@@ -20,7 +20,11 @@
   unsaved update (``unsaved_update``), and a parent's such press shows them the
   same way, only as a copy of that same request. The page also answers
   a turn-in press that was saved when its own page can't be read: its heading
-  and sentence then say what was saved, and which page can't be shown.
+  and sentence then say what was saved, and which page can't be shown. A
+  hand-in save that discarded a next step is answered with the details
+  themselves, and when they can't be read it is answered here the same way:
+  what the save did, that this attempt's next step was not saved, and which
+  page can't be shown.
 #}
 {% macro work_words(kept) %}
   {% if kept.status %}

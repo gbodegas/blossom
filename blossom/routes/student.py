@@ -112,8 +112,12 @@ from blossom.hand_in import (
     NEEDS_HAND_IN,
     NEXT_ACTION_MAX_LENGTH,
     UNKNOWN,
+    HandInEvent,
+    HandInProjection,
     HandInState,
 )
+from blossom.hand_in import REPORT as HAND_IN_REPORT
+from blossom.hand_in import UNDO as HAND_IN_UNDO
 from blossom.noticing import (
     Everything,
     Noticing,
@@ -330,6 +334,7 @@ from blossom.templating import answering, page_templates
 from blossom.to_turn_in import (
     COMPACT_ROWS,
     ON_THE_CARD,
+    RESULT_UNREADABLE,
     Attempt,
     ListRefusal,
     ListResult,
@@ -730,17 +735,29 @@ of a parent's moves on a request lands."""
 HAND_IN_SAVED: Final = "Your hand-in update is saved."
 HAND_IN_ALREADY_SAVED: Final = "Already saved."
 HAND_IN_UNDONE: Final = "Your hand-in update is undone."
-STEP_NOT_SAVED: Final = "The next step was not saved: it goes only with Still to turn in."
+STEP_NOT_SAVED: Final = (
+    "The next step was not saved by this attempt: it goes only with Still to turn in."
+)
+"""Said by the answer to a save that sent a next step beside another answer, and by that
+answer alone: no address and no record carries it, so no later read of the page says it."""
 HAND_IN_CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": HAND_IN_SAVED,
     "same": HAND_IN_ALREADY_SAVED,
     "undone": HAND_IN_UNDONE,
-    "saved_without_step": f"{HAND_IN_SAVED} {STEP_NOT_SAVED}",
-    "same_without_step": f"{HAND_IN_ALREADY_SAVED} {STEP_NOT_SAVED}",
 }
-"""What the address says a hand-in save or undo did, chosen by the server as her
-update's are; what stands is shown beside it, with its day. A save of another answer with
-a next step typed says the step was not saved."""
+"""What a hand-in save or undo did, by the word its address says, chosen by the server as
+her update's are: a save, a save of what already stood, or an undo. The word is good for
+nothing until the page's reading has the event the address names; what stands is shown
+beside the result, with its day."""
+HAND_IN_SAVED_EARLIER: Final = "Your hand-in update was saved earlier. This is what stands now."
+HAND_IN_UNDONE_EARLIER: Final = "Your hand-in update was undone earlier. This is what stands now."
+HAND_IN_EARLIER: Final[dict[str, str]] = {
+    "saved": HAND_IN_SAVED_EARLIER,
+    "same": HAND_IN_SAVED_EARLIER,
+    "undone": HAND_IN_UNDONE_EARLIER,
+}
+"""The result said of an event that something newer has followed: what she did, as done
+earlier, beside what stands now."""
 CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": UPDATE_SAVED,
     "same": UPDATE_ALREADY_SAVED,
@@ -2614,7 +2631,12 @@ class HandInCard:
     nothing she chose or typed is lost to a refusal; ``problem`` is what the
     save could not do, and ``field`` the field it is about. ``unsaved`` marks
     the refusal that shows what stands now above a form still holding what
-    she meant to save.
+    she meant to save. ``earlier`` marks a result about an event that
+    something newer has followed: it is said as done earlier, and the section
+    offers no Undo beside it. ``step_not_saved`` is set only by the answer to
+    a save that discarded a next step: the page that answers says so in a
+    line of its own after the result, which takes the focus as it arrives
+    and names that line as its description.
     """
 
     said: str | None = None
@@ -2625,6 +2647,75 @@ class HandInCard:
     next_action: str | None = None
     note: str | None = None
     unsaved: bool = False
+    earlier: bool = False
+    step_not_saved: bool = False
+
+
+@dataclass(frozen=True)
+class HandInAsked:
+    """What an address says a hand-in save or undo from the details did: the word for it and
+    the event the save returned. Words from an address, good for nothing until the page's
+    reading has that event in this assignment's history."""
+
+    said: str
+    event_id: str
+
+
+def hand_in_asked(said: str | None, event_id: str | None) -> HandInAsked | None:
+    """What an address says a hand-in save or undo did, held to the length of any id the
+    store makes. A word the server does not write, or one that names no event, says nothing."""
+    if said is None or said not in HAND_IN_CONFIRMATIONS:
+        return None
+    if not event_id or len(event_id) > TOKEN_MAX_LENGTH:
+        return None
+    return HandInAsked(said, event_id)
+
+
+def is_what_the_word_says(event: HandInEvent, said: str) -> bool:
+    """Whether an event of her hand-in history is what a word says happened, whatever state
+    it left: an undo for an undo; for a save of what already stood, any event that left a
+    state standing, since the head that save found may be her report or an undo that put
+    one back; and for a save, a report."""
+    if said == "undone":
+        return event.operation == HAND_IN_UNDO
+    if said == "same":
+        return event.state is not None
+    return event.operation == HAND_IN_REPORT
+
+
+def hand_in_result_for(
+    assignment_id: str,
+    reading: HandInProjection | None,
+    *,
+    unavailable: bool,
+    asked: HandInAsked,
+) -> HandInCard | None:
+    """The result a hand-in save or undo from the details left, as the page's reading bears
+    it out, or ``None``. ``asked`` is what an address says, or what a save answered with the
+    page itself returned.
+
+    The proof a turn-in press is held to, for any hand-in state: the event named must be
+    in this assignment's history, be this assignment's, and be of the kind the word says.
+    A made-up id, another assignment's event, or a report named as an undo says nothing.
+    While that event is the latest, the result is what stands, in the word's own sentence.
+    Once something newer follows it, the result is said as done earlier, and the section
+    offers no Undo, which would take back the newer event. Over a record that cannot be
+    read no save is said, only that what was done cannot be shown.
+    """
+    if unavailable:
+        return HandInCard(said=RESULT_UNREADABLE)
+    if reading is None or reading.head is None:
+        return None
+    event = next(
+        (row.event for row in reading.history if row.event.event_id == asked.event_id), None
+    )
+    if event is None or event.assignment_id != assignment_id:
+        return None
+    if not is_what_the_word_says(event, asked.said):
+        return None
+    if reading.head.event_id != event.event_id:
+        return HandInCard(said=HAND_IN_EARLIER[asked.said], earlier=True)
+    return HandInCard(said=HAND_IN_CONFIRMATIONS[asked.said])
 
 
 @dataclass(frozen=True)
@@ -3587,6 +3678,7 @@ templates.env.globals["turn_in_actions"] = turn_in_actions
 templates.env.globals["work_group_anchor"] = work_group_anchor
 templates.env.globals["turn_in_group_anchor"] = turn_in_group_anchor
 templates.env.globals["turn_in_means_line"] = TURN_IN_MEANS
+templates.env.globals["step_not_saved_line"] = STEP_NOT_SAVED
 
 
 def hand_in_actions(assignment_id: str) -> tuple[str, str]:
@@ -3781,6 +3873,7 @@ def detail_page(
     problem: str | None = None,
     status_code: int = status.HTTP_200_OK,
     turn_in: TurnIn | None = None,
+    hand_in_result: HandInAsked | None = None,
 ) -> HTMLResponse:
     """One assignment's current record, with her update and the way back.
 
@@ -3793,7 +3886,9 @@ def detail_page(
     stands, whatever plan or page the reader came from; the way back is data
     the reader's link carried, checked, and never chooses the assignment. ``turn_in`` is what
     a press of I turned it in or its Undo did here, said in Turning it in only when this
-    reading bears it out, and to her alone.
+    reading bears it out, and to her alone. ``hand_in_result`` is what an address says a
+    save or an undo from the hand-in form did, or what a save answered with this page itself
+    returned, held to the same reading and said to her alone.
     """
     viewer = viewer_of(request)
     card, hand_in = as_read_by(card, viewer), as_read_by(hand_in, viewer)
@@ -3859,6 +3954,20 @@ def detail_page(
             event_id=turn_in.event_id or "",
         )
     )
+    hand_in_shown = (
+        None
+        if hand_in_result is None or viewer == "parent"
+        else hand_in_result_for(
+            assignment_id,
+            turned_in.readable.get(assignment_id),
+            unavailable=assignment_id in turned_in.unreadable,
+            asked=hand_in_result,
+        )
+    )
+    if hand_in_shown is not None:
+        hand_in = replace(
+            hand_in or HandInCard(), said=hand_in_shown.said, earlier=hand_in_shown.earlier
+        )
     noticed = notice_due_date(expect_due_date(item), records)
     view = assignment_view(
         item,
@@ -3995,6 +4104,10 @@ def assignment_details(
     hand_in: Annotated[
         str | None, Query(description="change to open the hand-in form, or what a save did")
     ] = None,
+    hand_in_event: Annotated[
+        str | None,
+        Query(description="the event that save or undo returned; looked up, never trusted"),
+    ] = None,
     turn_in_said: Annotated[
         str | None, Query(description="what I turned it in or its Undo here did; a note")
     ] = None,
@@ -4009,7 +4122,11 @@ def assignment_details(
     form on an update that stands, and ``said`` is one of the three things a
     save or an undo can have done, which the server chose and the address
     only carries: any other word says nothing. An undo names the undo it made
-    in ``undo_event``, as on her week. When the record can't be read,
+    in ``undo_event``, as on her week. ``hand_in`` opens the hand-in form, or
+    is the word for what a save or an undo from that form did, with the event
+    it returned in ``hand_in_event``: the one it made, or for a save of what
+    already stood, the head it found. The word is said only when the page's
+    reading finds that event. When the record can't be read,
     503: a page that says so, offers the same address again and the way back
     the address names, and says nothing of a save. A save that has just made
     the assignment Done names a landing whose cookie says so; the page that
@@ -4029,16 +4146,24 @@ def assignment_details(
     elif change == "1":
         card = CardState(assignment_id, change=True)
     turning_in = None
+    hand_in_result = None
     # A turn-in result is read first; the hand-in form's words are read when there is none.
     turn_in = turn_in_asked(turn_in_said, assignment_id, turn_in_event)
     if turn_in is None and hand_in in HAND_IN_CONFIRMATIONS:
-        turning_in = HandInCard(said=HAND_IN_CONFIRMATIONS[hand_in])
+        hand_in_result = hand_in_asked(hand_in, hand_in_event)
     elif turn_in is None and hand_in in ("change", "remember"):
         # A link that says ``remember`` opens the same form, so a saved address still lands.
         turning_in = HandInCard(change=True)
     try:
         page = detail_page(
-            request, state, assignment_id, back, card=card, hand_in=turning_in, turn_in=turn_in
+            request,
+            state,
+            assignment_id,
+            back,
+            card=card,
+            hand_in=turning_in,
+            turn_in=turn_in,
+            hand_in_result=hand_in_result,
         )
     except (sqlite3.Error, StoreBusy, WriterBusy) as error:
         failed = unavailable_page(
