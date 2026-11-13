@@ -212,6 +212,43 @@ async def until(read: Callable[[], RunState | None], seconds: float = 3.0) -> Ru
     raise AssertionError(msg)
 
 
+async def within_real_time[T](
+    work: Coroutine[Any, Any, T], seconds: float = HANG_LIMIT_SECONDS
+) -> T:
+    """What ``work`` returns, or a failure once ``seconds`` of real time have passed.
+
+    A guard against hanging, not a bound on behavior. On a loop whose ``time()`` reads a
+    ``FakeTime``, a wait that only the clock ends lasts for as long as nobody moves the
+    clock. The limit here is a timer thread's, read from no clock a test controls: when it
+    runs out, the work is canceled and the test fails as hung."""
+    loop = asyncio.get_running_loop()
+    task = asyncio.ensure_future(work)
+    out_of_time = asyncio.Event()
+
+    def say_so() -> None:
+        # A loop already closed has no work left to stop.
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(out_of_time.set)
+
+    timer = threading.Timer(seconds, say_so)
+    timer.daemon = True
+    timer.start()
+    waiting = asyncio.ensure_future(out_of_time.wait())
+    try:
+        await asyncio.wait({task, waiting}, return_when=asyncio.FIRST_COMPLETED)
+    except BaseException:
+        task.cancel()
+        raise
+    finally:
+        timer.cancel()
+        waiting.cancel()
+    if not task.done():
+        task.cancel()
+        msg = f"still running after {seconds:g} s of real time: hung"
+        raise AssertionError(msg)
+    return task.result()
+
+
 async def ends_stopped(task: "asyncio.Future[Any]") -> bool:
     """Whether awaiting ``task`` ends in its cancel, rather than in an answer or a failure."""
     try:
@@ -403,21 +440,32 @@ def test_an_error_after_a_committed_settle_is_read_back_as_published(
 def test_an_error_from_the_settle_after_the_deadline_is_unconfirmed_without_a_lookup(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The settle fails inside the grace, after the deadline; the answer is
+    """A controlled-time lifecycle test, not a measure of wall-clock latency: the run's 0.3
+    seconds are read from a clock the test moves. The settle begins with all of that time
+    left and fails half a second on, after the deadline and inside the grace; the answer is
     unconfirmed at once with no read of the record, and a later check ends the run."""
-    state = application(tmp_path)
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    budget = fake.budget(0.3)
     looked: list[int] = []
+    left_at_the_settle: list[float] = []
     try:
 
         def late(original: Callable[..., Any]) -> Callable[..., Any]:
             def fail_late(*args: object, **kwargs: object) -> object:
-                time.sleep(0.5)
+                left_at_the_settle.append(budget.remaining())
+                # Queued on the loop that reads the clock before this call's failure is, so
+                # the clock is half a second on, past the deadline and inside the grace,
+                # when the loop hears that the settle failed.
+                loop = fake.loop
+                assert loop is not None
+                loop.call_soon_threadsafe(fake.advance, 0.5)
                 msg = "the file failed"
                 raise RuntimeError(msg)
 
             return fail_late
 
-        settling_through(state, late)
+        calls = settling_through(state, late)
         reads = state.drafts.run_status
 
         def spied(
@@ -433,14 +481,17 @@ def test_an_error_from_the_settle_after_the_deadline_is_unconfirmed_without_a_lo
                 state, planner=Scripted(ok(fixture_week_plan())), critic=critic()
             )
             try:
-                await make_plan(graph, PLAN_DATE, state, budget=RunBudget(seconds=0.3))
+                await make_plan(graph, PLAN_DATE, state, budget=budget)
             except Unconfirmed as error:
                 return error
             return None
 
-        caught = asyncio.run(scenario())
+        caught = fake.run(within_real_time(scenario()))
         during = list(looked)
         state.drafts.run_status = reads  # type: ignore[method-assign]
+        assert calls == [1]
+        assert left_at_the_settle == [0.3]
+        assert 0.3 < budget.elapsed() < 0.3 + SETTLE_GRACE_SECONDS
         assert isinstance(caught, Unconfirmed)
         later = state.drafts.run_status(caught.run_id)
     finally:
@@ -561,19 +612,36 @@ def test_an_ending_held_across_the_deadline_is_recorded_and_answered_as_timed_ou
 def test_a_press_after_a_run_timed_out_is_admitted_while_its_compose_is_still_held(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The first run times out while its draft's save waits on a barrier; the
-    next press is admitted once the ending commits and publishes, and the released save
-    is refused, leaving no draft behind."""
-    state = application(tmp_path)
+    """A controlled-time lifecycle test, not a measure of wall-clock latency: the first
+    run's 0.3 seconds are read from a clock the test moves. Its draft's save begins with
+    all of that time left and is held; the clock then passes the deadline and the run times
+    out. The next press is admitted and publishes while that save is still held, and the
+    released save is refused, leaving no draft behind."""
+    fake = FakeTime()
+    state = application_on(tmp_path, fake)
+    budget = fake.budget(0.3)
     original = state.drafts.record_waiting
     barrier = threading.Event()
     finished = threading.Event()
     held_for: list[str] = []
+    left_at_the_save: list[float] = []
+    let_go: list[bool] = []
+
+    def holding() -> bool:
+        """Whether the first save has begun and its hold has not ended."""
+        return bool(held_for) and not let_go
 
     def held(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
         if not held_for:
             held_for.append(str(kwargs["thread_id"]))
-            barrier.wait(5)
+            left_at_the_save.append(budget.remaining())
+            # Half a second on, on the loop that reads the clock: past the run's deadline
+            # while this save waits.
+            loop = fake.loop
+            assert loop is not None
+            loop.call_soon_threadsafe(fake.advance, 0.5)
+            # True when the test ends the hold, False when the hold's own limit does.
+            let_go.append(barrier.wait(5))
             try:
                 original(*args, **kwargs)
             finally:
@@ -587,15 +655,17 @@ def test_a_press_after_a_run_timed_out_is_admitted_while_its_compose_is_still_he
         def graph() -> Any:  # noqa: ANN401
             return plan_graph_for(state, planner=Scripted(ok(fixture_week_plan())), critic=critic())
 
-        async def scenario() -> tuple[PlanRunView, RunState, PlanMade]:
-            first = await plan_evening(graph(), PLAN_DATE, state, budget=RunBudget(seconds=0.3))
+        async def scenario() -> tuple[PlanRunView, RunState, PlanMade, tuple[bool, bool]]:
+            first = await plan_evening(graph(), PLAN_DATE, state, budget=budget)
+            held_at_the_answer = holding()
             ended = await until(lambda: ended_run_of(state, first.thread_id))
             second = await make_plan(graph(), PLAN_DATE, state)
+            held_at_the_next_plan = holding()
             barrier.set()
             await asyncio.to_thread(finished.wait, 5)
-            return first, ended, second
+            return first, ended, second, (held_at_the_answer, held_at_the_next_plan)
 
-        first, ended, second = asyncio.run(scenario())
+        first, ended, second, still_held = fake.run(within_real_time(scenario()))
         orphan = state.drafts.get(f"draft:{first.thread_id}")
         latest = state.drafts.latest_for(PLAN_DATE)
         after = state.drafts.run_status(first.thread_id)
@@ -603,6 +673,9 @@ def test_a_press_after_a_run_timed_out_is_admitted_while_its_compose_is_still_he
         state.close()
 
     assert held_for == [first.thread_id]
+    assert left_at_the_save == [0.3]
+    assert still_held == (True, True)
+    assert let_go == [True]
     assert first.outcome == "timed_out"
     assert (ended.status, ended.reason) == ("ended", "timed_out")
     assert second.record is not None
