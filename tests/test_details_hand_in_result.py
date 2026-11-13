@@ -12,12 +12,18 @@ result is said as done earlier, beside what stands now, with no Undo. Any
 other address says nothing, and the section is as on a plain visit. A parent
 reads what stands and no result.
 
+A save that discards a next step, typed beside an answer other than Still to
+turn in, is answered with the details themselves: the result, and apart from
+it a line that this attempt's next step was not saved. That line belongs to
+that one answer. No address carries it, so no later read says it.
+
 The fixture week through the app on a pinned clock, forms read from the
 page's own HTML, and no model asked.
 """
 
 import pathlib
 import re
+import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import partial
@@ -29,6 +35,7 @@ from fastapi.testclient import TestClient
 from markupsafe import escape
 
 from blossom.app import create_app
+from blossom.dependencies import ApplicationState
 from blossom.hand_in import (
     NEEDS_HAND_IN,
     TURNED_IN,
@@ -37,6 +44,7 @@ from blossom.hand_in import (
     HandInState,
     HandInUndone,
 )
+from blossom.routes import hand_in as hand_in_routes
 from blossom.routes.student import HAND_IN_ALREADY_SAVED, HAND_IN_SAVED, HAND_IN_UNDONE
 from blossom.to_turn_in import RESULT_UNREADABLE
 from tests.support import (
@@ -52,10 +60,12 @@ from tests.support import (
     Answer,
     browser,
     form_fields,
+    main_of,
     pressed_form,
     signed_in_household,
     spoil,
     state_of,
+    words,
 )
 
 SAVE: Final = f"/student/actions/assignments/{ESSAY_ID}/hand-in"
@@ -71,6 +81,15 @@ EVERY_SENTENCE: Final = (*STANDING, SAVED_EARLIER, UNDONE_EARLIER)
 RESULT_LINE: Final = 'class="note update-result"'
 SECTION_UNDO: Final = 'name="hand_in_id"'
 TURN_IN_UNDO: Final = 'name="undo_hand_in"'
+OTHER_ANSWERS: Final[tuple[HandInState, ...]] = (TURNED_IN, "not_required", "unknown")
+"""The answers a next step does not go with."""
+STEP_NOTICE: Final = (
+    "The next step was not saved by this attempt: it goes only with Still to turn in."
+)
+NOTICE_LINE: Final = f'<p class="note">{STEP_NOTICE}</p>'
+ABOUT_A_STEP: Final = "next step was not saved"
+"""Words any line about a discarded step holds, and nothing else on these pages does."""
+NOT_SHOWN: Final = "This assignment can't be shown right now."
 
 
 def section(page: str) -> str:
@@ -86,15 +105,28 @@ def stands(turning: str) -> str:
     return found.group(0)
 
 
-def save(client: TestClient, state: HandInState, *, note: str = "", **back: str) -> Answer:
-    """The hand-in form of the details, opened by its own link and sent with her choice."""
+def result_line(turning: str) -> str:
+    """The one line of the section that says what a save or an undo did."""
+    found = re.findall(r'<p class="note update-result"[^>]*>.*?</p>', turning, re.DOTALL)
+    assert len(found) == 1, found
+    return str(found[0])
+
+
+def typed(
+    client: TestClient, state: HandInState, *, action: str = "", **back: str
+) -> dict[str, str]:
+    """What the hand-in form of the details sends, opened by its own link, with her choice
+    and a next step as she typed it."""
     page = client.get(DETAILS, params={"hand_in": "change", **back}).text
-    fields = form_fields(page, SAVE)
-    return client.post(
-        SAVE,
-        data={**fields, "state": state, "next_action": "", "note": note},
-        headers=PAGE_HEADERS,
-    )
+    return {**form_fields(page, SAVE), "state": state, "next_action": action, "note": ""}
+
+
+def save(
+    client: TestClient, state: HandInState, *, note: str = "", action: str = "", **back: str
+) -> Answer:
+    """The hand-in form of the details, opened by its own link and sent with her choice."""
+    sent = {**typed(client, state, action=action, **back), "note": note}
+    return client.post(SAVE, data=sent, headers=PAGE_HEADERS)
 
 
 def undo(client: TestClient, page: str) -> Answer:
@@ -505,3 +537,251 @@ def test_a_turn_in_result_is_read_first_and_the_hand_in_words_only_when_there_is
     assert "You reported this turned in." in alone
     assert alone.count(RESULT_LINE) == 1
     assert both == alone
+
+
+# ------------------------------------------------- a save that discards a next step
+
+
+@pytest.mark.parametrize("state", OTHER_ANSWERS)
+def test_a_save_that_discards_a_next_step_is_answered_with_the_details_themselves(
+    state: HandInState,
+) -> None:
+    """No redirect: the page says the result, held to the event the save made, and after it,
+    as an element of its own, that this attempt's next step was not saved. The step is kept
+    nowhere and shown nowhere, and the section's Undo names the event the result is about."""
+    with browser() as client:
+        answer = save(client, state, action="Blue folder")
+        events = chain(client)
+
+    assert answer.status_code == 200, answer.headers.get("location")
+    assert "location" not in answer.headers
+    shown = section(answer.text)
+    said = result_line(shown)
+    assert [sentence for sentence in EVERY_SENTENCE if sentence in said] == [HAND_IN_SAVED]
+    assert ABOUT_A_STEP not in said
+    assert "autofocus" in said
+    assert answer.text.count("autofocus") == 1
+    assert shown.count(NOTICE_LINE) == 1
+    assert shown.count(ABOUT_A_STEP) == 1
+    assert shown.index(said) < shown.index(NOTICE_LINE)
+    assert [(event.operation, event.state, event.next_action) for event in events] == [
+        ("report", state, None)
+    ]
+    assert re.findall(r'name="hand_in_id" value="([^"]*)"', shown) == [events[0].event_id]
+    assert "Blue folder" not in answer.text
+
+
+def test_every_other_save_repeat_and_undo_is_answered_with_a_redirect() -> None:
+    """A step saved with Still to turn in, a save with no step, a repeat with no step, a step
+    of spaces only, and an Undo discard nothing, so each is answered with a redirect that
+    says the plain word and names the latest event."""
+    answered: list[tuple[Answer, str]] = []
+    discarding_nothing: tuple[tuple[HandInState, str], ...] = (
+        (NEEDS_HAND_IN, "Blue folder"),
+        (TURNED_IN, ""),
+        (TURNED_IN, ""),
+        ("not_required", "   "),
+    )
+    with browser() as client:
+        for state, action in discarding_nothing:
+            answered.append((save(client, state, action=action), ids(client)[-1]))
+        answered.append((undo(client, client.get(DETAILS).text), ids(client)[-1]))
+        events = chain(client)
+
+    assert [asked(answer).get("hand_in") for answer, _ in answered] == [
+        "saved",
+        "saved",
+        "same",
+        "saved",
+        "undone",
+    ]
+    assert [asked(answer).get("hand_in_event") for answer, _ in answered] == [
+        head for _, head in answered
+    ]
+    assert [event.next_action for event in events] == ["Blue folder", None, None, None]
+
+
+@pytest.mark.parametrize("situation", ["a standing event", "an older event", "no event"])
+@pytest.mark.parametrize("word", ["saved_without_step", "same_without_step"])
+def test_a_word_about_a_next_step_says_nothing_on_a_later_read(word: str, situation: str) -> None:
+    """No address carries the discarded step. A word about one is no word the page knows,
+    with a real event of a save that discarded a step, with that event once something newer
+    follows it, and with none."""
+    with browser() as client:
+        named = {}
+        if situation != "no event":
+            save(client, TURNED_IN, action="Blue folder")
+            named = {"hand_in_event": ids(client)[-1]}
+        if situation == "an older event":
+            newer_than(client, "nothing to turn in")
+        plain = section(client.get(DETAILS).text)
+        shown = section(client.get(DETAILS, params={"hand_in": word, **named}).text)
+
+    assert RESULT_LINE not in plain
+    assert ABOUT_A_STEP not in plain
+    assert shown == plain
+
+
+def test_the_plain_word_with_the_event_says_the_result_and_nothing_of_a_step() -> None:
+    with browser() as client:
+        save(client, TURNED_IN, action="Blue folder")
+        event = ids(client)[-1]
+        shown = section(
+            client.get(DETAILS, params={"hand_in": "saved", "hand_in_event": event}).text
+        )
+
+    assert HAND_IN_SAVED in result_line(shown)
+    assert ABOUT_A_STEP not in shown
+    assert "autofocus" not in shown
+
+
+def test_the_same_form_sent_again_is_already_saved_with_the_notice_and_writes_nothing() -> None:
+    """A reload of the answer sends the same fields again. Nothing is written: the page
+    says it was already saved, about the event that stands, with the line about this
+    attempt's step, and its Undo names that event."""
+    with browser() as client:
+        sent = typed(client, TURNED_IN, action="Blue folder")
+        first = client.post(SAVE, data=sent, headers=PAGE_HEADERS)
+        again = client.post(SAVE, data=sent, headers=PAGE_HEADERS)
+        events = chain(client)
+
+    assert (first.status_code, again.status_code) == (200, 200)
+    shown = section(again.text)
+    said = result_line(shown)
+    assert [sentence for sentence in EVERY_SENTENCE if sentence in said] == [HAND_IN_ALREADY_SAVED]
+    assert shown.count(NOTICE_LINE) == 1
+    assert len(events) == 1
+    assert re.findall(r'name="hand_in_id" value="([^"]*)"', shown) == [events[0].event_id]
+
+
+def test_the_same_form_sent_again_after_a_newer_update_is_refused_and_writes_nothing() -> None:
+    """Something newer and different stands when the same fields arrive again. The save is
+    refused as any save from a page that fell behind, and so is an Undo drawn while the
+    first save stood. Nothing is written, and no result or line about a step is said."""
+    with browser() as client:
+        sent = typed(client, TURNED_IN, action="Blue folder")
+        client.post(SAVE, data=sent, headers=PAGE_HEADERS)
+        drawn = form_fields(section(client.get(DETAILS).text), UNDO)
+        newer = newer_than(client, "still to turn in")
+        before = ids(client)
+        again = client.post(SAVE, data=sent, headers=PAGE_HEADERS)
+        refused = client.post(UNDO, data=drawn, headers=PAGE_HEADERS)
+        after = ids(client)
+
+    assert before == [drawn["hand_in_id"], newer]
+    assert (again.status_code, refused.status_code) == (409, 409)
+    assert after == before
+    for answer in (again, refused):
+        assert RESULT_LINE not in answer.text
+        assert ABOUT_A_STEP not in answer.text
+
+
+def test_a_newer_event_before_the_page_is_read_gives_the_earlier_result_and_the_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another report lands after the save is kept and before its page is read: both writes
+    are the store's own. The result is said as done earlier with no Undo, which would take
+    back the newer report, and the line about this attempt's step is still said."""
+    kept = hand_in_routes.hand_in_now
+
+    def then_a_newer_report(
+        state: ApplicationState,
+        assignment_id: str,
+        said: HandInState,
+        action: str,
+        note: str,
+        *,
+        expected_head: str | None,
+        only_over: HandInState | None = None,
+    ) -> object:
+        made = kept(
+            state,
+            assignment_id,
+            said,
+            action,
+            note,
+            expected_head=expected_head,
+            only_over=only_over,
+        )
+        assert isinstance(made, HandInSaved)
+        newer = state.project_state.record_hand_in(
+            assignment_id,
+            NEEDS_HAND_IN,
+            None,
+            None,
+            expected_head=made.event.event_id,
+            now=AT_NINE,
+            today=PLAN_DATE,
+        )
+        assert isinstance(newer, HandInSaved)
+        return made
+
+    with browser() as client:
+        sent = typed(client, TURNED_IN, action="Blue folder")
+        monkeypatch.setattr(hand_in_routes, "hand_in_now", then_a_newer_report)
+        answer = client.post(SAVE, data=sent, headers=PAGE_HEADERS)
+        events = chain(client)
+        plain = section(client.get(DETAILS).text)
+
+    assert answer.status_code == 200, answer.headers.get("location")
+    shown = section(answer.text)
+    said = result_line(shown)
+    assert [sentence for sentence in EVERY_SENTENCE if sentence in shown] == [SAVED_EARLIER]
+    assert SAVED_EARLIER in said
+    assert ABOUT_A_STEP not in said
+    assert shown.count(NOTICE_LINE) == 1
+    assert SECTION_UNDO not in shown
+    assert TURN_IN_UNDO not in shown
+    assert [(event.state, event.next_action) for event in events] == [
+        (TURNED_IN, None),
+        (NEEDS_HAND_IN, None),
+    ]
+    assert stands(shown) == stands(plain)
+    assert SECTION_UNDO in plain
+
+
+@pytest.mark.parametrize("outcome", ["saved", "same"])
+def test_a_kept_save_whose_page_cannot_be_read_says_what_was_kept_and_the_notice(
+    outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The save is kept, or was already, and the read for its page fails. The answer reads
+    no store and tries nothing again: it says the confirmed result, that this attempt's
+    next step was not saved, and which page cannot be shown. It never says the update was
+    not saved, and it holds no form and nothing to press."""
+    tried: list[str] = []
+
+    def unreadable(*_: object, **__: object) -> None:
+        tried.append("the details")
+        msg = "disk I/O error"
+        raise sqlite3.OperationalError(msg)
+
+    with browser() as client:
+        sent = typed(client, TURNED_IN, action="Blue folder")
+        if outcome == "same":
+            client.post(SAVE, data=sent, headers=PAGE_HEADERS)
+        monkeypatch.setattr(hand_in_routes, "detail_page", unreadable)
+        answer = client.post(SAVE, data=sent, headers=PAGE_HEADERS)
+        events = chain(client)
+
+    confirmed = HAND_IN_SAVED if outcome == "saved" else HAND_IN_ALREADY_SAVED
+    assert answer.status_code == 503, answer.headers.get("location")
+    main = main_of(answer.text)
+    alert = re.search(
+        r'<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>(.*?)</p>',
+        main,
+        re.DOTALL,
+    )
+    assert alert is not None, main[:600]
+    assert words(alert.group(1)) == f"{confirmed} {STEP_NOTICE} {NOT_SHOWN}"
+    assert "<h1>Turning it in</h1>" in main
+    assert tried == ["the details"]
+    assert "Update not saved" not in answer.text
+    assert "Nothing was saved" not in answer.text
+    assert "<form" not in main
+    assert "<button" not in main
+    assert answer.text.count("autofocus") == 1
+    assert ">Back to the assignment</a>" in main
+    assert "Blue folder" not in answer.text
+    assert [(event.operation, event.state, event.next_action) for event in events] == [
+        ("report", TURNED_IN, None)
+    ]

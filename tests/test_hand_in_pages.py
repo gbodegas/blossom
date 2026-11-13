@@ -260,8 +260,11 @@ def test_change_opens_the_form_with_what_stands_and_an_action_left_behind_is_not
         form = section(opened(client))
         assert 'value="needs_hand_in" checked' in form
         assert "Put it in my folder" in form
-        shown = section(landed(client, save(client, form, TURNED_IN, action="Put it in my folder")))
+        answer = save(client, form, TURNED_IN, action="Put it in my folder")
+        assert answer.status_code == 200, answer.headers.get("location")
+        shown = section(answer.text)
 
+        assert f'<p class="note">{STEP_NOT_SAVED}</p>' in shown
         assert "You reported it turned in on August 19, 2026." in shown
         assert "Put it in my folder" not in shown[: shown.index("Hand-in history")]
         assert "Put it in my folder" in shown[shown.index("Hand-in history") :]
@@ -376,16 +379,23 @@ def test_the_form_asks_one_question_and_says_what_the_step_is_before_the_field()
 
 
 @pytest.mark.parametrize("state", [TURNED_IN, "not_required", "unknown"])
-def test_a_step_typed_beside_another_answer_is_not_saved_and_the_result_says_so(
+def test_a_step_typed_beside_another_answer_is_not_saved_and_the_answer_says_so(
     state: str,
 ) -> None:
+    """The save is answered with the details themselves, and so is the same save again. The
+    result is one line, and that this attempt's step was not saved is another after it."""
     with browser() as client:
-        result = section(landed(client, save(client, opened(client), state, action="Blue folder")))
-        again = section(landed(client, save(client, opened(client), state, action="Blue folder")))
+        first = save(client, opened(client), state, action="Blue folder")
+        repeat = save(client, opened(client), state, action="Blue folder")
         stored = state_of(client).project_state.hand_in_chains([ESSAY_ID])[ESSAY_ID]
 
-    assert f"{HAND_IN_SAVED} {STEP_NOT_SAVED}" in result
-    assert f"{HAND_IN_ALREADY_SAVED} {STEP_NOT_SAVED}" in again
+    assert (first.status_code, repeat.status_code) == (200, 200)
+    result, again = section(first.text), section(repeat.text)
+    assert f"{HAND_IN_SAVED} <a " in result
+    assert f"{HAND_IN_ALREADY_SAVED} <a " in again
+    for shown in (result, again):
+        assert shown.count(f'<p class="note">{STEP_NOT_SAVED}</p>') == 1
+        assert shown.count(STEP_NOT_SAVED) == 1
     assert "Blue folder" not in result
     assert [event.next_action for event in stored] == [None]
 
