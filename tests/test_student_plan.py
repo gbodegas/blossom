@@ -88,6 +88,7 @@ from tests.support import (
     Spending,
     accepting,
     admissions_refused,
+    background_work_ended,
     changed_by_hand,
     client_for,
     drafts_in_memory,
@@ -3532,6 +3533,9 @@ def test_a_used_id_whose_lookup_fails_is_unconfirmed_whichever_step_before_the_r
     with browser() as client:
         body = plan_body(client, route)
         client.post(route, json=body)
+        # The first run keeps its time on a worker thread after its answer. That write is
+        # over before the retry, so the errors read below are the retry's alone.
+        background_work_ended(client)
         lookups_fail(monkeypatch, client)
         step_fails(step, route, monkeypatch, client)
         with caplog.at_level(logging.ERROR, logger="blossom.routes.runs"):
