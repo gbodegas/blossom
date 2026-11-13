@@ -215,12 +215,15 @@ async def until(read: Callable[[], RunState | None], seconds: float = 3.0) -> Ru
 async def within_real_time[T](
     work: Coroutine[Any, Any, T], seconds: float = HANG_LIMIT_SECONDS
 ) -> T:
-    """What ``work`` returns, or a failure once ``seconds`` of real time have passed.
+    """What ``work`` returns, or a failure once ``seconds`` of real time have passed with
+    the work still waiting on the loop.
 
     A guard against hanging, not a bound on behavior. On a loop whose ``time()`` reads a
     ``FakeTime``, a wait that only the clock ends lasts for as long as nobody moves the
     clock. The limit here is a timer thread's, read from no clock a test controls: when it
-    runs out, the work is canceled and the test fails as hung."""
+    runs out, the work is canceled and the test fails as hung. It ends waits on the loop
+    only: a call that blocks the loop's own thread is outside it, and the failure reaches
+    the test once the worker threads still running have ended."""
     loop = asyncio.get_running_loop()
     task = asyncio.ensure_future(work)
     out_of_time = asyncio.Event()
@@ -442,8 +445,9 @@ def test_an_error_from_the_settle_after_the_deadline_is_unconfirmed_without_a_lo
 ) -> None:
     """A controlled-time lifecycle test, not a measure of wall-clock latency: the run's 0.3
     seconds are read from a clock the test moves. The settle begins with all of that time
-    left and fails half a second on, after the deadline and inside the grace; the answer is
-    unconfirmed at once with no read of the record, and a later check ends the run."""
+    left, and the loop hears of its failure half a second on, after the deadline and inside
+    the grace; the answer is unconfirmed at once with no read of the record, and a later
+    check ends the run."""
     fake = FakeTime()
     state = application_on(tmp_path, fake)
     budget = fake.budget(0.3)
