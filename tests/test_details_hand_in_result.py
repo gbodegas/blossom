@@ -764,7 +764,7 @@ def a_newer_report(state: ApplicationState, about: HandInEvent) -> None:
 
 
 def off_the_record(state: ApplicationState, about: HandInEvent) -> None:
-    """The assignment leaves the record, as a refresh that no longer lists it leaves it."""
+    """The assignment is taken off the record; her hand-in events stay in the file."""
     store = state.project_state
     store._connection.execute(
         "DELETE FROM assignments WHERE assignment_id = ?", (about.assignment_id,)
