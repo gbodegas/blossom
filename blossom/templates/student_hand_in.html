@@ -41,8 +41,9 @@
   A save from the form that sent a next step beside another answer is answered
   with this page itself. The result line then takes the focus as the page
   arrives, and a line of its own after it says that this attempt's next step
-  was not saved. Only that answer sets ``hand_in_card.step_not_saved``; no
-  address does.
+  was not saved. The result names that line as its description, by the line's
+  id, so whoever arrives on the result is told both. Only that answer sets
+  ``hand_in_card.step_not_saved``; no address does.
 #}
 {% from "student_turn_in_buttons.html" import press, undo %}
 {% macro on(value) %}{{ value.strftime("%B") }} {{ value.day }}, {{ value.year }}{% endmacro %}
@@ -78,10 +79,10 @@
     {% if shown and shown.said %}
       <p class="note update-result" role="status" id="{{ hand_in_result_anchor(key) }}" tabindex="-1"{% if turn_in_direct %} autofocus{% endif %}>{{ shown.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
     {% elif hc and hc.said %}
-      <p class="note update-result" role="status" id="{{ hand_in_result_anchor(key) }}" tabindex="-1"{% if hc.step_not_saved %} autofocus{% endif %}>{{ hc.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
+      <p class="note update-result" role="status" id="{{ hand_in_result_anchor(key) }}" tabindex="-1"{% if hc.step_not_saved %} autofocus aria-describedby="hand-in-step-not-saved-{{ key }}"{% endif %}>{{ hc.said }}{% if ctx.back %} <a href="{{ ctx.back.href }}">{{ ctx.back.label }}</a>{% endif %}</p>
     {% endif %}
     {% if hc and hc.step_not_saved %}
-      <p class="note">{{ step_not_saved_line }}</p>
+      <p class="note" id="hand-in-step-not-saved-{{ key }}">{{ step_not_saved_line }}</p>
     {% endif %}
     {% if hc and hc.problem %}
       <p class="problem" id="hand-in-problem-{{ key }}" tabindex="-1">{{ hc.problem }}</p>

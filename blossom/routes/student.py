@@ -2635,7 +2635,8 @@ class HandInCard:
     something newer has followed: it is said as done earlier, and the section
     offers no Undo beside it. ``step_not_saved`` is set only by the answer to
     a save that discarded a next step: the page that answers says so in a
-    line of its own after the result, which takes the focus as it arrives.
+    line of its own after the result, which takes the focus as it arrives
+    and names that line as its description.
     """
 
     said: str | None = None
