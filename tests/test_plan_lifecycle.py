@@ -644,8 +644,9 @@ def test_a_press_after_a_run_timed_out_is_admitted_while_its_compose_is_still_he
             loop = fake.loop
             assert loop is not None
             loop.call_soon_threadsafe(fake.advance, 0.5)
-            # True when the test ends the hold, False when the hold's own limit does.
-            let_go.append(barrier.wait(5))
+            # True when the test ends the hold. The limit is a hang limit, far above any run
+            # measured: it bounds no behavior, and False means the test never let go.
+            let_go.append(barrier.wait(HANG_LIMIT_SECONDS))
             try:
                 original(*args, **kwargs)
             finally:
