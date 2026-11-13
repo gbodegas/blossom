@@ -45,6 +45,7 @@ from tests.support import (
     Statements,
     accepting,
     after_the_failure,
+    background_work_ended,
     browser,
     files_in,
     fixture_week_plan,
@@ -138,19 +139,6 @@ def coded(name: str) -> sqlite3.OperationalError:
     error.sqlite_errorcode = getattr(sqlite3, name)
     error.sqlite_errorname = name
     return error
-
-
-def background_work_ended(client: TestClient, seconds: float = 10.0) -> None:
-    """Return once the work the requests went on without has ended, within ``seconds``.
-
-    A run keeps its time on a worker thread after its answer. A test that holds the file or
-    the store next would meet that write: held up at its commit it keeps the store for its
-    whole wait, and a read the press makes before its own write is refused as busy."""
-    state = state_of(client)
-    ends = time.monotonic() + seconds
-    while state.detached and time.monotonic() < ends:
-        time.sleep(0.01)
-    assert not state.detached
 
 
 @contextlib.contextmanager

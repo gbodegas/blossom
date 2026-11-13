@@ -2234,6 +2234,19 @@ def planned(client: TestClient) -> DraftRecord:
     return record
 
 
+def background_work_ended(client: TestClient, seconds: float = 10.0) -> None:
+    """Return once the work the requests went on without has ended, within ``seconds``.
+
+    A run keeps its time on a worker thread after its answer. A test that holds the file or
+    the store next would meet that write: held up at its commit it keeps the store for its
+    whole wait, and a read the press makes before its own write is refused as busy."""
+    state = state_of(client)
+    ends = monotonic() + seconds
+    while state.detached and monotonic() < ends:
+        sleep(0.01)
+    assert not state.detached
+
+
 def to_details(assignment_id: str) -> str:
     """The address a row of today's plan links to for one assignment."""
     return details_href(assignment_id, return_to="today")
