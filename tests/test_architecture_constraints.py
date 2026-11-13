@@ -463,8 +463,9 @@ LITERAL_AUTOFOCUS = {
     "student_due_this_week.html": 5,
     "student_earlier_item.html": 1,
     "student_earlier_work.html": 1,
-    # A turn-in press answered with the page itself lands on its result in the section.
-    "student_hand_in.html": 4,
+    # A turn-in press answered with the page itself lands on its result in the section, and
+    # so does a hand-in save that discards a next step.
+    "student_hand_in.html": 5,
     # A card's turn-in result answered with the page itself, and a card's turn-in refusal.
     "student_hand_in_line.html": 2,
     "student_note.html": 1,
