@@ -40170,13 +40170,20 @@ def test_keep_s_lines_past_a_finished_read_take_their_ended_forms() -> None:
 
 
 def a_press_beside_another_tab_s(
-    browser: TestClient, monkeypatch: pytest.MonkeyPatch, other: str, press: str = "keep"
+    browser: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    other: str,
+    press: str = "keep",
+    *,
+    at: str = "its page",
 ) -> SimpleNamespace:
     """A review of one card and a press from its page that changes the card's Type, so its write
     stores an answer; Save for later from a page another tab has saved past. Timing forced: as
-    the route starts the press's page, another tab loads the review and presses
+    the route starts the press's page, or (``at`` "its rows") once that page has read the review
+    and is about to read its rows, another tab loads the review and presses
     (``A_PRESS_S_READS_BESIDE_ANOTHER_TAB_S``). The review, the post, what each answers write
-    returned, the press's own reads of the review at the store, and the other tab's answers."""
+    returned, whether each of the press's own reads of the review at the store said finished,
+    and the other tab's answers."""
     draft_id, page = read_review(
         browser, monkeypatch, (RED, homework_answer(cards=[homework_card()]))
     )
@@ -40191,8 +40198,17 @@ def a_press_beside_another_tab_s(
     written = answers_written_by(
         browser, monkeypatch, "save_for_later" if press == "later" else "keep_answers"
     )
-    reads = reads_of_the_review(browser, monkeypatch)
+    real_read = drafts.snapshot
+    real_rows = imports.rows_of
+    reads: list[bool] = []
     others: list[Answer] = []
+    begun: list[bool] = []
+
+    @functools.wraps(real_read)
+    def reading(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        found = real_read(*args, **kwargs)
+        reads.append(found.finished)
+        return found
 
     def then() -> None:
         own = len(reads)
@@ -40205,7 +40221,17 @@ def a_press_beside_another_tab_s(
             others.append(send(browser, draft_id, page_post(fresh, "save", tick=units_on(fresh))))
         del reads[own:]
 
-    as_its_page_begins(TwoCopies(browser, monkeypatch, draft_id, posted, []), then)
+    async def reading_rows(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if not begun:
+            begun.append(True)
+            await asyncio.to_thread(then)
+        return await real_rows(*args, **kwargs)
+
+    monkeypatch.setattr(drafts, "snapshot", reading)
+    if at == "its rows":
+        monkeypatch.setattr(imports, "rows_of", reading_rows)
+    else:
+        as_its_page_begins(TwoCopies(browser, monkeypatch, draft_id, posted, []), then)
     return SimpleNamespace(
         draft_id=draft_id, posted=posted, written=written, reads=reads, others=others
     )
@@ -40253,6 +40279,40 @@ def test_keep_on_a_review_read_finished_and_not_closed_says_its_answers_were_kep
     page = a_page_with_no_form_beside_another_tab_s_press(answer, beside.posted)
     assert page.kept == [KEPT_BEFORE_IT_ENDED, CORRECTIONS_NOT_SAVED]
     assert page.said == [imports.OUT_OF_DATE]
+    assert "answers were kept by this attempt" not in text
+    assert "Use Save review for later" not in text
+    assert beside.reads == [False, True, True]
+
+
+def test_keep_whose_read_after_its_empty_rows_alone_says_finished_says_the_ended_lines(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Timing forced: another tab's Save of the last group, its cleanup refused, lands once this
+    Keep's page has read the review, which that read finds open, and before its rows are read.
+    The rows come back empty, and only the read after them says the review finished and not
+    closed. At 200, with no form, the status block says that its answers were kept before the
+    review ended, then that this attempt did not save the corrections typed, with no instruction
+    to use Save review for later. The page has no problem line, its content's revision being the
+    one its own read found. The Keep reads the review three times."""
+    with here(open_settings(tmp_path)) as browser:
+        beside = a_press_beside_another_tab_s(
+            browser, monkeypatch, "saves the last group, its cleanup refused", at="its rows"
+        )
+        answer = send(browser, beside.draft_id, beside.posted)
+        monkeypatch.undo()
+        student, drafts = student_and_drafts(browser)
+        now = drafts.snapshot(student, beside.draft_id)
+
+    [other] = beside.others
+    kept = beside.written[0]
+    text = page_text(answer)
+    assert "Saved: 1 new assignment." in page_text(other)
+    assert (now.finished, now.closed_at) == (True, None)
+    assert (kept.stored, kept.dropped) == (1, 0)
+    assert beside.reads == [False, False, True]
+    page = a_page_with_no_form_beside_another_tab_s_press(answer, beside.posted)
+    assert page.kept == [KEPT_BEFORE_IT_ENDED, CORRECTIONS_NOT_SAVED]
+    assert page.said == []
     assert "answers were kept by this attempt" not in text
     assert "Use Save review for later" not in text
 

@@ -2712,14 +2712,14 @@ async def with_typing(
     draw no form, and give every box
     back to copy; behind, beside words a tick set aside, they say its choices can't be shown where
     the saved progress of the review's own read, or the answers the press's latest read of the
-    review holds, differ from them or can't be compared with them (``words_beside_unlike``). On
-    that page a Keep whose read of the review, or whose read after its rows came back empty, says
-    the review finished and not closed says its answers lines as an ended review's page says them,
-    and its corrections warning with no instruction to use Save review for later
-    (``apart_past_a_finished_read``). Choosing those lines reads nothing, and every other press
-    says its lines as they stand. With
+    review holds, differ from them or can't be compared with them (``words_beside_unlike``). With
     no read after its write, those answers are this press's own write's result (``own_write``,
     given only after it returned) as ``written_answers`` gives them, else its read before the press.
+    On that page a Keep whose read of the review, or whose read after its rows came back empty,
+    says the review finished and not closed says its answers lines as an ended review's page says
+    them, and its corrections warning with no instruction to use Save review for later
+    (``apart_past_a_finished_read``). Choosing those lines reads nothing, and every other press
+    says its lines as they stand.
     The form signs the revision its content was typed against: the post's; for an offer or a found
     row, that of the read that filled its boxes (``found``); after a save that committed, the one
     its own transaction raised the review to (``saved``). Where the review's stored revision is
