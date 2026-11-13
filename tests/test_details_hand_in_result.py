@@ -15,7 +15,8 @@ reads what stands and no result.
 A save that discards a next step, typed beside an answer other than Still to
 turn in, is answered with the details themselves: the result, and apart from
 it a line that this attempt's next step was not saved. That line belongs to
-that one answer. No address carries it, so no later read says it.
+that one answer. No address carries it, so no later read says it. The result
+takes the focus and names that line as its description.
 
 The fixture week through the app on a pinned clock, forms read from the
 page's own HTML, and no model asked.
@@ -91,7 +92,12 @@ OTHER_ANSWERS: Final[tuple[HandInState, ...]] = (TURNED_IN, "not_required", "unk
 STEP_NOTICE: Final = (
     "The next step was not saved by this attempt: it goes only with Still to turn in."
 )
-NOTICE_LINE: Final = f'<p class="note">{STEP_NOTICE}</p>'
+NOTICE_ID: Final = f"hand-in-step-not-saved-{ESSAY_ID}"
+NOTICE_LINE: Final = f'<p class="note" id="{NOTICE_ID}">{STEP_NOTICE}</p>'
+DESCRIBED_BY_THE_NOTICE: Final = f'aria-describedby="{NOTICE_ID}"'
+"""What the result line of a direct answer carries: the line about the step, an element of
+its own after it, is named as its description, so whoever arrives on the result is told
+both."""
 ABOUT_A_STEP: Final = "next step was not saved"
 """Words any line about a discarded step holds, and nothing else on these pages does."""
 NOT_SHOWN: Final = "This assignment can't be shown right now."
@@ -1029,3 +1035,102 @@ def test_a_record_unreadable_before_the_page_is_read_says_so_and_the_notice(
     for control in ("<form", "<button", "<input", "<textarea"):
         assert control not in shown, control
     assert len(stored) == 1
+
+
+# ------------------------------------------- the result names the notice as its description
+
+
+def opening_tag(element: str) -> str:
+    """The opening tag of an element, with its attributes."""
+    return element[: element.index(">") + 1]
+
+
+DIRECT_ANSWERS: Final = (
+    "saved, turned in",
+    "saved, nothing to turn in",
+    "saved, not sure",
+    "already saved",
+    "saved earlier",
+    "already saved, then earlier",
+    "a record that cannot be read",
+)
+"""Each direct answer that shows a result line above the line about the step."""
+
+
+@pytest.mark.parametrize("case", DIRECT_ANSWERS)
+def test_the_result_of_a_direct_answer_names_the_line_about_the_step_as_its_description(
+    case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The result line holds the focus, and the line about the step is a separate element
+    after it. The result names that element as its description, by an id one element on the
+    page has, so the step is said to whoever arrives on the result."""
+    states: dict[str, HandInState] = {
+        "saved, nothing to turn in": "not_required",
+        "saved, not sure": "unknown",
+    }
+    with browser() as client:
+        sent = typed(client, states.get(case, TURNED_IN), action="Blue folder")
+        if case.startswith("already saved"):
+            assert client.post(SAVE, data=sent, headers=PAGE_HEADERS).status_code == 200
+        if case.endswith("earlier"):
+            after_the_save(monkeypatch, a_newer_report)
+        if case == "a record that cannot be read":
+            after_the_save(monkeypatch, record_unreadable)
+        answer = client.post(SAVE, data=sent, headers=PAGE_HEADERS)
+
+    assert answer.status_code == 200, answer.headers.get("location")
+    shown = section(answer.text)
+    said = result_line(shown)
+    result = opening_tag(said)
+    assert DESCRIBED_BY_THE_NOTICE in result
+    assert result.count("aria-describedby") == 1
+    assert "autofocus" in result
+    assert answer.text.count(f'id="{NOTICE_ID}"') == 1
+    assert answer.text.count(NOTICE_ID) == 2
+    assert re.search(re.escape(said) + r"\s*" + re.escape(NOTICE_LINE), shown) is not None
+    assert ABOUT_A_STEP not in said
+
+
+def test_no_page_without_the_line_about_a_step_describes_its_result_by_it() -> None:
+    """A result read from an address, a plain visit and a refusal show no line about a step.
+    None holds that line's id, and no result line names a description, so no reference
+    points at an element the page lacks."""
+    with browser() as client:
+        behind = typed(client, NEEDS_HAND_IN)
+        assert save(client, TURNED_IN, action="Blue folder").status_code == 200
+        named = {"hand_in_event": ids(client)[-1]}
+        pages = {
+            "a plain visit": client.get(DETAILS),
+            "saved, standing": client.get(DETAILS, params={"hand_in": "saved", **named}),
+            "already saved, standing": client.get(DETAILS, params={"hand_in": "same", **named}),
+            "a form that fell behind": client.post(SAVE, data=behind, headers=PAGE_HEADERS),
+        }
+        newer_than(client, "nothing to turn in")
+        pages["saved, earlier"] = client.get(DETAILS, params={"hand_in": "saved", **named})
+        spoil(state_of(client).project_state, "hand_in_events", "state", "none-of-the-four")
+        pages["a record that cannot be read"] = client.get(
+            DETAILS, params={"hand_in": "saved", **named}
+        )
+
+    assert {name: page.status_code for name, page in pages.items()} == {
+        "a plain visit": 200,
+        "saved, standing": 200,
+        "already saved, standing": 200,
+        "a form that fell behind": 409,
+        "saved, earlier": 200,
+        "a record that cannot be read": 200,
+    }
+    with_a_result = []
+    for name, page in pages.items():
+        assert NOTICE_ID not in page.text, name
+        assert ABOUT_A_STEP not in page.text, name
+        shown = section(page.text)
+        if RESULT_LINE in shown:
+            with_a_result.append(name)
+            assert "aria-describedby" not in opening_tag(result_line(shown)), name
+    assert with_a_result == [
+        "saved, standing",
+        "already saved, standing",
+        "saved, earlier",
+        "a record that cannot be read",
+    ]

@@ -264,7 +264,9 @@ def test_change_opens_the_form_with_what_stands_and_an_action_left_behind_is_not
         assert answer.status_code == 200, answer.headers.get("location")
         shown = section(answer.text)
 
-        assert f'<p class="note">{STEP_NOT_SAVED}</p>' in shown
+        assert (
+            f'<p class="note" id="hand-in-step-not-saved-{ESSAY_ID}">{STEP_NOT_SAVED}</p>' in shown
+        )
         assert "You reported it turned in on August 19, 2026." in shown
         assert "Put it in my folder" not in shown[: shown.index("Hand-in history")]
         assert "Put it in my folder" in shown[shown.index("Hand-in history") :]
@@ -394,7 +396,8 @@ def test_a_step_typed_beside_another_answer_is_not_saved_and_the_answer_says_so(
     assert f"{HAND_IN_SAVED} <a " in result
     assert f"{HAND_IN_ALREADY_SAVED} <a " in again
     for shown in (result, again):
-        assert shown.count(f'<p class="note">{STEP_NOT_SAVED}</p>') == 1
+        notice = f'<p class="note" id="hand-in-step-not-saved-{ESSAY_ID}">{STEP_NOT_SAVED}</p>'
+        assert shown.count(notice) == 1
         assert shown.count(STEP_NOT_SAVED) == 1
     assert "Blue folder" not in result
     assert [event.next_action for event in stored] == [None]
