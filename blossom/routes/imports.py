@@ -2050,9 +2050,6 @@ PRESS_SAID: Final = {
         "later. Answer them again."
     ),
     "later_failed": "Your answers couldn't be kept, and nothing was saved for later. Try again.",
-    "kept_then_ended": (
-        "Your answers were kept, but this review ended before the homework was saved."
-    ),
     "kept_before_ended": "Your answers were kept before this review ended.",
     "some_kept_before_ended": "Some of your answers were kept before this review ended.",
     "none_chosen": "Choose at least one assignment to save.",
@@ -2198,11 +2195,12 @@ def answers_said(kept: AnswersKept) -> list[str]:
 def kept_then_ended(kept: AnswersKept) -> list[str]:
     """What a Save says of its own write where its review expired or was gone under its homework
     save, from what that committed write returned. When it stored some answers and dropped none:
-    that its answers were kept, but the review ended before the homework was saved. When it
-    stored some and dropped some: that some were kept before the review ended, that none were
-    kept for homework already saved, and that no homework was saved by this attempt. When it
-    stored none and dropped some: only that none were kept for homework already saved. When it
-    stored and dropped none: nothing."""
+    that its answers were kept before the review ended, then that no homework was saved by this
+    attempt. When it stored some and dropped some: that some were kept before the review ended,
+    that none were kept for homework already saved, and that no homework was saved by this
+    attempt. When it stored none and dropped some: only that none were kept for homework already
+    saved. When it stored and dropped none: nothing. No line here says that the review ended
+    before homework was saved, or what another attempt saved."""
     if kept.stored > 0 and kept.dropped > 0:
         return [
             PRESS_SAID["some_kept_before_ended"],
@@ -2210,7 +2208,7 @@ def kept_then_ended(kept: AnswersKept) -> list[str]:
             NO_HOMEWORK,
         ]
     if kept.stored > 0:
-        return [PRESS_SAID["kept_then_ended"]]
+        return [PRESS_SAID["kept_before_ended"], NO_HOMEWORK]
     if kept.dropped > 0:
         return [PRESS_SAID["not_kept_for_saved"]]
     return []
@@ -2224,6 +2222,25 @@ def kept_lines(said: Iterable[str]) -> list[str]:
 def apart_lines(said: Iterable[str]) -> list[str]:
     """Of a press's lines, those a page with no form says apart from its problems."""
     return [line for line in said if line in APART_SAID]
+
+
+CORRECTIONS_NOT_SAVED: Final = without(
+    PRESS_SAID["keep_warning"], "Use Save review for later to keep them."
+)
+"""Keep's corrections warning with no instruction to use Save review for later."""
+
+
+def apart_past_a_finished_read(said: Iterable[str]) -> list[str]:
+    """Of a Keep's lines, those its page with no form says apart from its problems, as that page
+    says them where a read the press has made says the review finished and not closed: each
+    answers line as an ended review's page says it (``ENDED_SAID``), and the corrections warning
+    with no instruction to use Save review for later (``CORRECTIONS_NOT_SAVED``), which a
+    finished review refuses."""
+    warning = PRESS_SAID["keep_warning"]
+    return [
+        CORRECTIONS_NOT_SAVED if line == warning else ENDED_SAID.get(line, line)
+        for line in apart_lines(said)
+    ]
 
 
 def after_answers(lines: Sequence[str], beside: Sequence[str]) -> list[str]:
@@ -2695,7 +2712,12 @@ async def with_typing(
     draw no form, and give every box
     back to copy; behind, beside words a tick set aside, they say its choices can't be shown where
     the saved progress of the review's own read, or the answers the press's latest read of the
-    review holds, differ from them or can't be compared with them (``words_beside_unlike``). With
+    review holds, differ from them or can't be compared with them (``words_beside_unlike``). On
+    that page a Keep whose read of the review, or whose read after its rows came back empty, says
+    the review finished and not closed says its answers lines as an ended review's page says them,
+    and its corrections warning with no instruction to use Save review for later
+    (``apart_past_a_finished_read``). Choosing those lines reads nothing, and every other press
+    says its lines as they stand. With
     no read after its write, those answers are this press's own write's result (``own_write``,
     given only after it returned) as ``written_answers`` gives them, else its read before the press.
     The form signs the revision its content was typed against: the post's; for an offer or a found
@@ -2828,13 +2850,17 @@ async def with_typing(
             behind and (with_choices or words_beside_unlike(after, post, held, progress, newer))
         ):
             unshown_lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
+        apart = notes
+        if post.press == "keep" and (after.finished or (newer is not None and newer.finished)):
+            apart = [*apart_past_a_finished_read(pressed), *notes]
+            pressed = [line for line in pressed if line not in APART_SAID]
         return await no_form_with_typing(
             request,
             state,
             draft_id,
             [*pressed, *unshown_lines],
             status,
-            notes=notes,
+            notes=apart,
             behind=behind,
             saved_exactly=saved_exactly,
         )

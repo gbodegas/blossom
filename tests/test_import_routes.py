@@ -9805,8 +9805,9 @@ def test_a_save_whose_review_ended_says_only_its_own_outcome_beside_another_atte
     answer on the row left. Timing forced: the review expires, or is removed, once that answers
     write has gone through, so its homework save finds the review ended. At 409 the page says
     that its answers were kept before the review ended, then that no homework was saved by this
-    attempt, and nothing about when the review ended or what another attempt saved; the file
-    holds that one receipt and that one assignment more than it began with, and no other."""
+    attempt. It does not say that the review ended before homework was saved, or that it
+    couldn't tell what another attempt saved. The file holds that one receipt and that one
+    assignment more than it began with, and no other."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, earlier, first, _ = two_rows(browser, monkeypatch)
         before = receipts_and_homework(browser)
@@ -32449,7 +32450,9 @@ def test_a_save_behind_whose_review_ends_before_its_transaction_says_it_ended(
 ) -> None:
     """Real presses: a page loaded and another page's Save for later; then timing forced by a hook
     once ``keep_answers`` returns, the review closed or past its end; then Save from the first page.
-    The ended review's page answers, not the out-of-date one."""
+    The ended review's page answers, not the out-of-date one. Past its end, that page says that
+    its answers were kept before the review ended, then that no homework was saved by this
+    attempt; closed, it says nothing of homework."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, _, row, other = settled_review(browser, monkeypatch)
         mine = loaded(browser, draft_id)
@@ -32478,7 +32481,10 @@ def test_a_save_behind_whose_review_ends_before_its_transaction_says_it_ended(
     assert owed_texts(posted) == every
     the_review_is_over(answer, 409, words, every)
     assert imports.OUT_OF_DATE not in page_text(answer)
-    assert imports.NO_HOMEWORK not in page_text(answer)
+    if ending == "closed":
+        assert imports.NO_HOMEWORK not in page_text(answer)
+    else:
+        says_in_order(answer, imports.PRESS_SAID["kept_before_ended"], imports.NO_HOMEWORK)
     assert saved == []
 
 
@@ -38732,6 +38738,7 @@ def test_the_sentences_said_of_one_attempt_are_spelled_as_approved() -> None:
     )
     pair = (SAID_OF_ONE_ATTEMPT["no_homework"], SAID_OF_ONE_ATTEMPT["another_attempt"])
     assert pair == imports.NO_HOMEWORK_BY_THIS_ATTEMPT
+    assert imports.CORRECTIONS_NOT_SAVED == "This attempt did not save the corrections you typed."
 
 
 def says_in_order(answer: Answer, *sentences: str) -> None:
@@ -40141,6 +40148,25 @@ open with its saved progress moved on."""
 CORRECTIONS_NOT_SAVED: Final = "This attempt did not save the corrections you typed."
 """Keep's corrections sentence with no instruction to use Save review for later."""
 KEEP_S_FOCUS: Final = ['<div role="status" id="kept" tabindex="-1" autofocus>']
+
+
+def test_keep_s_lines_past_a_finished_read_take_their_ended_forms() -> None:
+    """Of a Keep's lines, those its page says apart from its problems, in the order given: each
+    line saying answers were kept as an ended review's page says it, that none were kept for
+    homework already saved as it stands, and the warning with no instruction to use Save review
+    for later. A line that is neither is not among them."""
+    said = imports.PRESS_SAID
+    assert imports.apart_past_a_finished_read([said["answers_kept"], said["keep_warning"]]) == [
+        said["kept_before_ended"],
+        CORRECTIONS_NOT_SAVED,
+    ]
+    assert imports.apart_past_a_finished_read(
+        [said["some_kept"], said["not_kept_for_saved"], said["keep_warning"], imports.OUT_OF_DATE]
+    ) == [said["some_kept_before_ended"], said["not_kept_for_saved"], CORRECTIONS_NOT_SAVED]
+    assert imports.apart_past_a_finished_read([said["not_kept_for_saved"]]) == [
+        said["not_kept_for_saved"]
+    ]
+    assert imports.apart_past_a_finished_read([imports.OUT_OF_DATE]) == []
 
 
 def a_press_beside_another_tab_s(
