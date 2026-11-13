@@ -80,16 +80,19 @@ from blossom.routes.student import (
     BAD_RETURN,
     FROM_A_CARD,
     FROM_DETAILS,
+    HAND_IN_CONFIRMATIONS,
     HER_WEEK_NOT_SHOWN,
     IN_PLACE,
     NOT_HERS_TO_UPDATE,
     PAGE,
+    STEP_NOT_SAVED,
     TURN_IN_OVER,
     TURNING_IT_IN,
     UPDATE_NOT_SAVED,
     WITHOUT_THE_PAGE,
     YOUR_WEEK_NOT_SHOWN,
     CardState,
+    HandInAsked,
     HandInCard,
     InPlace,
     ListCard,
@@ -572,6 +575,42 @@ def could_not(
         )
 
 
+def answered_without_the_step(
+    request: Request,
+    state: ApplicationState,
+    assignment_id: str,
+    back: ReturnTo,
+    said: str,
+    event_id: str,
+) -> HTMLResponse:
+    """A save from the details' form that discarded a next step, answered with the details
+    themselves, tried once. The result is said from a reading made after the save, held to
+    the event the save returned as an address's would be, and beside it the page says that
+    this attempt's next step was not saved. That is a fact of this answer alone, carried by
+    no address. When the reading fails, the page that reads no store says what the save
+    did, that the step was not saved, and which page can't be shown; it tries nothing again
+    and offers nothing that saves."""
+    return shown_once(
+        request,
+        state,
+        lambda: detail_page(
+            request,
+            state,
+            assignment_id,
+            back,
+            hand_in=HandInCard(step_not_saved=True),
+            hand_in_result=HandInAsked(said, event_id),
+        ),
+        NotShown(
+            TURN_IN_FAILED_HEADING,
+            f"{HAND_IN_CONFIRMATIONS[said]} {STEP_NOT_SAVED}",
+            ASSIGNMENT_NOT_SHOWN,
+            plain_ways_back(Origin(detail=True, week=None, back=back, valid=True), assignment_id),
+        ),
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
 @router.post(
     "/actions/assignments/{assignment_id:path}/hand-in",
     response_class=HTMLResponse,
@@ -589,8 +628,12 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
     and note as what stands is already saved, with nothing written and no new
     day; a page whose head has moved on is answered 409 with what stands now
     above a form still holding what she meant to save, and nothing is
-    overwritten; anything else is appended. A next step left in the form
-    beside another state is not kept, and the result says so.
+    overwritten; anything else is appended. A save from the details is
+    answered with a redirect to them that names the event it is about. A
+    next step left in the form beside another state is not kept: that save,
+    kept or already standing, is answered with the details themselves, which
+    say the result and, in a line of its own, that this attempt's next step
+    was not saved.
     Words the record will not keep are said beside the field they are in,
     422, with everything else as she left it. Her work update is not read
     and not changed. A form from a card's turn-in press is no form of these:
@@ -743,12 +786,30 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
             where = after_the_list(view, "turned_in", assignment_id, made.event_id)
         case HandInAlreadySaved(head=stands) if view is not None:
             where = after_the_list(view, "same", assignment_id, stands.event_id)
+        case HandInSaved(event=made) if step_dropped:
+            return await asyncio.to_thread(
+                answered_without_the_step,
+                request,
+                state,
+                assignment_id,
+                back,
+                "saved",
+                made.event_id,
+            )
+        case HandInAlreadySaved(head=stands) if step_dropped:
+            return await asyncio.to_thread(
+                answered_without_the_step,
+                request,
+                state,
+                assignment_id,
+                back,
+                "same",
+                stands.event_id,
+            )
         case HandInSaved(event=made):
-            word = "saved_without_step" if step_dropped else "saved"
-            where = after(assignment_id, word, made.event_id, back)
+            where = after(assignment_id, "saved", made.event_id, back)
         case HandInAlreadySaved(head=stands):
-            word = "same_without_step" if step_dropped else "same"
-            where = after(assignment_id, word, stands.event_id, back)
+            where = after(assignment_id, "same", stands.event_id, back)
         case HandInConflict():
             return await refused(HAND_IN_CHANGED, status.HTTP_409_CONFLICT)
         case HandInNotOffered():

@@ -735,27 +735,20 @@ of a parent's moves on a request lands."""
 HAND_IN_SAVED: Final = "Your hand-in update is saved."
 HAND_IN_ALREADY_SAVED: Final = "Already saved."
 HAND_IN_UNDONE: Final = "Your hand-in update is undone."
-STEP_NOT_SAVED: Final = "The next step was not saved: it goes only with Still to turn in."
+STEP_NOT_SAVED: Final = (
+    "The next step was not saved by this attempt: it goes only with Still to turn in."
+)
+"""Said by the answer to a save that sent a next step beside another answer, and by that
+answer alone: no address and no record carries it, so no later read of the page says it."""
 HAND_IN_CONFIRMATIONS: Final[dict[str, str]] = {
     "saved": HAND_IN_SAVED,
     "same": HAND_IN_ALREADY_SAVED,
     "undone": HAND_IN_UNDONE,
-    "saved_without_step": f"{HAND_IN_SAVED} {STEP_NOT_SAVED}",
-    "same_without_step": f"{HAND_IN_ALREADY_SAVED} {STEP_NOT_SAVED}",
 }
 """What a hand-in save or undo did, by the word its address says, chosen by the server as
-her update's are. The word is good for nothing until the page's reading has the event the
-address names; what stands is shown beside the result, with its day. A save of another
-answer with a next step typed says the step was not saved."""
-HAND_IN_OUTCOMES: Final[dict[str, str]] = {
-    "saved": "saved",
-    "same": "same",
-    "undone": "undone",
-    "saved_without_step": "saved",
-    "same_without_step": "same",
-}
-"""What each of those words says happened: a save, a save of what already stood, or an
-undo. A word about a next step is held to the proof of the save it goes with."""
+her update's are: a save, a save of what already stood, or an undo. The word is good for
+nothing until the page's reading has the event the address names; what stands is shown
+beside the result, with its day."""
 HAND_IN_SAVED_EARLIER: Final = "Your hand-in update was saved earlier. This is what stands now."
 HAND_IN_UNDONE_EARLIER: Final = "Your hand-in update was undone earlier. This is what stands now."
 HAND_IN_EARLIER: Final[dict[str, str]] = {
@@ -2640,7 +2633,9 @@ class HandInCard:
     the refusal that shows what stands now above a form still holding what
     she meant to save. ``earlier`` marks a result about an event that
     something newer has followed: it is said as done earlier, and the section
-    offers no Undo beside it.
+    offers no Undo beside it. ``step_not_saved`` is set only by the answer to
+    a save that discarded a next step: the page that answers says so in a
+    line of its own after the result, which takes the focus as it arrives.
     """
 
     said: str | None = None
@@ -2652,6 +2647,7 @@ class HandInCard:
     note: str | None = None
     unsaved: bool = False
     earlier: bool = False
+    step_not_saved: bool = False
 
 
 @dataclass(frozen=True)
@@ -2674,14 +2670,14 @@ def hand_in_asked(said: str | None, event_id: str | None) -> HandInAsked | None:
     return HandInAsked(said, event_id)
 
 
-def is_what_the_word_says(event: HandInEvent, outcome: str) -> bool:
+def is_what_the_word_says(event: HandInEvent, said: str) -> bool:
     """Whether an event of her hand-in history is what a word says happened, whatever state
     it left: an undo for an undo; for a save of what already stood, any event that left a
     state standing, since the head that save found may be her report or an undo that put
     one back; and for a save, a report."""
-    if outcome == "undone":
+    if said == "undone":
         return event.operation == HAND_IN_UNDO
-    if outcome == "same":
+    if said == "same":
         return event.state is not None
     return event.operation == HAND_IN_REPORT
 
@@ -2694,30 +2690,30 @@ def hand_in_result_for(
     asked: HandInAsked,
 ) -> HandInCard | None:
     """The result a hand-in save or undo from the details left, as the page's reading bears
-    it out, or ``None``.
+    it out, or ``None``. ``asked`` is what an address says, or what a save answered with the
+    page itself returned.
 
-    The proof a turn-in press is held to, for any hand-in state: the event the address
-    names must be in this assignment's history, be this assignment's, and be of the kind
-    the word says. A made-up id, another assignment's event, or a report named as an undo
-    says nothing. While that event is the latest, the result is what stands, in the word's
-    own sentence. Once something newer follows it, the result is said as done earlier, and
-    the section offers no Undo, which would take back the newer event. Over a record that
-    cannot be read no save is said, only that what was done cannot be shown.
+    The proof a turn-in press is held to, for any hand-in state: the event named must be
+    in this assignment's history, be this assignment's, and be of the kind the word says.
+    A made-up id, another assignment's event, or a report named as an undo says nothing.
+    While that event is the latest, the result is what stands, in the word's own sentence.
+    Once something newer follows it, the result is said as done earlier, and the section
+    offers no Undo, which would take back the newer event. Over a record that cannot be
+    read no save is said, only that what was done cannot be shown.
     """
     if unavailable:
         return HandInCard(said=RESULT_UNREADABLE)
     if reading is None or reading.head is None:
         return None
-    outcome = HAND_IN_OUTCOMES[asked.said]
     event = next(
         (row.event for row in reading.history if row.event.event_id == asked.event_id), None
     )
     if event is None or event.assignment_id != assignment_id:
         return None
-    if not is_what_the_word_says(event, outcome):
+    if not is_what_the_word_says(event, asked.said):
         return None
     if reading.head.event_id != event.event_id:
-        return HandInCard(said=HAND_IN_EARLIER[outcome], earlier=True)
+        return HandInCard(said=HAND_IN_EARLIER[asked.said], earlier=True)
     return HandInCard(said=HAND_IN_CONFIRMATIONS[asked.said])
 
 
@@ -3681,6 +3677,7 @@ templates.env.globals["turn_in_actions"] = turn_in_actions
 templates.env.globals["work_group_anchor"] = work_group_anchor
 templates.env.globals["turn_in_group_anchor"] = turn_in_group_anchor
 templates.env.globals["turn_in_means_line"] = TURN_IN_MEANS
+templates.env.globals["step_not_saved_line"] = STEP_NOT_SAVED
 
 
 def hand_in_actions(assignment_id: str) -> tuple[str, str]:
