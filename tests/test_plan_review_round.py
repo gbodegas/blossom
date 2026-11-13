@@ -40,6 +40,7 @@ from tests.support import (
     PLAN_DATE,
     SITTINGS_WINDOW,
     accepting,
+    background_work_ended,
     browser,
     changed_by_hand,
     composed_plan,
@@ -169,6 +170,10 @@ def test_the_family_page_holds_while_a_second_connection_publishes_and_decides(
     with browser(key=True, **paths) as client:
         walkthrough(client)
         planned(client)
+        # The plan's run keeps its time on a worker thread after its answer. That write is
+        # over before the second connection opens, so the two let go together are the page
+        # and the second connection alone.
+        background_work_ended(client)
         writer = threading.Thread(target=elsewhere)
         writer.start()
         together.wait(10)
