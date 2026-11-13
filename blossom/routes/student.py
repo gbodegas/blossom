@@ -3885,9 +3885,9 @@ def detail_page(
     stands, whatever plan or page the reader came from; the way back is data
     the reader's link carried, checked, and never chooses the assignment. ``turn_in`` is what
     a press of I turned it in or its Undo did here, said in Turning it in only when this
-    reading bears it out, and to her alone. ``hand_in_result`` is what the address says a
-    save or an undo from the hand-in form did, held to the same reading and said to her
-    alone.
+    reading bears it out, and to her alone. ``hand_in_result`` is what an address says a
+    save or an undo from the hand-in form did, or what a save answered with this page itself
+    returned, held to the same reading and said to her alone.
     """
     viewer = viewer_of(request)
     card, hand_in = as_read_by(card, viewer), as_read_by(hand_in, viewer)
@@ -4104,7 +4104,8 @@ def assignment_details(
         str | None, Query(description="change to open the hand-in form, or what a save did")
     ] = None,
     hand_in_event: Annotated[
-        str | None, Query(description="the event that save or undo made; looked up, never trusted")
+        str | None,
+        Query(description="the event that save or undo returned; looked up, never trusted"),
     ] = None,
     turn_in_said: Annotated[
         str | None, Query(description="what I turned it in or its Undo here did; a note")
@@ -4122,7 +4123,8 @@ def assignment_details(
     only carries: any other word says nothing. An undo names the undo it made
     in ``undo_event``, as on her week. ``hand_in`` opens the hand-in form, or
     is the word for what a save or an undo from that form did, with the event
-    it made in ``hand_in_event``: the word is said only when the page's
+    it returned in ``hand_in_event``: the one it made, or for a save of what
+    already stood, the head it found. The word is said only when the page's
     reading finds that event. When the record can't be read,
     503: a page that says so, offers the same address again and the way back
     the address names, and says nothing of a save. A save that has just made
