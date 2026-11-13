@@ -464,12 +464,15 @@ def details_refused(
     )
 
 
-def after(assignment_id: str, said: str, back: ReturnTo) -> str:
-    """Where a save or an undo sends her: the details, at the result, with what happened."""
+def after(assignment_id: str, said: str, event_id: str, back: ReturnTo) -> str:
+    """Where a save or an undo sends her: the details, at the result, with what happened.
+    The address names the event the save returned, so the page that answers is about that
+    event and no later one."""
     return details_href(
         assignment_id,
         fragment=hand_in_result_anchor(assignment_id),
         hand_in=said,
+        hand_in_event=event_id,
         **back.fields(),
     )
 
@@ -740,10 +743,12 @@ async def hand_in_from_the_page(request: Request, assignment_id: str, state: Sta
             where = after_the_list(view, "turned_in", assignment_id, made.event_id)
         case HandInAlreadySaved(head=stands) if view is not None:
             where = after_the_list(view, "same", assignment_id, stands.event_id)
-        case HandInSaved():
-            where = after(assignment_id, "saved_without_step" if step_dropped else "saved", back)
-        case HandInAlreadySaved():
-            where = after(assignment_id, "same_without_step" if step_dropped else "same", back)
+        case HandInSaved(event=made):
+            word = "saved_without_step" if step_dropped else "saved"
+            where = after(assignment_id, word, made.event_id, back)
+        case HandInAlreadySaved(head=stands):
+            word = "same_without_step" if step_dropped else "same"
+            where = after(assignment_id, word, stands.event_id, back)
         case HandInConflict():
             return await refused(HAND_IN_CHANGED, status.HTTP_409_CONFLICT)
         case HandInNotOffered():
@@ -843,7 +848,7 @@ async def undo_hand_in_from_the_page(
     match result:
         case HandInUndone(event=made):
             where = (
-                after(assignment_id, "undone", back)
+                after(assignment_id, "undone", made.event_id, back)
                 if view is None
                 else after_the_list(view, "undone", assignment_id, made.event_id)
             )
