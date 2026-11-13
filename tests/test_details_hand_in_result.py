@@ -26,8 +26,9 @@ import pathlib
 import re
 import sqlite3
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from functools import partial
+from html import unescape
 from typing import Final
 from urllib.parse import parse_qsl, urlsplit
 
@@ -47,6 +48,7 @@ from blossom.hand_in import (
     HandInUndone,
 )
 from blossom.routes import hand_in as hand_in_routes
+from blossom.routes.navigation import details_href, segment
 from blossom.routes.student import HAND_IN_ALREADY_SAVED, HAND_IN_SAVED, HAND_IN_UNDONE
 from blossom.stores.drafts import StoreBusy
 from blossom.to_turn_in import RESULT_UNREADABLE
@@ -63,6 +65,7 @@ from tests.support import (
     Answer,
     as_stored,
     browser,
+    due,
     form_fields,
     main_of,
     pressed_form,
@@ -92,7 +95,7 @@ OTHER_ANSWERS: Final[tuple[HandInState, ...]] = (TURNED_IN, "not_required", "unk
 STEP_NOTICE: Final = (
     "The next step was not saved by this attempt: it goes only with Still to turn in."
 )
-NOTICE_ID: Final = f"hand-in-step-not-saved-{ESSAY_ID}"
+NOTICE_ID: Final = f"hand-in-result-{ESSAY_ID}-step-not-saved"
 NOTICE_LINE: Final = f'<p class="note" id="{NOTICE_ID}">{STEP_NOTICE}</p>'
 DESCRIBED_BY_THE_NOTICE: Final = f'aria-describedby="{NOTICE_ID}"'
 """What the result line of a direct answer carries: the line about the step, an element of
@@ -1134,3 +1137,46 @@ def test_no_page_without_the_line_about_a_step_describes_its_result_by_it() -> N
         "saved, earlier",
         "a record that cannot be read",
     ]
+
+
+AWKWARD_IDS: Final = {
+    "a space, a slash, an apostrophe, a hash, a question mark": "set/2 it's #1? \u00e9",
+    "a space, quotes, angle brackets, an ampersand": 'a "quoted" <b> & c',
+}
+"""Assignment ids the record keeps as they are, each holding characters that are not part of
+one id token on a page."""
+
+
+@pytest.mark.parametrize("held", AWKWARD_IDS)
+def test_the_description_is_one_id_token_whatever_the_assignments_id_holds(held: str) -> None:
+    """The record keeps any assignment id but a dot or two. With one that holds a space and
+    other characters an id token cannot, the direct answer's result line still names its
+    description by exactly one token, and that token is the id of the line about the step,
+    which one element has."""
+    name = AWKWARD_IDS[held]
+    details = details_href(name)
+    action = f"/student/actions/assignments/{segment(name)}/hand-in"
+    with browser() as client:
+        store = state_of(client).project_state
+        store.put_on_record([due(name, "Set two, question one", date(2026, 8, 21))], {})
+        opened = client.get(details, params={"hand_in": "change"})
+        assert opened.status_code == 200, opened.text[:300]
+        sent = {
+            **form_fields(opened.text, action),
+            "state": TURNED_IN,
+            "next_action": "Blue folder",
+            "note": "",
+        }
+        answer = client.post(action, data=sent, headers=PAGE_HEADERS)
+        events = store.hand_in_chains([name]).get(name, [])
+
+    assert answer.status_code == 200, answer.headers.get("location")
+    assert [(event.assignment_id, event.state) for event in events] == [(name, TURNED_IN)]
+    shown = section(answer.text)
+    described = re.findall(r'aria-describedby="([^"]*)"', opening_tag(result_line(shown)))
+    assert len(described) == 1
+    tokens = unescape(described[0]).split()
+    assert len(tokens) == 1, tokens
+    notices = re.findall(rf'<p class="note" id="([^"]*)">{re.escape(STEP_NOTICE)}</p>', shown)
+    assert [unescape(found) for found in notices] == tokens
+    assert answer.text.count(f'id="{notices[0]}"') == 1
