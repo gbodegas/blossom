@@ -1243,7 +1243,11 @@ def test_a_row_that_is_due_later_shows_what_she_said_about_turning_it_in(
             data={**fields, "state": state, "next_action": action, "note": ""},
             headers=PAGE_HEADERS,
         )
-        result = landed(client, answer)
+        # A next step sent beside another answer is discarded, and that save is answered
+        # with the details themselves; any other save is answered with a redirect to them.
+        discarded = bool(action) and state != NEEDS_HAND_IN
+        assert answer.status_code == (200 if discarded else 303), answer.text[:300]
+        result = answer.text if discarded else landed(client, answer)
         if kind == "a record that cannot be read":
             store = state_of(client).project_state
             store._connection.execute(
