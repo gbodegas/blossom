@@ -47,6 +47,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from blossom.principals import Principal
+from blossom.routes.navigation import asked_address
 from blossom.settings import Settings
 from blossom.stores.paths import SECRET_NAME, refuse_unsafe_path
 from blossom.templating import page_templates
@@ -492,6 +493,22 @@ def from_this_origin(request: Request) -> bool:
     return len(referers) == 1 and read_origin(referers[0], whole_address=True) == expected
 
 
+def way_back(path: str, query: bytes) -> str:
+    """The address a sign-in returns to: a path as the server decoded it and a query as the
+    request sent it, made into an address that asks for that same path and query.
+
+    In a decoded path, three characters would change what the address asks for: a percent
+    sign would begin an escape, a question mark would begin the query, and a number sign
+    would end the address. Each is escaped again, the percent sign first, so an id that
+    holds one is still that id. Nothing else in the path is touched: with none of the three
+    the path is used as it is, and a path the sign-in refuses as a destination is still
+    refused. The query keeps its spelling, its order and its repeated fields
+    (``asked_address``).
+    """
+    again = path.replace("%", "%25").replace("?", "%3F").replace("#", "%23")
+    return asked_address(again, query)
+
+
 def wants_a_page(request: Request) -> bool:
     """Whether the request comes from a browser, which is answered with a page, not JSON.
 
@@ -559,7 +576,7 @@ class HouseholdGate(BaseHTTPMiddleware):
                 # it leads to the sign-in page alone.
                 if request.method != "GET":
                     return RedirectResponse("/sign-in", status_code=303)
-                wanted = path if not request.url.query else f"{path}?{request.url.query}"
+                wanted = way_back(request.scope["path"], request.scope["query_string"])
                 return RedirectResponse(f"/sign-in?next={quote(wanted, safe='')}", status_code=303)
             return JSONResponse({"detail": "Sign in first."}, status_code=401)
         if not may_open(role, path) and not may_press_to_be_refused(role, request.method, path):
