@@ -136,11 +136,11 @@ class ApplicationState:
     def close(self) -> None:
         """Release resources held for the lifetime of the application.
 
-        The close of every store is attempted, in this order, whether the closes before it
-        returned or raised an ordinary error. Each failure is logged with its store's name,
-        and the first is raised once the last close has been attempted. A close that never
-        returns, a process that is ended, and an interrupt or exit raised inside a close,
-        which is not held back, leave the stores after it unattempted."""
+        The close of every store is attempted, in the order listed below, whether the closes
+        before it returned or raised an ordinary error. Each failure is logged with its
+        store's name, and the first is raised once the last close has been attempted. A close
+        that never returns, a process that is ended, and an interrupt or exit raised inside a
+        close, which is not held back, leave the stores after it unattempted."""
         closes: tuple[tuple[str, Callable[[], None]], ...] = (
             ("project state", self.project_state.close),
             ("drafts", self.drafts.close),
