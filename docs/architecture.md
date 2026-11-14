@@ -2069,11 +2069,15 @@ request or the evening's signal says by then, and a request that disagrees is
 told what stood. The same holds when the save of the checkpoint after the gate
 fails: the gate's task has saved the decision, its reason and the draft as
 pending writes of the checkpoint it paused on, and they are read as the review
-the thread holds only when that one task saved all of them, with an approved
-or rejected decision, the draft the checkpoint carries, its step onward to
-`record_decision` and no error. A draft whose thread holds a review is never
-expired away. Pending writes that are anything less are no review, and a
-decision on such a plan answers the same 409 as one whose thread is missing.
+the thread holds only when that one task's writes are just what a finished gate
+leaves: one approved or rejected decision, one reason, text or none, the draft
+the checkpoint carries with the status that decision gives it, and its one step
+onward to `record_decision`. A press finishes such a review only from the
+checkpoint its own read of the thread describes, so what the resumed thread
+records is what was read, and the sweep records the same row. A draft whose
+thread holds a review is never expired away. Pending writes that are anything
+less, anything more or anything else are no review, and a decision on such a
+plan answers the same 409 as one whose thread is missing.
 Tidying a thread after a
 run or a review has its outcome is never what a caller hears about: a thread
 that cannot be cleared is left to the sweep. The saver's only pruning

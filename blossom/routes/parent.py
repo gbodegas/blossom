@@ -896,10 +896,11 @@ async def gate_saved_its_review(
     after the gate was never saved, so the review is there to finish.
 
     A thread with no next step is not enough. The one task left must be the gate, finished
-    without an error; the draft it wrote must be this record's; and the saved thread must
-    hold the review as the sweep reads it (``saved_thread``), which takes the decision, its
-    reason and the draft from that one task's writes and needs its step onward among them,
-    so a review held here is one the resumed thread goes on to record.
+    without an error; the draft it wrote must be this record's; and the saved thread, read
+    as the sweep reads it (``saved_thread``), must hold a review the gate saved, on the
+    checkpoint this snapshot describes. That reader accepts only a task whose writes are
+    just a finished gate's, so what the resumed thread replays and records is what was read.
+    A decision in the checkpoint's own values is not this case and is left as it is.
     """
     if snapshot.next != ():
         return False
@@ -908,7 +909,8 @@ async def gate_saved_its_review(
     if draft_id_of(snapshot.values.get("draft")) != record.draft_id:
         return False
     saved = await saved_thread(state.checkpointer, record.thread_id)
-    return saved is not None and saved.held is not None
+    described = snapshot.config.get("configurable", {}).get("checkpoint_id")
+    return saved is not None and saved.gate_saved and saved.checkpoint_id == described
 
 
 async def decide_draft(
