@@ -21,8 +21,9 @@ and never deletes a published or decided draft: only a run's own settlement
 puts a plan on the pages, and a published plan stays published, and on her
 page for its own evening, even when its thread is gone. A waiting draft whose
 thread holds a review that never landed in the table, because recording it
-failed, has that review recorded, since a review that reached the thread is
-never lost and never expired away. Runs past their deadline are ended. Then
+failed or the checkpoint after the gate was never saved, has that review
+recorded, since a review that reached the thread is never lost and never
+expired away. Runs past their deadline are ended. Then
 any thread that neither a waiting draft nor a run still running refers to is
 cleared, which covers runs that ended without their thread being removed.
 
@@ -92,7 +93,9 @@ class SavedThread:
     paused: bool
     """An interrupt is pending: the gate paused, and a review could resume it."""
     held: tuple[Decision, str | None] | None
-    """A review the gate passed on that the table never recorded, with its reason."""
+    """A review the gate passed on that the table never recorded, with its reason: the
+    one in the checkpoint's own values, or, when they hold no decision, the one the gate
+    saved as pending writes for a checkpoint that was never saved after it."""
     saved_at: str
     """When the latest checkpoint was written, as the framework stamps it. The
     checkpoint before the gate is written in the instant before the gate
@@ -100,10 +103,59 @@ class SavedThread:
     records it."""
 
 
+def draft_id_of(draft: object) -> str | None:
+    """The id of a draft as saved state holds one, and ``None`` for anything else."""
+    found = getattr(draft, "draft_id", None)
+    return found if isinstance(found, str) else None
+
+
+def review_the_gate_saved(
+    pending: Sequence[tuple[str, str, Any]], draft: object
+) -> tuple[Decision, str | None] | None:
+    """The review a finished gate saved as pending writes of the latest checkpoint, for a
+    thread whose checkpoint after the gate was never saved.
+
+    The gate's task is the one whose pending writes hold its pause. It holds a review only
+    when that same task also saved exactly one decision, approved or rejected, exactly one
+    draft, the one the checkpoint carries, and at most one reason, kept when it is text.
+    The writes of different tasks are never read together, and anything missing, repeated
+    or of another value is no review, so nothing here reads as an approval by default.
+    """
+    by_task: dict[str, list[tuple[str, Any]]] = {}
+    for task_id, channel, value in pending:
+        by_task.setdefault(task_id, []).append((channel, value))
+    paused = [
+        writes
+        for writes in by_task.values()
+        if any(channel == INTERRUPT_CHANNEL for channel, _ in writes)
+    ]
+    if len(paused) != 1:
+        return None
+    (writes,) = paused
+    decisions = [value for channel, value in writes if channel == "decision"]
+    drafts = [value for channel, value in writes if channel == "draft"]
+    reasons = [value for channel, value in writes if channel == "reason"]
+    if len(decisions) != 1 or len(drafts) != 1 or len(reasons) > 1:
+        return None
+    (decision,) = decisions
+    carried = draft_id_of(draft)
+    if decision not in ("approved", "rejected"):
+        return None
+    if carried is None or draft_id_of(drafts[0]) != carried:
+        return None
+    reason = reasons[0] if reasons else None
+    return decision, reason if isinstance(reason, str) else None
+
+
 async def saved_thread(
     checkpointer: BaseCheckpointSaver[Any], thread_id: str
 ) -> SavedThread | None:
-    """Read a thread's latest checkpoint, or ``None`` for a thread the saver does not hold."""
+    """Read a thread's latest checkpoint, or ``None`` for a thread the saver does not hold.
+
+    A decision in the checkpoint's own values is the review held. Only when they hold none
+    are the checkpoint's pending writes read for one the gate saved
+    (``review_the_gate_saved``).
+    """
     saved = await checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
     if saved is None:
         return None
@@ -113,6 +165,8 @@ async def saved_thread(
     if decision in ("approved", "rejected"):
         reason = values.get("reason")
         held = (decision, reason if isinstance(reason, str) else None)
+    elif decision is None:
+        held = review_the_gate_saved(saved.pending_writes or (), values.get("draft"))
     return SavedThread(
         has_draft=values.get("draft") is not None,
         paused=any(channel == INTERRUPT_CHANNEL for _, channel, _ in saved.pending_writes or ()),
