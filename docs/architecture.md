@@ -2073,8 +2073,9 @@ the thread holds only when that one task's writes are just what a finished gate
 leaves: one approved or rejected decision, one reason, text or none, the draft
 the checkpoint carries, changed only in the status that decision gives it, and
 its one step onward to `record_decision`. A press finishes such a review only from the
-checkpoint its own read of the thread describes, so what the resumed thread
-records is what was read, and the sweep records the same row. A draft whose
+checkpoint its own read of the thread describes, and sends the decision and
+reason it read to the table itself, as the sweep does, without resuming the
+thread, so what is recorded is what was read. A draft whose
 thread holds a review is never expired away. Pending writes that are anything
 less, anything more or anything else are no review, and a decision on such a
 plan answers the same 409 as one whose thread is missing.

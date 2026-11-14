@@ -141,10 +141,11 @@ def review_the_gate_saved(
     the one the checkpoint carries but for the status that decision gives it; and its one
     step onward to ``record_decision``, which carries no value. The writes of different
     tasks are never read together, and anything missing, repeated, added or of another
-    value is no review, so nothing here reads as an approval by default. Resuming such a
-    thread replays these four writes into its state, so what it then records is what was
-    read here. The task's pause and the mark of its resume are the framework's own and are
-    not read beyond telling the task.
+    value is no review, so nothing here reads as an approval by default. The decision and
+    reason returned are what the sweep and a publishing run send to the table for such a
+    thread, and what a press sends once it has found the thread's gate finished; none of
+    them resumes the thread to record it. The task's pause and the mark of its resume are
+    the framework's own and are not read beyond telling the task.
     """
     by_task: dict[str, list[tuple[str, Any]]] = {}
     for task_id, channel, value in pending:
