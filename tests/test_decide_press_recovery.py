@@ -727,6 +727,64 @@ def test_a_checkpoint_failure_before_the_decisions_write_cant_be_told(
     assert after == (None, None)
 
 
+@pytest.mark.parametrize("button", list(BUTTONS))
+def test_the_press_after_a_refused_save_after_the_gate_finishes_that_review(
+    button: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The save after the gate is refused, so the first press can't tell and the row waits.
+    The same button and words again finish the review the gate saved: the answer goes back to
+    Family review, and the row holds that decision and its note."""
+    with a_waiting_plan() as (client, draft_id):
+        failing_checkpoint_save(monkeypatch, client, after_the_write=False)
+        first = press(client, draft_id, button, NOTE)
+        monkeypatch.undo()
+        between = row_of(client, draft_id)
+        second = press(client, draft_id, button, NOTE)
+        after = row_of(client, draft_id)
+
+    the_stand_in(first, status=500, said=UNKNOWN, note=NOTE)
+    assert between == (None, None)
+    assert second.status_code == 303, second.text[:600]
+    assert second.headers["location"] == "/parent"
+    assert after == (BUTTONS[button][0], NOTE)
+
+
+def test_a_disagreeing_press_after_a_refused_save_after_the_gate_keeps_its_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Looks good, its save after the gate refused, leaves the review in the thread; Ask for
+    a change with other words then finishes that review and is told the plan was already
+    approved, the existing 409 on the family page."""
+    with a_waiting_plan() as (client, draft_id):
+        failing_checkpoint_save(monkeypatch, client, after_the_write=False)
+        press(client, draft_id, "approve", NOTE)
+        monkeypatch.undo()
+        answer = press(client, draft_id, "refuse", "other words")
+        after = row_of(client, draft_id)
+
+    assert answer.status_code == 409, answer.text[:600]
+    said = words(main_of(answer.text))
+    assert f"draft '{draft_id}' was already approved" in said
+    for new in (APPROVED, ASKED_FOR_A_CHANGE, A_DECISION, UNKNOWN):
+        assert new not in said
+    assert after == ("approved", NOTE)
+
+
+def test_the_sweep_finishes_a_review_whose_save_after_the_gate_was_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The press that couldn't tell is the last one: one pass of the sweep records the
+    review the gate saved, with its note."""
+    with a_waiting_plan() as (client, draft_id):
+        failing_checkpoint_save(monkeypatch, client, after_the_write=False)
+        press(client, draft_id, "refuse", NOTE)
+        monkeypatch.undo()
+        sweep(client)
+        after = row_of(client, draft_id)
+
+    assert after == ("rejected", NOTE)
+
+
 # ------------------------------------------------------------- the order of things
 
 
