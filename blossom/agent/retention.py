@@ -49,7 +49,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from blossom.agent.runs import GRAPH_VERSION, GRAPH_VERSION_KEY, to_the_end, worker_to_the_end
 from blossom.clock import Clock
-from blossom.drafts import Decision, DraftStatus
+from blossom.drafts import Decision, Draft, DraftStatus
 from blossom.stores.drafts import DraftsStore
 
 logger = logging.getLogger(__name__)
@@ -137,12 +137,14 @@ def review_the_gate_saved(
 
     The gate's task is the one whose pending writes hold its pause. It holds a review only
     when its writes are just what a finished gate leaves (``GATE_WRITES``) and nothing
-    else: one decision, approved or rejected; one reason, text or none; one draft, the one
-    the checkpoint carries, with the status that decision gives it; and its one step onward
-    to ``record_decision``. The writes of different tasks are never read together, and
-    anything missing, repeated, added or of another value is no review, so nothing here
-    reads as an approval by default. Resuming such a thread replays these writes, so what
-    it then records is what was read here.
+    else: one decision, approved or rejected; one reason, text or none; one draft, equal to
+    the one the checkpoint carries but for the status that decision gives it; and its one
+    step onward to ``record_decision``, which carries no value. The writes of different
+    tasks are never read together, and anything missing, repeated, added or of another
+    value is no review, so nothing here reads as an approval by default. Resuming such a
+    thread replays these four writes into its state, so what it then records is what was
+    read here. The task's pause and the mark of its resume are the framework's own and are
+    not read beyond telling the task.
     """
     by_task: dict[str, list[tuple[str, Any]]] = {}
     for task_id, channel, value in pending:
@@ -168,11 +170,12 @@ def review_the_gate_saved(
         return None
     if not (reason is None or isinstance(reason, str)):
         return None
-    carried = draft_id_of(draft)
-    status = DraftStatus.APPROVED_FOR_MANUAL_SEND if decision == "approved" else DraftStatus.DRAFT
-    if carried is None or draft_id_of(written) != carried:
+    if saved[TO_RECORD_DECISION] != [None]:
         return None
-    if getattr(written, "status", None) != status:
+    if not (isinstance(draft, Draft) and isinstance(written, Draft)):
+        return None
+    status = DraftStatus.APPROVED_FOR_MANUAL_SEND if decision == "approved" else DraftStatus.DRAFT
+    if written != draft.model_copy(update={"status": status}):
         return None
     return decision, reason
 

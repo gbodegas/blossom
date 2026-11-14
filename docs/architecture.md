@@ -2071,8 +2071,8 @@ fails: the gate's task has saved the decision, its reason and the draft as
 pending writes of the checkpoint it paused on, and they are read as the review
 the thread holds only when that one task's writes are just what a finished gate
 leaves: one approved or rejected decision, one reason, text or none, the draft
-the checkpoint carries with the status that decision gives it, and its one step
-onward to `record_decision`. A press finishes such a review only from the
+the checkpoint carries, changed only in the status that decision gives it, and
+its one step onward to `record_decision`. A press finishes such a review only from the
 checkpoint its own read of the thread describes, so what the resumed thread
 records is what was read, and the sweep records the same row. A draft whose
 thread holds a review is never expired away. Pending writes that are anything
