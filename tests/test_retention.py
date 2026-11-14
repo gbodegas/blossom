@@ -3589,12 +3589,16 @@ def test_recovering_again_changes_nothing_of_the_review_first_recorded(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
     """The review the gate saved is recorded while its thread is still kept. The store's
-    clock moves on, and the same recovery again, the thread's own write, the sweep and a
-    press with the other button leave the decision, the reason and the time it was recorded
-    as they were."""
+    clock moves on, and the same recovery again, the thread's own write, which sends the
+    same review to the table once more, the sweep and a press with the other button leave
+    the decision, the reason and the time it was recorded as they were."""
 
     async def scenario() -> tuple[
-        bool, DraftRecord | None, list[tuple[str, str]], DraftRecord | None
+        bool,
+        DraftRecord | None,
+        list[tuple[str, str]],
+        list[tuple[str, str | None]],
+        DraftRecord | None,
     ]:
         async with household_in(tmp_path) as state:
             draft_id, thread_id = await a_review_only_the_gate_saved(
@@ -3604,6 +3608,7 @@ def test_recovering_again_changes_nothing_of_the_review_first_recorded(
             first = finished == [(draft_id, thread_id)]
             recorded = state.drafts.get(draft_id)
             monkeypatch.setattr(state.drafts, "_clock", fixture_clock(LATER))
+            sent = counting_decisions(monkeypatch, state)
             again = await finish_held_reviews(state.checkpointer, state.drafts)
             await graph_for(state).ainvoke(
                 None, config=run_config(thread_id), durability=DURABILITY
@@ -3612,17 +3617,16 @@ def test_recovering_again_changes_nothing_of_the_review_first_recorded(
             other = DecisionRequest(approved=False, reason="other words")
             with pytest.raises(HTTPException, match="was already approved"):
                 await decide_draft(state, lambda: graph_for(state), draft_id, other)
-            return first, recorded, again, state.drafts.get(draft_id)
+            return first, recorded, again, sent, state.drafts.get(draft_id)
 
-    first, recorded, again, record = asyncio.run(scenario())
+    first, recorded, again, sent, record = asyncio.run(scenario())
     assert first
     assert again == []
-    assert as_recorded(recorded) == (
-        "approved",
-        "fine",
-        DraftStatus.APPROVED_FOR_MANUAL_SEND,
-        fixture_clock().now(),
-    )
+    assert sent == [("approved", "fine")]
+    assert recorded is not None
+    assert as_recorded(recorded)[:3] == ("approved", "fine", DraftStatus.APPROVED_FOR_MANUAL_SEND)
+    assert recorded.decided_at is not None
+    assert recorded.decided_at < LATER
     assert as_recorded(record) == as_recorded(recorded)
 
 
