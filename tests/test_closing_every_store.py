@@ -34,7 +34,7 @@ STORES: Final = (
     "help_requests",
     "import_drafts",
 )
-"""The stores the application closes when it stops, in the order it closes them."""
+"""The stores ``ApplicationState.close`` closes, in its order."""
 
 NAMED: Final = {
     "project_state": "project state",
@@ -137,10 +137,12 @@ def test_the_stores_are_closed_in_one_order(
 @pytest.mark.parametrize(
     ("failing", "kind"),
     [
-        pytest.param("project_state", sqlite3.OperationalError, id="the first"),
-        pytest.param("drafts", StoreBusy, id="the second, busy"),
-        pytest.param("help_requests", sqlite3.OperationalError, id="one in the middle"),
-        pytest.param("import_drafts", StoreBusy, id="the last, busy"),
+        pytest.param("project_state", sqlite3.OperationalError, id="project state, the first"),
+        pytest.param("drafts", StoreBusy, id="drafts, busy"),
+        pytest.param("traces", RuntimeError, id="traces, an error of another kind"),
+        pytest.param("workload_signals", sqlite3.OperationalError, id="workload signals"),
+        pytest.param("help_requests", OSError, id="help requests"),
+        pytest.param("import_drafts", StoreBusy, id="import drafts, busy, the last"),
     ],
 )
 def test_a_close_that_fails_leaves_every_other_store_closed(
@@ -196,10 +198,14 @@ def test_a_stop_whose_close_fails_still_fails_and_still_lets_go_of_the_household
     error = StoreBusy("synthetic")
 
     client.__enter__()
-    state = state_of(client)
-    close_drafts = state.drafts.close
-    with pytest.raises(AnotherProcessHasTheHousehold):
-        claim_household(settings.database_path, settings.checkpoint_path)
+    try:
+        state = state_of(client)
+        close_drafts = state.drafts.close
+        with pytest.raises(AnotherProcessHasTheHousehold):
+            claim_household(settings.database_path, settings.checkpoint_path)
+    except BaseException:
+        client.__exit__(None, None, None)
+        raise
     fail_to_close(monkeypatch, state, "drafts", error)
     try:
         with caplog.at_level(logging.ERROR), pytest.raises(StoreBusy) as raised:
@@ -210,23 +216,27 @@ def test_a_stop_whose_close_fails_still_fails_and_still_lets_go_of_the_household
         assert failures_logged(caplog) == [(could_not_close("drafts"), error)]
         saver = state.checkpointer
         assert isinstance(saver, AsyncSqliteSaver)
-        with pytest.raises(ValueError, match="no active connection|Connection closed"):
+        with pytest.raises(ValueError, match="no active connection"):
             asyncio.run(read_saved_state(saver))
         claim_household(settings.database_path, settings.checkpoint_path).release()
     finally:
         close_drafts()
 
 
-def test_an_interrupt_raised_inside_a_close_is_raised_at_once(
+@pytest.mark.parametrize(
+    "told_to_stop", [KeyboardInterrupt, SystemExit], ids=["an interrupt", "an exit"]
+)
+def test_an_interrupt_or_an_exit_raised_inside_a_close_is_raised_at_once(
+    told_to_stop: type[BaseException],
     state: ApplicationState,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """An interrupt is the process being told to stop, not a close that failed: it is not held
+    """Either is the process being told to stop, not a close that failed: it is not held
     back, nothing is logged for it, and the stores after it are left as they are."""
-    fail_to_close(monkeypatch, state, "traces", KeyboardInterrupt())
+    fail_to_close(monkeypatch, state, "traces", told_to_stop())
 
-    with caplog.at_level(logging.ERROR), pytest.raises(KeyboardInterrupt):
+    with caplog.at_level(logging.ERROR), pytest.raises(told_to_stop):
         state.close()
 
     assert closed(state) == {"project_state", "drafts"}
