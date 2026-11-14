@@ -32,6 +32,7 @@ from langgraph.checkpoint.base import (
     CheckpointTuple,
 )
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import InvalidUpdateError
 from langgraph.types import Command, Durability, StateSnapshot
 
 from blossom.agent.gates import ApprovalState, require_human_approval
@@ -64,6 +65,7 @@ from blossom.dependencies import (
 )
 from blossom.drafts import Decision, Draft, DraftStatus
 from blossom.plans import DailyPlan, PlanBlock
+from blossom.routes import parent as parent_routes
 from blossom.routes import runs as plan_runs
 from blossom.routes.parent import (
     DecisionRequest,
@@ -4017,9 +4019,13 @@ def test_a_press_finishes_a_whole_review_the_paused_task_holds(
     assert threads == set()
 
 
-REFUSED_TO_A_PRESS = [name for name in NOT_A_REVIEW if not name.startswith("two ")]
-"""The writes that are no review and leave a thread whose state can still be read. A write
-saved twice for one task is left out: the framework refuses to read such a thread's state."""
+REFUSED_TO_A_PRESS = [
+    name for name in NOT_A_REVIEW if name not in ("two decisions", "two drafts", "two reasons")
+]
+"""The writes that are no review and leave a thread whose state the framework assembles,
+so a press reaches its check of the thread. A decision, a reason or a draft saved twice is
+left out: the framework refuses to assemble such a thread's state, and a press fails at
+its first read of it (``SAVED_TWICE``)."""
 
 
 @pytest.mark.parametrize("evidence", REFUSED_TO_A_PRESS)
@@ -4488,3 +4494,102 @@ def test_a_press_canceled_during_its_write_of_the_review_waits_for_it_under_the_
     assert canceled
     assert not still_locked
     assert as_recorded(record)[:3] == ("approved", "fine", DraftStatus.APPROVED_FOR_MANUAL_SEND)
+
+
+SAVED_TWICE: dict[str, str | None] = {
+    "two decisions": "decision",
+    "two drafts": "draft",
+    "two reasons": "reason",
+    "two steps onward": None,
+}
+"""The kinds of pending writes that hold one write twice, and the key the framework names
+when it refuses to assemble such a thread's state; none for the kind it assembles."""
+
+
+@pytest.mark.parametrize("evidence", list(SAVED_TWICE))
+def test_a_press_on_a_write_saved_twice_fails_at_its_first_read_or_is_refused_at_its_check(
+    evidence: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """A control of how a press already answers, with the recovery of a saved review or
+    without it. The task paused at the gate holds one write twice, placed by hand, and the
+    reader holds no review. With a decision, a reason or a draft twice, the framework
+    refuses to assemble the thread's state at the press's first read, naming that key; the
+    press never reaches its check of the thread and raises that error. With a step onward
+    twice the read succeeds, the check is reached once, and the press is refused with the
+    words for a saved review step nothing can finish. Each time nothing is sent to the
+    table, the row still waits, the thread keeps its checkpoint and its pending writes, and
+    the decision lock is free afterwards."""
+    key = SAVED_TWICE[evidence]
+
+    async def scenario() -> tuple[
+        tuple[Decision, str | None] | None,
+        BaseException,
+        list[str],
+        list[str],
+        list[tuple[str, str | None]],
+        DraftRecord | None,
+        tuple[object, object],
+        bool,
+    ]:
+        async with household_in(tmp_path) as state:
+            draft_id, thread_id = await paused_with(state, PENDING[evidence][0])
+            before = await as_saved(state, thread_id)
+            held = await held_in(state, thread_id)
+            graph = graph_for(state)
+            read, check = graph.aget_state, parent_routes.review_the_gate_left
+            reads: list[str] = []
+            checks: list[str] = []
+
+            async def reading(config: RunnableConfig, **keywords: Any) -> StateSnapshot:  # noqa: ANN401
+                try:
+                    snapshot = await read(config, **keywords)
+                except InvalidUpdateError:
+                    reads.append("refused by the framework")
+                    raise
+                reads.append("assembled")
+                return snapshot
+
+            async def checking(
+                state: ApplicationState, record: DraftRecord, snapshot: StateSnapshot
+            ) -> tuple[Decision, str | None] | None:
+                checks.append(record.draft_id)
+                return await check(state, record, snapshot)
+
+            monkeypatch.setattr(graph, "aget_state", reading)
+            monkeypatch.setattr(parent_routes, "review_the_gate_left", checking)
+            sent = counting_decisions(monkeypatch, state)
+            with pytest.raises((HTTPException, InvalidUpdateError)) as failed:
+                await decide_draft(
+                    state, lambda: graph, draft_id, DecisionRequest(approved=True, reason="fine")
+                )
+            await detached_done(state)
+            return (
+                held,
+                failed.value,
+                reads,
+                [draft for draft in checks if draft == draft_id],
+                sent,
+                state.drafts.get(draft_id),
+                (before, await as_saved(state, thread_id)),
+                state.decision_lock.locked(),
+            )
+
+    held, failed, reads, checks, sent, record, (before, after), locked = asyncio.run(scenario())
+    assert held is None
+    if key is None:
+        assert reads == ["assembled"]
+        assert len(checks) == 1
+        assert isinstance(failed, HTTPException)
+        assert failed.status_code == 409
+        assert CANT_FINISH in str(failed.detail)
+    else:
+        assert reads == ["refused by the framework"]
+        assert checks == []
+        assert isinstance(failed, InvalidUpdateError)
+        assert f"At key '{key}': Can receive only one value per step" in str(failed)
+    assert sent == []
+    assert record is not None
+    assert record.waiting
+    assert before is not None
+    assert after == before
+    assert not locked
