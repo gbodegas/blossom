@@ -59,10 +59,10 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request, Response, status
 from fastapi.openapi.constants import REF_PREFIX
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from langgraph.types import Command
+from langgraph.types import Command, StateSnapshot
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from blossom.agent.retention import unresumable_threads
+from blossom.agent.retention import draft_id_of, saved_thread, unresumable_threads
 from blossom.agent.runs import (
     DURABILITY,
     RunBudget,
@@ -889,6 +889,30 @@ class PlanGoneStale(HTTPException):
         super().__init__(status.HTTP_409_CONFLICT, detail=stale)
 
 
+async def gate_saved_its_review(
+    state: ApplicationState, record: DraftRecord, snapshot: StateSnapshot
+) -> bool:
+    """Whether the thread's approval gate finished and saved its review while the checkpoint
+    after the gate was never saved, so the review is there to finish.
+
+    A thread with no next step is not enough. The one task left must be the gate, finished
+    without an error; the draft it wrote must be this record's; and the saved thread, read
+    as the sweep reads it (``saved_thread``), must hold a review the gate saved, on the
+    checkpoint this snapshot describes. That reader accepts only a task whose writes are
+    just a finished gate's, so what the resumed thread replays and records is what was read.
+    A decision in the checkpoint's own values is not this case and is left as it is.
+    """
+    if snapshot.next != ():
+        return False
+    if [(task.name, task.error) for task in snapshot.tasks] != [("require_human_approval", None)]:
+        return False
+    if draft_id_of(snapshot.values.get("draft")) != record.draft_id:
+        return False
+    saved = await saved_thread(state.checkpointer, record.thread_id)
+    described = snapshot.config.get("configurable", {}).get("checkpoint_id")
+    return saved is not None and saved.gate_saved and saved.checkpoint_id == described
+
+
 async def decide_draft(
     state: ApplicationState,
     build: PlanGraphBuilder,
@@ -909,7 +933,9 @@ async def decide_draft(
     second process. Every read of the record runs on a worker thread.
 
     A thread past the gate with its record unwritten is a review that reached
-    the thread and then failed to land in the table. It is finished with the
+    the thread and then failed to land in the table. So is a thread whose gate
+    saved its review while the checkpoint after the gate was never saved
+    (``gate_saved_its_review``). Either is finished with the
     decision the thread holds rather than given a new one, whatever the request
     says and whatever the evening's signal says now, since the review was
     checked against the evening when it was given; a request that disagrees
@@ -946,7 +972,9 @@ async def decide_draft(
             if request.approved and stale is not None:
                 raise PlanGoneStale(stale)
             resume = Command(resume={"approved": request.approved, "reason": request.reason})
-        elif snapshot.next == ("record_decision",):
+        elif snapshot.next == ("record_decision",) or await gate_saved_its_review(
+            state, record, snapshot
+        ):
             resume = None
         else:
             raise HTTPException(
