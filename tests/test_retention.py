@@ -3700,6 +3700,11 @@ def marked(draft: Draft) -> Draft:
     return draft.model_copy(update={"status": DraftStatus.APPROVED_FOR_MANUAL_SEND})
 
 
+def reworded(draft: Draft) -> Draft:
+    """The draft with another body, its id and status as they are."""
+    return draft.model_copy(update={"body": "another body"})
+
+
 def approval(draft: Draft, /, **changed: object) -> list[tuple[str, object]]:
     """What a finished gate leaves for an approval with the reason "fine", in the order it
     saves them, with ``changed`` in place of a write of that name, or without that write
@@ -3750,6 +3755,34 @@ PENDING: dict[str, tuple[Callable[[Draft], list[tuple[str, object]]], object]] =
         None,
     ),
     "another write beside it": (lambda draft: [*approval(draft), ("outcome", "accepted")], None),
+    "an approval whose draft has another body": (
+        lambda draft: approval(draft, draft=reworded(marked(draft))),
+        None,
+    ),
+    "a refusal whose draft has another body": (
+        lambda draft: approval(draft, decision="rejected", draft=reworded(draft)),
+        None,
+    ),
+    "a draft made at another time": (
+        lambda draft: approval(
+            draft,
+            draft=marked(draft).model_copy(
+                update={"created_at": draft.created_at + timedelta(minutes=1)}
+            ),
+        ),
+        None,
+    ),
+    "a draft that is not one": (
+        lambda draft: approval(
+            draft,
+            draft={"draft_id": draft.draft_id, "status": DraftStatus.APPROVED_FOR_MANUAL_SEND},
+        ),
+        None,
+    ),
+    "a step onward that carries a value": (
+        lambda draft: approval(draft, **{ONWARD[0]: "record_decision"}),
+        None,
+    ),
 }
 """Pending writes added to the task that paused at the gate, and the review the reader then
 holds."""
@@ -3763,8 +3796,9 @@ def test_the_reader_holds_a_review_only_when_the_paused_task_saved_just_what_a_g
 ) -> None:
     """Pending writes on the task that paused at the gate are a held review only as what a
     finished gate leaves and nothing else: one decision, approved or rejected, one reason,
-    text or none, this thread's draft with the status that decision gives it, and its one
-    step onward. Anything missing, repeated, added or of another value holds nothing."""
+    text or none, this thread's draft changed only in the status that decision gives it, and
+    its one step onward, with no value. Anything missing, repeated, added or of another
+    value holds nothing."""
     writes, held = PENDING[evidence]
 
     async def scenario() -> SavedThread | None:
