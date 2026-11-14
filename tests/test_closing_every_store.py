@@ -210,7 +210,7 @@ def test_a_stop_whose_close_fails_still_fails_and_still_lets_go_of_the_household
         assert failures_logged(caplog) == [(could_not_close("drafts"), error)]
         saver = state.checkpointer
         assert isinstance(saver, AsyncSqliteSaver)
-        with pytest.raises(ValueError, match="Connection closed"):
+        with pytest.raises(ValueError, match="no active connection|Connection closed"):
             asyncio.run(read_saved_state(saver))
         claim_household(settings.database_path, settings.checkpoint_path).release()
     finally:
