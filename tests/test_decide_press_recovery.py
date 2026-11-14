@@ -785,6 +785,53 @@ def test_the_sweep_finishes_a_review_whose_save_after_the_gate_was_refused(
     assert after == ("rejected", NOTE)
 
 
+@pytest.mark.parametrize(
+    ("failure", "status", "said", "row"),
+    [
+        ("its write is refused", 500, UNKNOWN, (None, None)),
+        ("its write lands and then raises", 503, A_DECISION, ("approved", NOTE)),
+        ("its record can't be read back", 503, A_DECISION, ("approved", NOTE)),
+    ],
+)
+def test_a_store_failure_finishing_the_review_the_gate_saved_is_answered_as_a_held_decisions(
+    failure: str,
+    status: int,
+    said: str,
+    row: tuple[object, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The save after the gate is refused and the review stays in the thread. The same
+    button and words again finish that review, and a store fails: a write refused leaves the
+    row waiting and can't be told; a write that lands and then raises, or one that returns
+    with its record unread after it, says a decision is recorded, never this press's. The
+    note is kept as typed each time."""
+    with a_waiting_plan() as (client, draft_id):
+        state = state_of(client)
+        failing_checkpoint_save(monkeypatch, client, after_the_write=False)
+        press(client, draft_id, "approve", NOTE)
+        monkeypatch.undo()
+        real = state.drafts.record_decision
+
+        def landed_then_failed(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            real(*args, **kwargs)
+            refused = coded("SQLITE_IOERR")
+            raise refused
+
+        if failure == "its write is refused":
+            monkeypatch.setattr(state.drafts, "record_decision", raising(StoreBusy()))
+        elif failure == "its write lands and then raises":
+            monkeypatch.setattr(state.drafts, "record_decision", landed_then_failed)
+        else:
+            gets = Counted(state.drafts.get, {2: raising(StoreBusy())})
+            monkeypatch.setattr(state.drafts, "get", gets)
+        second = press(client, draft_id, "approve", NOTE)
+        monkeypatch.undo()
+        after = row_of(client, draft_id)
+
+    the_stand_in(second, status=status, said=said, note=NOTE)
+    assert after == row
+
+
 # ------------------------------------------------------------- the order of things
 
 
