@@ -16,6 +16,7 @@ import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from time import monotonic, sleep
+from types import SimpleNamespace
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -31,16 +32,29 @@ from langgraph.checkpoint.base import (
     CheckpointTuple,
 )
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import InvalidUpdateError
 from langgraph.types import Command, Durability, StateSnapshot
 
+from blossom.agent.gates import ApprovalState, require_human_approval
 from blossom.agent.graph import CompiledPlanGraph, ModelAnswer, PlanState, plan_graph_for
 from blossom.agent.retention import (
     EXPIRED_REASON,
+    INTERRUPT_CHANNEL,
     PAUSED_RETENTION_DAYS,
+    SavedThread,
     Swept,
+    finish_held_reviews,
+    review_the_gate_saved,
+    saved_thread,
     sweep_saved_state,
 )
-from blossom.agent.runs import DURABILITY, RUN_DEADLINE_SECONDS, RunBudget, run_config
+from blossom.agent.runs import (
+    DURABILITY,
+    GRAPH_VERSION,
+    RUN_DEADLINE_SECONDS,
+    RunBudget,
+    run_config,
+)
 from blossom.app import create_app
 from blossom.clock import FrozenClock
 from blossom.dependencies import (
@@ -51,8 +65,14 @@ from blossom.dependencies import (
 )
 from blossom.drafts import Decision, Draft, DraftStatus
 from blossom.plans import DailyPlan, PlanBlock
+from blossom.routes import parent as parent_routes
 from blossom.routes import runs as plan_runs
-from blossom.routes.parent import DecisionRequest, decide_draft
+from blossom.routes.parent import (
+    DecisionRequest,
+    DecisionTrace,
+    decide_draft,
+    review_the_gate_left,
+)
 from blossom.routes.runs import AlreadyPlanning, CouldNotStart, NotSaved, plan_graphs
 from blossom.settings import (
     CALENDAR_MARGIN,
@@ -60,6 +80,7 @@ from blossom.settings import (
     DATABASE_PATH_VARIABLE,
     TRACE_PATH_VARIABLE,
 )
+from blossom.stores.checkpoints import open_checkpointer
 from blossom.stores.drafts import (
     SETTLE_GRACE_SECONDS,
     DraftRecord,
@@ -85,9 +106,11 @@ from tests.support import (
     Scripted,
     Spending,
     accepting,
+    changed_by_hand,
     ended_canceled,
     ended_run,
     family_plan_body,
+    fixture_clock,
     fixture_settings,
     fixture_week_plan,
     forgetful_fixture_plan,
@@ -3146,3 +3169,1427 @@ def test_a_sweep_canceled_during_a_write_keeps_the_decision_lock_until_the_write
     assert reached
     assert taken == [True]
     assert canceled
+
+
+# ---------------------------------- a review the gate saved, its checkpoint unsaved
+
+
+LATER = datetime(2026, 8, 19, 21, 30, tzinfo=UTC)
+"""A time after the fixture clock's, for a store whose clock has moved on."""
+
+REVIEWS = [
+    (True, "approved", "start with the essay"),
+    (False, "rejected", "two sittings"),
+    (True, "approved", None),
+]
+"""A review as pressed, the decision the table records for it, and its reason."""
+
+CANT_FINISH = "can't finish its saved review step"
+"""Words of the refusal for a saved review step nothing can resume."""
+
+
+@contextlib.asynccontextmanager
+async def household_in(folder: pathlib.Path) -> AsyncIterator[ApplicationState]:
+    """One household's files under ``folder``, the saved-state file opened as the app opens
+    it, and everything closed on the way out, so the same files can be opened again."""
+    settings = fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat(), **files_in(folder))
+    async with open_checkpointer(settings.checkpoint_path) as checkpointer:
+        state = build_application_state(settings, checkpointer)
+        try:
+            yield state
+        finally:
+            state.close()
+
+
+def refusing_the_save_after_the_gate(
+    monkeypatch: pytest.MonkeyPatch, state: ApplicationState
+) -> None:
+    """The saver's next save of a checkpoint that holds a decision refused, as a busy file
+    refuses it: the save after the gate, ahead of the decision's write to the table."""
+    real = state.checkpointer.aput
+    refused: list[bool] = []
+
+    async def put(
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        if checkpoint["channel_values"].get("decision") is not None and not refused:
+            refused.append(True)
+            msg = "database is locked"
+            raise sqlite3.OperationalError(msg)
+        return await real(config, checkpoint, metadata, new_versions)
+
+    monkeypatch.setattr(state.checkpointer, "aput", put)
+
+
+async def a_review_only_the_gate_saved(
+    state: ApplicationState, review: DecisionRequest
+) -> tuple[str, str]:
+    """A plan waiting at the gate and a press on it whose save after the gate is refused: the
+    press raises the file's refusal and the row still waits. The draft and its thread."""
+    made = await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+    await detached_done(state)
+    assert made.draft_id is not None
+    with pytest.MonkeyPatch.context() as patch:
+        refusing_the_save_after_the_gate(patch, state)
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await decide_draft(state, lambda: graph_for(state), made.draft_id, review)
+    record = state.drafts.get(made.draft_id)
+    assert record is not None
+    assert record.waiting
+    return made.draft_id, made.thread_id
+
+
+def counting_the_gate(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The drafts the approval gate is run for from here on, one entry each time it runs."""
+    ran: list[str] = []
+
+    def gate(approval: ApprovalState) -> dict[str, Any]:
+        ran.append(approval["draft"].draft_id)
+        return require_human_approval(approval)
+
+    monkeypatch.setattr("blossom.agent.graph.require_human_approval", gate)
+    return ran
+
+
+def counting_decisions(
+    monkeypatch: pytest.MonkeyPatch, state: ApplicationState
+) -> list[tuple[str, str | None]]:
+    """Each decision and reason sent to the table from here on, in order."""
+    sent: list[tuple[str, str | None]] = []
+    real = state.drafts.record_decision
+
+    def record(
+        draft_id: str, *, status: DraftStatus, decision: Decision, reason: str | None
+    ) -> DraftRecord:
+        sent.append((decision, reason))
+        return real(draft_id, status=status, decision=decision, reason=reason)
+
+    monkeypatch.setattr(state.drafts, "record_decision", record)
+    return sent
+
+
+def status_for(decision: str) -> DraftStatus:
+    """The status the table gives a draft with this decision."""
+    return DraftStatus.APPROVED_FOR_MANUAL_SEND if decision == "approved" else DraftStatus.DRAFT
+
+
+async def held_in(state: ApplicationState, thread_id: str) -> tuple[Decision, str | None] | None:
+    """The review the saved thread holds, as the sweep reads it."""
+    saved = await saved_thread(state.checkpointer, thread_id)
+    return None if saved is None else saved.held
+
+
+def as_recorded(record: DraftRecord | None) -> tuple[object, object, object, object]:
+    """The decision, reason, status and time of deciding the table holds for a draft."""
+    assert record is not None
+    return record.decision, record.reason, record.status, record.decided_at
+
+
+@pytest.mark.parametrize(("approved", "decision", "reason"), REVIEWS)
+def test_the_sweeps_reader_finds_the_review_the_gate_saved(
+    approved: bool, decision: str, reason: str | None, tmp_path: pathlib.Path
+) -> None:
+    """The save after the gate was refused: the thread still reads as paused with its draft,
+    and holds the review the gate saved, its decision and its reason."""
+
+    async def scenario() -> SavedThread | None:
+        async with household_in(tmp_path) as state:
+            _, thread_id = await a_review_only_the_gate_saved(
+                state, DecisionRequest(approved=approved, reason=reason)
+            )
+            return await saved_thread(state.checkpointer, thread_id)
+
+    saved = asyncio.run(scenario())
+    assert saved is not None
+    assert saved.held == (decision, reason)
+    assert saved.gate_saved
+    assert saved.paused
+    assert saved.has_draft
+
+
+@pytest.mark.parametrize(("approved", "decision", "reason"), REVIEWS)
+def test_the_next_press_finishes_the_review_the_gate_saved(
+    approved: bool,
+    decision: str,
+    reason: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """The save after the gate was refused and the row still waits. The same press again
+    records that review, its decision and its reason, once, without running the gate again,
+    and clears the thread."""
+
+    async def scenario() -> tuple[
+        tuple[str | None, str | None],
+        list[str],
+        list[tuple[str, str | None]],
+        DraftRecord | None,
+        set[str],
+    ]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=approved, reason=reason)
+            draft_id, _ = await a_review_only_the_gate_saved(state, review)
+            gate = counting_the_gate(monkeypatch)
+            sent = counting_decisions(monkeypatch, state)
+            view = await decide_draft(state, lambda: graph_for(state), draft_id, review)
+            await detached_done(state)
+            answered = (view.decision, view.reason)
+            return answered, gate, sent, state.drafts.get(draft_id), await thread_ids(state)
+
+    answered, gate, sent, record, threads = asyncio.run(scenario())
+    assert answered == (decision, reason)
+    assert gate == []
+    assert sent == [(decision, reason)]
+    assert as_recorded(record)[:3] == (decision, reason, status_for(decision))
+    assert threads == set()
+
+
+@pytest.mark.parametrize(("approved", "decision", "reason"), REVIEWS[:2])
+def test_a_press_that_differs_from_the_review_the_gate_saved_is_told_what_stood(
+    approved: bool,
+    decision: str,
+    reason: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """The save after the gate was refused and the row still waits. The other button with
+    other words finishes the review the gate saved and is told the plan was already decided
+    that way; the table holds the first decision and its reason."""
+
+    async def scenario() -> tuple[
+        str, HTTPException, list[str], list[tuple[str, str | None]], DraftRecord | None
+    ]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=approved, reason=reason)
+            draft_id, _ = await a_review_only_the_gate_saved(state, review)
+            gate = counting_the_gate(monkeypatch)
+            sent = counting_decisions(monkeypatch, state)
+            other = DecisionRequest(approved=not approved, reason="other words")
+            with pytest.raises(HTTPException) as refused:
+                await decide_draft(state, lambda: graph_for(state), draft_id, other)
+            return draft_id, refused.value, gate, sent, state.drafts.get(draft_id)
+
+    draft_id, refused, gate, sent, record = asyncio.run(scenario())
+    assert refused.status_code == 409
+    assert refused.detail == f"draft {draft_id!r} was already {decision}"
+    assert gate == []
+    assert sent == [(decision, reason)]
+    assert as_recorded(record)[:3] == (decision, reason, status_for(decision))
+
+
+@pytest.mark.parametrize(("approved", "decision", "reason"), REVIEWS)
+def test_the_sweep_finishes_the_review_the_gate_saved(
+    approved: bool,
+    decision: str,
+    reason: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Nobody presses again: the sweep records the review the gate saved, once, and clears
+    the thread."""
+
+    async def scenario() -> tuple[
+        str, Swept, list[tuple[str, str | None]], DraftRecord | None, set[str]
+    ]:
+        async with household_in(tmp_path) as state:
+            draft_id, _ = await a_review_only_the_gate_saved(
+                state, DecisionRequest(approved=approved, reason=reason)
+            )
+            sent = counting_decisions(monkeypatch, state)
+            swept = await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return draft_id, swept, sent, state.drafts.get(draft_id), await thread_ids(state)
+
+    draft_id, swept, sent, record, threads = asyncio.run(scenario())
+    assert swept.finished == (draft_id,)
+    assert swept.expired == ()
+    assert sent == [(decision, reason)]
+    assert as_recorded(record)[:3] == (decision, reason, status_for(decision))
+    assert threads == set()
+
+
+@pytest.mark.parametrize(("approved", "decision", "reason"), REVIEWS[:2])
+def test_a_later_plan_first_records_the_review_the_gate_saved(
+    approved: bool, decision: str, reason: str | None, tmp_path: pathlib.Path
+) -> None:
+    """A new plan for the same evening: the review the gate saved lands before the plan is
+    published, and the new plan is the one that waits."""
+
+    async def scenario() -> tuple[DraftRecord | None, str, list[str], DraftRecord | None, set[str]]:
+        async with household_in(tmp_path) as state:
+            draft_id, _ = await a_review_only_the_gate_saved(
+                state, DecisionRequest(approved=approved, reason=reason)
+            )
+            second = await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            await detached_done(state)
+            waiting = [record.thread_id for record in state.drafts.waiting()]
+            return (
+                state.drafts.get(draft_id),
+                second.thread_id,
+                waiting,
+                state.drafts.latest_for(PLAN_DATE),
+                await thread_ids(state),
+            )
+
+    reviewed, second, waiting, latest, threads = asyncio.run(scenario())
+    assert as_recorded(reviewed)[:3] == (decision, reason, status_for(decision))
+    assert waiting == [second]
+    assert latest is not None
+    assert latest.thread_id == second
+    assert threads == {second}
+
+
+def test_a_review_the_gate_saved_under_another_graph_version_is_not_finished_by_a_press(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The running graph is another version than the one that wrote the thread: a press is
+    refused with the words for a saved review step nothing can finish, nothing is sent to the
+    table, the row still waits, and the thread keeps the review."""
+
+    async def scenario() -> tuple[
+        HTTPException,
+        list[tuple[str, str | None]],
+        DraftRecord | None,
+        tuple[Decision, str | None] | None,
+    ]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=True, reason="fine")
+            draft_id, thread_id = await a_review_only_the_gate_saved(state, review)
+            sent = counting_decisions(monkeypatch, state)
+            monkeypatch.setattr("blossom.agent.runs.GRAPH_VERSION", GRAPH_VERSION + 1)
+            with pytest.raises(HTTPException) as refused:
+                await decide_draft(state, lambda: graph_for(state), draft_id, review)
+            held = await held_in(state, thread_id)
+            return refused.value, sent, state.drafts.get(draft_id), held
+
+    refused, sent, record, held = asyncio.run(scenario())
+    assert refused.status_code == 409
+    assert CANT_FINISH in str(refused.detail)
+    assert sent == []
+    assert record is not None
+    assert record.waiting
+    assert held == ("approved", "fine")
+
+
+SUPERSEDED = (
+    "UPDATE drafts SET decision='superseded', reason='a later plan', decided_at=? WHERE draft_id=?"
+)
+"""The row closed as a later plan published from another process closes it."""
+
+
+@pytest.mark.parametrize("when", ["before the press", "as its review is recorded"])
+def test_a_review_the_gate_saved_never_reaches_a_plan_superseded_meanwhile(
+    when: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The plan was superseded while its review sat in the thread, before the press or as
+    the press's write reaches the table: the press is told it was already superseded, the
+    sweep records nothing for it, the row stays superseded, and the thread goes."""
+
+    async def scenario() -> tuple[HTTPException, Swept, DraftRecord | None, set[str]]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=True, reason="fine")
+            draft_id, _ = await a_review_only_the_gate_saved(state, review)
+            closed = (LATER.isoformat(), draft_id)
+            real = state.drafts.record_decision
+
+            def closed_first(
+                draft: str, *, status: DraftStatus, decision: Decision, reason: str | None
+            ) -> DraftRecord:
+                changed_by_hand(state.drafts, SUPERSEDED, closed)
+                return real(draft, status=status, decision=decision, reason=reason)
+
+            if when == "before the press":
+                changed_by_hand(state.drafts, SUPERSEDED, closed)
+            else:
+                monkeypatch.setattr(state.drafts, "record_decision", closed_first)
+            with pytest.raises(HTTPException) as refused:
+                await decide_draft(state, lambda: graph_for(state), draft_id, review)
+            await detached_done(state)
+            swept = await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return refused.value, swept, state.drafts.get(draft_id), await thread_ids(state)
+
+    refused, swept, record, threads = asyncio.run(scenario())
+    assert refused.status_code == 409
+    assert "was already superseded" in str(refused.detail)
+    assert swept.finished == ()
+    assert as_recorded(record) == ("superseded", "a later plan", DraftStatus.DRAFT, LATER)
+    assert threads == set()
+
+
+def test_a_review_the_gate_saved_never_reaches_a_plan_taken_off_the_pages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The plan is on no page any more while its review sits in the thread: a press is
+    refused, nothing is sent to the table, and the row has no decision."""
+
+    async def scenario() -> tuple[HTTPException, list[tuple[str, str | None]], DraftRecord | None]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=True, reason="fine")
+            draft_id, _ = await a_review_only_the_gate_saved(state, review)
+            changed_by_hand(
+                state.drafts, "UPDATE drafts SET published=0 WHERE draft_id=?", (draft_id,)
+            )
+            sent = counting_decisions(monkeypatch, state)
+            with pytest.raises(HTTPException) as refused:
+                await decide_draft(state, lambda: graph_for(state), draft_id, review)
+            return refused.value, sent, state.drafts.get(draft_id)
+
+    refused, sent, record = asyncio.run(scenario())
+    assert refused.status_code == 409
+    assert "is not on the pages" in str(refused.detail)
+    assert sent == []
+    assert record is not None
+    assert record.waiting
+
+
+@pytest.mark.parametrize(
+    ("fails", "then"),
+    [
+        ("the table, on a press", "a press"),
+        ("the table, on a press", "the sweep"),
+        ("the table, on the sweep", "a press"),
+    ],
+)
+def test_a_recovery_that_fails_leaves_the_review_for_the_next_one(
+    fails: str, then: str, tmp_path: pathlib.Path
+) -> None:
+    """Finishing the review the gate saved fails at the table, on a press or on the sweep:
+    the row still waits, the thread still holds the review, and the next press or sweep
+    records it."""
+
+    async def scenario() -> tuple[
+        DraftRecord | None, tuple[Decision, str | None] | None, DraftRecord | None
+    ]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=False, reason="two sittings")
+            draft_id, thread_id = await a_review_only_the_gate_saved(state, review)
+            with pytest.MonkeyPatch.context() as patch:
+                if fails == "the table, on a press":
+                    patch.setattr(state.drafts, "record_decision", failing_once_then(state.drafts))
+                    with pytest.raises(RuntimeError, match="database is locked"):
+                        await decide_draft(state, lambda: graph_for(state), draft_id, review)
+                else:
+                    patch.setattr(state.drafts, "record_decision", failing_once_then(state.drafts))
+                    with pytest.raises(RuntimeError, match="database is locked"):
+                        await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            waiting = state.drafts.get(draft_id)
+            held = await held_in(state, thread_id)
+            if then == "a press":
+                await decide_draft(state, lambda: graph_for(state), draft_id, review)
+            else:
+                await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return waiting, held, state.drafts.get(draft_id)
+
+    waiting, held, record = asyncio.run(scenario())
+    assert waiting is not None
+    assert waiting.waiting
+    assert held == ("rejected", "two sittings")
+    assert as_recorded(record)[:3] == ("rejected", "two sittings", DraftStatus.DRAFT)
+
+
+def test_recovering_again_changes_nothing_of_the_review_first_recorded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The review the gate saved is recorded while its thread is still kept. The store's
+    clock moves on, and the same recovery again, the thread's own write, which sends the
+    same review to the table once more, a new plan for the evening, the sweep and a press
+    with the other button leave the decision, the reason and the time it was recorded as
+    they were."""
+
+    async def scenario() -> tuple[
+        bool,
+        DraftRecord | None,
+        list[tuple[str, str]],
+        list[tuple[str, str | None]],
+        DraftRecord | None,
+    ]:
+        async with household_in(tmp_path) as state:
+            draft_id, thread_id = await a_review_only_the_gate_saved(
+                state, DecisionRequest(approved=True, reason="fine")
+            )
+            finished = await finish_held_reviews(state.checkpointer, state.drafts)
+            first = finished == [(draft_id, thread_id)]
+            recorded = state.drafts.get(draft_id)
+            monkeypatch.setattr(state.drafts, "_clock", fixture_clock(LATER))
+            sent = counting_decisions(monkeypatch, state)
+            again = await finish_held_reviews(state.checkpointer, state.drafts)
+            await graph_for(state).ainvoke(
+                None, config=run_config(thread_id), durability=DURABILITY
+            )
+            await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            await detached_done(state)
+            await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            other = DecisionRequest(approved=False, reason="other words")
+            with pytest.raises(HTTPException, match="was already approved"):
+                await decide_draft(state, lambda: graph_for(state), draft_id, other)
+            return first, recorded, again, sent, state.drafts.get(draft_id)
+
+    first, recorded, again, sent, record = asyncio.run(scenario())
+    assert first
+    assert again == []
+    assert sent == [("approved", "fine")]
+    assert recorded is not None
+    assert as_recorded(recorded)[:3] == ("approved", "fine", DraftStatus.APPROVED_FOR_MANUAL_SEND)
+    assert recorded.decided_at is not None
+    assert recorded.decided_at < LATER
+    assert as_recorded(record) == as_recorded(recorded)
+
+
+@pytest.mark.parametrize("path", ["a press", "the sweep"])
+def test_the_review_the_gate_saved_is_finished_from_the_files_alone(
+    path: str, tmp_path: pathlib.Path
+) -> None:
+    """The household's files are closed with the review saved only by the gate, and opened
+    again: the thread read from the file still holds the review, and a press or the sweep
+    records it."""
+    review = DecisionRequest(approved=False, reason="two sittings")
+
+    async def closed_with_the_review() -> tuple[str, str]:
+        async with household_in(tmp_path) as state:
+            return await a_review_only_the_gate_saved(state, review)
+
+    async def opened_again(
+        draft_id: str, thread_id: str
+    ) -> tuple[tuple[Decision, str | None] | None, DraftRecord | None]:
+        async with household_in(tmp_path) as state:
+            held = await held_in(state, thread_id)
+            if path == "a press":
+                await decide_draft(state, lambda: graph_for(state), draft_id, review)
+            else:
+                await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return held, state.drafts.get(draft_id)
+
+    draft_id, thread_id = asyncio.run(closed_with_the_review())
+    held, record = asyncio.run(opened_again(draft_id, thread_id))
+    assert held == ("rejected", "two sittings")
+    assert as_recorded(record)[:3] == ("rejected", "two sittings", DraftStatus.DRAFT)
+
+
+ONWARD = ("branch:to:record_decision", None)
+"""The write a finished gate leaves for the step after it, as the framework saves it."""
+
+
+async def paused_with(
+    state: ApplicationState,
+    writes: Callable[[Draft], list[tuple[str, object]]],
+    elsewhere: Callable[[Draft], list[tuple[str, object]]] | None = None,
+) -> tuple[str, str]:
+    """A plan paused at the gate with ``writes`` added to the pending writes of the task
+    that paused, and ``elsewhere`` to those of another task. The draft and its thread."""
+    made = await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+    await detached_done(state)
+    assert made.draft_id is not None
+    saved = await state.checkpointer.aget_tuple(run_config(made.thread_id))
+    assert saved is not None
+    draft = saved.checkpoint["channel_values"]["draft"]
+    paused = next(
+        task for task, channel, _ in saved.pending_writes or () if channel == INTERRUPT_CHANNEL
+    )
+    if added := writes(draft):
+        await state.checkpointer.aput_writes(saved.config, added, paused)
+    if elsewhere is not None:
+        await state.checkpointer.aput_writes(saved.config, elsewhere(draft), "another-task")
+    return made.draft_id, made.thread_id
+
+
+def another(draft: Draft) -> Draft:
+    """The draft under another id."""
+    return draft.model_copy(update={"draft_id": "draft:another"})
+
+
+def marked(draft: Draft) -> Draft:
+    """The draft as the gate saves it with an approval."""
+    return draft.model_copy(update={"status": DraftStatus.APPROVED_FOR_MANUAL_SEND})
+
+
+def reworded(draft: Draft) -> Draft:
+    """The draft with another body, its id and status as they are."""
+    return draft.model_copy(update={"body": "another body"})
+
+
+def approval(draft: Draft, /, **changed: object) -> list[tuple[str, object]]:
+    """What a finished gate leaves for an approval with the reason "fine", in the order it
+    saves them, with ``changed`` in place of a write of that name, or without that write
+    when ``changed`` gives ``...`` for it."""
+    writes: dict[str, object] = {
+        "decision": "approved",
+        "reason": "fine",
+        "draft": marked(draft),
+        ONWARD[0]: ONWARD[1],
+    }
+    writes.update(changed)
+    return [(channel, value) for channel, value in writes.items() if value is not ...]
+
+
+PENDING: dict[str, tuple[Callable[[Draft], list[tuple[str, object]]], object]] = {
+    "an approval and its reason": (approval, ("approved", "fine")),
+    "an approval with no reason given": (
+        lambda draft: approval(draft, reason=None),
+        ("approved", None),
+    ),
+    "a refusal and its reason": (
+        lambda draft: approval(draft, decision="rejected", reason="two sittings", draft=draft),
+        ("rejected", "two sittings"),
+    ),
+    "a refusal with no reason given": (
+        lambda draft: approval(draft, decision="rejected", reason=None, draft=draft),
+        ("rejected", None),
+    ),
+    "no reason write": (lambda draft: approval(draft, reason=...), None),
+    "a reason that is not text": (lambda draft: approval(draft, reason=7), None),
+    "a decision that is neither": (lambda draft: approval(draft, decision="expired"), None),
+    "a decision that is not text": (lambda draft: approval(draft, decision=True), None),
+    "a decision that is neither, its draft unmarked": (
+        lambda draft: approval(draft, decision="expired", draft=draft),
+        None,
+    ),
+    "a decision that is not text, its draft unmarked": (
+        lambda draft: approval(draft, decision=False, draft=draft),
+        None,
+    ),
+    "no decision": (lambda draft: approval(draft, decision=...), None),
+    "no draft": (lambda draft: approval(draft, draft=...), None),
+    "another draft": (lambda draft: approval(draft, draft=marked(another(draft))), None),
+    "an approval whose draft is not marked": (lambda draft: approval(draft, draft=draft), None),
+    "a refusal whose draft is marked": (
+        lambda draft: approval(draft, decision="rejected"),
+        None,
+    ),
+    "two decisions": (lambda draft: [*approval(draft), ("decision", "rejected")], None),
+    "two drafts": (lambda draft: [*approval(draft), ("draft", marked(draft))], None),
+    "two reasons": (lambda draft: [*approval(draft), ("reason", "other words")], None),
+    "no step onward": (lambda draft: approval(draft, **{ONWARD[0]: ...}), None),
+    "two steps onward": (lambda draft: [*approval(draft), ONWARD], None),
+    "an error beside it": (
+        lambda draft: [*approval(draft), ("__error__", "the task was stopped")],
+        None,
+    ),
+    "another write beside it": (lambda draft: [*approval(draft), ("outcome", "accepted")], None),
+    "an approval whose draft has another body": (
+        lambda draft: approval(draft, draft=reworded(marked(draft))),
+        None,
+    ),
+    "a refusal whose draft has another body": (
+        lambda draft: approval(draft, decision="rejected", draft=reworded(draft)),
+        None,
+    ),
+    "a draft made at another time": (
+        lambda draft: approval(
+            draft,
+            draft=marked(draft).model_copy(
+                update={"created_at": draft.created_at + timedelta(minutes=1)}
+            ),
+        ),
+        None,
+    ),
+    "a draft that is not one": (
+        lambda draft: approval(
+            draft,
+            draft={"draft_id": draft.draft_id, "status": DraftStatus.APPROVED_FOR_MANUAL_SEND},
+        ),
+        None,
+    ),
+    "a step onward that carries a value": (
+        lambda draft: approval(draft, **{ONWARD[0]: "record_decision"}),
+        None,
+    ),
+}
+"""Pending writes added to the task that paused at the gate, and the review the reader then
+holds."""
+
+NOT_A_REVIEW = [name for name, (_, held) in PENDING.items() if held is None]
+
+
+@pytest.mark.parametrize("evidence", list(PENDING))
+def test_the_reader_holds_a_review_only_when_the_paused_task_saved_just_what_a_gate_does(
+    evidence: str, tmp_path: pathlib.Path
+) -> None:
+    """Pending writes on the task that paused at the gate are a held review only as what a
+    finished gate leaves and nothing else: one decision, approved or rejected, one reason,
+    text or none, this thread's draft changed only in the status that decision gives it, and
+    its one step onward, with no value. Anything missing, repeated, added or of another
+    value holds nothing."""
+    writes, held = PENDING[evidence]
+
+    async def scenario() -> SavedThread | None:
+        async with household_in(tmp_path) as state:
+            _, thread_id = await paused_with(state, writes)
+            return await saved_thread(state.checkpointer, thread_id)
+
+    saved = asyncio.run(scenario())
+    assert saved is not None
+    assert saved.held == held
+    assert saved.gate_saved is (held is not None)
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        "all on another task",
+        "all on another task with a pause of its own",
+        "split between two tasks",
+        "only the step onward elsewhere",
+    ],
+)
+def test_the_reader_never_puts_the_writes_of_different_tasks_together(
+    where: str, tmp_path: pathlib.Path
+) -> None:
+    """A decision, a reason, a draft and a step onward that the task paused at the gate
+    didn't save itself, whether another task holds them all, with a pause of its own or
+    without, or the two tasks hold them between them, are no review."""
+
+    async def scenario() -> tuple[Decision, str | None] | None:
+        async with household_in(tmp_path) as state:
+            if where == "all on another task":
+                _, thread_id = await paused_with(state, lambda _: [], approval)
+            elif where == "all on another task with a pause of its own":
+                _, thread_id = await paused_with(
+                    state, lambda _: [], lambda draft: [(INTERRUPT_CHANNEL, ()), *approval(draft)]
+                )
+            elif where == "split between two tasks":
+                _, thread_id = await paused_with(
+                    state,
+                    lambda _: [("decision", "approved"), ONWARD],
+                    lambda draft: [("reason", "fine"), ("draft", marked(draft))],
+                )
+            else:
+                _, thread_id = await paused_with(
+                    state, PENDING["no step onward"][0], lambda _: [ONWARD]
+                )
+            return await held_in(state, thread_id)
+
+    assert asyncio.run(scenario()) is None
+
+
+def test_a_decision_in_the_checkpoint_itself_comes_before_any_pending_write(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The checkpoint after the gate is saved with its decision and the table refused the
+    write. Pending writes that would read as another review change nothing: the review held
+    is the checkpoint's own, and it is not one the gate saved as pending writes."""
+
+    async def scenario() -> SavedThread | None:
+        async with household_in(tmp_path) as state:
+            made = await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            await detached_done(state)
+            assert made.draft_id is not None
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(state.drafts, "record_decision", failing_once_then(state.drafts))
+                with pytest.raises(RuntimeError, match="database is locked"):
+                    await decide_draft(
+                        state,
+                        lambda: graph_for(state),
+                        made.draft_id,
+                        DecisionRequest(approved=True, reason="fine"),
+                    )
+            saved = await state.checkpointer.aget_tuple(run_config(made.thread_id))
+            assert saved is not None
+            values = saved.checkpoint["channel_values"]
+            assert values["decision"] == "approved"
+            other = approval(values["draft"], reason="other words")
+            await state.checkpointer.aput_writes(
+                saved.config, [(INTERRUPT_CHANNEL, ()), *other], "another-task"
+            )
+            return await saved_thread(state.checkpointer, made.thread_id)
+
+    saved = asyncio.run(scenario())
+    assert saved is not None
+    assert saved.held == ("approved", "fine")
+    assert not saved.gate_saved
+
+
+def test_a_decision_of_another_kind_in_the_checkpoint_is_no_review_whatever_is_pending(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The checkpoint's own values hold a decision that is neither approved nor rejected.
+    Pending writes that would read as a whole review are not read at all: nothing is held."""
+
+    async def scenario() -> tuple[object, tuple[Decision, str | None] | None]:
+        async with household_in(tmp_path) as state:
+            made = await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            await detached_done(state)
+            thread = run_config(made.thread_id)
+            await graph_for(state).aupdate_state(thread, {"decision": "expired"}, as_node="compose")
+            saved = await state.checkpointer.aget_tuple(thread)
+            assert saved is not None
+            values = saved.checkpoint["channel_values"]
+            await state.checkpointer.aput_writes(
+                saved.config, [(INTERRUPT_CHANNEL, ()), *approval(values["draft"])], "another-task"
+            )
+            return values["decision"], await held_in(state, made.thread_id)
+
+    in_the_checkpoint, held = asyncio.run(scenario())
+    assert in_the_checkpoint == "expired"
+    assert held is None
+
+
+@pytest.mark.parametrize("carried", [None, {"draft_id": "draft:plan:a-thread"}, "a draft"])
+def test_a_checkpoint_whose_draft_is_not_one_holds_no_review(carried: object) -> None:
+    """The checkpoint carries no draft, or something that is not a draft, as a state class of
+    another name comes back: pending writes that are otherwise a whole review hold nothing."""
+    draft = Draft(draft_id="draft:plan:a-thread", body="the plan", created_at=CREATED_LATER)
+    pending = [
+        ("the-paused-task", INTERRUPT_CHANNEL, ()),
+        *(("the-paused-task", channel, value) for channel, value in approval(draft)),
+    ]
+
+    assert review_the_gate_saved(pending, draft) == ("approved", "fine")
+    assert review_the_gate_saved(pending, carried) is None
+
+
+class EqualToAnything:
+    """Not a draft: an object with a draft's id and status that says it equals whatever it
+    is compared with."""
+
+    def __init__(self, draft: Draft) -> None:
+        self.draft_id = draft.draft_id
+        self.status = draft.status
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __ne__(self, other: object) -> bool:
+        return False
+
+    __hash__ = object.__hash__
+
+
+@pytest.mark.parametrize("says_it_is_equal", [False, True])
+def test_a_pending_draft_that_is_not_a_draft_holds_no_review(says_it_is_equal: bool) -> None:
+    """By a direct call of the reader, since the saver gives back no such object: the
+    pending draft is not a draft but something with the checkpoint draft's id and an
+    approval's status, plain or one that says it equals anything. Pending writes that are
+    otherwise a whole review hold nothing."""
+    draft = Draft(draft_id="draft:plan:a-thread", body="the plan", created_at=CREATED_LATER)
+    stand_in: object = (
+        EqualToAnything(marked(draft))
+        if says_it_is_equal
+        else SimpleNamespace(draft_id=draft.draft_id, status=DraftStatus.APPROVED_FOR_MANUAL_SEND)
+    )
+
+    def pending(written: object) -> list[tuple[str, str, Any]]:
+        return [
+            ("the-paused-task", INTERRUPT_CHANNEL, ()),
+            *(
+                ("the-paused-task", channel, value)
+                for channel, value in approval(draft, draft=written)
+            ),
+        ]
+
+    assert review_the_gate_saved(pending(marked(draft)), draft) == ("approved", "fine")
+    assert review_the_gate_saved(pending(stand_in), draft) is None
+
+
+@pytest.mark.parametrize(
+    ("evidence", "approved"),
+    [("an approval and its reason", True), ("a refusal and its reason", False)],
+)
+def test_a_press_finishes_a_whole_review_the_paused_task_holds(
+    evidence: str, approved: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The task paused at the gate holds a whole review, written here by hand: a press
+    records it once, as the sweep would, without running the gate again, and clears the
+    thread."""
+    writes, held = PENDING[evidence]
+    assert isinstance(held, tuple)
+    decision, reason = held
+
+    async def scenario() -> tuple[
+        list[str], list[tuple[str, str | None]], DraftRecord | None, set[str]
+    ]:
+        async with household_in(tmp_path) as state:
+            draft_id, _ = await paused_with(state, writes)
+            gate = counting_the_gate(monkeypatch)
+            sent = counting_decisions(monkeypatch, state)
+            await decide_draft(
+                state,
+                lambda: graph_for(state),
+                draft_id,
+                DecisionRequest(approved=approved, reason=reason),
+            )
+            await detached_done(state)
+            return gate, sent, state.drafts.get(draft_id), await thread_ids(state)
+
+    gate, sent, record, threads = asyncio.run(scenario())
+    assert gate == []
+    assert sent == [(decision, reason)]
+    assert as_recorded(record)[:3] == (decision, reason, status_for(decision))
+    assert threads == set()
+
+
+REFUSED_TO_A_PRESS = [
+    name for name in NOT_A_REVIEW if name not in ("two decisions", "two drafts", "two reasons")
+]
+"""The writes that are no review and leave a thread whose state the framework assembles,
+so a press reaches its check of the thread. A decision, a reason or a draft saved twice is
+left out: the framework refuses to assemble such a thread's state, and a press fails at
+its first read of it (``SAVED_TWICE``)."""
+
+
+@pytest.mark.parametrize("evidence", REFUSED_TO_A_PRESS)
+def test_a_press_finishes_nothing_the_reader_does_not_hold(
+    evidence: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The task paused at the gate has pending writes that are not just what a finished gate
+    leaves, so the thread has no next step and holds no review. The sweep records nothing
+    for it. A press is refused with the words for a saved review step nothing can finish,
+    nothing is sent to the table, the row still waits, and the thread is kept as it was."""
+    writes, _ = PENDING[evidence]
+
+    async def scenario() -> tuple[
+        Swept, HTTPException, list[tuple[str, str | None]], DraftRecord | None, bool
+    ]:
+        async with household_in(tmp_path) as state:
+            draft_id, thread_id = await paused_with(state, writes)
+            before = await state.checkpointer.aget_tuple(run_config(thread_id))
+            sent = counting_decisions(monkeypatch, state)
+            swept = await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            with pytest.raises(HTTPException) as refused:
+                await decide_draft(
+                    state,
+                    lambda: graph_for(state),
+                    draft_id,
+                    DecisionRequest(approved=True, reason="fine"),
+                )
+            await detached_done(state)
+            after = await state.checkpointer.aget_tuple(run_config(thread_id))
+            kept = (
+                before is not None
+                and after is not None
+                and after.checkpoint["id"] == before.checkpoint["id"]
+                and len(after.pending_writes or ()) == len(before.pending_writes or ())
+            )
+            return swept, refused.value, sent, state.drafts.get(draft_id), kept
+
+    swept, refused, sent, record, kept = asyncio.run(scenario())
+    assert swept.finished == ()
+    assert refused.status_code == 409
+    assert CANT_FINISH in str(refused.detail)
+    assert sent == []
+    assert record is not None
+    assert record.waiting
+    assert kept
+
+
+def test_a_press_leaves_a_decision_the_checkpoint_itself_holds_to_the_sweep(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The checkpoint's own values hold an approval, and the task paused at the gate has
+    saved only part of a review, so the thread has no next step. A press finishes nothing
+    and keeps the thread; the sweep then records the decision the checkpoint holds."""
+
+    async def scenario() -> tuple[HTTPException, bool, Swept, DraftRecord | None]:
+        async with household_in(tmp_path) as state:
+            made = await plan_evening(graph_for(state, fixture_week_plan()), PLAN_DATE, state)
+            await detached_done(state)
+            assert made.draft_id is not None
+            thread = run_config(made.thread_id)
+            graph = graph_for(state)
+            held = {"decision": "approved", "reason": "fine"}
+            await graph.aupdate_state(thread, held, as_node="compose")
+            (task,) = (await graph.aget_state(thread)).tasks
+            saved = await state.checkpointer.aget_tuple(thread)
+            assert saved is not None
+            await state.checkpointer.aput_writes(
+                saved.config, [(INTERRUPT_CHANNEL, ()), ("decision", "approved")], task.id
+            )
+            with pytest.raises(HTTPException) as refused:
+                await decide_draft(
+                    state,
+                    lambda: graph_for(state),
+                    made.draft_id,
+                    DecisionRequest(approved=True, reason="fine"),
+                )
+            await detached_done(state)
+            kept = made.thread_id in await thread_ids(state)
+            swept = await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return refused.value, kept, swept, state.drafts.get(made.draft_id)
+
+    refused, kept, swept, record = asyncio.run(scenario())
+    assert refused.status_code == 409
+    assert CANT_FINISH in str(refused.detail)
+    assert kept
+    assert record is not None
+    assert swept.finished == (record.draft_id,)
+    assert (record.decision, record.reason) == ("approved", "fine")
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "nothing",
+        "a step is next",
+        "another task",
+        "a task with an error",
+        "two tasks",
+        "no task",
+        "another record",
+        "another checkpoint",
+    ],
+)
+def test_a_press_takes_the_review_only_from_the_finished_gate_and_its_own_draft(
+    changed: str, tmp_path: pathlib.Path
+) -> None:
+    """The review the gate saved is there for a press as the thread's snapshot stands. With
+    a step next, a task of another name, a task with an error, two tasks, none, a record of
+    another draft, or a snapshot of another checkpoint than the one the review is read
+    from, the same held review is not a press's to finish."""
+
+    async def scenario() -> tuple[Decision, str | None] | None:
+        async with household_in(tmp_path) as state:
+            draft_id, thread_id = await a_review_only_the_gate_saved(
+                state, DecisionRequest(approved=True, reason="fine")
+            )
+            record = state.drafts.get(draft_id)
+            assert record is not None
+            snapshot = await graph_for(state).aget_state(run_config(thread_id))
+            (task,) = snapshot.tasks
+            if changed == "a step is next":
+                snapshot = snapshot._replace(next=("record_decision",))
+            elif changed == "another task":
+                snapshot = snapshot._replace(tasks=(task._replace(name="compose"),))
+            elif changed == "a task with an error":
+                snapshot = snapshot._replace(tasks=(task._replace(error=RuntimeError("stopped")),))
+            elif changed == "two tasks":
+                snapshot = snapshot._replace(tasks=(task, task))
+            elif changed == "no task":
+                snapshot = snapshot._replace(tasks=())
+            elif changed == "another record":
+                record = record.model_copy(update={"draft_id": "draft:another"})
+            elif changed == "another checkpoint":
+                elsewhere = {**snapshot.config["configurable"], "checkpoint_id": "another"}
+                snapshot = snapshot._replace(
+                    config=cast(RunnableConfig, {**snapshot.config, "configurable": elsewhere})
+                )
+            return await review_the_gate_left(state, record, snapshot)
+
+    assert asyncio.run(scenario()) == (("approved", "fine") if changed == "nothing" else None)
+
+
+# ------------------------------ a press sends the gate's review to the table itself
+
+
+THE_FRAMEWORKS_OWN_TASK = "00000000-0000-0000-0000-000000000000"
+"""The task id the framework saves its own pending writes under. A resume of a thread
+applies every write saved under it before any task's."""
+
+OTHER_WORDS = "not what the gate saved"
+"""A reason no review in these cases gives."""
+
+
+async def other_writes_pending(state: ApplicationState, thread_id: str, decision: str) -> None:
+    """Written by hand under the framework's own task of the thread's latest checkpoint: a
+    decision, other words for its reason and a step onward to ``record_decision``."""
+    saved = await state.checkpointer.aget_tuple(run_config(thread_id))
+    assert saved is not None
+    await state.checkpointer.aput_writes(
+        saved.config,
+        [("decision", decision), ("reason", OTHER_WORDS), ONWARD],
+        THE_FRAMEWORKS_OWN_TASK,
+    )
+
+
+def counting_invocations(monkeypatch: pytest.MonkeyPatch, graph: CompiledPlanGraph) -> list[object]:
+    """What ``graph`` is invoked with from here on, one entry each time it is."""
+    invoked: list[object] = []
+    real = graph.ainvoke
+
+    async def ainvoke(given: Any, **keywords: Any) -> Any:  # noqa: ANN401
+        invoked.append(given)
+        return await real(given, **keywords)
+
+    monkeypatch.setattr(graph, "ainvoke", ainvoke)
+    return invoked
+
+
+async def as_saved(
+    state: ApplicationState, thread_id: str
+) -> tuple[str, list[tuple[str, str]]] | None:
+    """The id of the thread's latest checkpoint and the task and channel of each of its
+    pending writes, or ``None`` for a thread the saver does not hold."""
+    saved = await state.checkpointer.aget_tuple(run_config(thread_id))
+    if saved is None:
+        return None
+    writes = [(task, channel) for task, channel, _ in saved.pending_writes or ()]
+    return str(saved.checkpoint["id"]), writes
+
+
+@pytest.mark.parametrize(("approved", "decision", "reason"), REVIEWS)
+def test_a_press_records_the_review_the_gate_saved_and_nothing_else_pending(
+    approved: bool,
+    decision: str,
+    reason: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Beside the review the gate saved, the thread holds the other decision, other words
+    and a step onward, written by hand under the framework's own task, where a resume of
+    the thread would apply them. The reader holds the gate's review, and a press sends
+    exactly that decision and reason to the table, once, without invoking the graph, and
+    clears the thread."""
+    other = "rejected" if approved else "approved"
+
+    async def scenario() -> tuple[
+        tuple[Decision, str | None] | None,
+        tuple[str | None, str | None],
+        list[object],
+        list[tuple[str, str | None]],
+        DraftRecord | None,
+        set[str],
+    ]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=approved, reason=reason)
+            draft_id, thread_id = await a_review_only_the_gate_saved(state, review)
+            await other_writes_pending(state, thread_id, other)
+            held = await held_in(state, thread_id)
+            graph = graph_for(state)
+            invoked = counting_invocations(monkeypatch, graph)
+            sent = counting_decisions(monkeypatch, state)
+            view = await decide_draft(state, lambda: graph, draft_id, review)
+            await detached_done(state)
+            answered = (view.decision, view.reason)
+            record = state.drafts.get(draft_id)
+            return held, answered, invoked, sent, record, await thread_ids(state)
+
+    held, answered, invoked, sent, record, threads = asyncio.run(scenario())
+    assert held == (decision, reason)
+    assert answered == (decision, reason)
+    assert invoked == []
+    assert sent == [(decision, reason)]
+    assert as_recorded(record)[:3] == (decision, reason, status_for(decision))
+    assert threads == set()
+
+
+@pytest.mark.parametrize(("approved", "decision", "reason"), REVIEWS[:2])
+def test_a_press_that_agrees_with_the_other_pending_writes_is_told_what_the_gate_saved(
+    approved: bool,
+    decision: str,
+    reason: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Beside the review the gate saved, the thread holds the other decision and other
+    words, written by hand under the framework's own task. A press with that other decision
+    and those words finishes the gate's review and is told the plan was already decided the
+    gate's way; the table holds the gate's decision and reason, sent once."""
+    other = "rejected" if approved else "approved"
+
+    async def scenario() -> tuple[
+        str, HTTPException, list[tuple[str, str | None]], DraftRecord | None
+    ]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=approved, reason=reason)
+            draft_id, thread_id = await a_review_only_the_gate_saved(state, review)
+            await other_writes_pending(state, thread_id, other)
+            sent = counting_decisions(monkeypatch, state)
+            agreeing = DecisionRequest(approved=not approved, reason=OTHER_WORDS)
+            with pytest.raises(HTTPException) as refused:
+                await decide_draft(state, lambda: graph_for(state), draft_id, agreeing)
+            await detached_done(state)
+            return draft_id, refused.value, sent, state.drafts.get(draft_id)
+
+    draft_id, refused, sent, record = asyncio.run(scenario())
+    assert refused.status_code == 409
+    assert refused.detail == f"draft {draft_id!r} was already {decision}"
+    assert sent == [(decision, reason)]
+    assert as_recorded(record)[:3] == (decision, reason, status_for(decision))
+
+
+def refused_by_the_store(*_: object, **__: object) -> DraftRecord:
+    """A write the drafts file refuses as a busy file does."""
+    msg = "database is locked"
+    raise sqlite3.OperationalError(msg)
+
+
+@pytest.mark.parametrize("then", ["a press", "the sweep"])
+def test_a_write_the_store_refuses_leaves_the_review_and_its_thread_as_they_were(
+    then: str, tmp_path: pathlib.Path
+) -> None:
+    """A press's write of the review the gate saved is refused by the store, as a busy file
+    refuses it. The press raises that refusal, traced as a held decision whose write began
+    and did not return, with the row read again and still waiting. The thread is as it was,
+    its checkpoint and its pending writes unchanged, and the next press or sweep records
+    the review."""
+
+    async def scenario() -> tuple[object, object, DecisionTrace, DraftRecord | None]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=False, reason="two sittings")
+            draft_id, thread_id = await a_review_only_the_gate_saved(state, review)
+            before = await as_saved(state, thread_id)
+            trace = DecisionTrace()
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(state.drafts, "record_decision", refused_by_the_store)
+                with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                    await decide_draft(
+                        state, lambda: graph_for(state), draft_id, review, trace=trace
+                    )
+            after = await as_saved(state, thread_id)
+            if then == "a press":
+                await decide_draft(state, lambda: graph_for(state), draft_id, review)
+            else:
+                await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return before, after, trace, state.drafts.get(draft_id)
+
+    before, after, trace, record = asyncio.run(scenario())
+    assert before is not None
+    assert after == before
+    assert (trace.began, trace.resumed, trace.returned, trace.read_back) == (
+        True,
+        True,
+        False,
+        False,
+    )
+    assert trace.unread is None
+    assert trace.record is not None
+    assert trace.record.waiting
+    assert as_recorded(record)[:3] == ("rejected", "two sittings", DraftStatus.DRAFT)
+
+
+def test_a_write_that_returns_with_no_decision_recorded_keeps_the_review_and_its_thread(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A press's write of the review the gate saved returns and the row read back still
+    waits, as a store that wrote nothing would leave it. The press is the server's error,
+    in words that say the review was sent, and the thread is kept as it was, its checkpoint
+    and its pending writes unchanged, so the next press records the review."""
+
+    async def scenario() -> tuple[str, HTTPException, object, object, DraftRecord | None]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=True, reason="fine")
+            draft_id, thread_id = await a_review_only_the_gate_saved(state, review)
+            before = await as_saved(state, thread_id)
+            waiting = state.drafts.get(draft_id)
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(state.drafts, "record_decision", lambda *_, **__: waiting)
+                with pytest.raises(HTTPException) as failed:
+                    await decide_draft(state, lambda: graph_for(state), draft_id, review)
+                await detached_done(state)
+            after = await as_saved(state, thread_id)
+            await decide_draft(state, lambda: graph_for(state), draft_id, review)
+            return draft_id, failed.value, before, after, state.drafts.get(draft_id)
+
+    draft_id, failed, before, after, record = asyncio.run(scenario())
+    assert failed.status_code == 500
+    assert failed.detail == (
+        f"the review the gate saved was sent but no decision was recorded for {draft_id!r}"
+    )
+    assert before is not None
+    assert after == before
+    assert as_recorded(record)[:3] == ("approved", "fine", DraftStatus.APPROVED_FOR_MANUAL_SEND)
+
+
+async def refusing_to_clear(thread_id: str) -> None:
+    """A saved-state file that refuses to delete a thread, as a busy file does."""
+    msg = f"database is locked, {thread_id} kept"
+    raise sqlite3.OperationalError(msg)
+
+
+def test_a_thread_that_cant_be_cleared_once_its_review_is_recorded_changes_no_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """A press records the review the gate saved, and the thread can't be cleared then: the
+    answer is the decision recorded, and the thread is kept as it was, its checkpoint and
+    its pending writes unchanged. The store's clock moves on. The same press again and the
+    other button are each told the plan was already approved, nothing more is sent to the
+    table, the sweep finishes nothing and clears the thread, and the decision, the reason
+    and the time it was recorded stay as they were."""
+
+    async def scenario() -> tuple[
+        str,
+        tuple[str | None, str | None],
+        tuple[object, object],
+        DraftRecord | None,
+        list[tuple[int, str]],
+        Swept,
+        list[tuple[str, str | None]],
+        DraftRecord | None,
+        set[str],
+    ]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=True, reason="fine")
+            draft_id, thread_id = await a_review_only_the_gate_saved(state, review)
+            before = await as_saved(state, thread_id)
+            sent = counting_decisions(monkeypatch, state)
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(state.checkpointer, "adelete_thread", refusing_to_clear)
+                view = await decide_draft(state, lambda: graph_for(state), draft_id, review)
+                await detached_done(state)
+            kept = await as_saved(state, thread_id)
+            recorded = state.drafts.get(draft_id)
+            monkeypatch.setattr(state.drafts, "_clock", fixture_clock(LATER))
+            told: list[tuple[int, str]] = []
+            for again in (review, DecisionRequest(approved=False, reason="other words")):
+                with pytest.raises(HTTPException) as refused:
+                    await decide_draft(state, lambda: graph_for(state), draft_id, again)
+                told.append((refused.value.status_code, str(refused.value.detail)))
+            swept = await sweep_saved_state(state.checkpointer, state.drafts, state.clock)
+            return (
+                draft_id,
+                (view.decision, view.reason),
+                (before, kept),
+                recorded,
+                told,
+                swept,
+                sent,
+                state.drafts.get(draft_id),
+                await thread_ids(state),
+            )
+
+    draft_id, answered, (before, kept), recorded, told, swept, sent, record, threads = asyncio.run(
+        scenario()
+    )
+    assert answered == ("approved", "fine")
+    assert before is not None
+    assert kept == before
+    assert told == [(409, f"draft {draft_id!r} was already approved")] * 2
+    assert swept.finished == ()
+    assert sent == [("approved", "fine")]
+    assert recorded is not None
+    assert recorded.decided_at is not None
+    assert recorded.decided_at < LATER
+    assert as_recorded(record) == as_recorded(recorded)
+    assert as_recorded(record)[:3] == ("approved", "fine", DraftStatus.APPROVED_FOR_MANUAL_SEND)
+    assert threads == set()
+
+
+def test_a_press_canceled_during_its_write_of_the_review_waits_for_it_under_the_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """A press is canceled while its write of the review the gate saved is on its worker
+    thread. It goes on holding the decision lock until the write has returned, then ends as
+    canceled with the lock free; the write landed, so the row holds the review."""
+
+    async def scenario() -> tuple[bool, bool, bool, DraftRecord | None]:
+        async with household_in(tmp_path) as state:
+            review = DecisionRequest(approved=True, reason="fine")
+            draft_id, _ = await a_review_only_the_gate_saved(state, review)
+            started, release = threading.Event(), threading.Event()
+            real = state.drafts.record_decision
+
+            def slow(
+                draft: str, *, status: DraftStatus, decision: Decision, reason: str | None
+            ) -> DraftRecord:
+                started.set()
+                assert release.wait(HANG_LIMIT_SECONDS)
+                return real(draft, status=status, decision=decision, reason=reason)
+
+            monkeypatch.setattr(state.drafts, "record_decision", slow)
+            press = asyncio.ensure_future(
+                decide_draft(state, lambda: graph_for(state), draft_id, review)
+            )
+            assert await asyncio.to_thread(started.wait, HANG_LIMIT_SECONDS)
+            press.cancel()
+            await asyncio.sleep(0.05)
+            waiting = state.decision_lock.locked() and not press.done()
+            release.set()
+            await asyncio.wait([press])
+            await detached_done(state)
+            canceled, locked = ended_canceled(press), state.decision_lock.locked()
+            return waiting, canceled, locked, state.drafts.get(draft_id)
+
+    waiting, canceled, still_locked, record = asyncio.run(scenario())
+    assert waiting
+    assert canceled
+    assert not still_locked
+    assert as_recorded(record)[:3] == ("approved", "fine", DraftStatus.APPROVED_FOR_MANUAL_SEND)
+
+
+SAVED_TWICE: dict[str, str | None] = {
+    "two decisions": "decision",
+    "two drafts": "draft",
+    "two reasons": "reason",
+    "two steps onward": None,
+}
+"""The kinds of pending writes that hold one write twice, and the key the framework names
+when it refuses to assemble such a thread's state; none for the kind it assembles."""
+
+
+@pytest.mark.parametrize("evidence", list(SAVED_TWICE))
+def test_a_press_on_a_write_saved_twice_fails_at_its_first_read_or_is_refused_at_its_check(
+    evidence: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """A control of how a press already answers, with the recovery of a saved review or
+    without it. The task paused at the gate holds one write twice, placed by hand, and the
+    reader holds no review. With a decision, a reason or a draft twice, the framework
+    refuses to assemble the thread's state at the press's first read, naming that key; the
+    press never reaches its check of the thread and raises that error. With a step onward
+    twice the read succeeds, the check is reached once, and the press is refused with the
+    words for a saved review step nothing can finish. Each time nothing is sent to the
+    table, the row still waits, the thread keeps its checkpoint and its pending writes, and
+    the decision lock is free afterwards."""
+    key = SAVED_TWICE[evidence]
+
+    async def scenario() -> tuple[
+        tuple[Decision, str | None] | None,
+        BaseException,
+        list[str],
+        list[str],
+        list[tuple[str, str | None]],
+        DraftRecord | None,
+        tuple[object, object],
+        bool,
+    ]:
+        async with household_in(tmp_path) as state:
+            draft_id, thread_id = await paused_with(state, PENDING[evidence][0])
+            before = await as_saved(state, thread_id)
+            held = await held_in(state, thread_id)
+            graph = graph_for(state)
+            read, check = graph.aget_state, parent_routes.review_the_gate_left
+            reads: list[str] = []
+            checks: list[str] = []
+
+            async def reading(config: RunnableConfig, **keywords: Any) -> StateSnapshot:  # noqa: ANN401
+                try:
+                    snapshot = await read(config, **keywords)
+                except InvalidUpdateError:
+                    reads.append("refused by the framework")
+                    raise
+                reads.append("assembled")
+                return snapshot
+
+            async def checking(
+                state: ApplicationState, record: DraftRecord, snapshot: StateSnapshot
+            ) -> tuple[Decision, str | None] | None:
+                checks.append(record.draft_id)
+                return await check(state, record, snapshot)
+
+            monkeypatch.setattr(graph, "aget_state", reading)
+            monkeypatch.setattr(parent_routes, "review_the_gate_left", checking)
+            sent = counting_decisions(monkeypatch, state)
+            with pytest.raises((HTTPException, InvalidUpdateError)) as failed:
+                await decide_draft(
+                    state, lambda: graph, draft_id, DecisionRequest(approved=True, reason="fine")
+                )
+            await detached_done(state)
+            return (
+                held,
+                failed.value,
+                reads,
+                [draft for draft in checks if draft == draft_id],
+                sent,
+                state.drafts.get(draft_id),
+                (before, await as_saved(state, thread_id)),
+                state.decision_lock.locked(),
+            )
+
+    held, failed, reads, checks, sent, record, (before, after), locked = asyncio.run(scenario())
+    assert held is None
+    if key is None:
+        assert reads == ["assembled"]
+        assert len(checks) == 1
+        assert isinstance(failed, HTTPException)
+        assert failed.status_code == 409
+        assert CANT_FINISH in str(failed.detail)
+    else:
+        assert reads == ["refused by the framework"]
+        assert checks == []
+        assert isinstance(failed, InvalidUpdateError)
+        assert f"At key '{key}': Can receive only one value per step" in str(failed)
+    assert sent == []
+    assert record is not None
+    assert record.waiting
+    assert before is not None
+    assert after == before
+    assert not locked

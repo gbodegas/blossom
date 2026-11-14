@@ -2066,7 +2066,25 @@ past the gate with the decision it holds; the next
 review of that draft, the next run for its evening, or the next sweep finishes
 the record with that decision rather than taking a new one, whatever the
 request or the evening's signal says by then, and a request that disagrees is
-told what stood. Such a draft is never expired away. Tidying a thread after a
+told what stood. The same holds when the save of the checkpoint after the gate
+fails: the gate's task has saved the decision, its reason and the draft as
+pending writes of the checkpoint it paused on, and they are read as the review
+the thread holds only when that one task's writes are just what a finished gate
+leaves: one approved or rejected decision, one reason, text or none, the draft
+the checkpoint carries, changed only in the status that decision gives it, and
+its one step onward to `record_decision`. A press finishes such a review only from the
+checkpoint its own read of the thread describes, and sends the decision and
+reason it read to the table itself, as the sweep does, without resuming the
+thread, so what is recorded is what was read. A draft whose
+thread holds a review is never expired away. Pending writes that are anything
+less, anything more or anything else are no review. Where such evidence
+reaches the press's check of the thread, the press is refused there, with the
+same 409 as for a plan whose thread is missing. A decision, a reason or a
+draft saved twice does not reach it: the framework refuses to assemble the
+thread's state at the press's first read of it, before that check, and the
+press fails with the framework's error, not with a refusal. Either way
+nothing is recorded, and the row and the thread stay as they were.
+Tidying a thread after a
 run or a review has its outcome is never what a caller hears about: a thread
 that cannot be cleared is left to the sweep. The saver's only pruning
 primitive deletes a thread whole, and that is the only granularity the rule

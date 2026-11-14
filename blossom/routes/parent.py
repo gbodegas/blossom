@@ -59,10 +59,10 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request, Response, status
 from fastapi.openapi.constants import REF_PREFIX
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from langgraph.types import Command
+from langgraph.types import Command, StateSnapshot
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from blossom.agent.retention import unresumable_threads
+from blossom.agent.retention import draft_id_of, saved_thread, unresumable_threads
 from blossom.agent.runs import (
     DURABILITY,
     RunBudget,
@@ -79,7 +79,7 @@ from blossom.assignment_status import AssignmentStatus, basis_parts, statuses_fo
 from blossom.captures import what_remains
 from blossom.clock import local_now
 from blossom.dependencies import ApplicationState, get_application_state
-from blossom.drafts import DraftStatus
+from blossom.drafts import Decision, DraftStatus
 from blossom.evening import PlanUpdates, Staleness, limit_now, plan_updates, staleness
 from blossom.hand_in import NEEDS_HAND_IN
 from blossom.intake import NOTE_MAX_LENGTH as ENTRY_NOTE_MAX_LENGTH
@@ -859,7 +859,7 @@ DECISION_STORE_FAILURES: Final = (sqlite3.Error, StoreBusy, WriterBusy)
 @dataclass
 class DecisionTrace:
     """How far a decision from the family page went, for its answer when a store fails: whether
-    the graph's write began, whether it resumed the decision the thread held, whether it
+    its write began, whether that write finished a decision the thread held, whether it
     returned and its record was read back, and, after a write that raised, the record as read
     once more, or the kind of failure that left it unread."""
 
@@ -889,6 +889,32 @@ class PlanGoneStale(HTTPException):
         super().__init__(status.HTTP_409_CONFLICT, detail=stale)
 
 
+async def review_the_gate_left(
+    state: ApplicationState, record: DraftRecord, snapshot: StateSnapshot
+) -> tuple[Decision, str | None] | None:
+    """The review the thread's approval gate finished and saved while the checkpoint after
+    the gate was never saved, its decision and its reason, and ``None`` for any other thread.
+
+    A thread with no next step is not enough. The one task left must be the gate, finished
+    without an error; the draft it wrote must be this record's; and the saved thread, read
+    as the sweep reads it (``saved_thread``), must hold a review the gate saved, on the
+    checkpoint this snapshot describes. That reader accepts only a task whose writes are
+    just a finished gate's, and the decision and reason it read are the ones returned.
+    A decision in the checkpoint's own values is not this case and is left as it is.
+    """
+    if snapshot.next != ():
+        return None
+    if [(task.name, task.error) for task in snapshot.tasks] != [("require_human_approval", None)]:
+        return None
+    if draft_id_of(snapshot.values.get("draft")) != record.draft_id:
+        return None
+    saved = await saved_thread(state.checkpointer, record.thread_id)
+    described = snapshot.config.get("configurable", {}).get("checkpoint_id")
+    if saved is None or not saved.gate_saved or saved.checkpoint_id != described:
+        return None
+    return saved.held
+
+
 async def decide_draft(
     state: ApplicationState,
     build: PlanGraphBuilder,
@@ -897,7 +923,7 @@ async def decide_draft(
     *,
     trace: DecisionTrace | None = None,
 ) -> DecisionView:
-    """The decision, from the table check to the resumed thread, under one lock.
+    """The decision, from the table check to its write, under one lock.
 
     The table is read first, so an unknown, already decided or unpublished draft
     is refused without a graph and therefore without a key. The graph is built
@@ -909,15 +935,20 @@ async def decide_draft(
     second process. Every read of the record runs on a worker thread.
 
     A thread past the gate with its record unwritten is a review that reached
-    the thread and then failed to land in the table. It is finished with the
+    the thread and then failed to land in the table. So is a thread whose gate
+    saved its review while the checkpoint after the gate was never saved
+    (``review_the_gate_left``). Either is finished with the
     decision the thread holds rather than given a new one, whatever the request
     says and whatever the evening's signal says now, since the review was
     checked against the evening when it was given; a request that disagrees
-    with what stood is told so.
+    with what stood is told so. The first is finished by resuming the thread.
+    The second is not resumed: the decision and reason read from the gate's
+    writes are sent to the table from here, as the sweep sends them, so what is
+    recorded is what was read.
 
     ``trace``, which only the family page passes, is marked as the decision goes.
-    When the graph's write raises a store's failure, the record is read once more
-    for it, once every write the run started has ended and still under the lock,
+    When the decision's write raises a store's failure, the record is read once more
+    for it, once every write the press started has ended and still under the lock,
     and the failure is then raised as it was. Without one, nothing more is read.
     """
     async with state.decision_lock:
@@ -941,6 +972,7 @@ async def decide_draft(
         config = run_config(record.thread_id, callbacks=[state.tracer])
         snapshot = await graph.aget_state(config)
         resume: Command[Any] | None
+        held: tuple[Decision, str | None] | None = None
         if snapshot.next == ("require_human_approval",):
             stale = await read_for_the_decision(partial(stale_reason, state, record))
             if request.approved and stale is not None:
@@ -949,10 +981,13 @@ async def decide_draft(
         elif snapshot.next == ("record_decision",):
             resume = None
         else:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                detail=unresumable(record.plan_date, state.clock.today()),
-            )
+            held = await review_the_gate_left(state, record, snapshot)
+            if held is None:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    detail=unresumable(record.plan_date, state.clock.today()),
+                )
+            resume = None
         try:
             ensure_current_version(snapshot)
         except StaleGraphVersion as error:
@@ -963,7 +998,24 @@ async def decide_draft(
         if trace is not None:
             trace.began, trace.resumed = True, resume is None
         try:
-            await awaited_to_the_end(graph.ainvoke(resume, config=config, durability=DURABILITY))
+            if held is None:
+                await awaited_to_the_end(
+                    graph.ainvoke(resume, config=config, durability=DURABILITY)
+                )
+            else:
+                decision, reason = held
+                approved = decision == "approved"
+                await worker_to_the_end(
+                    partial(
+                        state.drafts.record_decision,
+                        draft_id,
+                        status=DraftStatus.APPROVED_FOR_MANUAL_SEND
+                        if approved
+                        else DraftStatus.DRAFT,
+                        decision=decision,
+                        reason=reason,
+                    )
+                )
         except (AlreadyDecided, NotPublished) as error:
             # The review reached the thread, so the gate is passed and the
             # thread cannot pause again, and the table refused because the
@@ -984,10 +1036,13 @@ async def decide_draft(
         decided = await read_for_the_decision(partial(state.drafts.get, draft_id))
         if trace is not None:
             trace.read_back = True
-        # The decision is in the table; the loop is over and its state is cleared.
-        await tidy_thread(record.thread_id, state)
+        if held is None or (decided is not None and not decided.waiting):
+            # The decision is in the table; the loop is over and its state is cleared. A
+            # review the gate saved is kept while the row read back shows no decision.
+            await tidy_thread(record.thread_id, state)
     if decided is None or decided.waiting:
-        msg = f"the run resumed but no decision was recorded for {draft_id!r}"
+        did = "the run resumed" if held is None else "the review the gate saved was sent"
+        msg = f"{did} but no decision was recorded for {draft_id!r}"
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
     if resume is None and (
         (decided.decision == "approved") != request.approved or decided.reason != request.reason
@@ -2865,14 +2920,14 @@ def decision_store_answer(
 ) -> HTMLResponse:
     """A decision whose store failed, answered by how far it went.
 
-    Before the graph's write began, nothing can have been recorded: the record couldn't be
+    Before the decision's write began, nothing can have been recorded: the record couldn't be
     read in time when the failure was busy, and the household's records couldn't be read
     otherwise, 503, on the family page tried once. After the write returned, its decision is
     recorded. After it raised, only the record read once more can show a decision recorded,
-    as this press's when the press resumed nothing and its choice and words are the ones
-    recorded. These are said on the stand-in, with nothing more read: a decision recorded,
-    503, or that it can't be told, 500. The note is kept as typed unless it is known to be
-    stored. One warning names the failure's kind."""
+    as this press's when it finished no decision the thread held and its choice and words
+    are the ones recorded. These are said on the stand-in, with nothing more read: a
+    decision recorded, 503, or that it can't be told, 500. The note is kept as typed unless
+    it is known to be stored. One warning names the failure's kind."""
     kind = type(error).__name__
     if not trace.began:
         logger.warning("a decision's record could not be read: %s", kind)
