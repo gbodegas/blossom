@@ -2077,8 +2077,13 @@ checkpoint its own read of the thread describes, and sends the decision and
 reason it read to the table itself, as the sweep does, without resuming the
 thread, so what is recorded is what was read. A draft whose
 thread holds a review is never expired away. Pending writes that are anything
-less, anything more or anything else are no review, and a decision on such a
-plan answers the same 409 as one whose thread is missing.
+less, anything more or anything else are no review. Where such evidence
+reaches the press's check of the thread, the press is refused there, with the
+same 409 as for a plan whose thread is missing. A decision, a reason or a
+draft saved twice does not reach it: the framework refuses to assemble the
+thread's state at the press's first read of it, before that check, and the
+press fails with the framework's error, not with a refusal. Either way
+nothing is recorded, and the row and the thread stay as they were.
 Tidying a thread after a
 run or a review has its outcome is never what a caller hears about: a thread
 that cannot be cleared is left to the sweep. The saver's only pruning
