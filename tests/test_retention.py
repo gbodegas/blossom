@@ -42,6 +42,7 @@ from blossom.agent.retention import (
     SavedThread,
     Swept,
     finish_held_reviews,
+    review_the_gate_saved,
     saved_thread,
     sweep_saved_state,
 )
@@ -3737,6 +3738,14 @@ PENDING: dict[str, tuple[Callable[[Draft], list[tuple[str, object]]], object]] =
     "a reason that is not text": (lambda draft: approval(draft, reason=7), None),
     "a decision that is neither": (lambda draft: approval(draft, decision="expired"), None),
     "a decision that is not text": (lambda draft: approval(draft, decision=True), None),
+    "a decision that is neither, its draft unmarked": (
+        lambda draft: approval(draft, decision="expired", draft=draft),
+        None,
+    ),
+    "a decision that is not text, its draft unmarked": (
+        lambda draft: approval(draft, decision=False, draft=draft),
+        None,
+    ),
     "no decision": (lambda draft: approval(draft, decision=...), None),
     "no draft": (lambda draft: approval(draft, draft=...), None),
     "another draft": (lambda draft: approval(draft, draft=marked(another(draft))), None),
@@ -3813,19 +3822,29 @@ def test_the_reader_holds_a_review_only_when_the_paused_task_saved_just_what_a_g
 
 
 @pytest.mark.parametrize(
-    "where", ["all on another task", "split between two tasks", "only the step onward elsewhere"]
+    "where",
+    [
+        "all on another task",
+        "all on another task with a pause of its own",
+        "split between two tasks",
+        "only the step onward elsewhere",
+    ],
 )
 def test_the_reader_never_puts_the_writes_of_different_tasks_together(
     where: str, tmp_path: pathlib.Path
 ) -> None:
     """A decision, a reason, a draft and a step onward that the task paused at the gate
-    didn't save itself, whether another task holds them all or the two tasks hold them
-    between them, are no review."""
+    didn't save itself, whether another task holds them all, with a pause of its own or
+    without, or the two tasks hold them between them, are no review."""
 
     async def scenario() -> tuple[Decision, str | None] | None:
         async with household_in(tmp_path) as state:
             if where == "all on another task":
                 _, thread_id = await paused_with(state, lambda _: [], approval)
+            elif where == "all on another task with a pause of its own":
+                _, thread_id = await paused_with(
+                    state, lambda _: [], lambda draft: [(INTERRUPT_CHANNEL, ()), *approval(draft)]
+                )
             elif where == "split between two tasks":
                 _, thread_id = await paused_with(
                     state,
@@ -3866,9 +3885,9 @@ def test_a_decision_in_the_checkpoint_itself_comes_before_any_pending_write(
             assert saved is not None
             values = saved.checkpoint["channel_values"]
             assert values["decision"] == "approved"
-            refusal = PENDING["a refusal and its reason"][0](values["draft"])
+            other = approval(values["draft"], reason="other words")
             await state.checkpointer.aput_writes(
-                saved.config, [(INTERRUPT_CHANNEL, ()), *refusal], "another-task"
+                saved.config, [(INTERRUPT_CHANNEL, ()), *other], "another-task"
             )
             return await saved_thread(state.checkpointer, made.thread_id)
 
@@ -3901,6 +3920,20 @@ def test_a_decision_of_another_kind_in_the_checkpoint_is_no_review_whatever_is_p
     in_the_checkpoint, held = asyncio.run(scenario())
     assert in_the_checkpoint == "expired"
     assert held is None
+
+
+@pytest.mark.parametrize("carried", [None, {"draft_id": "draft:plan:a-thread"}, "a draft"])
+def test_a_checkpoint_whose_draft_is_not_one_holds_no_review(carried: object) -> None:
+    """The checkpoint carries no draft, or something that is not a draft, as a state class of
+    another name comes back: pending writes that are otherwise a whole review hold nothing."""
+    draft = Draft(draft_id="draft:plan:a-thread", body="the plan", created_at=CREATED_LATER)
+    pending = [
+        ("the-paused-task", INTERRUPT_CHANNEL, ()),
+        *(("the-paused-task", channel, value) for channel, value in approval(draft)),
+    ]
+
+    assert review_the_gate_saved(pending, draft) == ("approved", "fine")
+    assert review_the_gate_saved(pending, carried) is None
 
 
 @pytest.mark.parametrize(
