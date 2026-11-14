@@ -898,7 +898,8 @@ async def gate_saved_its_review(
     A thread with no next step is not enough. The one task left must be the gate, finished
     without an error; the draft it wrote must be this record's; and the saved thread must
     hold the review as the sweep reads it (``saved_thread``), which takes the decision, its
-    reason and the draft from that one task's writes.
+    reason and the draft from that one task's writes and needs its step onward among them,
+    so a review held here is one the resumed thread goes on to record.
     """
     if snapshot.next != ():
         return False

@@ -2070,9 +2070,11 @@ told what stood. The same holds when the save of the checkpoint after the gate
 fails: the gate's task has saved the decision, its reason and the draft as
 pending writes of the checkpoint it paused on, and they are read as the review
 the thread holds only when that one task saved all of them, with an approved
-or rejected decision and the draft the checkpoint carries. Anything less is no
-review, and a decision on such a plan answers the same 409 as one whose thread
-is missing. Such a draft is never expired away. Tidying a thread after a
+or rejected decision, the draft the checkpoint carries, its step onward to
+`record_decision` and no error. A draft whose thread holds a review is never
+expired away. Pending writes that are anything less are no review, and a
+decision on such a plan answers the same 409 as one whose thread is missing.
+Tidying a thread after a
 run or a review has its outcome is never what a caller hears about: a thread
 that cannot be cleared is left to the sweep. The saver's only pruning
 primitive deletes a thread whole, and that is the only granularity the rule

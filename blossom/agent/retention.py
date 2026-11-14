@@ -84,6 +84,15 @@ process died after the checkpoint before the gate and before the gate paused
 does not, though its saved state holds the draft."""
 
 
+ERROR_CHANNEL: Final = "__error__"
+"""The framework's name for the pending write a task that failed leaves beside whatever
+it had written."""
+
+TO_RECORD_DECISION: Final = "branch:to:record_decision"
+"""The framework's name for the pending write a finished gate leaves for the step after
+it, the one that records the decision."""
+
+
 @dataclass(frozen=True)
 class SavedThread:
     """What a thread's latest saved state says about its run, as much as the sweep needs."""
@@ -116,10 +125,12 @@ def review_the_gate_saved(
     thread whose checkpoint after the gate was never saved.
 
     The gate's task is the one whose pending writes hold its pause. It holds a review only
-    when that same task also saved exactly one decision, approved or rejected, exactly one
-    draft, the one the checkpoint carries, and at most one reason, kept when it is text.
-    The writes of different tasks are never read together, and anything missing, repeated
-    or of another value is no review, so nothing here reads as an approval by default.
+    when that same task finished: it saved its step onward to ``record_decision``, once, and
+    no error. With those it must have saved exactly one decision, approved or rejected,
+    exactly one draft, the one the checkpoint carries, and at most one reason, kept when it
+    is text. The writes of different tasks are never read together, and anything missing,
+    repeated or of another value is no review, so nothing here reads as an approval by
+    default.
     """
     by_task: dict[str, list[tuple[str, Any]]] = {}
     for task_id, channel, value in pending:
@@ -132,6 +143,9 @@ def review_the_gate_saved(
     if len(paused) != 1:
         return None
     (writes,) = paused
+    channels = [channel for channel, _ in writes]
+    if ERROR_CHANNEL in channels or channels.count(TO_RECORD_DECISION) != 1:
+        return None
     decisions = [value for channel, value in writes if channel == "decision"]
     drafts = [value for channel, value in writes if channel == "draft"]
     reasons = [value for channel, value in writes if channel == "reason"]
