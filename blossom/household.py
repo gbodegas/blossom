@@ -494,16 +494,18 @@ def from_this_origin(request: Request) -> bool:
 
 
 def way_back(path: str, query: bytes) -> str:
-    """The address a sign-in returns to: a path as the server decoded it and a query as the
-    request sent it, made into an address that asks for that same path and query.
+    """The address a sign-in returns to, made from a path as the server decoded it and a
+    query as the request sent it, so that a client sending the address as it is written asks
+    for that same path and query.
 
     In a decoded path, three characters would change what the address asks for: a percent
     sign would begin an escape, a question mark would begin the query, and a number sign
     would end the address. Each is escaped again, the percent sign first, so an id that
     holds one is still that id. Nothing else in the path is touched: with none of the three
-    the path is used as it is, and a path the sign-in refuses as a destination is still
-    refused. The query keeps its spelling, its order and its repeated fields
-    (``asked_address``).
+    the path is used as it is, a path the sign-in refuses as a destination is still refused,
+    and dot segments stay where they are, for a browser to read its own way. The query is
+    the request's (``asked_address``): what a browser sends is kept as it is, in its order
+    and with its repeated fields, and a byte a browser would have escaped is escaped.
     """
     again = path.replace("%", "%25").replace("?", "%3F").replace("#", "%23")
     return asked_address(again, query)

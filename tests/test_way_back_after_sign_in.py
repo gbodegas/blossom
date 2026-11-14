@@ -52,7 +52,8 @@ OVER_A_SOCKET = {
     "a percent sign alone": ("100%25", "100%"),
 }
 """Ids asked for over a real server, which decodes a path once. The tests' client decodes a
-path twice, so the text of an escape inside an id is only told apart here."""
+path twice, so the text of an escape inside an id is only told apart here. A percent sign
+alone is a control: no escape follows it, so it reads the same however often it is decoded."""
 
 QUERY = "choice=one&choice=two&blank=&b=2&a=1&note=a%20b+c%26d"
 """A query with a repeated field, a blank one, fields out of alphabetical order and escapes
@@ -157,6 +158,7 @@ ADDRESSES = {
     "a percent sign no escape follows": ("/a/100%zz", b"", "/a/100%25zz"),
     "all three": ("/a/50%?#", b"", "/a/50%25%3F%23"),
     "a slash, a space and colons": ("/a/unit/3 b:c", b"", "/a/unit/3 b:c"),
+    "dot segments, left for a browser to read": ("/a/unit/../3", b"", "/a/unit/../3"),
     "a backslash, left for the sign-in to refuse": ("/a/unit\\part", b"", "/a/unit\\part"),
     "a line break, left for the sign-in to refuse": ("/a/unit\npart", b"", "/a/unit\npart"),
     "a number sign in a query as sent": ("/a/unit", b"x=1#y", "/a/unit?x=1%23y"),
@@ -168,7 +170,8 @@ ADDRESSES = {
 def test_the_way_back_escapes_again_only_what_would_change_the_address(case: str) -> None:
     """A percent sign, a question mark and a number sign in a decoded path are escaped again,
     the percent sign first, so the text of an escape inside an id is not read as one. The
-    rest of the path is as it was, and the query keeps its spelling and order."""
+    rest of the path is as it was. The query is kept as a browser sends one, in its order;
+    a byte a browser would have escaped, a number sign among them, is escaped."""
     path, query, address = ADDRESSES[case]
 
     assert way_back(path, query) == address
@@ -215,8 +218,9 @@ def test_over_a_real_server_the_sign_in_returns_to_the_same_id_and_query(
     case: str, tmp_path: pathlib.Path
 ) -> None:
     """The same conversation over a loopback socket, with a server that decodes a path once:
-    the page asked for, the sign-in page, the sign-in, and the address it sends to. What the
-    page receives after the sign-in is the id and the query first asked for."""
+    the page asked for, the sign-in page, the sign-in, and the address it sends to, asked
+    for as a browser asks, which sends nothing from a number sign on. What the page receives
+    after the sign-in is the id and the query first asked for."""
     sent, item = OVER_A_SOCKET[case]
     asked: list[tuple[str, str]] = []
     with a_household(tmp_path, asked) as client, serving(client) as port:
@@ -226,7 +230,8 @@ def test_over_a_real_server_the_sign_in_returns_to_the_same_id_and_query(
             port, "POST", "/sign-in", form={"passphrase": HERS, **way_back_on(sign_in.text)}
         )
         before = list(asked)
-        back = over_a_socket(port, "GET", came_in.location, cookie=came_in.cookie)
+        as_a_browser_asks = came_in.location.partition("#")[0]
+        back = over_a_socket(port, "GET", as_a_browser_asks, cookie=came_in.cookie)
 
     assert (first.status, sign_in.status, came_in.status) == (303, 200, 303)
     assert came_in.cookie.startswith(f"{COOKIE}=")
