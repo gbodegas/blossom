@@ -476,7 +476,8 @@ appends, with the writer reserved, so two presses of one Done, together or one
 after the other, find one new save and one already saved. A save on an
 assignment's details is met the same way, through a landing of its own and a
 `blossom-done-` cookie for the details path, which holds that mark and no card.
-Either page is sent with `Cache-Control: no-store`. A browser may still keep it
+Either page is sent with `Cache-Control: no-store`, as every answer but a
+static file is, with the sign-in on or off. A browser may still keep it
 in its back/forward cache, and Edge does, signed in or not; `blossom.js` then
 retires the petal on `pageshow` with `persisted`, as it does on a page shown
 again from a kept copy: the petal holds still, its words leave the

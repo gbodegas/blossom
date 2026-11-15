@@ -527,11 +527,15 @@ class HouseholdGate(BaseHTTPMiddleware):
     and from there to the person's home, since a sign-in cannot send the form
     again; a JSON call is answered 401. A signed-in student asking for a
     parent's page is told the page is not hers, 403, and offered her own.
+
     Every answer the application makes but a static file is marked not to be
-    stored: pages, calls, the sign-in and its redirects, and the gate's own
-    refusals, so a shared browser or anything on the way keeps no copy to show
-    after a sign-out. The server's bare 500 for an error no page catches is
-    made outside the gate and carries no mark.
+    stored, whether the sign-in is on or off: pages, calls, redirects, the
+    sign-in and its redirects, and every refusal, the gate's own included. The
+    mark is the ``Cache-Control: no-store`` header and no more than that: it
+    asks a browser, and anything on the way, to keep no copy. It does not make
+    a browser ask again on Back or Forward, and it removes no copy already
+    kept. The server's bare 500 for an error no page catches is made outside
+    the gate and carries no mark.
 
     Before any of that, and whether or not the sign-in is on, a request that
     would change something must come from this server's own pages: a page on
@@ -553,11 +557,12 @@ class HouseholdGate(BaseHTTPMiddleware):
             return PlainTextResponse(
                 ELSEWHERE, status_code=403, headers={"Cache-Control": "no-store"}
             )
-        if not self.settings.household_sign_in:
-            return await call_next(request)
         if request.url.path.startswith(STATIC_PREFIX):
             return await call_next(request)
-        response = await self.answer(request, call_next)
+        if self.settings.household_sign_in:
+            response = await self.answer(request, call_next)
+        else:
+            response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         return response
 
