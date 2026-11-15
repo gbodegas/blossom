@@ -2632,12 +2632,15 @@ it, none where the save logs nothing."""
 
 
 def saved_with_her_name_failing(
-    house: House, caplog: pytest.LogCaptureFixture, read: Callable[[], object]
+    house: House,
+    caplog: pytest.LogCaptureFixture,
+    read: Callable[[], object],
+    press: SavePress | None = None,
 ) -> tuple[object, list[str], bool, object]:
-    """A save of a review answered "Yes, this is her name" with ``read`` in place of the grade
-    store's read of her name record: what it answered, the save's log lines, whether the file
-    is as it was, and what the same press answers afterward."""
-    press = first_use(press_of(house, her_name_review(house)))
+    """A save of a review answered "Yes, this is her name", or of ``press``, with ``read`` in
+    place of the grade store's read of her name record: what it answered, the save's log
+    lines, whether the file is as it was, and what the same press answers afterward."""
+    press = press or first_use(press_of(house, her_name_review(house)))
     before = world(house)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(house.record, "_her_name_record", read)
@@ -2746,3 +2749,122 @@ def test_a_lost_transaction_stays_failed_though_the_error_behind_it_is_a_busy_on
     assert PRIVATE not in caplog.text
     assert untouched
     assert isinstance(again, Saved)
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    [gradebook.NameFormNotSaved, gradebook.GradeTransactionLost],
+    ids=["a refusal", "a lost transaction"],
+)
+def test_an_error_being_handled_when_the_store_s_error_is_raised_does_not_tell_it(
+    wrapper: type[Exception],
+    house: House,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the error a refusal or a loss was raised from tells it. The test raises the
+    store's error in the name write's place while a busy error is being handled, and not from
+    it: the save answers failed, the refusal with no line and the loss with the line it had."""
+    press = first_use(press_of(house, her_name_review(house)))
+    before = world(house)
+    raised = wrapper("its own fixed sentence")
+
+    def refusing(*_: object) -> None:
+        try:
+            raise sqlite_failure(
+                sqlite3.OperationalError, f"UNIQUE constraint failed: {PRIVATE}", "SQLITE_BUSY"
+            )
+        except sqlite3.Error:
+            raise raised  # noqa: B904
+
+    monkeypatch.setattr(house.record, "add_name_form", refusing)
+    with caplog.at_level(logging.DEBUG, logger="blossom.screenshot_save"):
+        outcome = save(house, press)
+    said = [line.getMessage() for line in caplog.records if line.name == "blossom.screenshot_save"]
+    kept = ["A screenshot save couldn't finish: its own fixed sentence"]
+
+    assert raised.__cause__ is None
+    assert isinstance(raised.__context__, sqlite3.Error)
+    assert outcome == NotSaved("failed")
+    assert said == ([] if wrapper is gradebook.NameFormNotSaved else kept)
+    assert PRIVATE not in caplog.text
+    assert world(house) == before
+
+
+def test_a_lost_transaction_behind_a_transaction_left_open_keeps_the_line_it_had(
+    house: House, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Inside the grade write of her name the test really ends the save's transaction and
+    raises a transaction-left-open error in its store's place. The grade store finds its
+    transaction lost, and the save's line is the store's own sentence, as it was, not a
+    second naming of an error its store logs where it raises."""
+    failure = sqlite_failure(
+        homework_saves.TransactionLeftOpen, f"UNIQUE constraint failed: {PRIVATE}"
+    )
+
+    outcome, said, untouched, again = saved_with_her_name_failing(
+        house,
+        caplog,
+        refused_in_the_grade_write(house.record, failure, ends_the_transaction=True),
+    )
+
+    assert outcome == NotSaved("failed")
+    assert said == [
+        "A screenshot save couldn't finish: "
+        "the transaction holding a grade write was lost: TransactionLeftOpen"
+    ]
+    assert PRIVATE not in caplog.text
+    assert untouched
+    assert isinstance(again, Saved)
+
+
+def test_a_save_that_finds_a_transaction_open_keeps_the_line_it_had(
+    house: House, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A loss with no SQLite error behind it: a transaction really left open on the record's
+    connection before the save. It answers failed, with the line it had."""
+    press = press_of(house, two_row_review(house))
+    house.record._connection.execute("BEGIN")
+    try:
+        with caplog.at_level(logging.DEBUG, logger="blossom.screenshot_save"):
+            outcome = save(house, press)
+    finally:
+        house.record._connection.rollback()
+    said = [line.getMessage() for line in caplog.records if line.name == "blossom.screenshot_save"]
+
+    assert outcome == NotSaved("failed")
+    assert said == [f"A screenshot save couldn't finish: {screenshot_save.TRANSACTION_NOT_ITS_OWN}"]
+    assert isinstance(save(house, press), Saved)
+
+
+@pytest.mark.parametrize("case", ["a busy file", "an input or output error"])
+def test_a_refused_confirmation_of_her_name_again_is_told_the_same_way(
+    case: str, house: House, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The save's other write of her name, after the household's secret was replaced, goes
+    through the same grade write. An error the test raises inside it in SQLite's place is told
+    as the first write's is: a busy file answers busy with no line, an input or output error
+    failed with one line by its kind. Nothing is written, and the same press saves afterward."""
+    kind, name, reason, named = NAME_WRITE_FAILURES[case]
+    failure = sqlite_failure(kind, f"UNIQUE constraint failed: {PRIVATE}", name)
+    first_use_answered_hers(house)
+    again = name_form(OTHER_KEY, "Wren")
+    draft_id = read_review(
+        house, screenshot("Friday 8/21/2026", card("Word Study", "Study list three.", 200))
+    )
+    keep_destinations(
+        house, draft_id, {p.name: {"new": 1} for p in state_of(house, draft_id).pieces}
+    )
+    name_answered(house, draft_id, again, "hers")
+    press = dataclasses.replace(press_of(house, draft_id, "2" * 32), name_key=OTHER_KEY)
+    press = dataclasses.replace(press, names=dict.fromkeys(press.names, ("confirm_again", again)))
+
+    outcome, said, untouched, after = saved_with_her_name_failing(
+        house, caplog, refused_in_the_grade_write(house.record, failure), press
+    )
+
+    assert outcome == NotSaved(reason)
+    assert said == ([] if named is None else [f"A screenshot save's transaction failed: {named}"])
+    assert PRIVATE not in caplog.text
+    assert untouched
+    assert isinstance(after, Saved)

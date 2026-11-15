@@ -2426,8 +2426,8 @@ def test_a_save_whose_write_of_her_name_fails_is_told_by_the_error_behind_it(
     or output error and an error with no code say only that the homework wasn't saved, with
     one line naming the error by its class and its code's name. A transaction really ended
     there is lost, not refused: it says the same though the error is a busy one. Each answers
-    503 with the review and what was typed still in its box, saves nothing, and shows none of
-    the error's words."""
+    503 with the review and what was typed still in its box, writes no acceptance, and shows
+    none of the error's words."""
     name, ends, reason, logged = NAME_WRITE_SAVE_FAILURES[case]
     other = "failed" if reason == "busy" else "busy"
     failure = sqlite_failure(
