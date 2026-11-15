@@ -638,10 +638,14 @@ def test_a_fresh_upload_after_an_uncertain_one_that_committed_makes_a_second_rev
     screenshots sent from Family review's form, which carries a new token, make another
     review when the first write did commit."""
     with here(open_settings(tmp_path)) as browser:
-        uncertain_upload(browser, RED, committed=True)
+        first, _ = uncertain_upload(browser, RED, committed=True)
+        before = drafts(browser)
         fresh = upload(browser, RED)
         count = drafts(browser)
 
+    assert first.status_code == 503
+    assert says(first.text, UPLOAD_UNKNOWN)
+    assert before == 1
     assert fresh.status_code == 303
     assert count == 2
 

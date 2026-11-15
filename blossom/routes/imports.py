@@ -8,9 +8,11 @@ parameter, so that check runs before any byte of a body is read. Every answer is
 no-store, sign-in on or off. Addresses carry a review's id and an image's id, nothing else.
 
 An upload's body is read here, through ``uploads.read_upload``, within every limit; its images
-are prepared before the draft store's one write. A committed upload answers with a redirect to
-its review, so a reload sends nothing again; what that upload refused or found already there is
-said once on the review, from a short signed note kept in a cookie for that review alone.
+are prepared before the draft store's one write. A confirmed successful upload answers with a
+redirect to its review, so a reload sends nothing again; what that upload refused or found
+already there is said once on the review, from a short signed note kept in a cookie for that
+review alone. A write that commits and then raises can answer the page that says its outcome
+isn't known.
 """
 
 import asyncio
@@ -649,7 +651,8 @@ UNKNOWN_SAID: Final = {
 """What each press says when the household's file refused its write for a reason that isn't a
 busy file, so whether its change was made isn't known: the change it would have made, and
 nothing more. A Save whose answers' keep is refused this way says too that no homework was
-saved, since its homework was never begun."""
+saved, since its homework was never begun. A first upload says too how to try again, above
+the form that carries its own token and time (``unwritten_upload``)."""
 COUNTS_UNSHOWN: Final = "This homework was already saved, but its counts can't be shown right now."
 """What a resent save says when its earlier save is on record and its counts can't be read."""
 
