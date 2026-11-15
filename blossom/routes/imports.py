@@ -8,9 +8,11 @@ parameter, so that check runs before any byte of a body is read. Every answer is
 no-store, sign-in on or off. Addresses carry a review's id and an image's id, nothing else.
 
 An upload's body is read here, through ``uploads.read_upload``, within every limit; its images
-are prepared before the draft store's one write. A committed upload answers with a redirect to
-its review, so a reload sends nothing again; what that upload refused or found already there is
-said once on the review, from a short signed note kept in a cookie for that review alone.
+are prepared before the draft store's one write. A confirmed successful upload answers with a
+redirect to its review, so a reload sends nothing again; what that upload refused or found
+already there is said once on the review, from a short signed note kept in a cookie for that
+review alone. A write that commits and then raises can answer the page that says its outcome
+isn't known.
 """
 
 import asyncio
@@ -568,6 +570,37 @@ def unwritten_page(
     return upload_refusal(request, state, error) if upload else store_refusal(request, state, error)
 
 
+TRY_UPLOAD_AGAIN: Final = "To try this upload again, choose the same screenshots below."
+"""What a first upload's page says under its sentence when its outcome isn't known, above the
+form that sends screenshots with that upload's own token."""
+
+
+def unwritten_upload(
+    request: Request, state: ApplicationState, error: Exception, token: str, issued: str
+) -> Response:
+    """The household's file refusing a first upload's write. A busy file wrote nothing, as the
+    route says a busy store. For any other refusal whether the write committed can't be
+    known: the page says so and offers the upload's form once more, with the token and the
+    time the refused upload was sent with, never new ones. Screenshots sent from it go with
+    that token, so the store adds them to the review it names, made by the first write or made
+    now, or refuses them as it refuses any upload. The form is as old as it was. The token
+    names the review and checks no file. Nothing is sent until the files are chosen and the
+    button pressed."""
+    if busy_refusal(error):
+        return upload_refusal(request, state, error)
+    return templates.TemplateResponse(
+        request,
+        "import_said.html",
+        {
+            "said": [UNKNOWN_SAID["upload"]],
+            "again": {"said": TRY_UPLOAD_AGAIN, "token": token, "issued": issued},
+            "marks": marks_of(state),
+            "page": "parent",
+        },
+        status_code=503,
+    )
+
+
 TYPED_LABELS: Final = {
     "course": "Class",
     "title": "Title",
@@ -618,7 +651,8 @@ UNKNOWN_SAID: Final = {
 """What each press says when the household's file refused its write for a reason that isn't a
 busy file, so whether its change was made isn't known: the change it would have made, and
 nothing more. A Save whose answers' keep is refused this way says too that no homework was
-saved, since its homework was never begun."""
+saved, since its homework was never begun. A first upload says too how to try again, above
+the form that carries its own token and time (``unwritten_upload``)."""
 COUNTS_UNSHOWN: Final = "This homework was already saved, but its counts can't be shown right now."
 """What a resent save says when its earlier save is on record and its counts can't be read."""
 
@@ -1447,7 +1481,7 @@ async def first_upload(request: Request, state: State) -> Response:
         return upload_refusal(request, state, error)
     except sqlite3.Error as error:
         noted(error)
-        return unwritten_page(request, state, error, UNKNOWN_SAID["upload"], upload=True)
+        return unwritten_upload(request, state, error, token, fields["issued"])
     if added is None:
         lines = [image_refusal(place + 1, kind) for place, kind in prepared.refused]
         return said_page(request, marks_of(state), NOTHING_ADDED, 422, *lines)
