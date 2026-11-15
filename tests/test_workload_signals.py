@@ -707,6 +707,23 @@ def test_try_again_after_an_unreadable_landing_says_the_removal_once(
     assert REMOVED not in refreshed.text
 
 
+def test_an_unreadable_landing_after_a_removal_is_marked_with_the_sign_in_on_too(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same landing with the sign-in on and her signed in: the page that stands in for
+    her week is marked there as well, as it was before every answer was."""
+    with started(tmp_path, 75) as client:
+        client.post("/student/actions/too-much", data=fresh_signal_fields(client))
+        pressed = client.post(f"/student/actions/take-back/{tonight(client)[0]}")
+        monkeypatch.setattr(student_routes, "student_page", refusing())
+        failed = client.get(pressed.headers["location"])
+
+    assert pressed.status_code == 303
+    assert "landing=" in pressed.headers["location"]
+    assert failed.status_code == 503
+    assert failed.headers["cache-control"] == "no-store"
+
+
 def test_a_press_on_her_page_reaches_the_parents_plan() -> None:
     with browser() as client:
         client.post("/student/actions/too-much", data=fresh_signal_fields(client))

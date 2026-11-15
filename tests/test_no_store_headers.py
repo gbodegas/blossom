@@ -8,6 +8,7 @@ make a browser ask again on Back or Forward, remove a copy a browser already hol
 typed and not sent.
 """
 
+import dataclasses
 import pathlib
 import re
 from collections.abc import Iterator
@@ -39,6 +40,7 @@ from tests.support import (
 
 MODES = ("the sign-in off", "the sign-in on")
 DETAILS = f"/student/assignments/{ESSAY_ID}"
+IMPORTS = "/parent/imports"
 
 
 @contextmanager
@@ -55,25 +57,30 @@ def her_pages(mode: str, tmp_path: pathlib.Path) -> Iterator[TestClient]:
 
 
 @pytest.mark.parametrize("mode", MODES)
-def test_a_page_a_call_a_redirect_and_a_refusal_are_marked_and_a_static_file_is_not(
+def test_a_page_two_calls_a_redirect_and_a_refusal_are_marked_and_a_static_file_is_not(
     mode: str, tmp_path: pathlib.Path
 ) -> None:
     """One answer of each kind the gate lets through: a page that reads her week, a JSON
-    call, a redirect and a refusal of an assignment that isn't on record. Each is marked,
-    with the sign-in on or off. A static file is marked in neither."""
+    call that succeeds and one that is refused, a redirect and a page that refuses an
+    assignment that isn't on record. Each is marked, with the sign-in on or off. A static
+    file is marked in neither."""
     with her_pages(mode, tmp_path) as client:
         page = client.get(HER_PAGE, headers=PAGE_HEADERS)
-        call = client.get("/student/plans/today")
+        call = client.post("/student/help-requests", json={"note": "A synthetic question"})
+        no_plan = client.get("/student/plans/today")
         redirect = client.get("/", headers=PAGE_HEADERS)
         refusal = client.get("/student/assignments/assignment-not-here", headers=PAGE_HEADERS)
         stylesheet = client.get("/static/blossom.css")
 
     assert page.status_code == 200
-    assert call.headers["content-type"].startswith("application/json")
+    assert call.status_code == 201
+    assert no_plan.status_code == 404
+    for json_answer in (call, no_plan):
+        assert json_answer.headers["content-type"].startswith("application/json")
     assert redirect.status_code in (302, 303, 307)
     assert refusal.status_code == 404
     assert stylesheet.status_code == 200
-    for answer in (page, call, redirect, refusal):
+    for answer in (page, call, no_plan, redirect, refusal):
         assert answer.headers["cache-control"] == "no-store"
     assert "cache-control" not in stylesheet.headers
 
@@ -122,15 +129,18 @@ def test_the_details_that_can_t_be_read_are_marked_as_the_details_are(
 
 
 def test_every_route_in_the_table_answers_with_the_mark_with_the_sign_in_off() -> None:
-    """Each route in the application's own table is asked once, with the sign-in off, a
-    synthetic id in each path parameter and nothing in the body, and whatever answers is
-    marked. No route is skipped but the static files' mount.
+    """Each route in the application's own table, screenshot import's routes among them,
+    is asked once, with the sign-in off, a synthetic id in each path parameter and nothing
+    in the body, and whatever answers is marked. No route is skipped but the static files'
+    mount.
 
     This shows the mark doesn't depend on which route answers. It is not a test of each
     route's successful answer: most of these requests are refused for a missing form or an
     id that isn't on record. The pages named in the contract are asked for by name above and
     in the modules that reach them."""
-    settings = fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat())
+    settings = dataclasses.replace(
+        fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat()), screenshot_import=True
+    )
     asked: list[tuple[str, str]] = []
     unmarked: list[tuple[str, str, int]] = []
     left_out: list[str] = []
@@ -155,5 +165,6 @@ def test_every_route_in_the_table_answers_with_the_mark_with_the_sign_in_off() -
 
     assert left_out == ["static"]
     assert len(asked) == len(set(asked))
-    assert len(asked) > 90
+    assert len(asked) > 100
+    assert any(path.startswith(IMPORTS) for _, path in asked)
     assert unmarked == []
