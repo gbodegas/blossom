@@ -2910,7 +2910,8 @@ async def with_typing(
         ):
             unshown_lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
         apart = notes
-        if post.press == "keep" and (after.finished or (newer is not None and newer.finished)):
+        finished = after.finished or (newer is not None and newer.finished)
+        if post.press == "keep" and finished:
             apart = [*apart_past_a_finished_read(pressed), *notes]
             pressed = [line for line in pressed if line not in APART_SAID]
         return await no_form_with_typing(
@@ -2921,6 +2922,7 @@ async def with_typing(
             status,
             notes=apart,
             behind=behind,
+            finished=finished,
             saved_exactly=saved_exactly,
         )
     if rows is not None and carry:
@@ -3031,6 +3033,7 @@ async def no_form_with_typing(
     *,
     notes: Sequence[str] = (),
     behind: bool,
+    finished: bool = False,
     saved_exactly: Collection[tuple[str, str, str]] = (),
 ) -> Response:
     """A press's page with no form: an earlier save's result first (``done``), the press's lines,
@@ -3038,12 +3041,15 @@ async def no_form_with_typing(
     revision isn't its content's (``behind``), every box it typed to copy, a Save's date beside
     carried words among them (``typed_beside_words``), apart from the class, title and
     instructions boxes this request's own save is shown to hold exactly (``saved_exactly``), and
-    the ways back."""
+    the ways back. Where a read behind this page says the review finished (``finished``), closed
+    or not, the notice is said as a page known to have ended says it, with no instruction to
+    check the review or try again, since a finished review takes no press."""
     typed = await typing_by_press(
         request, beside_words=True, as_sent=True, every_press=True, saved_exactly=saved_exactly
     )
+    notice = ENDED_SAID[OUT_OF_DATE] if finished else OUT_OF_DATE
     lines = [
-        shown
+        notice if shown == OUT_OF_DATE else shown
         for line in typing_here(said, typed)
         for shown in UNSHOWN_SAID.get(line, (line,))
         if shown != OUT_OF_DATE or not behind
@@ -3051,7 +3057,7 @@ async def no_form_with_typing(
     kept = list(dict.fromkeys([*apart_lines(lines), *notes]))
     problems = [
         *(line for line in lines if line not in APART_SAID),
-        *([OUT_OF_DATE] if behind else []),
+        *([notice] if behind else []),
     ]
     if done:
         return saved_outcome(
