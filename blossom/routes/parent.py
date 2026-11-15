@@ -1302,14 +1302,32 @@ PROBLEM_FIELDS: Final = frozenset(
 pasted text and the entry's own."""
 
 
+OPENING_LIMIT: Final = 100
+"""The most characters of a refusal's line that take the focus. A browser brings a focused
+element into view by its middle when it is taller than the screen, so a long opening would
+arrive with its first lines above a narrow screen with large text."""
+
+
 def opening_of(said: str) -> tuple[str, str]:
-    """A refusal's line, written as one string, as its first sentence and the rest: cut after
-    the first period a space follows, so a long line still arrives with its opening on the
-    screen. The lines a refused decision, check or reply says are the app's own sentences. A
-    value no button of the page sends, quoted in one, could hold a period and a space, and
-    the opening would end there; the line's words are the same either way."""
-    first, stop, rest = said.partition(". ")
-    return (f"{first}.", rest) if stop else (said, "")
+    """A refusal's line, written as one string, as its opening, which takes the focus, and the
+    rest. The opening is the first sentence, cut after the first period a space follows,
+    when that is within ``OPENING_LIMIT``. A longer one ends at its last colon before the
+    limit, failing that its last semicolon, then its last comma, then its last space, so
+    the opening is short whatever the sentence. The opening, a space and the rest are the
+    line as written. One unbroken run longer than the limit can't be cut and is left whole.
+
+    The lines a refused decision, check or reply says are the app's own sentences. A value
+    no button of the page sends, quoted in one, could hold a period and a space, and the
+    opening would end there; the line's words are the same either way."""
+    first, stop, _ = said.partition(". ")
+    opening = f"{first}." if stop else said
+    if len(opening) > OPENING_LIMIT:
+        head = opening[: OPENING_LIMIT + 1]
+        marks = [head.rfind(mark) for mark in (": ", "; ", ", ")]
+        cut = next((found + 1 for found in marks if found >= 0), head.rfind(" "))
+        if cut > 0:
+            opening = opening[:cut]
+    return opening, said[len(opening) :].removeprefix(" ")
 
 
 def where_shown(
@@ -1529,8 +1547,8 @@ def review_page(
         r.open and r.request_id == help_reply.request_id for r in asked
     )
     # A refusal gives the focus to one place: the field its problem is about, where this
-    # page shows that field and marks it, and the problem line's first sentence everywhere
-    # else, as a plan answer's line gives it to its own.
+    # page shows that field and marks it, and the problem line's opening everywhere else, as
+    # a plan answer's line gives it to its first sentence.
     at_a_field = (
         problem_field in PROBLEM_FIELDS
         or (
