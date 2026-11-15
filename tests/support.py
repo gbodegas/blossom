@@ -25,6 +25,7 @@ import json
 import os
 import pathlib
 import re
+import socket
 import sqlite3
 import sys
 import threading
@@ -43,6 +44,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
+import uvicorn
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from langchain_core.callbacks.manager import CallbackManager
@@ -923,6 +925,38 @@ def signed_in(client: TestClient, passphrase: str) -> None:
     """Sign in on this client with a passphrase that must open the door."""
     came_in = client.post("/sign-in", data={"passphrase": passphrase})
     assert came_in.status_code == 303, came_in.text
+
+
+@contextmanager
+def serving(browser: TestClient) -> Iterator[int]:
+    """The app this client holds, on a free loopback port for this block: the port."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    server = uvicorn.Server(
+        uvicorn.Config(
+            browser.app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            access_log=False,
+            log_config=None,
+            lifespan="off",
+            ws="none",
+            http="h11",
+        )
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(400):
+        if server.started:
+            break
+        sleep(0.05)
+    try:
+        yield port
+    finally:
+        server.should_exit = True
+        thread.join(timeout=30)
 
 
 def as_a_browser_sends(form: Mapping[str, str]) -> dict[str, str]:

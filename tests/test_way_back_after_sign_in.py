@@ -25,8 +25,7 @@ from fastapi.testclient import TestClient
 from blossom.app import create_app
 from blossom.household import COOKIE, home_of, way_back
 from blossom.principals import Principal
-from tests.import_review_cases import serving
-from tests.support import SAME_ORIGIN, fixture_settings
+from tests.support import SAME_ORIGIN, fixture_settings, serving
 
 HERS = "quiet mornings and loud music"
 THEIRS = "the kitchen table at seven"
