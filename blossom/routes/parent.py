@@ -2857,7 +2857,8 @@ async def decide_from_the_page(
     focus whenever the box doesn't. A plan listed under Earlier plans has its fold opened by
     a refusal about it, and no other plan's is. A refusal whose page can't be read keeps its
     status, with the reason as typed, on the family page's stand-in. A store's failure is
-    answered by how far the decision went (``decision_store_answer``), and opens no plan.
+    answered by how far the decision went (``decision_store_answer``), and it opens no plan,
+    nor does a record that couldn't be read in time.
     """
     typed = FamilyKept(reason=reason)
     words = reason.strip()
@@ -2908,6 +2909,9 @@ async def decide_from_the_page(
             )
         if kept is not None and isinstance(error, PlanGoneStale):
             kept = ReasonKept(draft_id, reason, stale=True)
+        # A refusal is about the plan and names it. A record that couldn't be read in time
+        # is the store's failure, 503, and names none.
+        refusal = error.status_code < status.HTTP_500_INTERNAL_SERVER_ERROR
         return await asyncio.to_thread(
             refused_on_the_page,
             request,
@@ -2916,7 +2920,7 @@ async def decide_from_the_page(
             error.status_code,
             typed,
             reason_kept=kept,
-            open_plan=draft_id,
+            open_plan=draft_id if refusal else None,
         )
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 
