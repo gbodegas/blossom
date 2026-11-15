@@ -3673,7 +3673,10 @@ async def committed_page(
     whether it finished the review (``incomplete``), one read decides, and the page takes that
     read as it is: rows still open answer as a save that left them open; a finished review says
     the cleanup closes it; a closed one is the finished answer; and a read that fails, or an
-    ended review, promises no cleanup, since the cleanup closes only a finished review. A closed
+    ended review, promises no cleanup, since the cleanup closes only a finished review. A save
+    that closed the review itself says its counts as an ended review's page does: its own
+    transaction counted what was left, and its close came after, so something can still be
+    counted as left on a review that has finished. A closed
     review's copies leave out only text an assignment this save wrote holds exactly in that field,
     as read back inside its transaction (``Saved.stored``; a date by its own piece). A page that
     can't read the review leaves out the class, title and instructions boxes among that evidence
@@ -3681,7 +3684,8 @@ async def committed_page(
     if outcome.closed:
         typed = await typing_of(request, outcome.stored, as_sent=True, beside_words=True)
         week = await week_of(state, outcome.pairs)
-        return saved_outcome(request, state, [*done, *problems], week, typed=typed)
+        lines = [*ended_lines(done, saved=True), *problems]
+        return saved_outcome(request, state, lines, week, typed=typed)
     read: DraftSnapshot | None = None
     if outcome.incomplete:
         now = await snapshot_keeping_typing(
