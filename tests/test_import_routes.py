@@ -41097,3 +41097,79 @@ def test_a_line_that_isn_t_a_save_s_counts_is_said_as_it_is_on_an_ended_review_s
     line: str,
 ) -> None:
     assert imports.ended_lines([line], saved=True) == [line]
+
+
+def closed_by_its_own_save(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, saved: Saved
+) -> Answer:
+    """A Save of one group of two with a title typed on the other, answered with a stand-in for
+    the save's outcome only: ``saved`` is supplied in place of the homework transaction, which
+    doesn't run. No second save is run beside it."""
+    draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+    page = her_name_answered(browser, draft_id, page)
+    first_unit, _, other = typed_on_the_row_left(page)
+    posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
+    monkeypatch.setattr(imports, "save_homework", lambda *_, **__: saved)
+    return send(browser, draft_id, posted)
+
+
+@pytest.mark.parametrize("left", [1, 0], ids=["one item left", "nothing left"])
+def test_a_save_that_closed_the_review_itself_says_what_it_left_as_it_stood(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, left: int
+) -> None:
+    """A stand-in for the outcome only: a committed save that answers closed, its counts saying
+    what its own transaction left. The save's code can answer so when the review finishes
+    between its commit and its own read after it; that timing isn't run here. The page says the
+    review is finished, so what was left is said as it stood at the save, and with nothing left
+    the counts are said as they are. The status, the typing to copy and the way to Family
+    review are as they were; the supplied outcome names no assignment, so no week is linked."""
+    saved = Saved(
+        "a" * 32, (), ("first",), progress_revision=0, closed=True, counts=(1, 0, 0, left)
+    )
+    with here(open_settings(tmp_path)) as browser:
+        answer = closed_by_its_own_save(browser, monkeypatch, saved)
+
+    assert answer.status_code == 200
+    assert says(answer.text, imports.SAID["closed"])
+    assert says(answer.text, TYPED_SAID)
+    assert TYPED_ON_THE_OTHER in TYPED_BACK.findall(answer.text)
+    assert links_of(answer) == [("/parent", "Back to Family review")]
+    assert "still needs checking" not in page_text(answer)
+    the_saved_heading(answer, ONE_LEFT_THEN if left else "Saved: 1 new assignment.")
+
+
+def test_a_save_that_closed_the_review_itself_keeps_its_other_lines_in_their_order(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same stand-in, one item left, with a group already saved and a ticked group changed:
+    the panel says the counts as they stood, then that it was already saved, then the changed
+    line, then that the review is finished, each once and in that order. Only the counts are
+    said differently."""
+    saved = Saved(
+        "a" * 32,
+        (),
+        ("first",),
+        progress_revision=0,
+        changed_units=("second",),
+        already_units=("third",),
+        closed=True,
+        counts=(1, 0, 0, 1),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        answer = closed_by_its_own_save(browser, monkeypatch, saved)
+
+    text = page_text(answer)
+    shown = OUTCOME.search(answer.text)
+    already, changed = imports.PRESS_SAID["already"], imports.PRESS_SAID["changed"]
+    assert answer.status_code == 200
+    assert shown is not None
+    assert text.count(already) == 1
+    assert text.count(changed) == 1
+    assert text.count(imports.SAID["closed"]) == 1
+    assert TYPED_ON_THE_OTHER in TYPED_BACK.findall(answer.text)
+    assert [html.unescape(t) for t in re.findall(r">([^<>]+)</(?:h2|p)>", shown.group(1))] == [
+        ONE_LEFT_THEN,
+        already,
+        changed,
+        imports.SAID["closed"],
+    ]
