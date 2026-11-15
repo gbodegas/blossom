@@ -2350,12 +2350,12 @@ def test_a_save_that_fails_inside_sqlite_says_busy_only_for_a_busy_file_and_keep
     caplog: pytest.LogCaptureFixture,
     case: str,
 ) -> None:
-    """A Save press whose homework transaction fails inside SQLite, the error's words quoting
-    private text. A busy file says the file was busy; a locked table and an error with no code
-    say only that the homework wasn't saved. Each answers 503 with the review and what was
-    typed still in its box, saves nothing, and shows none of the error's words. The save's log
-    names the failure by its class and its code's name, once, and holds no line for a busy
-    file."""
+    """A Save press whose homework transaction fails with an error the test raises inside it
+    in SQLite's place, the error's words quoting private text. A busy file says the file was
+    busy; a locked table and an error with no code say only that the homework wasn't saved.
+    Each answers 503 with the review and what was typed still in its box, saves nothing, and
+    shows none of the error's words. The save's log names the failure by its class and its
+    code's name, once, and holds no line for a busy file."""
     kind, name, reason, named = SAVE_FAILURES[case]
     other = "failed" if reason == "busy" else "busy"
 

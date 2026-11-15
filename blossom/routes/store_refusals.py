@@ -12,6 +12,9 @@ time, and any other says the records sentence.
 
 A failure no page's own recovery catches is answered by the application's fallback only when
 it is the store failing, not a mistake in the code that called it.
+
+The homework save tells a busy file the same way, and it and that fallback name a failure in
+the log by its kind alone (``failure_named``).
 """
 
 import sqlite3

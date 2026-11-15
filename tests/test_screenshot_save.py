@@ -2584,9 +2584,10 @@ class FailsInside(SaveHooks):
 def test_a_failure_inside_sqlite_is_busy_by_its_primary_code_and_logged_by_its_kind(
     case: str, house: House, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The homework transaction fails inside SQLite, its error's words quoting private text. A
-    busy file, by its primary code, an extended busy code among them, answers busy and logs
-    nothing. A locked table, an error with no code and every other failure answer failed, with
+    """The homework transaction fails with an error the test raises inside it in SQLite's
+    place, its words quoting private text. A busy file, by its primary code, an extended busy
+    code among them, answers busy and logs nothing. A locked table and its extended code, an
+    error with no code, a constraint and a database error with no code answer failed, with
     one line that names the failure by its class and its code's name and never by its words; a
     transaction left open, which its store logs where it raises, gets no second line. Nothing
     is written, and the same press saves afterward."""
