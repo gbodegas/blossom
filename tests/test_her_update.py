@@ -396,7 +396,7 @@ def test_a_done_she_has_just_made_is_met_once_in_the_line_that_says_it_is_saved(
     card = card_for(landed, ESSAY)
     assert met_with(UPDATE_SAVED, ESSAY) in card
     assert arrived.headers["cache-control"] == "no-store"
-    assert "cache-control" not in again.headers
+    assert again.headers["cache-control"] == "no-store"
     assert card.count('role="status"') == 1
     assert "aria-live" not in card
     assert landed.count(PETAL) == 1

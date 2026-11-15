@@ -20,7 +20,6 @@ from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.types import Receive, Scope, Send
 
 from blossom.agent.runs import RUN_DEADLINE_SECONDS
 from blossom.app import create_app
@@ -56,6 +55,7 @@ from tests.support import (
     record,
     report,
     scripted_graphs,
+    sent_raw,
     signed_in,
     state_of,
     two_sittings,
@@ -539,17 +539,6 @@ def test_a_blank_week_is_said_again_when_the_record_reads() -> None:
 
     assert retried.status_code == 422
     assert student_routes.NOT_A_WEEK in retried.text
-
-
-def sent_raw(client: TestClient, query: bytes) -> TestClient:
-    """A client for the same app whose requests carry ``query`` as their query bytes, as a
-    client that escapes nothing would send them."""
-    app = client.app
-
-    async def raw(scope: Scope, receive: Receive, send: Send) -> None:
-        await app({**scope, "query_string": query}, receive, send)
-
-    return TestClient(raw, follow_redirects=False, raise_server_exceptions=False)
 
 
 @pytest.mark.parametrize(

@@ -401,7 +401,7 @@ def test_a_new_done_saved_on_the_details_is_met_once_and_nothing_else_is() -> No
     assert landed.headers["set-cookie"].startswith(f'{done_cookie(landing)}=""; ')
     assert "Path=/student/assignments" in landed.headers["set-cookie"]
     assert UPDATE_SAVED in again.text
-    assert "cache-control" not in again.headers
+    assert again.headers["cache-control"] == "no-store"
     assert "landing=" not in noted.headers["location"]
     assert "said=same" in same.headers["location"]
     assert UPDATE_ALREADY_SAVED in same_page

@@ -4979,7 +4979,7 @@ def test_turned_off_every_import_address_answers_as_a_missing_one_before_any_bod
     assert {method: answer[0] for method, answer in missing.items()} == dict.fromkeys(METHODS, 404)
     assert answers == {(method, path): missing[method] for method, path in answers}
     assert all("allow" not in dict(answer[2]) for answer in answers.values())
-    assert all("cache-control" not in dict(answer[2]) for answer in answers.values())
+    assert all(dict(answer[2])["cache-control"] == "no-store" for answer in answers.values())
     assert count == 0
 
 

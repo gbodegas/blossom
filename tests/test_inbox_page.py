@@ -1771,7 +1771,7 @@ def test_an_inbox_press_while_another_program_holds_the_file_says_the_records_ca
     kept_as_sent(main, case, form)
     assert answers_listed(main) == []
     assert "See the answers given." not in main
-    assert "cache-control" not in answer.headers
+    assert answer.headers["cache-control"] == "no-store"
     assert after == before
 
 

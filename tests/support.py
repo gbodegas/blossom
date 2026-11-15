@@ -927,6 +927,17 @@ def signed_in(client: TestClient, passphrase: str) -> None:
     assert came_in.status_code == 303, came_in.text
 
 
+def sent_raw(client: TestClient, query: bytes) -> TestClient:
+    """A client for the same app whose requests carry ``query`` as their query bytes, as a
+    client that escapes nothing would send them."""
+    app = client.app
+
+    async def raw(scope: Scope, receive: Receive, send: Send) -> None:
+        await app({**scope, "query_string": query}, receive, send)
+
+    return TestClient(raw, follow_redirects=False, raise_server_exceptions=False)
+
+
 @contextmanager
 def serving(browser: TestClient) -> Iterator[int]:
     """The app this client holds, on a free loopback port for this block: the port."""
