@@ -4385,7 +4385,13 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
         ".import-review summary[id]",
     ):
         assert declared_for(landing) == ["scroll-margin-top: 0.75rem;"]
-    assert carriers == ["import_find.html", "import_review.html", "parent_review.html"]
+    # The page of an uncertain upload carries it for the upload form it offers again.
+    assert carriers == [
+        "import_find.html",
+        "import_review.html",
+        "import_said.html",
+        "parent_review.html",
+    ]
 
 
 # ------------------------------------------------------------------ the cascade at 320 px
