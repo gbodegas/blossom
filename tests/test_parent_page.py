@@ -56,6 +56,7 @@ from tests.support import (
     FAMILY_FOR_A_NEW_PLAN,
     FAMILY_FORM_EXPIRED,
     FAMILY_FORM_NOT_WHOLE,
+    FAMILY_LINE,
     FAMILY_NEWER_PLAN_AUGUST_19,
     FIXTURE_TIMEZONE,
     NOTHING_FOR_AUGUST_20,
@@ -65,21 +66,26 @@ from tests.support import (
     THAT_PLAN_SHOWN_BELOW,
     Element,
     Scripted,
+    earlier_plans_open,
+    earlier_plans_unfolded,
     elements_of,
     ended_run,
     family_line,
     family_line_focused,
     family_plan,
     family_plan_body,
+    first_sentence,
     fixture_settings,
     forgetful_fixture_plan,
     form_fields,
     fresh_plan_fields,
+    given_the_focus,
     help_group,
     help_reply,
     help_row,
     household_client,
     ok,
+    opening_focused,
     plan_fold_open,
     record,
     reported,
@@ -2487,6 +2493,175 @@ def test_a_refusal_keeps_no_reason_when_none_was_typed(blank: str) -> None:
     for answer in (refused, gone):
         assert kept_under_the_problem(answer.text) is None
         assert 'id="kept-reason"' not in answer.text
+
+
+# ------------------------------------------------------- a refusal lands in one place
+
+OVER_THE_CAP = "r" * (REASON_MAX_LENGTH + 1)
+LOST = f"plan:{PLAN_DATE.isoformat()}:lost"
+REFUSED_DECISIONS = {
+    # The plan pressed, the button, the words typed, the status, whether the note's box lands.
+    "a decision no button makes": ("waiting", "sideways", TYPED_REASON, 422, False),
+    "a reason over the cap": ("waiting", "approve", OVER_THE_CAP, 422, True),
+    "Looks good on a plan gone stale": ("waiting", "approve", TYPED_REASON, 409, False),
+    "a decision no button makes, the plan decided": (
+        "decided",
+        "sideways",
+        TYPED_REASON,
+        422,
+        False,
+    ),
+    "a reason over the cap, the plan decided": ("decided", "refuse", OVER_THE_CAP, 422, False),
+    "a plan already decided": ("decided", "refuse", TYPED_REASON, 409, False),
+    "a plan no review can resume": ("lost", "refuse", TYPED_REASON, 409, False),
+    "a plan not on record": ("nobody", "refuse", TYPED_REASON, 404, False),
+}
+
+
+def earlier_plan_unfolded(page: str, draft_id: str) -> bool:
+    """Whether the plan ``draft_id``, listed under Earlier plans, has its own fold open."""
+    opened = (
+        r"<details open>\s*<summary>The plan as it was[^<]*</summary>\s*"
+        rf'<div class="plan-reading" id="{re.escape(anchor_for(draft_id))}"'
+    )
+    return re.search(opened, page) is not None
+
+
+def one_waiting_one_earlier(client: TestClient) -> tuple[str, str]:
+    """Today's plan waiting and tomorrow's approved, so listed under Earlier plans with a
+    fold of its own: their draft ids, the waiting one first."""
+    today, tomorrow = two_waiting_plans(client)
+    first = {"decision": "approve", "reason": "First words."}
+    assert client.post(f"/parent/actions/decide/{tomorrow}", data=first).status_code == 303
+    return today, tomorrow
+
+
+@pytest.mark.parametrize("case", list(REFUSED_DECISIONS))
+def test_a_refused_decision_lands_in_one_place_and_opens_only_its_own_plan(case: str) -> None:
+    """A refused decision gives the focus to one place: the note's box when the note is what
+    was refused and its plan shows the box, and the problem line's first sentence otherwise,
+    so a long line still arrives with its opening on the screen. The line
+    keeps its role and the way to the field, and the words typed are on the page once, as
+    typed: in the plan's box, or read-only under the problem where the plan has no box, a
+    reason over the cap and one with markup characters alike. A plan listed under Earlier
+    plans has its fold opened when the refusal is about it, and at no other refusal; another
+    plan listed there beside it stays folded, and so does the plan form."""
+    which, decision, words, status, at_the_note = REFUSED_DECISIONS[case]
+    with browser() as client:
+        waiting, earlier = one_waiting_one_earlier(client)
+        if case.endswith("stale"):
+            assert client.post("/parent/inbox/keep", data=IN_THE_WINDOW).status_code == 303
+        if which in ("lost", "decided"):
+            # A plan no review can resume is today's newest, so the one that waited is listed
+            # with the earlier plans too: two plans there, each with a fold of its own.
+            settled_run(
+                state_of(client).drafts,
+                Draft(draft_id=f"draft:{LOST}", body="Plan for Wednesday", created_at=CREATED),
+                thread_id=LOST,
+                plan_date=PLAN_DATE,
+            )
+        pressed = {
+            "waiting": waiting,
+            "decided": earlier,
+            "lost": f"draft:{LOST}",
+            "nobody": "draft:nobody",
+        }[which]
+        refused = client.post(
+            f"/parent/actions/decide/{pressed}", data={"decision": decision, "reason": words}
+        )
+
+    page = refused.text
+    assert refused.status_code == status
+    assert "location" not in refused.headers
+    assert page.count(FAMILY_LINE) == 1
+    boxes = note_boxes(page)
+    if which == "waiting":
+        box_id, attributes = boxes[pressed]
+        assert value_of(attributes) == words
+        assert kept_under_the_problem(page) is None
+    else:
+        assert pressed not in boxes
+        assert kept_under_the_problem(page) == words
+    assert page.count(str(escape(words))) == 1
+    if words == TYPED_REASON:
+        assert words not in page
+    linked = which == "waiting" and (at_the_note or case.endswith("stale"))
+    assert page.count("Go to the field.") == int(linked)
+    assert plan_fold_open(page) is False
+    assert earlier_plans_open(page) is (which == "decided")
+    listed = 2 if which in ("lost", "decided") else 1
+    assert len(earlier_plans_unfolded(page)) == listed
+    assert earlier_plans_unfolded(page).count(True) == int(which == "decided")
+    assert earlier_plan_unfolded(page, earlier) is (which == "decided")
+    if at_the_note:
+        assert given_the_focus(page) == [boxes[pressed][0]]
+    else:
+        assert given_the_focus(page) == ["opening"]
+        said = family_line(page).removesuffix(" Go to the field.")
+        assert said
+        assert (said != family_line(page)) is linked
+        assert opening_focused(page, FAMILY_LINE) == first_sentence(said)
+        if which == "lost":
+            assert said == unescape(UNRESUMABLE_TODAY)
+            assert first_sentence(said) == unescape(CANT_RESUME)
+
+
+NEIGHBOR_REFUSALS = {
+    "a check of homework not on record": (
+        "/parent/actions/checks/assignment-nobody/mark",
+        {"basis": "assignment-nobody", "expected_check_id": "", "note": ""},
+        404,
+    ),
+    "a reply to no request": (
+        "/parent/actions/help/" + "0" * 32,
+        {"step": "accept", "response": TYPED_REASON},
+        404,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(NEIGHBOR_REFUSALS))
+def test_a_refusal_about_no_plan_lands_on_the_problem_and_opens_no_plan(case: str) -> None:
+    """A refused check and a refused reply to her request, with plans on the page and a
+    model configured: the problem line's first sentence takes the focus, alone, and no plan's
+    fold is opened. A plain visit to the same page asks for no focus and has no problem line."""
+    path, data, status = NEIGHBOR_REFUSALS[case]
+    with browser() as client:
+        one_waiting_one_earlier(client)
+        refused = client.post(path, data=data)
+        plain = client.get("/parent")
+
+    page = refused.text
+    assert refused.status_code == status
+    assert page.count(FAMILY_LINE) == 1
+    assert plan_fold_open(page) is False
+    assert earlier_plans_open(page) is False
+    assert earlier_plans_unfolded(page) == [False]
+    assert plain.status_code == 200
+    assert FAMILY_LINE not in plain.text
+    assert given_the_focus(plain.text) == []
+    assert plan_fold_open(plain.text) is False
+    assert earlier_plans_unfolded(plain.text) == [False]
+    assert given_the_focus(page) == ["opening"]
+    said = family_line(page)
+    assert said
+    assert opening_focused(page, FAMILY_LINE) == first_sentence(said)
+
+
+def test_a_refused_plan_press_opens_the_plan_form_and_no_plan() -> None:
+    """With a model configured, a refused plan press lands on its first sentence, as it
+    did, with Help with a plan open on the form it came from and no plan's fold opened."""
+    with browser() as client:
+        one_waiting_one_earlier(client)
+        refused = client.post("/parent/actions/plan", data=family_plan(client, "someday"))
+
+    page = refused.text
+    assert refused.status_code == 422
+    assert given_the_focus(page) == ["opening"]
+    assert family_line_focused(page)
+    assert plan_fold_open(page) is True
+    assert earlier_plans_open(page) is False
+    assert earlier_plans_unfolded(page) == [False]
 
 
 # ------------------------------------------------------------------ every card's place

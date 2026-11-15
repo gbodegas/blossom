@@ -1807,6 +1807,31 @@ def plan_fold_open(page: str) -> bool | None:
     return None if found is None else found.group(1) is not None
 
 
+def earlier_plans_open(page: str) -> bool | None:
+    """Whether the family page's Earlier plans is open, or ``None`` when it isn't there."""
+    found = re.search(
+        r'<details class="steps panel-fold"( open)?>\s*<summary>Earlier plans</summary>', page
+    )
+    return None if found is None else found.group(1) is not None
+
+
+def earlier_plans_unfolded(page: str) -> list[bool]:
+    """Whether each plan listed under the family page's Earlier plans has its own fold open,
+    in the page's order."""
+    folds = re.findall(r"<details( open)?>\s*<summary>The plan as it was", page)
+    return [opened == " open" for opened in folds]
+
+
+def given_the_focus(page: str) -> list[str]:
+    """Each element the page asks a browser to give the focus to when it arrives, by its id,
+    or by its class where it has no id."""
+    named = []
+    for tag in re.findall(r"<[a-z0-9]+\b[^>]*\sautofocus\b[^>]*>", page):
+        found = re.search(r'\sid="([^"]*)"', tag) or re.search(r'\sclass="([^"]*)"', tag)
+        named.append(tag if found is None else found.group(1))
+    return named
+
+
 def plan_date_shown(page: str) -> str | None:
     """The date the family page's plan form holds, or ``None`` when it shows no form."""
     found = re.search(r'<input type="date" name="plan_date" value="([^"]*)">', page)
