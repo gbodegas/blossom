@@ -489,6 +489,210 @@ def test_a_first_upload_form_is_used_only_within_48_hours_of_its_making(
     assert count == (1 if allowed else 0)
 
 
+# ------------------------------------------------- a first upload whose outcome isn't known
+
+
+UPLOAD_UNKNOWN: Final = "Blossom couldn't tell whether the screenshots were uploaded."
+TRY_AGAIN: Final = "To try this upload again, choose the same screenshots below."
+AGAIN_FORM: Final = re.compile(
+    r'<form method="post" action="/parent/imports" enctype="multipart/form-data">(.*?)</form>',
+    re.S,
+)
+
+
+def again_form(page: str) -> dict[str, str]:
+    """The hidden fields of the upload form a page offers, as the page wrote them."""
+    found = AGAIN_FORM.search(page)
+    assert found is not None, page[:900]
+    fields = re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', found.group(1))
+    return {name: html.unescape(value) for name, value in fields}
+
+
+def uncertain_upload(
+    browser: TestClient, *images: bytes, committed: bool, form: dict[str, str] | None = None
+) -> tuple[Answer, dict[str, str]]:
+    """A first upload whose write fails for a reason that isn't a busy file, by a stand-in for
+    the store's failure: raised once the real write has committed, or before any write. The
+    answer, and the form the upload sent."""
+    store = state_of(browser).import_drafts
+    real = store.create
+    sent = form if form is not None else first_form(browser)
+
+    def create(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        if committed:
+            real(*args, **kwargs)
+        refusing_coded("SQLITE_IOERR")()
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(store, "create", create)
+        answer = upload(browser, *images, form=sent)
+    return answer, sent
+
+
+def token_of(browser: TestClient, draft_id: str) -> str:
+    """The creation token a review was made with."""
+    connection = state_of(browser).import_drafts._connection
+    row = connection.execute(
+        "SELECT creation_token FROM import_drafts WHERE draft_id = ?", (draft_id,)
+    ).fetchone()
+    return str(row[0])
+
+
+@pytest.mark.parametrize(
+    "committed", [True, False], ids=["the write committed", "the write never committed"]
+)
+def test_an_upload_whose_outcome_isn_t_known_is_sent_again_with_its_own_token(
+    tmp_path: pathlib.Path, committed: bool
+) -> None:
+    """A first upload's write fails for a reason that isn't a busy file, after it committed or
+    before it wrote anything. The page says it couldn't tell and how to try again, and offers
+    a form with the token and the time the upload sent. The same screenshots sent with it
+    land on one review, each screenshot once, whichever of the two happened."""
+    with here(open_settings(tmp_path)) as browser:
+        answer, sent = uncertain_upload(browser, RED, BLUE, committed=committed)
+        between = drafts(browser)
+        offered = again_form(answer.text)
+        again = upload(browser, RED, BLUE, form=offered)
+        after = drafts(browser)
+        landed = re.fullmatch(r"/parent/imports/([0-9a-f]{32})", again.headers["location"])
+        assert landed is not None
+        images = images_of(browser, landed.group(1))
+
+    assert answer.status_code == 503
+    assert says(answer.text, UPLOAD_UNKNOWN)
+    assert says(answer.text, TRY_AGAIN)
+    assert offered == sent
+    assert between == (1 if committed else 0)
+    assert again.status_code == 303
+    assert after == 1
+    assert len(images) == 2
+
+
+def test_the_form_of_an_uncertain_upload_waits_for_the_parent(tmp_path: pathlib.Path) -> None:
+    """The form sends nothing by itself: a file field with nothing chosen, the upload's own
+    button, and no refresh on the page. Its two sentences come in order, the one that says
+    what isn't known first."""
+    with here(open_settings(tmp_path)) as browser:
+        answer, _ = uncertain_upload(browser, RED, committed=True)
+
+    found = AGAIN_FORM.search(answer.text)
+    assert found is not None
+    form = found.group(1)
+    picker = re.search(r'<input type="file"[^>]*>', form)
+    assert picker is not None
+    assert 'name="screenshots"' in picker.group(0)
+    assert " value=" not in picker.group(0)
+    assert '<button type="submit" class="primary">Upload chosen screenshots</button>' in form
+    assert 'http-equiv="refresh"' not in answer.text.lower()
+    assert "autofocus" not in form
+    shown = html.unescape(answer.text)
+    assert shown.index(UPLOAD_UNKNOWN) < shown.index(TRY_AGAIN)
+    assert answer.headers["cache-control"] == "no-store"
+
+
+def test_other_screenshots_sent_with_that_form_join_the_same_review(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The token names the review, not the files: a different screenshot sent with the form
+    is added to the review the first write made."""
+    with here(open_settings(tmp_path)) as browser:
+        answer, _ = uncertain_upload(browser, RED, committed=True)
+        again = upload(browser, GREEN, form=again_form(answer.text))
+        count = drafts(browser)
+        landed = re.fullmatch(r"/parent/imports/([0-9a-f]{32})", again.headers["location"])
+        assert landed is not None
+        images = images_of(browser, landed.group(1))
+
+    assert again.status_code == 303
+    assert count == 1
+    assert len(images) == 2
+
+
+def test_the_form_of_an_uncertain_upload_keeps_the_first_forms_48_hours(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The form carries the time the first form was made, not a new one: once 48 hours have
+    passed from it the screenshots are refused as from a form too old, and nothing is added."""
+    with here(open_settings(tmp_path)) as browser:
+        made_at = now_of(browser) - (DRAFT_LIFETIME - timedelta(minutes=1))
+        answer, sent = uncertain_upload(
+            browser, RED, committed=False, form=first_form(browser, made_at)
+        )
+        offered = again_form(answer.text)
+        later = now_of(browser) + timedelta(minutes=2)
+        monkeypatch.setattr(state_of(browser).real_clock, "now", lambda: later)
+        refused = upload(browser, RED, form=offered)
+        count = drafts(browser)
+
+    assert offered == sent
+    assert offered["issued"] == made_at.isoformat()
+    assert refused.status_code == 400
+    assert says(refused.text, imports.SAID["too_old"])
+    assert count == 0
+
+
+def test_a_fresh_upload_after_an_uncertain_one_that_committed_makes_a_second_review(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Why the page offers its own form and promises nothing of any other: the same
+    screenshots sent from Family review's form, which carries a new token, make another
+    review when the first write did commit."""
+    with here(open_settings(tmp_path)) as browser:
+        uncertain_upload(browser, RED, committed=True)
+        fresh = upload(browser, RED)
+        count = drafts(browser)
+
+    assert fresh.status_code == 303
+    assert count == 2
+
+
+def test_a_review_closed_or_with_its_screenshots_fixed_refuses_more_by_its_token(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resend by a review's own token is refused as any upload to it is: once some of its
+    homework is saved its screenshots are fixed, and once it is discarded it is finished."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, kept = kept_two_groups(browser, monkeypatch)
+        form = {"token": token_of(browser, draft_id), "issued": now_of(browser).isoformat()}
+        first, _ = units_on(kept)
+        followed(browser, send(browser, draft_id, page_post(kept, "save", tick=[first])))
+        fixed = upload(browser, GREEN, form=form)
+        followed(browser, press_outside(browser, kept, "discard"))
+        finished = upload(browser, GREEN, form=form)
+        count = drafts(browser)
+
+    assert fixed.status_code == 409
+    assert says(fixed.text, imports.SAID["frozen"])
+    assert finished.status_code == 409
+    assert says(finished.text, imports.SAID["closed"])
+    assert count == 1
+
+
+def test_a_busy_file_and_more_screenshots_keep_their_pages_without_the_form(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Only a first upload whose outcome isn't known offers the form. A busy file wrote
+    nothing and says to send the screenshots again; more screenshots for an open review,
+    their outcome not known, say only that."""
+    with here(open_settings(tmp_path)) as browser:
+        store = state_of(browser).import_drafts
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(store, "create", refusing_coded("SQLITE_BUSY"))
+            busy = upload(browser, RED)
+        draft_id = made(browser, RED)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(store, "add_images", refusing_coded("SQLITE_IOERR"))
+            more = upload(browser, BLUE, form={}, to=f"/parent/imports/{draft_id}/images")
+
+    assert busy.status_code == 503
+    assert says(busy.text, imports.SAID["busy"])
+    assert more.status_code == 503
+    assert says(more.text, UPLOAD_UNKNOWN)
+    for page in (busy.text, more.text):
+        assert not says(page, TRY_AGAIN)
+        assert AGAIN_FORM.search(page) is None
+
+
 def test_a_form_from_before_a_restart_still_uploads(tmp_path: pathlib.Path) -> None:
     settings = open_settings(tmp_path)
     with here(settings) as browser:
