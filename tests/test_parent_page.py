@@ -15,7 +15,7 @@ import sqlite3
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from html import unescape
-from time import monotonic
+from time import monotonic, sleep
 from typing import Annotated
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -41,7 +41,7 @@ from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel
 from blossom.routes import parent as parent_routes
 from blossom.routes import runs as runs_module
-from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH
+from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH, RECORD_TOO_SLOW
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT
@@ -2604,6 +2604,46 @@ def test_a_refused_decision_lands_in_one_place_and_opens_only_its_own_plan(case:
         if which == "lost":
             assert said == unescape(UNRESUMABLE_TODAY)
             assert first_sentence(said) == unescape(CANT_RESUME)
+
+
+def test_a_decision_whose_record_can_t_be_read_in_time_opens_no_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A decision pressed on a plan listed under Earlier plans, its record read running past
+    the store's wait: 503 on the family page, which reads after it. That is the store's
+    failure and no refusal about the plan, so the plan's fold is left as it was. The line's
+    first sentence takes the focus and the reason is kept under the problem."""
+    with browser() as client:
+        _, earlier = one_waiting_one_earlier(client)
+        drafts = state_of(client).drafts
+        read = drafts.get
+        first = iter([True])
+
+        def held(draft_id: str) -> object:
+            if next(first, False):
+                sleep(1.0)
+            return read(draft_id)
+
+        monkeypatch.setattr(parent_routes, "STORE_WAIT_SECONDS", 0.2)
+        monkeypatch.setattr(drafts, "get", held)
+        refused = client.post(
+            f"/parent/actions/decide/{earlier}",
+            data={"decision": "refuse", "reason": TYPED_REASON},
+        )
+        monkeypatch.undo()
+        sleep(1.0)
+        record = client.get(f"/parent/approvals/{earlier}").json()
+
+    page = refused.text
+    assert refused.status_code == 503
+    assert family_line(page) == RECORD_TOO_SLOW
+    assert kept_under_the_problem(page) == TYPED_REASON
+    assert (record["decision"], record["reason"]) == ("approved", "First words.")
+    assert given_the_focus(page) == ["opening"]
+    assert opening_focused(page, FAMILY_LINE) == first_sentence(RECORD_TOO_SLOW)
+    assert plan_fold_open(page) is False
+    assert earlier_plans_open(page) is False
+    assert earlier_plan_unfolded(page, earlier) is False
 
 
 NEIGHBOR_REFUSALS = {
