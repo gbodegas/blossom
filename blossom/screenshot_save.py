@@ -40,6 +40,7 @@ from blossom.intake import (
     keep,
 )
 from blossom.reconciliation import SourceChannel
+from blossom.routes.store_refusals import busy_file, failure_named
 from blossom.school_instructions import InstructionChoice
 from blossom.screenshot_review import (
     DATE_FIELDS,
@@ -91,7 +92,7 @@ from blossom.stores.gradebook import (
     GradeTransactionLost,
     NameFormNotSaved,
 )
-from blossom.stores.homework_saves import DraftForSave, HomeworkAcceptance
+from blossom.stores.homework_saves import DraftForSave, HomeworkAcceptance, TransactionLeftOpen
 from blossom.stores.import_drafts import ImportDraftsStore, StoredReading
 from blossom.stores.intake_decisions import DecisionToKeep
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
@@ -858,10 +859,14 @@ def save_homework(
     except GradeTransactionLost as error:
         logger.warning("A screenshot save couldn't finish: %s", error)
         return NotSaved("failed")
-    except sqlite3.OperationalError as error:
-        busy = error.sqlite_errorcode in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
-        return NotSaved("busy" if busy else "failed")
-    except sqlite3.Error:
+    except sqlite3.Error as error:
+        # Busy is the file held by another program, told by the error's primary code. Any
+        # other failure goes on record by its kind alone, except a transaction left open,
+        # which the store that raised it has logged.
+        if busy_file(error):
+            return NotSaved("busy")
+        if not isinstance(error, TransactionLeftOpen):
+            logger.warning("A screenshot save's transaction failed: %s", failure_named(error))
         return NotSaved("failed")
     if not isinstance(outcome, Saved):
         return outcome

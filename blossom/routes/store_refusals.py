@@ -50,6 +50,13 @@ def busy_file(error: sqlite3.Error) -> bool:
     return isinstance(code, int) and (code & 0xFF) in BUSY_CODES
 
 
+def failure_named(error: BaseException) -> str:
+    """A failure by its kind alone: its class, and SQLite's name for its code where it has
+    one. Never its words, which can quote stored text."""
+    name = getattr(error, "sqlite_errorname", None)
+    return type(error).__name__ + (f" {name}" if isinstance(name, str) else "")
+
+
 def store_failure(error: BaseException) -> bool:
     """Whether ``error`` is the household's store failing: the drafts store's lock or the file's
     writer staying taken for the whole wait; any sqlite3 error whose primary code, an extended

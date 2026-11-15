@@ -53,7 +53,7 @@ from blossom.routes.navigation import (
     note_href,
     segment,
 )
-from blossom.routes.store_refusals import store_failure
+from blossom.routes.store_refusals import failure_named, store_failure
 from blossom.routes.student import ReturnLink, parent_reads
 from blossom.settings import PageMarks, Settings, get_settings
 from blossom.stores.drafts import StoreBusy, WriterBusy
@@ -151,13 +151,6 @@ def answers_a_page(route: object) -> bool:
     router's. A JSON route, a route that only redirects, and no route at all are left to the
     server."""
     return isinstance(route, APIRoute) and route.response_class is HTMLResponse
-
-
-def failure_named(error: BaseException) -> str:
-    """A failure by its kind alone: its class, and SQLite's name for its code where it has
-    one. Never its words, which can quote stored text."""
-    name = getattr(error, "sqlite_errorname", None)
-    return type(error).__name__ + (f" {name}" if isinstance(name, str) else "")
 
 
 def where_in_the_routes(error: BaseException, endpoint: Callable[..., object]) -> str:
