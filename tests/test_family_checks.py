@@ -101,6 +101,7 @@ from tests.support import (
     state_of,
     status_of,
     store_free_page,
+    unwrapped,
 )
 
 HELPER = "This records your check here. It does not change her update or the school's report."
@@ -1122,7 +1123,7 @@ def test_the_check_form_is_read_whole_and_comes_back_with_the_words_kept() -> No
     assert blank.status_code == 422
     assert NOT_THIS in blank.text
     assert nowhere.status_code == 404
-    assert NOT_ON_RECORD in nowhere.text
+    assert NOT_ON_RECORD in unwrapped(nowhere.text)
     assert again_blank.status_code == 422
     assert NOT_THIS in again_blank.text
     assert again_doubled.status_code == 422

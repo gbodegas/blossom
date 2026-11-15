@@ -48,6 +48,7 @@ from tests.support import (
     as_a_browser_sends,
     fixture_clock,
     fixture_settings,
+    given_the_focus,
     help_reply,
     help_row,
     help_updates,
@@ -55,6 +56,7 @@ from tests.support import (
     signed_in_household,
     state_of,
     store_free_page,
+    unwrapped,
     waiting_note,
     whole_form,
 )
@@ -1115,7 +1117,7 @@ def test_a_refused_reply_comes_back_with_the_family_page(case: str, status_code:
     else:
         assert (field is None) is (case == "a request closed meanwhile")
         assert field is None or field.group(1) == ""
-        assert problem.group(1) == str(escape(answer_detail(case, named)))
+        assert unwrapped(problem.group(1)) == str(escape(answer_detail(case, named)))
         kept = page.split(problem.group(0), 1)[1]
         assert kept.lstrip().startswith(KEPT_UNDER_THE_PROBLEM)
         assert f'<textarea id="kept-reply" rows="3" readonly>{escape(typed)}</textarea>' in kept
@@ -1767,7 +1769,7 @@ def test_i_can_help_from_another_page_left_open_adds_nothing_and_keeps_new_words
     opening, inside = field_of(page, request_id)
     assert answer.status_code == 409
     assert problem is not None
-    assert problem.group(1) == (
+    assert unwrapped(problem.group(1)) == (
         f'{escape(ALREADY_TAKEN_UP)} <a href="#reply-{request_id}">Go to the field.</a>'
     )
     assert inside == str(escape(words))
@@ -1884,7 +1886,7 @@ def test_every_refusal_of_a_parents_words_writes_nothing_and_keeps_them(case: st
     assert problem is not None
     go = f' <a href="#reply-{request_id}">Go to the field.</a>'
     pointed = where in ("below", "marked")
-    assert problem.group(1) == f"{escape(said)}{go if pointed else ''}"
+    assert unwrapped(problem.group(1)) == f"{escape(said)}{go if pointed else ''}"
     if where == "under the problem":
         assert f'id="reply-{request_id}"' not in text
         kept = text.split(problem.group(0), 1)[1]
@@ -1897,6 +1899,7 @@ def test_every_refusal_of_a_parents_words_writes_nothing_and_keeps_them(case: st
     assert ('aria-describedby="problem"' in opening) is pointed
     assert ('aria-invalid="true"' in opening) is (where == "marked")
     assert (" autofocus" in opening) is (where == "marked")
+    assert given_the_focus(text) == [f"reply-{request_id}" if where == "marked" else "opening"]
     assert family_form(text, request_id)["update_id"] != fields["update_id"]
     if typed:
         assert text.count(str(escape(typed))) == 1
@@ -2061,7 +2064,7 @@ def test_a_blank_update_to_a_request_not_kept_is_unknown_before_it_is_blank(
             )
             problem = PROBLEM_LINE.search(answer.text)
             assert problem is not None
-            said = problem.group(1)
+            said = unwrapped(problem.group(1))
         after = requests_held(client)
 
     assert answer.status_code == status_code
@@ -2124,7 +2127,7 @@ def test_a_move_on_a_row_that_can_not_be_read_keeps_the_words_and_writes_nothing
 
     assert answer.status_code == 500
     assert "<h1>Family review</h1>" in answer.text
-    assert f'id="problem">{escape(CANNOT_BE_READ)}</p>' in answer.text
+    assert f'id="problem">{escape(CANNOT_BE_READ)}</p>' in unwrapped(answer.text)
     assert str(escape(SET_APART)) in answer.text
     assert '<textarea id="kept-reply" rows="3" readonly>Synthetic zebra words</textarea>' in (
         answer.text

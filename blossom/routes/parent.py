@@ -1295,6 +1295,39 @@ DECISIONS: Final = ("approve", "refuse")
 
 
 BELOW_EARLIER_PLANS: Final = "below, under Earlier plans"
+PROBLEM_FIELDS: Final = frozenset(
+    {"text", "course", "title", "assigned_on", "due_date", "kind", "note"}
+)
+"""The fields of Add assignments a problem can be about, each always on the family page: the
+pasted text and the entry's own."""
+
+
+OPENING_LIMIT: Final = 100
+"""The most characters of a refusal's line that take the focus. A browser brings a focused
+element into view by its middle when it is taller than the screen, so a long opening would
+arrive with its first lines above a narrow screen with large text."""
+
+
+def opening_of(said: str) -> tuple[str, str]:
+    """A refusal's line, written as one string, as its opening, which takes the focus, and the
+    rest. The opening is the first sentence, cut after the first period a space follows,
+    when that is within ``OPENING_LIMIT``. A longer one ends at its last colon before the
+    limit, failing that its last semicolon, then its last comma, then its last space, so
+    the opening is short whatever the sentence. The opening, a space and the rest are the
+    line as written. One unbroken run longer than the limit can't be cut and is left whole.
+
+    The lines a refused decision, check or reply says are the app's own sentences. A value
+    no button of the page sends, quoted in one, could hold a period and a space, and the
+    opening would end there; the line's words are the same either way."""
+    first, stop, _ = said.partition(". ")
+    opening = f"{first}." if stop else said
+    if len(opening) > OPENING_LIMIT:
+        head = opening[: OPENING_LIMIT + 1]
+        marks = [head.rfind(mark) for mark in (": ", "; ", ", ")]
+        cut = next((found + 1 for found in marks if found >= 0), head.rfind(" "))
+        if cut > 0:
+            opening = opening[:cut]
+    return opening, said[len(opening) :].removeprefix(" ")
 
 
 def where_shown(
@@ -1358,7 +1391,10 @@ def review_page(
     one row of the assignment updates shows beyond the record, a check made
     or a problem with one; a row's problem is said at the top too, with a
     link to the row, so it is met on a page that opens at its top.
-    ``open_plan`` is a plan a link came back to, whose folds are opened.
+    ``open_plan`` is a plan a link came back to, or the one a refused decision was about,
+    whose folds are opened where it is listed with folds. A refusal gives the focus to one
+    place: the field its problem is about when the page shows that field, and the problem
+    line's first sentence otherwise.
     ``problem_check`` links the problem to the run it names, and ``run_notice`` is what
     the page says about a planning run. ``run_asked`` is the run the address asked about:
     its own line takes the focus, or, with none, the plan that run published. ``plan_answer``
@@ -1506,6 +1542,29 @@ def review_page(
             first.replace(PLACE_MARK, place or ""),
             rest.replace(PLACE_MARK, place or ""),
         )
+    updates = assignment_updates(everything, today)
+    reply_listed = help_reply is not None and any(
+        r.open and r.request_id == help_reply.request_id for r in asked
+    )
+    # A refusal gives the focus to one place: the field its problem is about, where this
+    # page shows that field and marks it, and the problem line's opening everywhere else, as
+    # a plan answer's line gives it to its first sentence.
+    at_a_field = (
+        problem_field in PROBLEM_FIELDS
+        or (
+            check is not None
+            and check.field == "note"
+            and any(
+                item.assignment_id == check.assignment_id and not item.checks_unavailable
+                for item in updates.check
+            )
+        )
+        or (help_reply is not None and help_reply.at_reply and reply_listed)
+        or (reason_kept is not None and reason_kept.at_reason and reason_at is not None)
+    )
+    said_at_the_top = check.problem if about_a_row and check is not None else problem
+    if problem_opening is None and said_at_the_top is not None and not at_a_field:
+        problem_opening = opening_of(said_at_the_top)
     return templates.TemplateResponse(
         request,
         "parent_review.html",
@@ -1537,7 +1596,7 @@ def review_page(
             # Open when the latest run of an evening still ahead made no plan, so the
             # parent sees why without looking for it.
             "ended_open": any(run.newest and run.plan_date >= today for run in ended),
-            "problem": check.problem if about_a_row and check is not None else problem,
+            "problem": said_at_the_top,
             "problem_target": check.assignment_id if about_a_row and check is not None else None,
             "reason_max_length": REASON_MAX_LENGTH,
             "help_open": [help_view(state, r, named) for r in asked if r.open],
@@ -1545,8 +1604,7 @@ def review_page(
             "help_set_apart": set_apart(listed.unreadable),
             "update_ids": {r.request_id: new_update_id() for r in asked if r.open},
             "help_reply": help_reply,
-            "help_reply_listed": help_reply is not None
-            and any(r.open and r.request_id == help_reply.request_id for r in asked),
+            "help_reply_listed": reply_listed,
             "reason_kept": reason_kept,
             "reason_at": reason_at,
             "homework_notes": notes.notes,
@@ -1572,7 +1630,7 @@ def review_page(
             "entry_open": entry_open or bool(paste) or bool(entry),
             "text_max_length": TEXT_MAX_LENGTH,
             "entry_note_max_length": ENTRY_NOTE_MAX_LENGTH,
-            "updates": assignment_updates(everything, today),
+            "updates": updates,
             "instructions_to_review": [
                 (item, everything.instructions[item.assignment_id].awaiting)
                 for item in everything.assignments
@@ -2813,9 +2871,12 @@ async def decide_from_the_page(
     Every refusal answers with the family page and the reason as typed: in its plan's
     box while the plan waits there with its form, marked and focused when the words are
     what was refused, and under the problem otherwise. The problem leads to the box when
-    the words are what was refused or the plan went stale. A refusal whose page can't be
-    read keeps its status, with the reason as typed, on the family page's stand-in. A
-    store's failure is answered by how far the decision went (``decision_store_answer``).
+    the words are what was refused or the plan went stale, and its first sentence takes the
+    focus whenever the box doesn't. A plan listed under Earlier plans has its fold opened by
+    a refusal about it, and no other plan's is. A refusal whose page can't be read keeps its
+    status, with the reason as typed, on the family page's stand-in. A store's failure is
+    answered by how far the decision went (``decision_store_answer``), and it opens no plan,
+    nor does a record that couldn't be read in time.
     """
     typed = FamilyKept(reason=reason)
     words = reason.strip()
@@ -2829,6 +2890,7 @@ async def decide_from_the_page(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             typed,
             reason_kept=kept,
+            open_plan=draft_id,
         )
     if len(words) > REASON_MAX_LENGTH:
         return await asyncio.to_thread(
@@ -2839,6 +2901,7 @@ async def decide_from_the_page(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             typed,
             reason_kept=ReasonKept(draft_id, reason, at_reason=True),
+            open_plan=draft_id,
         )
     decided = DecisionRequest(approved=decision == "approve", reason=words or None)
     trace = DecisionTrace()
@@ -2864,6 +2927,9 @@ async def decide_from_the_page(
             )
         if kept is not None and isinstance(error, PlanGoneStale):
             kept = ReasonKept(draft_id, reason, stale=True)
+        # A refusal is about the plan and names it. A record that couldn't be read in time
+        # is the store's failure, 503, and names none.
+        refusal = error.status_code < status.HTTP_500_INTERNAL_SERVER_ERROR
         return await asyncio.to_thread(
             refused_on_the_page,
             request,
@@ -2872,6 +2938,7 @@ async def decide_from_the_page(
             error.status_code,
             typed,
             reason_kept=kept,
+            open_plan=draft_id if refusal else None,
         )
     return RedirectResponse("/parent", status_code=status.HTTP_303_SEE_OTHER)
 

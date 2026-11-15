@@ -120,12 +120,14 @@ from tests.support import (
     family_line_focused,
     family_page,
     family_plan,
+    first_sentence,
     first_write_to,
     fixture_settings,
     form_fields,
     form_values,
     fresh_plan_fields,
     fresh_signal_fields,
+    given_the_focus,
     grade_answers,
     hidden,
     homework_answer,
@@ -134,6 +136,7 @@ from tests.support import (
     link_note,
     main_of,
     page_of,
+    plan_fold_open,
     plan_form,
     planned,
     pressed_form,
@@ -955,6 +958,49 @@ def test_a_refusal_on_family_review_is_said_without_it_when_it_cannot_be_read(
     assert after == before
 
 
+@pytest.mark.parametrize("reader", ["parent", "open"])
+@pytest.mark.parametrize("case", list(FAMILY_PRESSES))
+def test_a_refusal_family_review_shows_lands_in_one_place(
+    case: str, reader: str, tmp_path: pathlib.Path
+) -> None:
+    """Each of these refusals, on the family page itself: its status, one problem line, and
+    exactly one place given the focus. That is the box when the words in it are what was
+    refused and the page shows the box, a check's note or a reply; otherwise the first
+    sentence of the problem line as the page says it. The line's words are compared with
+    no expected sentence here: the cases of each route hold them. What was typed is on the
+    page once, as typed. No model is configured here, so the plan form isn't shown and Help
+    with a plan stays folded. A plain visit asks for no focus."""
+    press = FAMILY_PRESSES[case]
+    with household_client(reader, tmp_path) as client:
+        path, data, _ = family_press(client, case, reader)
+        answer = client.post(path, data=data, headers=PAGE_HEADERS)
+        plain = client.get("/parent", headers=PAGE_HEADERS)
+
+    page = main_of(answer.text)
+    boxes = {
+        "a check note too long": f"check-note-{ESSAY_ID}",
+        "a reply too long": f"reply-{path.rsplit('/', 1)[1]}",
+    }
+    assert answer.status_code == press.status
+    assert len(FAMILY_LINE.findall(page)) == 1
+    if press.kept is not None:
+        assert page.count(str(escape(press.kept[1]))) == 1
+    assert plan_fold_open(answer.text) is False
+    assert plain.status_code == 200
+    assert FAMILY_LINE.findall(plain.text) == []
+    assert given_the_focus(plain.text) == []
+    if case in boxes:
+        assert given_the_focus(answer.text) == [boxes[case]]
+    else:
+        assert given_the_focus(answer.text) == ["opening"]
+        assert family_line_focused(answer.text)
+        if path != "/parent/actions/plan":
+            line = FAMILY_LINE.findall(page)[0]
+            said = words(line).removesuffix(" Go to the row.")
+            assert words(line.split("</span>", 1)[0]) == first_sentence(said)
+            assert len(first_sentence(said)) <= 100
+
+
 def test_a_decision_on_a_decided_draft_keeps_its_409_and_the_reason_without_the_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1012,7 +1058,9 @@ def test_a_refused_step_reads_the_same_on_family_review_and_its_stand_in(
     ended = said if said.endswith(".") else f"{said}."
     assert page.status_code == status
     assert len(named) == 32
-    assert f'<p class="problem" role="alert" id="problem">{escape(said)}</p>' in main_of(page.text)
+    assert f'<p class="problem" role="alert" id="problem">{escape(said)}</p>' in unwrapped(
+        main_of(page.text)
+    )
     store_free_page(stand_in, status=status, heading="Family review", alert=f"{ended} {FAMILY}")
 
 

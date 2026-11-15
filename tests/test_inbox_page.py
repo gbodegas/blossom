@@ -44,6 +44,7 @@ from blossom.routes.inbox import (
     STORE_REFUSED,
     TOO_LONG,
 )
+from blossom.routes.parent import PROBLEM_FIELDS
 from blossom.settings import Settings
 from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.project_state import Assignment, AssignmentKind, UnreadableClaim
@@ -54,6 +55,7 @@ from tests.support import (
     LockHeldByAnother,
     every_row,
     fixture_settings,
+    given_the_focus,
     main_of,
     outside_earlier_work,
     refusing,
@@ -325,6 +327,52 @@ def test_a_form_that_fails_comes_back_filled_with_the_field_named(
     assert below_zero.status_code == 200
     assert "-1 added" not in below_zero.text
     assert " added, " not in below_zero.text
+
+
+FIELD_PROBLEMS = {
+    "text": ("/parent/inbox/read", {"text": "   "}, "paste-text"),
+    "course": ("/parent/inbox/enter", {"title": "Vocabulary list"}, "entry-course"),
+    "title": ("/parent/inbox/enter", {"course": "Spanish"}, "entry-title"),
+    "assigned_on": (
+        "/parent/inbox/enter",
+        {"course": "Spanish", "title": "Vocabulary list", "assigned_on": "last monday"},
+        "entry-assigned_on",
+    ),
+    "due_date": (
+        "/parent/inbox/enter",
+        {"course": "Spanish", "title": "Vocabulary list", "due_date": "next friday"},
+        "entry-due_date",
+    ),
+    "kind": (
+        "/parent/inbox/enter",
+        {"course": "Spanish", "title": "Vocabulary list", "kind": "CHORE"},
+        "entry-kind",
+    ),
+    "note": (
+        "/parent/inbox/enter",
+        {"course": "Spanish", "title": "Vocabulary list", "note": "n" * 501},
+        "entry-note",
+    ),
+}
+
+
+@pytest.mark.parametrize("field", list(FIELD_PROBLEMS))
+def test_a_problem_with_a_field_gives_the_focus_to_that_field_alone(
+    field: str, tmp_path: pathlib.Path
+) -> None:
+    """Each field of Add assignments a problem can name is on the family page, marked, and is
+    the one place the refusal gives the focus to: the problem line takes none beside it, and
+    keeps its link to the field."""
+    path, data, box = FIELD_PROBLEMS[field]
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        refused = client.post(path, data=data)
+
+    assert refused.status_code == 422
+    assert given_the_focus(refused.text) == [box]
+    assert f'<a href="#{box}">Go to the field.</a>' in refused.text
+    assert sorted(FIELD_PROBLEMS) == sorted(PROBLEM_FIELDS)
 
 
 def test_text_that_cannot_be_read_is_listed_by_line_and_can_be_edited(
