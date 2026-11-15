@@ -650,7 +650,7 @@ def test_only_the_page_her_undo_lands_on_says_she_removed_her_request() -> None:
         assert part in left, part
     assert landed.headers["cache-control"] == "no-store"
     assert landed.headers["set-cookie"].startswith(f'{landing_cookie(landing)}=""; ')
-    assert "cache-control" not in refreshed.headers
+    assert refreshed.headers["cache-control"] == "no-store"
 
 
 @pytest.mark.parametrize("kept", [0, 1], ids=["nothing kept", "a request kept"])
@@ -677,7 +677,7 @@ def test_an_address_alone_never_says_she_removed_her_request(kept: int, query: s
     else:
         assert state is None
         assert ">Too much right now</button>" in today
-    assert "cache-control" not in page.headers
+    assert page.headers["cache-control"] == "no-store"
 
 
 def test_try_again_after_an_unreadable_landing_says_the_removal_once(
@@ -698,6 +698,7 @@ def test_try_again_after_an_unreadable_landing_says_the_removal_once(
         refreshed = client.get(again.group(1))
 
     assert failed.status_code == 503
+    assert failed.headers["cache-control"] == "no-store"
     assert REMOVED not in failed.text
     assert "set-cookie" not in failed.headers
     assert again.group(1) == pressed.headers["location"]

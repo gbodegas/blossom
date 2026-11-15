@@ -7453,7 +7453,7 @@ def test_a_grade_page_while_another_program_holds_the_file_says_it_can_t_be_show
         after = every_row(database(settings))
 
     unshown_page(answer, page, ids)
-    assert "cache-control" not in answer.headers
+    assert answer.headers["cache-control"] == "no-store"
     assert after == before
 
 

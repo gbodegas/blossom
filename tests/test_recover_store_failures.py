@@ -4614,6 +4614,7 @@ def test_a_turn_in_with_her_words_saved_before_her_week_is_busy_says_it_was_save
         alert=f"{TURNED_IN_SAID} {YOUR_WEEK}",
     )
     assert after == before + 1
+    assert answer.headers["cache-control"] == "no-store"
     assert TURNED_IN_WORDS["note"] in main
     for never in NOT_SAVED_ON_A_TURN_IN:
         assert never not in main, never
@@ -4628,6 +4629,7 @@ def test_a_turn_in_with_her_words_is_her_week_as_before_when_the_drafts_are_free
         after = turn_ins(client)
 
     assert answer.status_code == 200, answer.text[:300]
+    assert answer.headers["cache-control"] == "no-store"
     assert TURNED_IN_SAID in answer.text
     assert after == before + 1
 
