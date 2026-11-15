@@ -568,6 +568,36 @@ def unwritten_page(
     return upload_refusal(request, state, error) if upload else store_refusal(request, state, error)
 
 
+TRY_UPLOAD_AGAIN: Final = "To try this upload again, choose the same screenshots below."
+"""What a first upload's page says under its sentence when its outcome isn't known, above the
+form that sends screenshots with that upload's own token."""
+
+
+def unwritten_upload(
+    request: Request, state: ApplicationState, error: Exception, token: str, issued: str
+) -> Response:
+    """The household's file refusing a first upload's write. A busy file wrote nothing, as the
+    route says a busy store. For any other refusal whether the write committed can't be
+    known: the page says so and offers the upload's form once more, with the token and the
+    time the refused upload was sent with, never new ones. Screenshots sent from it reach the
+    review that token names, made by the first write or made now, and the form is as old as it
+    was. The token names the review and checks no file. Nothing is sent until the files are
+    chosen and the button pressed."""
+    if busy_refusal(error):
+        return upload_refusal(request, state, error)
+    return templates.TemplateResponse(
+        request,
+        "import_said.html",
+        {
+            "said": [UNKNOWN_SAID["upload"]],
+            "again": {"said": TRY_UPLOAD_AGAIN, "token": token, "issued": issued},
+            "marks": marks_of(state),
+            "page": "parent",
+        },
+        status_code=503,
+    )
+
+
 TYPED_LABELS: Final = {
     "course": "Class",
     "title": "Title",
@@ -1447,7 +1477,7 @@ async def first_upload(request: Request, state: State) -> Response:
         return upload_refusal(request, state, error)
     except sqlite3.Error as error:
         noted(error)
-        return unwritten_page(request, state, error, UNKNOWN_SAID["upload"], upload=True)
+        return unwritten_upload(request, state, error, token, fields["issued"])
     if added is None:
         lines = [image_refusal(place + 1, kind) for place, kind in prepared.refused]
         return said_page(request, marks_of(state), NOTHING_ADDED, 422, *lines)
