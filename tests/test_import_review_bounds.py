@@ -88,7 +88,6 @@ from tests.import_review_cases import (
     read_again_unsure,
     read_review,
     send,
-    serving,
     signed_again,
     sizes_as_sent,
     stream_of,
@@ -100,7 +99,7 @@ from tests.import_review_cases import (
     worded_options,
     written_as_the_older_form,
 )
-from tests.support import homework_answer, homework_card, state_of
+from tests.support import homework_answer, homework_card, serving, state_of
 
 PARSERS_FIELDS: Final = 1_000
 PARSERS_FIELD_BYTES: Final = 1024 * 1024

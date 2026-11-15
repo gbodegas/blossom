@@ -17,10 +17,7 @@ import json
 import pathlib
 import random
 import re
-import socket
 import sqlite3
-import threading
-import time
 import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -30,7 +27,6 @@ from typing import Any, Final, NamedTuple
 from urllib.parse import unquote_plus, urlencode
 
 import pytest
-import uvicorn
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -1260,38 +1256,6 @@ def written_as_the_older_form(browser: TestClient, draft_id: str, page: str) -> 
 
 
 # ------------------------------------------------------------------ over a real socket
-
-
-@contextmanager
-def serving(browser: TestClient) -> Iterator[int]:
-    """The app this client holds, on a free loopback port for this block: the port."""
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = int(probe.getsockname()[1])
-    server = uvicorn.Server(
-        uvicorn.Config(
-            browser.app,
-            host="127.0.0.1",
-            port=port,
-            log_level="warning",
-            access_log=False,
-            log_config=None,
-            lifespan="off",
-            ws="none",
-            http="h11",
-        )
-    )
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    for _ in range(400):
-        if server.started:
-            break
-        time.sleep(0.05)
-    try:
-        yield port
-    finally:
-        server.should_exit = True
-        thread.join(timeout=30)
 
 
 class Reply(NamedTuple):
