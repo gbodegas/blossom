@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import sqlite3
 from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
@@ -1225,8 +1226,13 @@ async def saved_busy(
     the review can't be shown; every correction it typed given back to copy, by its press
     (``typing_by_press``, with ``as_sent`` and then the words-aware reading), apart from the boxes
     this request's own committed write is shown to hold exactly (``saved_exactly``); and the way
-    back to the review."""
+    back to the review. Where a line of ``notes`` says this press kept answers before the review
+    ended, a read of this press has said that it ended, so the counts say what was left as it
+    stood at the save (``counts_then``); with no such line they are said as the review says
+    them."""
     lines = [shown for line in said for shown in UNSHOWN_SAID.get(line, (line,))]
+    if KEPT_BEFORE_IT_ENDED.intersection(notes):
+        done = [counts_then(line) for line in done]
     return saved_outcome(
         request,
         state,
@@ -2043,11 +2049,11 @@ def not_a_list_line(count: int) -> str:
 
 # ------------------------------------------------------------------ the review's presses
 
-CHANGED_IN_ANOTHER_TAB: Final = "This review changed in another tab. Check the rows again."
 OUT_OF_DATE: Final = "This page is out of date. Check the review before trying again."
-"""What Keep these answers, Save selected homework and Save review for later say when the
-review moved on since the page, or when another tab saved for later since this press's own
-commit."""
+"""What a press says when the review moved on since its page: Keep these answers, Save selected
+homework and Save review for later, a Save for later another tab saved past since its own
+commit, and the small presses that set aside or discard, each before its own result. It names no
+cause: the version says that the review moved, never what moved it."""
 NOTHING_BY_THIS_ATTEMPT: Final = "Nothing was kept or saved by this attempt."
 """A press whose post doesn't match its page, where the review it would go back to can't be shown,
 has ended, or sits beside an earlier save: nothing says why the post doesn't match."""
@@ -2111,15 +2117,13 @@ NOT_SAVED_BECAUSE: Final = {
         "the assignments you ticked come from screenshots with different names; save each "
         "name's assignments on their own"
     ),
-    "stale": "this review changed in another tab",
 }
 """Why a press's homework wasn't saved, for "The homework wasn't saved: {reason}."."""
 
 
 def wasnt_saved(reason: str) -> str:
     """Why a press's homework transaction didn't commit, by ``NOT_SAVED_BECAUSE``."""
-    because = NOT_SAVED_BECAUSE.get(reason, NOT_SAVED_BECAUSE["stale"])
-    return f"The homework wasn't saved: {because}. Nothing of it was written."
+    return f"The homework wasn't saved: {NOT_SAVED_BECAUSE[reason]}. Nothing of it was written."
 
 
 UNSHOWN_SAID: Final = {
@@ -2182,20 +2186,43 @@ ENDED_SAID: Final = {
 them: each line saying this attempt kept answers, as kept before the review ended; each line
 holding an instruction that needs that review, as listed here without it; each line that is only
 such an instruction, or points at the review's rows, left out (empty), and Keep's corrections
-warning with them. The changed line is said by ``ended_lines``; any other line not listed is
-said as the review says it."""
+warning with them. The changed line is said by ``ended_lines``, as are a save's counts; any
+other line not listed is said as the review says it."""
+
+
+COUNTS_WITH_SOME_LEFT: Final = re.compile(
+    r"(?P<counts>Saved: \d+ new assignments?\.(?: \d+ updated\.)?(?: \d+ already up to date\.)?"
+    r"|Nothing new to save: \d+ assignments? already up to date\.)"
+    r" (?P<left>\d+) still needs? checking\."
+)
+"""A save's counts with something left to check, whole, as ``counted`` says them."""
+
+
+def counts_then(line: str) -> str:
+    """A save's counts as an ended review's page says them: the new, the updated and the already
+    up to date as they are, and what was left as it stood at the save, "At the time of this save,
+    1 item still needed checking.", since nothing of an ended review is left to check. Items,
+    not assignments: what was left counts questions still open and cards that couldn't be read
+    too. Any other line, and counts that left nothing, as it is."""
+    found = COUNTS_WITH_SOME_LEFT.fullmatch(line)
+    if found is None:
+        return line
+    left = int(found["left"])
+    items = "item" if left == 1 else "items"
+    return f"{found['counts']} At the time of this save, {left} {items} still needed checking."
 
 
 def ended_lines(lines: Iterable[str], *, saved: bool) -> list[str]:
     """A press's lines as an ended review's page says them (``ENDED_SAID``). The changed line
     of a homework transaction that didn't commit says that no homework was saved; beside a
-    save that committed (``saved``), it is left out."""
+    save that committed (``saved``), it is left out. A save's counts say what was left as it
+    stood at the save (``counts_then``)."""
     out = []
     for line in lines:
         if line == PRESS_SAID["changed"]:
             ended = "" if saved else NO_HOMEWORK
         else:
-            ended = ENDED_SAID.get(line, line)
+            ended = ENDED_SAID.get(line, counts_then(line))
         if ended:
             out.append(ended)
     return out
@@ -2343,6 +2370,11 @@ CONFIRMED_SAID: Final = frozenset(
     }
 )
 """The lines that say a press kept answers, by this attempt or before the review ended."""
+KEPT_BEFORE_IT_ENDED: Final = frozenset(
+    {PRESS_SAID["kept_before_ended"], PRESS_SAID["some_kept_before_ended"]}
+)
+"""The lines that say a press kept answers before the review ended. A page says one only after a
+read of its press has said the review ended."""
 ANSWERS_SAID: Final = KEPT_SAID | CONFIRMED_SAID
 """The answers lines as any page says them: by this attempt, or before the review ended."""
 
@@ -2391,26 +2423,19 @@ def not_saved(outcome: NotSaved, own_write: AnswersKept) -> list[str]:
     """What a press says when the homework transaction didn't commit: its answers lines
     (``answers_said``), and why nothing of the homework was written. A save refused as changed
     says, where its write stored answers, that no homework was saved and to check the effects,
-    and gives no cause for the change."""
+    and gives no cause for the change. One refused because the review moved on since its page,
+    by its revision or by its version, says that no homework was saved by this attempt and that
+    the page is out of date, and gives no cause either; so does a reason not listed in
+    ``NOT_SAVED_BECAUSE``."""
     kept = answers_said(own_write)
     if outcome.reason == "changed":
         changed = "changed_beside_answers" if own_write.stored > 0 else "changed"
         return [*kept, PRESS_SAID[changed]]
     if outcome.reason in ("busy", "failed"):
         return [*kept, PRESS_SAID[outcome.reason]]
-    if outcome.reason == "behind":
+    if outcome.reason not in NOT_SAVED_BECAUSE:
         return [*kept, NO_HOMEWORK, OUT_OF_DATE]
     return [*kept, wasnt_saved(outcome.reason)]
-
-
-def out_of_date_save(said: Iterable[str]) -> list[str]:
-    """A Save its homework transaction refused by the version, as its page with no form says it:
-    answers it kept apart, then that no homework was saved by this attempt, then that the page is
-    out of date. A Save refused at keeping its answers keeps its own line."""
-    out: list[str] = []
-    for line in said:
-        out += [NO_HOMEWORK, OUT_OF_DATE] if line == wasnt_saved("stale") else [line]
-    return list(dict.fromkeys(out))
 
 
 REVIEW_FORM_FIELDS: Final = 200_000
@@ -2763,7 +2788,7 @@ async def with_typing(
     no correction to compare with it, and answers no confirmation the answers they read hold as
     posted, beside saved progress absent or readable with no assigned date for it
     (``tick_beyond_progress``), and says it's out of date
-    (``no_form_with_typing``), a Save with nothing saved as ``out_of_date_save`` says it. Each page
+    (``no_form_with_typing``), a Save with nothing saved as ``not_saved`` says it. Each page
     here that draws no form after this request's own save leaves out of its copies the class,
     title and instructions boxes that save's evidence holds (``text_boxes``)."""
     saved_exactly = text_boxes(saved.stored) if saved else frozenset()
@@ -2789,7 +2814,7 @@ async def with_typing(
     else:
         revision = post.progress_revision
     behind = after.progress_revision != revision
-    pressed = out_of_date_save(said) if behind and post.press == "save" and not done else said
+    pressed = said
     lines = [*said, *notes]
     ticked = post.units if post.ticked else None
     current = post.version == after.version
@@ -4219,7 +4244,12 @@ async def saved_page(
                     saved_exactly=saved_exactly,
                 )
             return await saved_unread(
-                request, state, lines, [*notes, *gone], week, saved_exactly=saved_exactly
+                request,
+                state,
+                ended_lines(lines, saved=True),
+                [*notes, *gone],
+                week,
+                saved_exactly=saved_exactly,
             )
         if post is None:
             try:
@@ -4469,7 +4499,7 @@ async def closing_press(
                 store.discard_rest, student, draft_id, version=version, keys=keys
             )
     except ReviewChanged:
-        return to_review(state, draft_id, [CHANGED_IN_ANOTHER_TAB, AFTER_SAID["nothing_set_aside"]])
+        return to_review(state, draft_id, [OUT_OF_DATE, AFTER_SAID["nothing_set_aside"]])
     except (StoreBusy, WriterBusy):
         return to_review(state, draft_id, [AFTER_SAID["busy"]])
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
@@ -4526,7 +4556,7 @@ async def discarding_press(
     except DraftFrozen:
         return to_review(state, draft_id, [AFTER_SAID["not_hers_after_a_save"]])
     except ReviewChanged:
-        return to_review(state, draft_id, [CHANGED_IN_ANOTHER_TAB, AFTER_SAID["nothing_discarded"]])
+        return to_review(state, draft_id, [OUT_OF_DATE, AFTER_SAID["nothing_discarded"]])
     except (StoreBusy, WriterBusy):
         return to_review(state, draft_id, [AFTER_SAID["busy"]])
     except (DraftClosed, DraftExpired, DraftNotFound) as error:
