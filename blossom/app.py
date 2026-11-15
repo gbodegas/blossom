@@ -53,10 +53,11 @@ from blossom.routes.navigation import (
     note_href,
     segment,
 )
-from blossom.routes.store_refusals import failure_named, store_failure
+from blossom.routes.store_refusals import store_failure
 from blossom.routes.student import ReturnLink, parent_reads
 from blossom.settings import PageMarks, Settings, get_settings
 from blossom.stores.drafts import StoreBusy, WriterBusy
+from blossom.stores.failures import failure_named
 from blossom.templating import page_templates
 
 logger = logging.getLogger(__name__)
