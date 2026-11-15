@@ -1271,7 +1271,7 @@ def test_the_review_while_another_program_holds_the_file_says_it_can_t_be_shown(
         after = every_row(database)
 
     unshown_page(answer)
-    assert answer.headers.get("cache-control") == ("no-store" if reader == "parent" else None)
+    assert answer.headers["cache-control"] == "no-store"
     assert after == before
 
 
