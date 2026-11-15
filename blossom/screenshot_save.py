@@ -85,13 +85,14 @@ from blossom.screenshots import (
     cards_placed,
     homework_rows,
 )
+from blossom.stores.failures import busy_file, failure_named
 from blossom.stores.gradebook import (
     AnswerNotAsked,
     ConfirmedBy,
     GradeTransactionLost,
     NameFormNotSaved,
 )
-from blossom.stores.homework_saves import DraftForSave, HomeworkAcceptance
+from blossom.stores.homework_saves import DraftForSave, HomeworkAcceptance, TransactionLeftOpen
 from blossom.stores.import_drafts import ImportDraftsStore, StoredReading
 from blossom.stores.intake_decisions import DecisionToKeep
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
@@ -853,16 +854,27 @@ def save_homework(
                     raise GradeTransactionLost(TRANSACTION_ENDED)
     except (_Changed, AnswerNotAsked):
         return NotSaved("changed")
-    except NameFormNotSaved:
-        return NotSaved("failed")
+    except NameFormNotSaved as error:
+        # The grade store's refusal of her name's write, with nothing of that write left. The
+        # SQLite error it was raised from tells busy from failed as one of the save's own does.
+        # Raised from none, it says failed and logs nothing, as it did.
+        cause = error.__cause__
+        return _refused(cause) if isinstance(cause, sqlite3.Error) else NotSaved("failed")
     except GradeTransactionLost as error:
-        logger.warning("A screenshot save couldn't finish: %s", error)
+        # Lost is not a refusal, so never busy, whatever code the error behind it carries. A
+        # SQLite error behind it is named by its kind. A transaction left open, which its store
+        # has logged, and a loss with no SQLite error behind it keep the sentence they had.
+        cause = error.__cause__
+        if isinstance(cause, sqlite3.Error) and not isinstance(cause, TransactionLeftOpen):
+            logger.warning(
+                "A screenshot save couldn't finish: its transaction was lost: %s",
+                failure_named(cause),
+            )
+        else:
+            logger.warning("A screenshot save couldn't finish: %s", error)
         return NotSaved("failed")
-    except sqlite3.OperationalError as error:
-        busy = error.sqlite_errorcode in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
-        return NotSaved("busy" if busy else "failed")
-    except sqlite3.Error:
-        return NotSaved("failed")
+    except sqlite3.Error as error:
+        return _refused(error)
     if not isinstance(outcome, Saved):
         return outcome
     closed = False
@@ -874,6 +886,18 @@ def save_homework(
     except Exception:
         incomplete.append("close")
     return dataclasses.replace(outcome, closed=closed, incomplete=tuple(incomplete))
+
+
+def _refused(error: sqlite3.Error) -> NotSaved:
+    """What the save answers when SQLite refused inside its transaction. Busy is the file held
+    by another program, told by the error's primary code, and is not logged. Any other failure
+    goes on record once by its kind alone, except a transaction left open, which the store that
+    raised it has logged."""
+    if busy_file(error):
+        return NotSaved("busy")
+    if not isinstance(error, TransactionLeftOpen):
+        logger.warning("A screenshot save's transaction failed: %s", failure_named(error))
+    return NotSaved("failed")
 
 
 def _homework_transaction(

@@ -2495,6 +2495,36 @@ def refusing_coded(name: str) -> Callable[..., None]:
     return refused
 
 
+def sqlite_failure(kind: type[sqlite3.Error], words: str, name: str | None = None) -> sqlite3.Error:
+    """A failure as SQLite makes one: ``kind`` with these words and, when ``name`` names a result
+    code (``"SQLITE_LOCKED"``), that code and name set on it as the module sets them. With no
+    name it carries no code, as an error made in Python carries none."""
+    error = kind(words)
+    if name is not None:
+        error.sqlite_errorcode = getattr(sqlite3, name)
+        error.sqlite_errorname = name
+    return error
+
+
+def refused_in_the_grade_write(
+    record: ProjectStateStore, error: BaseException, *, ends_the_transaction: bool = False
+) -> Callable[[], tuple[str, str | None, list[str]]]:
+    """A stand-in for the read of her name record that raises ``error`` in SQLite's place, only
+    inside a grade write, so the grade store itself wraps it for its caller. With
+    ``ends_the_transaction`` it first really rolls the writer's transaction back, as SQLite does
+    when it ends one, so the store finds the transaction lost."""
+    real = record._her_name_record
+
+    def read() -> tuple[str, str | None, list[str]]:
+        if not record._grade_depth:
+            return real()
+        if ends_the_transaction:
+            record._connection.rollback()
+        raise error
+
+    return read
+
+
 def unreadable_claim(
     store: ProjectStateStore, assignment_id: str, value: str = "2026-10-06"
 ) -> None:

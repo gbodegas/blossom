@@ -12,19 +12,22 @@ time, and any other says the records sentence.
 
 A failure no page's own recovery catches is answered by the application's fallback only when
 it is the store failing, not a mistake in the code that called it.
+
+The busy check itself (``busy_file``) lives below the routes, in ``blossom.stores.failures``,
+where the homework save reads it too; the routes that tell a busy file by it find it here.
 """
 
 import sqlite3
 from typing import Final
 
 from blossom.stores.drafts import StoreBusy, WriterBusy
+from blossom.stores.failures import BUSY_CODES as BUSY_CODES
+from blossom.stores.failures import busy_file as busy_file
 
 RECORDS_UNREAD: Final = "Blossom couldn't read the household's records."
 """Said for a press whose read of the household's records was refused, busy or not, or for the
 decide press when it wasn't busy: nothing about a save, or about whether the text was read, or
 about what is shown below it."""
-BUSY_CODES: Final = frozenset({sqlite3.SQLITE_BUSY})
-"""The primary result codes of a household file another program holds."""
 STORE_FAILURE_CODES: Final = frozenset(
     {
         sqlite3.SQLITE_BUSY,
@@ -41,13 +44,6 @@ STORE_FAILURE_CODES: Final = frozenset(
 """The primary result codes of a household file that can't be used: held by another program,
 refused by its permissions or as read-only, failing to read or write, damaged, on a full disk,
 not opened, or not a database."""
-
-
-def busy_file(error: sqlite3.Error) -> bool:
-    """Whether the household's file refused as busy, by its error's primary code, as the drafts
-    store reads it. An error with no code, as one made in Python, is not busy."""
-    code = getattr(error, "sqlite_errorcode", None)
-    return isinstance(code, int) and (code & 0xFF) in BUSY_CODES
 
 
 def store_failure(error: BaseException) -> bool:
