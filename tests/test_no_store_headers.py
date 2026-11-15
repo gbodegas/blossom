@@ -34,6 +34,7 @@ from tests.support import (
     refusing,
     report,
     save,
+    sent_raw,
     signed_in,
     signed_in_household,
 )
@@ -125,6 +126,19 @@ def test_the_details_that_can_t_be_read_are_marked_as_the_details_are(
     assert address.startswith(DETAILS)
     assert ("landing=" in address) == (landing == "a Done landing")
     assert answer.status_code == 503
+    assert answer.headers["cache-control"] == "no-store"
+
+
+def test_a_query_that_isn_t_utf_8_still_reaches_its_route_with_the_sign_in_off() -> None:
+    """With the sign-in off the gate reads no rebuilt address, which can't be made from a
+    query holding a byte that isn't UTF-8. Family review, which reads the raw query itself,
+    is reached with such a query as it was before the gate marked anything, and its answer
+    is marked."""
+    with client_for(fixture_settings(BLOSSOM_TODAY=PLAN_DATE.isoformat())) as client:
+        raw = sent_raw(client, b"plan=caf\xe9&refreshed=1")
+        answer = raw.get("/parent", headers=PAGE_HEADERS)
+
+    assert answer.status_code == 200
     assert answer.headers["cache-control"] == "no-store"
 
 
