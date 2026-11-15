@@ -579,10 +579,11 @@ def unwritten_upload(
     """The household's file refusing a first upload's write. A busy file wrote nothing, as the
     route says a busy store. For any other refusal whether the write committed can't be
     known: the page says so and offers the upload's form once more, with the token and the
-    time the refused upload was sent with, never new ones. Screenshots sent from it reach the
-    review that token names, made by the first write or made now, and the form is as old as it
-    was. The token names the review and checks no file. Nothing is sent until the files are
-    chosen and the button pressed."""
+    time the refused upload was sent with, never new ones. Screenshots sent from it go with
+    that token, so the store adds them to the review it names, made by the first write or made
+    now, or refuses them as it refuses any upload. The form is as old as it was. The token
+    names the review and checks no file. Nothing is sent until the files are chosen and the
+    button pressed."""
     if busy_refusal(error):
         return upload_refusal(request, state, error)
     return templates.TemplateResponse(

@@ -544,10 +544,10 @@ def token_of(browser: TestClient, draft_id: str) -> str:
 def test_an_upload_whose_outcome_isn_t_known_is_sent_again_with_its_own_token(
     tmp_path: pathlib.Path, committed: bool
 ) -> None:
-    """A first upload's write fails for a reason that isn't a busy file, after it committed or
-    before it wrote anything. The page says it couldn't tell and how to try again, and offers
-    a form with the token and the time the upload sent. The same screenshots sent with it
-    land on one review, each screenshot once, whichever of the two happened."""
+    """A stand-in fails a first upload's write for a reason that isn't a busy file, after the
+    write committed or before it wrote anything. The page says it couldn't tell and how to try
+    again, and offers a form with the token and the time the upload sent. The same screenshots
+    sent with it land on one review, each screenshot once, whichever of the two happened."""
     with here(open_settings(tmp_path)) as browser:
         answer, sent = uncertain_upload(browser, RED, BLUE, committed=committed)
         between = drafts(browser)
@@ -671,9 +671,9 @@ def test_a_review_closed_or_with_its_screenshots_fixed_refuses_more_by_its_token
 def test_a_busy_file_and_more_screenshots_keep_their_pages_without_the_form(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Only a first upload whose outcome isn't known offers the form. A busy file wrote
-    nothing and says to send the screenshots again; more screenshots for an open review,
-    their outcome not known, say only that."""
+    """Only a first upload whose outcome isn't known offers the form. A busy file, here the
+    tests' stand-in for one, wrote nothing and says to send the screenshots again; more
+    screenshots for an open review, their outcome not known, say only that."""
     with here(open_settings(tmp_path)) as browser:
         store = state_of(browser).import_drafts
         with pytest.MonkeyPatch.context() as patch:
