@@ -41,7 +41,13 @@ from blossom.plans import DailyPlan, Deferral, PlanBlock
 from blossom.reconciliation import SourceChannel
 from blossom.routes import parent as parent_routes
 from blossom.routes import runs as runs_module
-from blossom.routes.parent import ASSIGNMENTS_CHANGED, REASON_MAX_LENGTH, RECORD_TOO_SLOW
+from blossom.routes.parent import (
+    ASSIGNMENTS_CHANGED,
+    OPENING_LIMIT,
+    REASON_MAX_LENGTH,
+    RECORD_TOO_SLOW,
+    opening_of,
+)
 from blossom.routes.runs import NOTHING_TO_SCHEDULE, PlanGraphs, plan_graphs
 from blossom.routes.student import ASSIGNMENTS_CHANGED as HER_ASSIGNMENTS_CHANGED
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, REPOSITORY_ROOT
@@ -2600,7 +2606,15 @@ def test_a_refused_decision_lands_in_one_place_and_opens_only_its_own_plan(case:
         said = family_line(page).removesuffix(" Go to the field.")
         assert said
         assert (said != family_line(page)) is linked
-        assert opening_focused(page, FAMILY_LINE) == first_sentence(said)
+        opening = opening_focused(page, FAMILY_LINE)
+        assert len(opening) <= OPENING_LIMIT
+        if case.endswith("stale"):
+            # Its first sentence alone is longer than a narrow screen with large text is
+            # tall, so the focus goes to its opening clause and the words stay as they were.
+            assert said == ASSIGNMENTS_CHANGED
+            assert opening == "The assignments or her updates differ from the work this plan used:"
+        else:
+            assert opening == first_sentence(said)
         if which == "lost":
             assert said == unescape(UNRESUMABLE_TODAY)
             assert first_sentence(said) == unescape(CANT_RESUME)
@@ -2644,6 +2658,46 @@ def test_a_decision_whose_record_can_t_be_read_in_time_opens_no_plan(
     assert plan_fold_open(page) is False
     assert earlier_plans_open(page) is False
     assert earlier_plan_unfolded(page, earlier) is False
+
+
+OPENINGS = {
+    "one short sentence": ("This request is already closed.", "This request is already closed."),
+    "two sentences": (
+        "The form did not arrive whole. Nothing was written.",
+        "The form did not arrive whole.",
+    ),
+    "a first sentence at the limit": ("a" * 49 + " " + "b" * 49 + ". More.", None),
+    "a long first sentence with a colon": (
+        ASSIGNMENTS_CHANGED,
+        "The assignments or her updates differ from the work this plan used:",
+    ),
+    "a long first sentence with commas only": (
+        "Her updates differ from the work in its window, a date, a type, a note, a status the "
+        "school reports, or what a source says about a date and more besides. Plan again.",
+        "Her updates differ from the work in its window, a date, a type, a note, a status the "
+        "school reports,",
+    ),
+    "a long first sentence with no mark": (
+        "word " * 30 + "end. More.",
+        ("word " * 20).strip(),
+    ),
+    "one unbroken run past the limit": ("x" * 150 + ". More.", "x" * 150 + "."),
+}
+
+
+@pytest.mark.parametrize("case", list(OPENINGS))
+def test_the_opening_of_a_refusal_is_short_and_leaves_its_words_as_they_were(case: str) -> None:
+    """The part of a refusal's line that takes the focus: its first sentence when that is
+    within the limit, and otherwise the sentence up to its last colon, semicolon or comma
+    before the limit, or failing those its last space. The opening, a space and the rest
+    are the line as written. One unbroken run longer than the limit can't be cut and is
+    left whole."""
+    said, expected = OPENINGS[case]
+    opening, rest = opening_of(said)
+
+    assert f"{opening} {rest}".strip() == said
+    assert opening == (expected if expected is not None else said.removesuffix(" More."))
+    assert len(opening) <= OPENING_LIMIT or " " not in opening
 
 
 NEIGHBOR_REFUSALS = {

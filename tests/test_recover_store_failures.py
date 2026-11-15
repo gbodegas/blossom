@@ -998,6 +998,7 @@ def test_a_refusal_family_review_shows_lands_in_one_place(
             line = FAMILY_LINE.findall(page)[0]
             said = words(line).removesuffix(" Go to the row.")
             assert words(line.split("</span>", 1)[0]) == first_sentence(said)
+            assert len(first_sentence(said)) <= 100
 
 
 def test_a_decision_on_a_decided_draft_keeps_its_409_and_the_reason_without_the_page(
