@@ -11,6 +11,7 @@ Every review is read from synthetic screenshots of Wren's homework list.
 import dataclasses
 import hashlib
 import json
+import logging
 import pathlib
 import sqlite3
 import threading
@@ -53,7 +54,14 @@ from blossom.stores.import_drafts import (
     new_creation_token,
 )
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
-from tests.support import OBSERVED_AT, closed_world, fixture_clock, homework_answer, homework_card
+from tests.support import (
+    OBSERVED_AT,
+    closed_world,
+    fixture_clock,
+    homework_answer,
+    homework_card,
+    sqlite_failure,
+)
 
 HOMEWORK = "homework_screenshot"
 TIMING = ReadTiming(seconds=1.0, input_tokens=10, output_tokens=10)
@@ -2524,3 +2532,78 @@ def test_a_save_for_later_s_own_answers_leave_every_open_row_s_text_boxes_as_the
     assert all(len(found) == 1 for found in text_boxes(after).values())
     assert set(text_boxes(before)) == {split_key, one_key, plain.key}
     assert len([p for p in before.open if p.key == split_key]) == 3
+
+
+# ------------------------------------------------------------------ a failure inside SQLite
+
+
+PRIVATE: Final = "Maya's Geometry worksheet, page 12"
+"""Synthetic words of the kind an error's text can quote from what is stored."""
+
+FAILURES: Final = {
+    "a busy file": (sqlite3.OperationalError, "SQLITE_BUSY", "busy", None),
+    "an extended busy code": (sqlite3.OperationalError, "SQLITE_BUSY_SNAPSHOT", "busy", None),
+    "a locked table": (
+        sqlite3.OperationalError,
+        "SQLITE_LOCKED",
+        "failed",
+        "OperationalError SQLITE_LOCKED",
+    ),
+    "an extended locked code": (
+        sqlite3.OperationalError,
+        "SQLITE_LOCKED_SHAREDCACHE",
+        "failed",
+        "OperationalError SQLITE_LOCKED_SHAREDCACHE",
+    ),
+    "an error with no code": (sqlite3.OperationalError, None, "failed", "OperationalError"),
+    "a constraint": (
+        sqlite3.IntegrityError,
+        "SQLITE_CONSTRAINT_UNIQUE",
+        "failed",
+        "IntegrityError SQLITE_CONSTRAINT_UNIQUE",
+    ),
+    "a database error with no code": (sqlite3.DatabaseError, None, "failed", "DatabaseError"),
+    "a transaction left open": (homework_saves.TransactionLeftOpen, None, "failed", None),
+}
+"""A failure raised inside the homework transaction: its class, the name of its result code if
+it has one, what the save answers, and how the save's one log line names it, none where the
+save logs nothing."""
+
+
+class FailsInside(SaveHooks):
+    """Raises its error inside the homework transaction, before the acceptance is written."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def before_acceptance(self) -> None:
+        raise self.error
+
+
+@pytest.mark.parametrize("case", list(FAILURES))
+def test_a_failure_inside_sqlite_is_busy_by_its_primary_code_and_logged_by_its_kind(
+    case: str, house: House, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The homework transaction fails inside SQLite, its error's words quoting private text. A
+    busy file, by its primary code, an extended busy code among them, answers busy and logs
+    nothing. A locked table, an error with no code and every other failure answer failed, with
+    one line that names the failure by its class and its code's name and never by its words; a
+    transaction left open, which its store logs where it raises, gets no second line. Nothing
+    is written, and the same press saves afterward."""
+    kind, name, reason, named = FAILURES[case]
+    draft_id = two_row_review(house)
+    press = press_of(house, draft_id)
+    before = world(house)
+    failure = sqlite_failure(kind, f"UNIQUE constraint failed: {PRIVATE}", name)
+
+    with caplog.at_level(logging.DEBUG, logger="blossom.screenshot_save"):
+        outcome = save(house, press, FailsInside(failure))
+    said = [line.getMessage() for line in caplog.records if line.name == "blossom.screenshot_save"]
+    after = world(house)
+    again = save(house, press)
+
+    assert outcome == NotSaved(reason)
+    assert said == ([] if named is None else [f"A screenshot save's transaction failed: {named}"])
+    assert PRIVATE not in caplog.text
+    assert after == before
+    assert isinstance(again, Saved)

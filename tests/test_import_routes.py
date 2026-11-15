@@ -113,6 +113,7 @@ from tests.support import (
     selector,
     signed_in,
     signed_in_household,
+    sqlite_failure,
     state_of,
     style_rules,
     unshielded,
@@ -2322,6 +2323,67 @@ def test_a_save_that_saves_nothing_answers_with_the_typing_in_the_form(
     assert says_each(refused.text, CHANGED_BESIDE_ANSWERS)
     assert 'value="Sentence Combining"' in review_form(refused.text)
     assert "A new Sentence Combining (1)" in review_form(refused.text)
+
+
+PRIVATE_WORDS: Final = "Maya's Geometry worksheet, page 12"
+"""Synthetic words of the kind an error's text can quote from what is stored."""
+
+SAVE_FAILURES: Final = {
+    "a busy file": (sqlite3.OperationalError, "SQLITE_BUSY", "busy", None),
+    "a locked table": (
+        sqlite3.OperationalError,
+        "SQLITE_LOCKED",
+        "failed",
+        "OperationalError SQLITE_LOCKED",
+    ),
+    "an error with no code": (sqlite3.OperationalError, None, "failed", "OperationalError"),
+}
+"""A failure raised inside a Save press's homework transaction: its class, the name of its
+result code if it has one, which sentence the page says, and how the save's log line names it,
+none for a busy file."""
+
+
+@pytest.mark.parametrize("case", list(SAVE_FAILURES))
+def test_a_save_that_fails_inside_sqlite_says_busy_only_for_a_busy_file_and_keeps_the_typing(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    case: str,
+) -> None:
+    """A Save press whose homework transaction fails inside SQLite, the error's words quoting
+    private text. A busy file says the file was busy; a locked table and an error with no code
+    say only that the homework wasn't saved. Each answers 503 with the review and what was
+    typed still in its box, saves nothing, and shows none of the error's words. The save's log
+    names the failure by its class and its code's name, once, and holds no line for a busy
+    file."""
+    kind, name, reason, named = SAVE_FAILURES[case]
+    other = "failed" if reason == "busy" else "busy"
+
+    def failing() -> None:
+        raise sqlite_failure(kind, f"UNIQUE constraint failed: {PRIVATE_WORDS}", name)
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        field = box_subject(page, "title")
+        typed = {f"correct:{field}": "Sentence Combining"}
+        kept = send(browser, draft_id, page_post(page, "keep", typed=typed))
+        posted = page_post(kept.text, "save", tick=units_on(kept.text)[:1])
+        monkeypatch.setattr(screenshot_save.NO_HOOKS, "before_acceptance", failing)
+        with caplog.at_level(logging.DEBUG):
+            answer = send(browser, draft_id, posted)
+        accepted = acceptances_of(browser, draft_id)
+
+    said = [line.getMessage() for line in caplog.records if line.name == "blossom.screenshot_save"]
+    assert kept.status_code == 200
+    assert answer.status_code == 503
+    assert says(answer.text, imports.PRESS_SAID[reason])
+    assert not says(answer.text, imports.PRESS_SAID[other])
+    assert 'value="Sentence Combining"' in review_form(answer.text)
+    assert accepted == 0
+    assert PRIVATE_WORDS not in answer.text
+    assert PRIVATE_WORDS not in caplog.text
+    assert said == ([] if named is None else [f"A screenshot save's transaction failed: {named}"])
 
 
 def test_a_save_refused_while_a_group_is_open_keeps_the_ticks_it_sent(

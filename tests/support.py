@@ -2495,6 +2495,17 @@ def refusing_coded(name: str) -> Callable[..., None]:
     return refused
 
 
+def sqlite_failure(kind: type[sqlite3.Error], words: str, name: str | None = None) -> sqlite3.Error:
+    """A failure as SQLite makes one: ``kind`` with these words and, when ``name`` names a result
+    code (``"SQLITE_LOCKED"``), that code and name set on it as the module sets them. With no
+    name it carries no code, as an error made in Python carries none."""
+    error = kind(words)
+    if name is not None:
+        error.sqlite_errorcode = getattr(sqlite3, name)
+        error.sqlite_errorname = name
+    return error
+
+
 def unreadable_claim(
     store: ProjectStateStore, assignment_id: str, value: str = "2026-10-06"
 ) -> None:
