@@ -40541,6 +40541,9 @@ review. The first leaves the review finished and not closed, the second closed, 
 open with its saved progress moved on."""
 CORRECTIONS_NOT_SAVED: Final = "This attempt did not save the corrections you typed."
 """Keep's corrections sentence with no instruction to use Save review for later."""
+OUT_OF_DATE_ENDED: Final = "This page is out of date."
+"""The out-of-date notice as a page known to have ended says it: no instruction to check the
+review or try again."""
 KEEP_S_FOCUS: Final = ['<div role="status" id="kept" tabindex="-1" autofocus>']
 
 
@@ -40654,7 +40657,9 @@ def test_keep_on_a_review_read_finished_and_not_closed_says_its_answers_were_kep
     review finished and not closed. At 200, with no form, its status block says that its answers
     were kept before the review ended, then that this attempt did not save the corrections typed,
     with no instruction to use Save review for later, which a finished review refuses. Nothing
-    says the answers were kept by this attempt. Its alert is the out-of-date notice."""
+    says the answers were kept by this attempt. Its alert is the out-of-date notice as a page
+    known to have ended says it, with no instruction to check the review or try again: a read
+    that says finished is enough, closed or not."""
     with here(open_settings(tmp_path)) as browser:
         beside = a_press_beside_another_tab_s(
             browser, monkeypatch, "saves the last group, its cleanup refused"
@@ -40672,10 +40677,11 @@ def test_keep_on_a_review_read_finished_and_not_closed_says_its_answers_were_kep
     assert (kept.stored, kept.dropped) == (1, 0)
     page = a_page_with_no_form_beside_another_tab_s_press(answer, beside.posted)
     assert page.kept == [KEPT_BEFORE_IT_ENDED, CORRECTIONS_NOT_SAVED]
-    assert page.said == [imports.OUT_OF_DATE]
     assert "answers were kept by this attempt" not in text
     assert "Use Save review for later" not in text
     assert beside.reads == [False, True, True]
+    assert page.said == [OUT_OF_DATE_ENDED]
+    assert "trying again" not in text
 
 
 def test_keep_whose_read_after_its_empty_rows_alone_says_finished_says_the_ended_lines(
@@ -40785,7 +40791,8 @@ def test_save_for_later_behind_on_a_review_read_finished_and_not_closed_says_its
     forced as for Keep, so its reads find the review finished and not closed. At 409, with no
     form, its status block says only that its answers were kept by this attempt, and its
     problems say that its corrections weren't saved for later and that the typing is still here,
-    then the out-of-date notice. It reads the review three times."""
+    then the out-of-date notice as a page known to have ended says it, with no instruction to
+    check the review or try again. It reads the review three times."""
     with here(open_settings(tmp_path)) as browser:
         beside = a_press_beside_another_tab_s(
             browser, monkeypatch, "saves the last group, its cleanup refused", "later"
@@ -40800,8 +40807,9 @@ def test_save_for_later_behind_on_a_review_read_finished_and_not_closed_says_its
     assert (kept.stored, kept.dropped) == (1, 0)
     page = a_page_with_no_form_beside_another_tab_s_press(answer, beside.posted, 409)
     assert page.kept == [imports.PRESS_SAID["answers_kept"]]
-    assert page.said == [LATER_REFUSED_HERE, imports.OUT_OF_DATE]
     assert len(beside.reads) == 3
+    assert page.said == [LATER_REFUSED_HERE, OUT_OF_DATE_ENDED]
+    assert "trying again" not in page_text(answer)
 
 
 # ------------------------------- a page out of date; what a save left, once its review has ended
