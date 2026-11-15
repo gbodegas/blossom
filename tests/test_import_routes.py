@@ -136,6 +136,15 @@ def says_each(page: str, lines: Sequence[str]) -> bool:
     return all(says(page, line) for line in lines)
 
 
+ONE_LEFT_THEN: Final = (
+    "Saved: 1 new assignment. At the time of this save, 1 item still needed checking."
+)
+THREE_LEFT_THEN: Final = (
+    "Saved: 1 new assignment. At the time of this save, 3 items still needed checking."
+)
+"""A save's counts as an ended review's page says them: what it left, as it stood at the save."""
+
+
 KEPT_THEN_WARNING: Final = (
     imports.PRESS_SAID["answers_kept"],
     imports.PRESS_SAID["keep_warning"],
@@ -1529,7 +1538,7 @@ def test_a_page_made_before_a_newer_answer_keeps_nothing_and_says_it_is_out_of_d
     assert answers == before
     for shown in (after, refused, later):
         assert says(shown, imports.OUT_OF_DATE)
-        assert not says(shown, imports.CHANGED_IN_ANOTHER_TAB)
+        assert "another tab" not in shown
         assert not says(shown, "weren't kept")
 
 
@@ -2259,7 +2268,7 @@ def test_a_small_form_from_a_page_before_a_change_changes_nothing(
             ),
         )
 
-    assert says(left, imports.CHANGED_IN_ANOTHER_TAB)
+    assert says(left, imports.OUT_OF_DATE)
     assert says(left, imports.AFTER_SAID["nothing_set_aside"])
     assert says(finished, imports.AFTER_SAID["nothing_set_aside"])
     assert says(discarded, imports.AFTER_SAID["nothing_discarded"])
@@ -2448,7 +2457,7 @@ def test_a_card_that_couldn_t_be_read_can_be_set_aside_and_the_review_then_finis
         done = closed(browser, draft_id)
 
     assert says(left, imports.AFTER_SAID["set_aside"])
-    assert says(refused, imports.CHANGED_IN_ANOTHER_TAB)
+    assert says(refused, imports.OUT_OF_DATE)
     assert sorted(states.values()) == ["discarded", "open", "open"]
     assert left_again.status_code == 303
     assert says(saved.text, imports.counted(1, 0, 0, 0))
@@ -2699,7 +2708,7 @@ def test_a_page_from_before_a_change_answers_with_its_typing_in_the_current_revi
         stale = send(browser, draft_id, page_post(page, "keep", typed=typed))
 
     assert stale.status_code == 409
-    assert not says(stale.text, imports.CHANGED_IN_ANOTHER_TAB)
+    assert "another tab" not in stale.text
     assert says(stale.text, imports.OUT_OF_DATE)
     assert 'value="Sentence Craft"' in review_form(stale.text)
 
@@ -8608,9 +8617,10 @@ def test_a_read_refused_after_a_save_committed_says_what_it_saved_and_gives_the_
     refused, after the save committed (the save itself, or its resend): the press
     answers with what it saved in the success panel, which takes the focus, never that nothing
     was added nor that the review is finished, and gives the typed title back; a review found
-    expired or gone says so there, a busy one says neither. Sent again once the review can be
-    read, it answers with the counts and the title to copy, with no form, as the save's own raise
-    of the revision leaves its page behind, and nothing is written twice."""
+    expired or gone says so there, with what the save left as it stood then, and a busy one says
+    neither. Sent again once the review can be read, it answers with the counts and the title to
+    copy, with no form, as the save's own raise of the revision leaves its page behind, and
+    nothing is written twice."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         page = her_name_answered(browser, draft_id, page)
@@ -8632,11 +8642,12 @@ def test_a_read_refused_after_a_save_committed_says_what_it_saved_and_gives_the_
         after = assignment_count(browser)
 
     counts = "Saved: 1 new assignment. 1 still needs checking."
+    heading = ONE_LEFT_THEN if busy in (DraftExpired, DraftNotFound) else counts
     shown = OUTCOME.search(answer.text)
     assert answer.status_code == 200
     assert shown is not None
     assert re.search(
-        rf'<h2 id="outcome-heading" tabindex="-1" autofocus>{re.escape(counts)}</h2>',
+        rf'<h2 id="outcome-heading" tabindex="-1" autofocus>{re.escape(heading)}</h2>',
         shown.group(1),
     )
     assert not says(answer.text, imports.SAID["busy"])
@@ -9674,7 +9685,7 @@ ENDED_LINES: Final = {
         "The homework wasn't saved because the household file was busy; nothing of it was written."
     ),
     "G6b": G6B,
-    "counts": "Saved: 1 new assignment. 1 still needs checking.",
+    "counts": ONE_LEFT_THEN,
 }
 ENDED_CASES: Final = {
     "keep": (200, 2, ["kept_before_ended"], []),
@@ -9797,7 +9808,6 @@ def test_an_ended_review_s_page_says_each_press_line_as_listed() -> None:
         said["unsaved_typing"]: [],
         imports.wasnt_saved("gate"): [imports.wasnt_saved("gate")],
         imports.wasnt_saved("open"): [imports.wasnt_saved("open")],
-        imports.wasnt_saved("stale"): [imports.wasnt_saved("stale")],
     }
     for line, ended in expected.items():
         assert imports.ended_lines([line], saved=False) == ended, line
@@ -9834,7 +9844,7 @@ def test_a_committed_save_with_a_changed_group_never_says_no_homework_when_its_r
 
     gone = imports.SAID["expired" if ending is DraftExpired else "absent"]
     assert answer.status_code == 200
-    assert says(answer.text, "Saved: 1 new assignment. 1 still needs checking.")
+    assert says(answer.text, ONE_LEFT_THEN)
     assert not says(answer.text, imports.NO_HOMEWORK)
     assert not says(answer.text, imports.PRESS_SAID["changed"])
     assert says(answer.text, gone)
@@ -9846,8 +9856,8 @@ def test_an_ended_review_s_page_leaves_out_the_rows_left_unsaved_and_keeps_the_t
 ) -> None:
     """A save that committed one group with a title typed for the other: on a review that stays
     readable it says the changes on the rows below aren't saved yet; on a review found ended at
-    the page's read, that line is left out, while the counts stay and the open row's Class box
-    and typed title come back to copy."""
+    the page's read, that line is left out, while the counts stay, with what was left said as it
+    stood at the save, and the open row's Class box and typed title come back to copy."""
     answers: dict[str, Answer] = {}
     for mode in ("live", "ended"):
         with here(open_settings(tmp_path / mode)) as browser:
@@ -9874,7 +9884,7 @@ def test_an_ended_review_s_page_leaves_out_the_rows_left_unsaved_and_keeps_the_t
     assert says(live, imports.PRESS_SAID["unsaved_typing"])
     assert not says(ended, imports.PRESS_SAID["unsaved_typing"])
     assert says(live, counts)
-    assert says(ended, counts)
+    assert says(ended, ONE_LEFT_THEN)
     assert says(ended, imports.SAID["expired"])
     back = ["Science 8", "Chains Guide Six"]
     assert TYPED_BACK.findall(ended) == back
@@ -12777,7 +12787,7 @@ def test_a_save_whose_review_has_ended_promises_no_cleanup(
         answer = send(browser, draft_id, posted)
         put_back()
 
-    shown = the_saved_heading(answer, ONE_OF_TWO)
+    shown = the_saved_heading(answer, ONE_LEFT_THEN)
     assert not says(answer.text, imports.PRESS_SAID["incomplete"])
     assert says(shown, imports.SAID["expired" if ending is DraftExpired else "absent"])
     left_open = json.loads(other.removeprefix("correct:"))[0]
@@ -12795,7 +12805,9 @@ def test_a_review_closed_by_another_tab_never_costs_the_counts_or_the_typing(
 ) -> None:
     """The save committed, leaving a row open with a title typed on it, and another tab closes
     the review before a later read. Whichever read finds it closed, the answer keeps the counts
-    and the typing: in the row's box, or in a box to copy."""
+    and the typing: in the row's box, or in a box to copy. Where the page's own read is the one
+    that finds it closed, or a later one than the first to, what the save left is said as it
+    stood at the save."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         page = her_name_answered(browser, draft_id, page)
@@ -12808,8 +12820,9 @@ def test_a_review_closed_by_another_tab_never_costs_the_counts_or_the_typing(
         answer = send(browser, draft_id, posted)
         put_back()
 
+    its_page_s_read = {"save": 3, "resent": 2}[path]
     assert answer.status_code == 200
-    assert says(answer.text, ONE_OF_TWO)
+    assert says(answer.text, ONE_LEFT_THEN if at <= its_page_s_read else ONE_OF_TWO)
     assert TYPED_ON_THE_OTHER in html.unescape(answer.text)
     assert not says(answer.text, imports.PRESS_SAID["incomplete"])
 
@@ -13934,7 +13947,7 @@ def test_a_review_discarded_before_the_page_s_read_gives_the_typing_back(
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    shown = the_saved_heading(answer, ONE_OF_TWO)
+    shown = the_saved_heading(answer, ONE_LEFT_THEN)
     assert says(shown, imports.SAID["closed"])
     owed_now = owed_past_a_save(posted, other, own=path == "save")
     assert TYPED_ON_THE_OTHER in owed_now
@@ -24937,7 +24950,9 @@ def test_a_later_refused_behind_its_page_s_save_says_so_beneath_that_save(
 ) -> None:
     """Real presses: answers kept, one group saved from that page, then Save for later from it,
     which its write refuses as behind that Save. Timing forced past that write to the Save's
-    receipt: its counts, status, copies and links, and the line beneath them."""
+    receipt: its counts, status, copies and links, and the line beneath them. Where a line of
+    the page says its answers were kept before the review ended, the counts say what that save
+    left as it stood at the save."""
     with here(open_settings(tmp_path)) as browser:
         beside = a_press_that_can_commit(browser, monkeypatch, "later", words=words)
         before = review_as_stored(browser, beside.draft_id)
@@ -24947,8 +24962,10 @@ def test_a_later_refused_behind_its_page_s_save_says_so_beneath_that_save(
         after = review_as_stored(browser, beside.draft_id)
 
     page = recovery_of(answer)
+    then = "before this review ended" in page_text(answer)
+    live = "Saved: 1 new assignment. 1 still needs checking."
     assert answer.status_code == 200, page_text(answer)[:400]
-    assert "Saved: 1 new assignment. 1 still needs checking." in the_outcome_heading(answer)
+    assert (ONE_LEFT_THEN if then else live) in the_outcome_heading(answer)
     says_the_refusal_beneath_the_earlier_save(answer, LATER_REFUSED_HERE)
     carried = [WORDS_BESIDE] if words else []
     assert copies_in_order(answer) == in_reader_order(
@@ -25117,8 +25134,8 @@ def test_keep_storing_an_answer_past_its_next_read_says_so_apart_with_no_form(
 ) -> None:
     """Here the press itself commits, on the earlier save's page. The counts are the earlier save's,
     its own answers lines sit apart from them and from the problem message, some answers as kept
-    before the review ended where the read says it ended, and a connection of its own holds the
-    answer it stored."""
+    before the review ended where the read says it ended, with the counts then said as they stood
+    at that save, and a connection of its own holds the answer it stored."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, field, value = a_keep_storing_an_answer_beside_a_save(
             browser, monkeypatch, text
@@ -25131,7 +25148,8 @@ def test_keep_storing_an_answer_past_its_next_read_says_so_apart_with_no_form(
 
     assert not text or text in in_reader_order(posted)
     says_the_earlier_save_with_no_form(answer, draft_id, in_reader_order(posted))
-    the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
+    live = "Saved: 1 new assignment. 3 still need checking."
+    the_saved_heading(answer, THREE_LEFT_THEN if read in THE_ENDINGS else live)
     says_this_keep_stored_its_answers(
         answer, SOME_KEPT_BEFORE_IT_ENDED if read in THE_ENDINGS else SOME_KEPT_SHORT
     )
@@ -25902,7 +25920,7 @@ def test_keep_storing_an_answer_says_it_was_kept_on_a_page_that_read_the_review_
         monkeypatch.undo()
 
     text = page_text(answer)
-    the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
+    the_saved_heading(answer, THREE_LEFT_THEN)
     assert THE_PAGES_ENDING[ending] in text
     assert f'<p class="note">{escape(SOME_KEPT_BEFORE_IT_ENDED)}</p>' in answer.text
     assert answer.text.count(str(escape(SOME_KEPT_BEFORE_IT_ENDED))) == 1
@@ -25943,7 +25961,7 @@ def test_keep_storing_an_answer_says_it_was_kept_when_the_first_read_of_its_page
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
 
-    the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
+    the_saved_heading(answer, THREE_LEFT_THEN)
     assert imports.SAID["closed"] in page_text(answer)
     assert f'<p class="note">{escape(SOME_KEPT_BEFORE_IT_ENDED)}</p>' in answer.text
     assert page_text(answer).count(NOT_KEPT_FOR_SAVED) == 1
@@ -26942,6 +26960,15 @@ SOME_KEPT_THEN_WARNING: Final = (
 its two answers lines, then its corrections warning."""
 
 
+def the_counts_beside_its_kept_line(answer: Answer) -> None:
+    """On a page that can't show the review: the earlier save's counts as its heading, said as
+    they stood at the save where a line of the page says this press's answers were kept before
+    the review ended, and as an open review says them where none does."""
+    then = "before this review ended" in page_text(answer)
+    live = "Saved: 1 new assignment. 3 still need checking."
+    the_saved_heading(answer, THREE_LEFT_THEN if then else live)
+
+
 @pytest.mark.parametrize("counts", ["shown", "empty", "refused"])
 @pytest.mark.parametrize("own", ["refused", "expired", "removed", "closed"])
 @pytest.mark.parametrize("look", list(THE_LOOKS_FOR_ITS_RECEIPT))
@@ -26957,7 +26984,10 @@ def test_save_with_nothing_ticked_keeps_its_line_when_a_later_look_finds_its_rec
     """Its kept line is its own write's, as kept before the review ended once a read saw the
     ending, and not at all past an observed close with empty counts. Refused counts aren't empty
     counts, and read nothing more. Each page says once that this attempt did not keep answers for
-    homework already saved. The earlier save's counts stay the heading, at 200, with no form."""
+    homework already saved. The earlier save's counts stay the heading, at 200, with no form;
+    where the page's own read says the review ended, what that save left is said as it stood at
+    the save; where that read is refused, the same beside a line saying its answers were kept
+    before the review ended, and otherwise as on a review still open."""
     ended = "expired" in look or "removed" in look or (counts != "refused" and own != "refused")
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, field, value = a_save_with_nothing_ticked_beside_its_receipt(
@@ -26973,8 +27003,10 @@ def test_save_with_nothing_ticked_keeps_its_line_when_a_later_look_finds_its_rec
     text = page_text(answer)
     assert answer.status_code == 200
     assert 'name="correct:' not in answer.text
-    if counts == "shown":
-        the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
+    if counts == "shown" and own == "refused":
+        the_counts_beside_its_kept_line(answer)
+    elif counts == "shown":
+        the_saved_heading(answer, THREE_LEFT_THEN)
     else:
         says_the_save_with_its_counts_unread(answer)
     assert SOME_KEPT_BEFORE_IT_ENDED not in the_outcome_heading(answer)
@@ -27145,7 +27177,7 @@ def test_save_with_nothing_ticked_keeps_its_line_s_tense_and_place_when_its_rows
 
     assert answer.status_code == 200
     assert 'name="correct:' not in answer.text
-    the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
+    the_counts_beside_its_kept_line(answer)
     if stored:
         says_this_keep_stored_its_answers(answer, THE_LINE_BESIDE_ITS_ROWS[look])
     else:
@@ -27172,7 +27204,8 @@ def test_save_with_nothing_ticked_reads_once_more_when_its_rows_come_back_empty(
     """Timing forced: a later look finds its receipt, its own read finds the review open, and its
     rows come back empty, which can't tell an ending from nothing open. So a press with a kept line
     reads once more, and that read says whether its answers were kept by this attempt or before
-    the review ended. A read of a close beside empty counts leaves the kept line unsaid, the close
+    the review ended; beside that second line the earlier save's counts say what was left as it
+    stood at the save. A read of a close beside empty counts leaves the kept line unsaid, the close
     having removed its answers, and the page still says that this attempt did not keep answers for
     homework already saved. A read that fails says nothing of an ending. A press with no kept
     line reads nothing more, and says only that this attempt did not keep answers for homework
@@ -27209,7 +27242,7 @@ def test_save_with_nothing_ticked_reads_once_more_when_its_rows_come_back_empty(
     assert answer.status_code == 200
     assert 'name="correct:' not in answer.text
     if counts == "shown":
-        the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
+        the_counts_beside_its_kept_line(answer)
     else:
         says_the_save_with_its_counts_unread(answer)
     if not stored or (read == "closed" and counts == "empty"):
@@ -27261,7 +27294,7 @@ def test_save_with_a_group_ticked_reads_nothing_more_when_its_rows_come_back_emp
     assert answer.status_code == 200
     assert 'name="correct:' not in answer.text
     if counts == "shown":
-        the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
+        the_counts_beside_its_kept_line(answer)
     else:
         says_the_save_with_its_counts_unread(answer)
     says_this_keep_stored_its_answers(answer, THE_LINE_BESIDE_ITS_ROWS[look])
@@ -29359,11 +29392,11 @@ def test_a_refused_post_says_why_beneath_an_earlier_save_s_result(
     read: str,
     look: str,
 ) -> None:
-    """An earlier save of this page found: its result and counts first, as they stand, then the
-    press's reason once in the note style, apart from the heading and any alert; past an ended read,
-    the ended review's words too. Save looks for it first, whatever the read after finds, and again
-    after that read when its first look finds none; Keep and Save for later look only past a
-    refused or ended read."""
+    """An earlier save of this page found: its result and counts first, then the press's reason
+    once in the note style, apart from the heading and any alert; past an ended read, the ended
+    review's words too, and what that save left said as it stood at the save. Save looks for it
+    first, whatever the read after finds, and again after that read when its first look finds
+    none; Keep and Save for later look only past a refused or ended read."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted = a_refused_post(browser, monkeypatch, press, refusal, "found")
         calls = the_read_after_it(browser, monkeypatch, draft_id, read, "found")
@@ -29374,8 +29407,9 @@ def test_a_refused_post_says_why_beneath_an_earlier_save_s_result(
 
     line = REFUSAL_SAID[refusal]
     text = page_text(answer)
+    counts = "Saved: 1 new assignment. 1 still needs checking."
     assert answer.status_code == 200, text[:300]
-    assert "Saved: 1 new assignment. 1 still needs checking." in text
+    assert (ONE_LEFT_THEN if read in ("closed", "expired", "removed") else counts) in text
     assert text.index("Saved: 1 new assignment.") < text.index(line)
     says_its_line_once_as_a_note(answer, line)
     assert "by this attempt" in line
@@ -32708,8 +32742,8 @@ def test_a_save_refused_as_stale_and_left_behind_says_the_refused_save_lines(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Timing forced by ``a_stale_save_left_behind``, then Save from a page loaded before. No form;
-    no homework saved by this attempt, then the out-of-date notice, in place of the line saying the
-    review changed in another tab; the title to copy and both links."""
+    no homework saved by this attempt, then the out-of-date notice, once, and no tab named; the
+    title to copy and both links."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, _, row, other = settled_review(browser, monkeypatch)
         mine = loaded(browser, draft_id)
@@ -32727,7 +32761,7 @@ def test_a_save_refused_as_stale_and_left_behind_says_the_refused_save_lines(
     assert not page.form
     assert page.kept == [imports.PRESS_SAID["answers_kept"]]
     assert page.said == [imports.NO_HOMEWORK, imports.OUT_OF_DATE]
-    assert imports.wasnt_saved("stale") not in page_text(answer)
+    assert "another tab" not in page_text(answer)
     assert "Y Typed" in page.copies
     assert page.copies == owed_in_order(posted)
     assert page.links == ["Back to the review", "Back to Family review"]
@@ -32740,7 +32774,9 @@ def test_a_save_refused_as_stale_and_left_behind_keeps_its_line_where_no_rows_ar
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, where: str
 ) -> None:
     """Timing forced by ``a_stale_save_left_behind`` and a hook on its rows' read. These pages had
-    no form already and say what they say where nothing is behind, with no out-of-date notice."""
+    no form already. Where its rows' read is refused the Save says its own lines, that no homework
+    was saved by this attempt and that the page is out of date, once each; where the review is
+    then found expired, neither, and no tab is named on either."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, _, row, other = settled_review(browser, monkeypatch)
         mine = loaded(browser, draft_id)
@@ -32756,15 +32792,19 @@ def test_a_save_refused_as_stale_and_left_behind_keeps_its_line_where_no_rows_ar
 
     text = page_text(answer)
     assert outcomes == [NotSaved("stale")]
-    assert imports.OUT_OF_DATE not in text
-    assert imports.NO_HOMEWORK not in text
+    assert "another tab" not in text
     assert copied(answer) == owed_texts(posted)
     if where == "its rows' read refused":
         assert answer.status_code == 409
-        assert recovery_of(answer).said == [imports.wasnt_saved("stale"), imports.REVIEW_NOT_SHOWN]
+        assert recovery_of(answer).said == [
+            imports.NO_HOMEWORK,
+            imports.OUT_OF_DATE,
+            imports.REVIEW_NOT_SHOWN,
+        ]
     else:
         assert answer.status_code == 410
-        assert imports.wasnt_saved("stale") not in text
+        assert "out of date" not in text
+        assert imports.NO_HOMEWORK not in text
         assert imports.SAID["expired"] in text
 
 
@@ -32792,7 +32832,7 @@ def test_a_save_refused_as_stale_and_left_behind_with_rows_back_empty_says_the_r
     assert not page.form
     assert page.kept == [imports.PRESS_SAID["answers_kept"]]
     assert page.said == [imports.NO_HOMEWORK, imports.OUT_OF_DATE]
-    assert imports.wasnt_saved("stale") not in page_text(answer)
+    assert "another tab" not in page_text(answer)
     assert "Y Typed" in page.copies
     assert page.copies == owed_in_order(posted)
     assert page.links == ["Back to the review", "Back to Family review"]
@@ -40762,3 +40802,298 @@ def test_save_for_later_behind_on_a_review_read_finished_and_not_closed_says_its
     assert page.kept == [imports.PRESS_SAID["answers_kept"]]
     assert page.said == [LATER_REFUSED_HERE, imports.OUT_OF_DATE]
     assert len(beside.reads) == 3
+
+
+# ------------------------------- a page out of date; what a save left, once its review has ended
+
+PAGE_IS_OUT_OF_DATE: Final = "This page is out of date. Check the review before trying again."
+NO_HOMEWORK_BY_IT: Final = "No homework was saved by this attempt."
+SMALL_PRESSES_BEHIND: Final = {
+    "Leave this group unsaved": ("leave-1", "Nothing was set aside."),
+    "Finish without the rest": ("finish", "Nothing was set aside."),
+    "Discard": ("discard", "Nothing was discarded."),
+    "Not hers": ("not-hers", "Nothing was discarded."),
+}
+"""Each small press of the review, by its button: its form on the page, and what it says of
+itself when the page it came from isn't at the review's version."""
+
+
+def links_of(answer: Answer) -> list[tuple[str, str]]:
+    """Each link in the page's main part: where it leads and what it says."""
+    part = answer.text[answer.text.find("<main") : answer.text.find("</main>")]
+    found = re.findall(r'<a href="([^"]*)"[^>]*>(.*?)</a>', part, re.S)
+    return [(html.unescape(href), re.sub(r"<[^>]+>", "", label).strip()) for href, label in found]
+
+
+@pytest.mark.parametrize("press", list(SMALL_PRESSES_BEHIND))
+def test_a_small_press_from_a_page_this_browser_left_behind_says_the_page_is_out_of_date(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The page is left behind by this same browser's Keep, pressed on that page: no other tab
+    takes part. The press comes back to the review saying that the page is out of date and then
+    what it didn't do, names no tab, and changes nothing."""
+    form_id, result = SMALL_PRESSES_BEHIND[press]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        pressed = press_outside(browser, page, form_id)
+        shown = browser.get(pressed.headers["location"]) if pressed.status_code == 303 else pressed
+        states = row_states(browser, draft_id)
+        still_open = not closed(browser, draft_id)
+
+    text = page_text(shown)
+    assert pressed.status_code == 303
+    assert set(states.values()) == {"open"}
+    assert still_open
+    assert text.count(result) == 1
+    assert "another tab" not in text
+    assert text.count(PAGE_IS_OUT_OF_DATE) == 1
+    assert text.index(PAGE_IS_OUT_OF_DATE) < text.index(result)
+
+
+def test_a_small_press_s_note_isn_t_said_on_a_review_that_expired_before_its_page(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leave this group unsaved from a page left behind, the review past its expiry before the
+    redirect is followed: the review's address says it expired and nothing of the press's note,
+    so no instruction that needs the review."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        expires = state.import_drafts.snapshot(student, draft_id).expires_at
+        pressed = press_outside(browser, page, "leave-1")
+        clock_moved_to(monkeypatch, browser, expires + timedelta(hours=2))
+        shown = browser.get(pressed.headers["location"])
+
+    text = page_text(shown)
+    assert pressed.status_code == 303
+    assert shown.status_code == 410
+    assert imports.SAID["expired"] in text
+    assert "out of date" not in text
+    assert "trying again" not in text
+    assert "another tab" not in text
+
+
+def test_a_save_refused_by_the_version_says_no_homework_and_that_the_page_is_out_of_date(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Timing forced by a hook on ``save_homework``: the version raised just before it runs, a
+    stand-in for a press that moved it after this Save kept its answers, so the homework
+    transaction refuses the Save as stale. It answers on the review with its form: that no
+    homework was saved by this attempt, then that the page is out of date, and no tab named."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, row, _ = settled_review(browser, monkeypatch)
+        mine = loaded(browser, draft_id)
+        real: Callable[..., object] = save_homework
+        outcomes: list[object] = []
+
+        def moved_first(*args: object, **kwargs: object) -> object:
+            a_version_moved_by(browser, draft_id)
+            outcomes.append(real(*args, **kwargs))
+            return outcomes[-1]
+
+        monkeypatch.setattr(imports, "save_homework", moved_first)
+        answer = send(browser, draft_id, page_post(mine, "save", tick=[row]))
+        monkeypatch.undo()
+        saved = saved_from_the_review(browser)
+
+    text = page_text(answer)
+    assert outcomes == [NotSaved("stale")]
+    assert answer.status_code == 409
+    assert saved == []
+    assert recovery_of(answer).form
+    assert "another tab" not in text
+    assert "The homework wasn't saved" not in text
+    assert text.count(NO_HOMEWORK_BY_IT) == 1
+    assert text.count(PAGE_IS_OUT_OF_DATE) == 1
+    assert text.index(NO_HOMEWORK_BY_IT) < text.index(PAGE_IS_OUT_OF_DATE)
+
+
+def test_a_save_refused_by_the_version_on_a_review_then_expired_gives_no_instruction(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Timing forced by a hook on ``save_homework``: the version raised before it runs, a stand-in
+    for a press that moved it, so the Save is refused as stale; the clock past the review's expiry
+    once it returns, so the page's own read finds the review expired. That page says no homework
+    was saved by this attempt and that the page is out of date, with no instruction to check the
+    review or try again, and names no tab."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, row, _ = settled_review(browser, monkeypatch)
+        mine = loaded(browser, draft_id)
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        expires = state.import_drafts.snapshot(student, draft_id).expires_at
+        real: Callable[..., object] = save_homework
+        outcomes: list[object] = []
+
+        def stale_then_expired(*args: object, **kwargs: object) -> object:
+            a_version_moved_by(browser, draft_id)
+            outcomes.append(real(*args, **kwargs))
+            clock_moved_to(monkeypatch, browser, expires + timedelta(hours=2))
+            return outcomes[-1]
+
+        monkeypatch.setattr(imports, "save_homework", stale_then_expired)
+        answer = send(browser, draft_id, page_post(mine, "save", tick=[row]))
+        monkeypatch.undo()
+
+    text = page_text(answer)
+    assert outcomes == [NotSaved("stale")]
+    assert answer.status_code == 409
+    assert imports.SAID["expired"] in text
+    assert "Check the review before trying again." not in text
+    assert "another tab" not in text
+    assert text.count(NO_HOMEWORK_BY_IT) == 1
+    assert text.count("This page is out of date.") == 1
+
+
+@pytest.mark.parametrize("gone", ["expired", "removed"])
+def test_an_actual_partial_save_resent_after_its_review_ended_says_what_was_left_then(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, gone: str
+) -> None:
+    """Nothing forced but the clock: the real save of one group of two, the review then past its
+    expiry, or taken by the sweep, and the same press sent again. The live review said one still
+    needs checking; the ended review's page says one item still needed checking at the time of
+    the save. Its links are her week and Family review, both of which answer, and none leads
+    into the review."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, kept = kept_two_groups(browser, monkeypatch)
+        first, _ = units_on(kept)
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        expires = state.import_drafts.snapshot(student, draft_id).expires_at
+        posted = page_post(kept, "save", tick=[first])
+        live = send(browser, draft_id, posted)
+        clock_moved_to(monkeypatch, browser, expires + timedelta(hours=2))
+        if gone == "removed":
+            assert state.import_drafts.sweep().expired == 1
+        resent = send(browser, draft_id, posted)
+        links = links_of(resent)
+        answered = [browser.get(href).status_code for href, _ in links]
+
+    assert says(live.text, "Saved: 1 new assignment. 1 still needs checking.")
+    assert resent.status_code == 200
+    assert says(resent.text, imports.SAID["expired" if gone == "expired" else "absent"])
+    assert [label for _, label in links] == ["See them on her week", "Back to Family review"]
+    assert answered == [200, 200]
+    assert not any(href.startswith("/parent/imports") for href, _ in links)
+    assert "still needs checking" not in page_text(resent)
+    the_saved_heading(resent, ONE_LEFT_THEN)
+
+
+@pytest.mark.parametrize("gone", ["expired", "removed"])
+def test_a_partial_save_whose_review_ended_before_its_page_s_read_says_what_was_left_then(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, gone: str
+) -> None:
+    """Timing forced by a hook on ``save_homework``: once the real save of one group of two has
+    returned, the clock is past the review's expiry, and for ``removed`` the sweep has taken the
+    review, so the page's own read finds it ended. The page says what was left as it stood at
+    the save, and its one link is the way to Family review."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, kept = kept_two_groups(browser, monkeypatch)
+        first, _ = units_on(kept)
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        expires = state.import_drafts.snapshot(student, draft_id).expires_at
+        real: Callable[..., object] = save_homework
+
+        def saved_then_ended(*args: object, **kwargs: object) -> object:
+            outcome = real(*args, **kwargs)
+            clock_moved_to(monkeypatch, browser, expires + timedelta(hours=2))
+            if gone == "removed":
+                state.import_drafts.sweep()
+            return outcome
+
+        monkeypatch.setattr(imports, "save_homework", saved_then_ended)
+        answer = send(browser, draft_id, page_post(kept, "save", tick=[first]))
+        monkeypatch.undo()
+
+    assert answer.status_code == 200
+    assert says(answer.text, imports.SAID["expired" if gone == "expired" else "absent"])
+    assert [label for _, label in links_of(answer)] == ["Back to Family review"]
+    assert "still needs checking" not in page_text(answer)
+    the_saved_heading(answer, ONE_LEFT_THEN)
+
+
+def test_a_partial_save_resent_after_the_rest_was_left_unsaved_says_what_was_left_then(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing forced: the real save of one group of two, then Finish without the rest, which
+    closes the review, then the same Save sent again. The finished review's page says what the
+    save left as it stood at the save, since nothing is left to check now."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, kept = kept_two_groups(browser, monkeypatch)
+        first, _ = units_on(kept)
+        posted = page_post(kept, "save", tick=[first])
+        live = send(browser, draft_id, posted)
+        press_outside(browser, live.text, "finish")
+        done = closed(browser, draft_id)
+        resent = send(browser, draft_id, posted)
+
+    assert says(live.text, "Saved: 1 new assignment. 1 still needs checking.")
+    assert done
+    assert resent.status_code == 200
+    assert says(resent.text, imports.SAID["closed"])
+    assert "still needs checking" not in page_text(resent)
+    the_saved_heading(resent, ONE_LEFT_THEN)
+
+
+@pytest.mark.parametrize(
+    ("counts", "ended"),
+    [
+        ((1, 0, 0, 1), ONE_LEFT_THEN),
+        (
+            (2, 1, 1, 2),
+            "Saved: 2 new assignments. 1 updated. 1 already up to date. At the time of this "
+            "save, 2 items still needed checking.",
+        ),
+        (
+            (0, 2, 0, 3),
+            "Saved: 0 new assignments. 2 updated. At the time of this save, 3 items still "
+            "needed checking.",
+        ),
+        (
+            (0, 0, 1, 1),
+            "Nothing new to save: 1 assignment already up to date. At the time of this save, "
+            "1 item still needed checking.",
+        ),
+        ((1, 0, 0, 0), "Saved: 1 new assignment."),
+        ((0, 0, 2, 0), "Nothing new to save: 2 assignments already up to date."),
+    ],
+)
+def test_an_ended_review_s_page_says_what_a_save_left_as_it_stood_at_the_save(
+    counts: tuple[int, int, int, int], ended: str
+) -> None:
+    """A save's counts as an ended review's page says them: the new, updated and already up to
+    date as the review says them, and what was left as items that still needed checking at the
+    time of the save; nothing added where nothing was left."""
+    live = imports.counted(*counts)
+    assert imports.ended_lines([live], saved=True) == [ended]
+    assert imports.ended_lines([live], saved=False) == [ended]
+
+
+@pytest.mark.parametrize("reason", ["behind", "stale", "a reason on no list"])
+def test_a_save_refused_because_the_review_moved_on_names_no_cause(reason: str) -> None:
+    """A homework transaction refused by the revision, by the version, or for a reason on no
+    list: that no homework was saved by this attempt, then that the page is out of date."""
+    nothing_kept = AnswersKept(version=1, stored=0, dropped=0)
+    assert imports.not_saved(NotSaved(reason), nothing_kept) == [
+        NO_HOMEWORK_BY_IT,
+        PAGE_IS_OUT_OF_DATE,
+    ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "1 still needs checking.",
+        "Chapter 2 still needs checking.",
+        "Saved: 1 new assignment. 1 still needs checking. See the review.",
+        "Saved: Chapter 1. 2 still need checking.",
+    ],
+)
+def test_a_line_that_isn_t_a_save_s_counts_is_said_as_it_is_on_an_ended_review_s_page(
+    line: str,
+) -> None:
+    assert imports.ended_lines([line], saved=True) == [line]
