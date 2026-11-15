@@ -557,12 +557,17 @@ class HouseholdGate(BaseHTTPMiddleware):
             return PlainTextResponse(
                 ELSEWHERE, status_code=403, headers={"Cache-Control": "no-store"}
             )
+        if not self.settings.household_sign_in:
+            response = await call_next(request)
+            # The path as the server decoded it. The request's rebuilt address is not read
+            # with the sign-in off: it can't be made from a query that isn't UTF-8, and such
+            # a request is its route's to answer.
+            if not request.scope["path"].startswith(STATIC_PREFIX):
+                response.headers["Cache-Control"] = "no-store"
+            return response
         if request.url.path.startswith(STATIC_PREFIX):
             return await call_next(request)
-        if self.settings.household_sign_in:
-            response = await self.answer(request, call_next)
-        else:
-            response = await call_next(request)
+        response = await self.answer(request, call_next)
         response.headers["Cache-Control"] = "no-store"
         return response
 
