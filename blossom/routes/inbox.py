@@ -154,6 +154,10 @@ HOMEWORK_CHANGED: Final = (
     "The saved homework or a note of hers changed since this review was shown, so nothing was "
     "saved. Look at it again before saving."
 )
+SELECTIONS_CHANGE: Final = (
+    "Your selections change what saving would do for a card below, so nothing was saved. "
+    "Check the review, then save."
+)
 IDENTITY_FORM_UNREADABLE: Final = (
     "The answers about which homework a card is could not be read, so nothing was saved. "
     "Look at them again below."
@@ -314,8 +318,9 @@ def moment_of(state: ApplicationState, draft: Mapping[str, str]) -> tuple[dateti
 MADE_WITH: Final = "made_with"
 """The field where a review page writes what it was made with, signed: the answers to which
 homework each card is, each question it asked about the school's instructions, each question
-it asked about which homework a card is about, and what it said a typed note would do, so a
-save can tell what the page asked and said from what a form claims."""
+it asked about which homework a card is about, what it said a typed note would do, and what
+it said each reading made from a teacher's note does when selected, so a save can tell what
+the page asked and said from what a form claims."""
 
 
 @dataclass(frozen=True)
@@ -357,6 +362,9 @@ class PageMade:
     unsaved_picks: dict[int, tuple[str, str]] = field(default_factory=dict)
     """Homework chosen on each card that wasn't taken, with why, as the page said it, so later
     pages say it again until the card takes a choice or an answer."""
+    tasks: dict[int, str] = field(default_factory=dict)
+    """For each reading made from a teacher's note, whether the page showed it ticked, the
+    state it has when selected, and the row it lands in then."""
 
 
 def made_with_field(
@@ -373,9 +381,11 @@ def made_with_field(
     query: tuple[int, str, int, tuple[int, ...]] | None = None,
     picks: Mapping[int, Pick] | None = None,
     unsaved_picks: Mapping[int, tuple[str, str]] | None = None,
+    tasks: Mapping[int, str] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
-    ties it to the page's draft."""
+    ties it to the page's draft. What the page said of the readings made from teachers'
+    notes (``tasks``) is written only when there are such readings."""
     answers = ",".join(f"{card}:{value}" for card, value in sorted((occurrences or {}).items()))
     context = {
         "asked": sorted([card, *question] for card, question in (asked or {}).items()),
@@ -400,6 +410,8 @@ def made_with_field(
             [card, target, why] for card, (target, why) in (unsaved_picks or {}).items()
         ),
     }
+    if tasks:
+        context["tasks"] = sorted([card, said] for card, said in tasks.items())
     made = f"{answers};{json.dumps(context, separators=(',', ':'))}"
     return f"{made}.{_made_with_check(key, draft, made)}"
 
@@ -457,6 +469,7 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
     unsaved_picks = {
         int(card): (str(target), str(why)) for card, target, why in context.get("unsaved_picks", [])
     }
+    tasks = {int(card): str(said) for card, said in context.get("tasks", [])}
     return PageMade(
         occurrences,
         asked,
@@ -469,6 +482,7 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         query,
         picks,
         unsaved_picks,
+        tasks,
     )
 
 
@@ -743,6 +757,15 @@ def selected(form: Mapping[str, str], read: Read) -> Read:
     return replace(read, left_out=frozenset(left_out))
 
 
+def ticks_of(read: Read) -> dict[int, bool]:
+    """For each reading made from a teacher's note, by its key, whether it is selected."""
+    return {
+        key: key not in read.left_out
+        for key, item in enumerate(read.items)
+        if item.teacher_note is not None
+    }
+
+
 def read_draft(state: ApplicationState, draft: Mapping[str, str]) -> Read | Problem:
     """Read what a draft holds: the pasted text, with its teachers' notes read as tasks, or
     the entry, the same way every time, as of the moment it was first read."""
@@ -803,6 +826,9 @@ class AnswerKept:
     """Whether ``homework`` was found and chosen under another name."""
     unsaved_homework: str | None = None
     """The id of homework chosen on the card under another name that wasn't taken."""
+    selected: bool | None = None
+    """For a reading made from a teacher's note, whether it was selected to save; ``None``
+    for any other card."""
 
 
 def answers_kept(
@@ -822,7 +848,9 @@ def answers_kept(
     are read; anything else the form holds is no answer and takes nothing else down. Which
     homework each card is about and the notes ticked to link are the save's own reading of
     them (``identities``, ``linked``), made against what the page signed (``page``), so
-    only choices it offered, each sent once, are said back."""
+    only choices it offered, each sent once, are said back. A tick on a reading made from a
+    teacher's note is read from the two fields the page writes for it: the note it says it
+    offered is selected when its tick came with it."""
     safe: dict[str, str] = {}
     for name, value in form.items():
         head, _, key = name.rpartition("-")
@@ -836,6 +864,12 @@ def answers_kept(
     occurrences, kinds = answers_from(safe, {})
     words = (page or PageMade()).words
     not_taken = still_unsaved(page, picks or {}, identities)
+    ticks = {
+        int(key): form.get(f"take-{key}") == "1"
+        for name in form
+        for head, _, key in [name.rpartition("-")]
+        if head == "offered" and review_key(key)
+    }
     return answers_shown(
         occurrences,
         kinds,
@@ -847,6 +881,7 @@ def answers_kept(
         words,
         picks,
         {key: target for key, (target, _) in not_taken.items()},
+        ticks,
     )
 
 
@@ -891,6 +926,7 @@ def answers_shown(
     words: Mapping[str, str] | None = None,
     picks: Mapping[int, Pick] | None = None,
     unsaved_picks: Mapping[int, str] | None = None,
+    ticks: Mapping[int, bool] | None = None,
 ) -> list[AnswerKept]:
     """The answers a review page was made with, in the same shape: an answer about the
     school's instructions by the words ticked, read off the wire before anything was
@@ -898,8 +934,9 @@ def answers_shown(
     could not be read chose, the same way; an instruction ticked by reference to a row,
     counted; a choice a card carries from a page that showed it as not saved, every answer
     of it together; which homework the card was said to be about; her notes ticked to
-    link, in the words the page signed; and homework chosen under another name that wasn't
-    taken, by id."""
+    link, in the words the page signed; homework chosen under another name that wasn't
+    taken, by id; and for each reading made from a teacher's note, whether it was selected
+    to save (``ticks``)."""
     made = {key: UnsavedChoice.of(answer) for key, answer in (instructions or {}).items()}
     made.update(unsaved or {})
     chosen = {
@@ -924,6 +961,7 @@ def answers_shown(
     linked = linked or {}
     picks = picks or {}
     unsaved_picks = unsaved_picks or {}
+    ticks = ticks or {}
     keys = sorted(
         {
             *(occurrences or {}),
@@ -933,6 +971,7 @@ def answers_shown(
             *linked,
             *picks,
             *unsaved_picks,
+            *ticks,
         }
     )
     return [
@@ -952,6 +991,7 @@ def answers_shown(
             tuple((words or {}).get(name, "") for name, _, _ in linked.get(key, ())),
             key in picks,
             unsaved_picks.get(key),
+            ticks.get(key),
         )
         for key in keys
     ]
@@ -1240,6 +1280,20 @@ def preview_page(
             picks=picks,
             left_out=read.left_out,
         )
+        # What each note not selected does once it is selected is read from a second
+        # comparison with every note selected, so its card can say it and the page sign it.
+        if_selected = changes
+        if read.left_out:
+            if_selected = changes_for(
+                read.items,
+                state.project_state,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                identities=identities,
+                picks=picks,
+                left_out=frozenset(),
+            )
     except UnreadableClaim:
         return intake_unavailable(
             request,
@@ -1256,6 +1310,7 @@ def preview_page(
                 (made or PageMade()).words,
                 picks,
                 not_taken,
+                ticks_of(read),
             ),
         )
     except UnreadableDecision:
@@ -1274,6 +1329,7 @@ def preview_page(
                 (made or PageMade()).words,
                 picks,
                 not_taken,
+                ticks_of(read),
             ),
             DECISION_UNREADABLE,
         )
@@ -1293,9 +1349,17 @@ def preview_page(
                 (made or PageMade()).words,
                 picks,
                 not_taken,
+                ticks_of(read),
             ),
             INSTRUCTION_UNREADABLE,
         )
+    when_selected = {change.key: change for change in if_selected}
+    tasks = {
+        change.key: f"{0 if change.left_out else 1}:{would.state}:{would.assignment_id}"
+        for change in changes
+        if change.reading.teacher_note is not None
+        for would in [when_selected[change.key] if change.left_out else change]
+    }
     said = unsaved_on(changes, unsaved or {}, carried)
     problem_target = None
     problem_link = None
@@ -1493,7 +1557,12 @@ def preview_page(
                 ),
                 picked,
                 wanted,
+                tasks,
             ),
+            "note_tasks": bool(tasks),
+            "if_selected": {
+                change.key: when_selected[change.key].label for change in shown if change.left_out
+            },
             "creations": {card: question.creation for card, question in signed.items()},
             "answered": {
                 card: DIFFERENT if answer.choice is None else choice_value(answer.choice)
@@ -1636,8 +1705,9 @@ async def edit_draft(request: Request, state: State) -> Response:
         return await asyncio.to_thread(read_refused, request, state, draft, answers, error)
 
 
-SEARCH_PRESSES: Final = ("find", "results_page", "choose", "remove")
-"""The presses that change only the review: Find, Next and Previous, Choose, and Remove."""
+SEARCH_PRESSES: Final = ("find", "results_page", "choose", "remove", "recheck")
+"""The presses that change only the review: Find, Next and Previous, Choose, Remove, and
+Review changes."""
 
 
 def one_press(fields: Iterable[tuple[str, object]]) -> tuple[str, str] | None:
@@ -1657,8 +1727,9 @@ def card_of(value: str) -> int | None:
 @router.post("/find", response_class=HTMLResponse, include_in_schema=False)
 async def search_review(request: Request, state: State) -> Response:
     """Find homework already here under another name for one card, page through what was
-    found, choose one, or take a choice back, and show the review again. Nothing is written:
-    Save is the one press that saves. The draft and every answer on the cards come back as
+    found, choose one, or take a choice back, and show the review again; or, for Review
+    changes, show it again with the selections as sent. Nothing is written: Save is the one
+    press that saves. The draft and every answer on the cards come back as
     sent, questions still open among them, and a choice made on a card stays until Remove,
     whatever is searched. Choose takes only homework the page showed for that card, and holds
     it to the row as shown; a press the page didn't offer changes nothing. The answers carried
@@ -1796,6 +1867,14 @@ async def search_review(request: Request, state: State) -> Response:
                 del picks[key]
                 focus = f"rename-{key}"
                 search = searched(key)
+        elif action == "recheck":
+            # Review changes: the review again with the selections as sent and the search
+            # the page showed.
+            shown = page_made.query
+            if value != "1":
+                refused = True
+            elif shown is not None:
+                search = SearchShown(shown[0], shown[1], shown[2])
         else:
             refused = True
         if refused:
@@ -2067,10 +2146,12 @@ async def keep_readings(request: Request, state: State) -> Response:
                 identities=identities,
                 shown_identities=set(page_made.identities),
                 shown_notes=page_made.notes,
-                links=linked,
+                # A note of hers ticked on a reading left out of the save is linked nowhere.
+                links={key: notes for key, notes in linked.items() if key not in read.left_out},
                 picks=picks,
                 offered=page_made.offers,
                 left_out=read.left_out,
+                shown_tasks=page_made.tasks,
                 imported_by="parent" if viewer_of(request) == "parent" else "household",
                 now=now,
                 today=today,
@@ -2159,6 +2240,38 @@ async def keep_readings(request: Request, state: State) -> Response:
         )
     if isinstance(kept, ChangedSinceShown):
         instructions_moved = any(change.instructions_stale for change in kept.changes)
+        # A note that would do something its card did not say, on a form whose ticks differ
+        # from the ticks the page signed, is the family's own selection at work: the page
+        # says so. Any other change is one the record made.
+        reselected = (
+            bool(kept.moved)
+            and kept.moved <= page_made.tasks.keys()
+            and any(
+                (said.partition(":")[0] == "1") != (key not in read.left_out)
+                for key, said in page_made.tasks.items()
+            )
+        )
+        if reselected:
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="stale",
+                notice=SELECTIONS_CHANGE,
+            )
         return await asyncio.to_thread(
             preview_or_recovery,
             request,

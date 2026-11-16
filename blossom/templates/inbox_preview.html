@@ -92,7 +92,10 @@
         <input type="hidden" name="kind-{{ change.key }}" value="{{ change.kind.value }}">
         <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
         <input type="hidden" name="folded-{{ change.key }}" value="{{ change.folded_into }}">
-        {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}
+        {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}{% if change.reading.teacher_note %}
+        {# A folded note is selected, and its tick travels with its answer. #}
+        <input type="hidden" name="offered-{{ change.key }}" value="1">
+        <input type="hidden" name="take-{{ change.key }}" value="1">{% endif %}
       {% endfor %}
       {% if folded %}
         <p class="note">{{ folded|length }} card{% if folded|length != 1 %}s{% endif %} folded into the card for the same assignment, as you said.</p>
@@ -140,7 +143,9 @@
               <input type="hidden" name="offered-{{ change.key }}" value="1">
               <div class="choice">
                 <label><input type="checkbox" name="take-{{ change.key }}" value="1"{% if not change.left_out %} checked{% endif %}> <span>Save this as homework<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
-              </div>{% endif %}
+              </div>{% if change.left_out %}
+              {# What the note does once it is selected, which the page signs, so a tick set here saves in one press. #}
+              <p class="helper">If selected: {{ if_selected[change.key] }}.</p>{% endif %}{% endif %}
               {% if change.state == "review" %}
                 <input type="hidden" name="asked-{{ change.key }}" value="1">
               {% endif %}
@@ -173,7 +178,7 @@
                 <input type="hidden" name="which-{{ change.key }}" value="1">
                 <fieldset class="choice" id="occurrence-question-{{ change.key }}" tabindex="-1"{% if problem_target == change.key %} aria-describedby="problem-summary"{% endif %}>
                   <legend>Which is it?</legend>
-                  <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> The same assignment, its due date changed</label>
+                  <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> {% if reading.teacher_note %}The same assignment{% if reading.due_date %}; its due date becomes {{ spoken_day(reading.due_date) }}{% endif %}{% else %}The same assignment, its due date changed{% endif %}</label>
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="new"> New work under the same name</label>
                 </fieldset>
               {% elif change.occurrence %}
@@ -361,7 +366,8 @@
           <p class="note">
             {% if to_save == 0 and counts.review == 0 %}{% if kept_note %}Her note will stay, and your note won't be saved to her homework. Nothing else here needs saving.{% elif waiting %}Everything read is saved already; a note of hers ticked above is linked when saved.{% else %}Everything here is saved already; there is nothing to save.{% endif %} A type changed on a card can still be saved.{% elif counts.review %}Answer the question{% if counts.review != 1 %}s{% endif %} above, then save.{% else %}Saving adds {{ counts.new }} and updates {{ counts.updated }}; the other {{ counts.unchanged }} stay as they are.{% endif %}
           </p>
-        {% endif %}
+        {% endif %}{% if note_tasks %}
+        <p class="helper">Review changes shows this review again with your selections. Nothing is saved until you save.</p>{% endif %}
         <div class="actions review-actions">
           {% if total %}
             {# A typed note kept off her homework is still something to finish, so the family page can say so. #}
@@ -372,7 +378,9 @@
             {% else %}
               <button type="submit" class="primary" data-changed-label="Save changes">{% if to_save == 0 and kept_note %}Keep her note{% elif to_save == 0 and waiting %}Save the ticked links{% else %}Save {{ to_save }} assignment{% if to_save != 1 %}s{% endif %}{% endif %}</button>
             {% endif %}
-          {% endif %}
+          {% endif %}{% if note_tasks %}
+          {# A press that shows the review again with the selections as sent and writes nothing. #}
+          <button type="submit" class="secondary" formaction="/parent/inbox/find" formnovalidate name="recheck" value="1">Review changes</button>{% endif %}
           <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate>Edit</button>
         </div>
         <p class="return"><a class="cancel" href="/parent">Cancel import</a></p>

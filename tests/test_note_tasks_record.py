@@ -1499,3 +1499,46 @@ def test_a_homework_page_day_has_no_note_so_its_read_comes_back_as_it_is() -> No
 
     assert read.notes == ()
     assert with_notes(read, now=NOW) is read
+
+
+def test_a_note_of_hers_ticked_on_a_reading_left_out_is_not_linked(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A link ticked on a reading that is left out of the save is no part of the save: it
+    is not checked against her note as it stands, the ten other readings are saved, and
+    nothing is linked."""
+    items = week_items()
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        hers = waiting_note(
+            store, course=items[8].course, title=items[8].title, text="Made-up words of hers"
+        )
+        kept = keep(
+            items, store, left_out={8}, links={8: ((hers, 99, None),)}, now=NOW, today=TODAY
+        )
+        saved = rows(store)
+    finally:
+        store.close()
+
+    assert kept == Kept(added=10, updated=0, unchanged=0)
+    assert len(saved) == 10
+    assert QUIZ not in saved
+
+
+def test_what_a_page_said_of_a_typed_note_is_not_held_against_a_reading_left_out(
+    tmp_path: pathlib.Path,
+) -> None:
+    """What a page signed about a typed note on a reading that is left out of the save is
+    not compared with anything: the ten other readings are saved."""
+    items = week_items()
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        kept = keep(
+            items, store, left_out={8}, shown_notes={8: "kept:made-up"}, now=NOW, today=TODAY
+        )
+        saved = rows(store)
+    finally:
+        store.close()
+
+    assert kept == Kept(added=10, updated=0, unchanged=0)
+    assert len(saved) == 10

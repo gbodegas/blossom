@@ -2034,9 +2034,12 @@ def _decision(
 @dataclass(frozen=True)
 class ChangedSinceShown:
     """Nothing was saved: a choice on the page was made against instructions that changed
-    since the page was made. The changes as they stand now come back, to look at again."""
+    since the page was made. The changes as they stand now come back, to look at again.
+    ``moved`` holds the readings made from teachers' notes that would do something other
+    than the page said for them."""
 
     changes: list["Change"]
+    moved: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -2998,6 +3001,28 @@ def _note_moved(change: Change, shown: str | None) -> bool:
     return (change.note_change == "kept") != (said == "kept")
 
 
+def _task_moved(change: Change, shown: str | None, answered: bool) -> bool:
+    """Whether a selected reading made from a teacher's note would do something the review
+    page didn't say for it. ``shown`` is what the page signed for it: whether it was shown
+    ticked, the state it has when selected, and the row it lands in. A note the page signed
+    nothing for has moved. A card that asked a question has not moved while the question is
+    open or when the form answers it (``answered``). A note that lands in the row the page
+    named has not moved, whether that row is new, saved already or added to, so a retry
+    passes."""
+    if change.reading.teacher_note is None or change.left_out:
+        return False
+    if shown is None:
+        return True
+    state, _, row = shown.partition(":")[2].partition(":")
+    if state == REVIEW:
+        return change.state != REVIEW and not answered
+    apart = (REVIEW, FOLDED)
+    return (state if state in apart else "", row) != (
+        change.state if change.state in apart else "",
+        change.assignment_id,
+    )
+
+
 @dataclass(frozen=True)
 class Kept:
     """What one saving did, counted in assignments: rows added, rows already saved that
@@ -3031,6 +3056,7 @@ def keep(
     today: date | None = None,
     dates: Mapping[int, tuple[date | None, date | None]] | None = None,
     left_out: Collection[int] | None = None,
+    shown_tasks: Mapping[int, str] | None = None,
 ) -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
     """Compare and write as one: save what the record lacks, and say what changed.
 
@@ -3080,6 +3106,11 @@ def keep(
     ``left_out`` holds the keys of the readings left out of the save, read as ``changes_for``
     reads it in every comparison made here: nothing is written for one, it is in none of the
     counts, and a date chosen for it in ``dates`` is not written. ``None`` leaves nothing out.
+
+    ``shown_tasks`` holds what a signed page said each reading made from a teacher's note
+    does when it is selected. When it's given, a selected note that would do something else,
+    or one the page signed nothing for, leaves the whole text unsaved with what changed
+    handed back and those readings named.
     """
     picks = picks or {}
     crossed = picks.keys() & (identities or {}).keys()
@@ -3125,17 +3156,36 @@ def keep(
         ):
             return ChangedSinceShown(changes)
         if shown_notes is not None and any(
-            _note_moved(change, shown_notes.get(change.key)) for change in changes
+            _note_moved(change, shown_notes.get(change.key))
+            for change in changes
+            if not change.left_out
         ):
             return ChangedSinceShown(changes)
+        if shown_tasks is not None:
+            answered = {
+                *(occurrences or {}),
+                *(identities or {}),
+                *picks,
+                *(instruction_answers or {}),
+            }
+            tasks_moved = frozenset(
+                change.key
+                for change in changes
+                if _task_moved(change, shown_tasks.get(change.key), change.key in answered)
+            )
+            if tasks_moved:
+                return ChangedSinceShown(changes, tasks_moved)
         if any(change.state == REVIEW for change in changes) or conflicting_choices(changes):
             return changes
         # Each note ticked to link goes to the homework its card landed on when the page was
         # made, or where an answer now lands a card that asked, and nowhere else; it must
         # still wait as the page showed it, and one joined there already is what was
-        # asked. Anything else leaves the text unsaved.
+        # asked. Anything else leaves the text unsaved. A reading left out of the save lands
+        # on no homework, so a note ticked on it is linked nowhere.
         linking: list[tuple[str, str, int]] = []
         for change in changes:
+            if change.left_out:
+                continue
             for capture_id, revision, lands in (links or {}).get(change.key, ()):
                 target = change.assignment_id
                 if lands not in (None, target):
