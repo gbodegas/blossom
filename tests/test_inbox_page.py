@@ -356,12 +356,21 @@ FIELD_PROBLEMS = {
 }
 
 
+def opening_tag(page: str, control: str) -> str:
+    """The opening tag of the one input, select or text box on the page with this id."""
+    tags: list[str] = re.findall(rf'<(?:input|select|textarea) id="{control}"[^>]*>', page)
+    assert len(tags) == 1, control
+    return tags[0]
+
+
 def test_each_label_of_the_entry_form_is_in_one_group_with_its_field_and_its_help(
     tmp_path: pathlib.Path,
 ) -> None:
     """In the entry form's markup a label, its control and the help under it are one group,
-    in that order, and no label stands outside a group. The due date and the type each name
-    their own help text, beside the problem line when that field is refused."""
+    in that order, and no label stands outside a group. The due date's input and the type's
+    select each name the help text of their own group, in their own tag, and no other tag
+    names it: alone as the page arrives and when the other of the two is refused, and after
+    the problem line, with the mark and the focus, when they are the one refused."""
     refusals = {
         "due_date": {"course": "Spanish", "title": "Vocabulary list", "due_date": "next friday"},
         "kind": {"course": "Spanish", "title": "Vocabulary list", "kind": "CHORE"},
@@ -392,15 +401,26 @@ def test_each_label_of_the_entry_form_is_in_one_group_with_its_field_and_its_hel
     assert "<label" not in re.sub(
         r'<div class="field(?: span-all)?">.*?</div>', "", form, flags=re.S
     )
-    assert 'name="due_date" value="" aria-describedby="entry-due_date-help">' in form
-    assert '<select id="entry-kind" name="kind" aria-describedby="entry-kind-help">' in form
     for name in ("due_date", "kind"):
-        assert form.count(f'aria-describedby="entry-{name}-help"') == 1
-        assert form.count(f'<p class="helper" id="entry-{name}-help">') == 1
-        other = refused["kind" if name == "due_date" else "due_date"]
-        assert f'aria-describedby="entry-{name}-help"' in other
-        marked = f'aria-invalid="true" aria-describedby="problem entry-{name}-help" autofocus'
-        assert marked in refused[name]
+        control, help_text = f"entry-{name}", f"entry-{name}-help"
+        assert form.count(f'<p class="helper" id="{help_text}">') == 1
+        holding = [group for group in groups if f'id="{help_text}"' in group]
+        assert len(holding) == 1
+        assert f' id="{control}"' in holding[0]
+        other = "kind" if name == "due_date" else "due_date"
+        for shown in (page, refused[other]):
+            tag = opening_tag(shown, control)
+            assert re.findall(r'aria-describedby="([^"]*)"', tag) == [help_text]
+            assert "aria-invalid" not in tag
+            assert "autofocus" not in tag
+        tag = opening_tag(refused[name], control)
+        assert re.findall(r'aria-describedby="([^"]*)"', tag) == [f"problem {help_text}"]
+        assert ' aria-invalid="true"' in tag
+        assert tag.endswith(" autofocus>")
+        assert refused[name].count(' id="problem"') == 1
+        for shown in (page, *refused.values()):
+            named = re.findall(r'aria-describedby="([^"]*)"', shown)
+            assert len([ids for ids in named if help_text in ids.split()]) == 1
 
 
 @pytest.mark.parametrize("field", list(FIELD_PROBLEMS))
