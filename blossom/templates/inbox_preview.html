@@ -70,8 +70,10 @@
             {% endfor %}
           </ul>
           <div class="actions">
-            <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate>Edit the text</button>
-          </div>
+            <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate{% if note_tasks %} aria-describedby="typing-lost"{% endif %}>Edit the text</button>
+          </div>{% if note_tasks %}
+          {# Editing the text reads it again from the start, so nothing chosen or typed on a note's card goes with it. #}
+          <p class="helper" id="typing-lost">Selections, titles, and due dates aren't kept when the text is edited.</p>{% endif %}
         </section>
       {% endif %}
 
@@ -151,8 +153,8 @@
               {# What the note does once it is selected, which the page signs, so a tick set here saves in one press. #}
               <p class="helper">If selected: {{ if_selected[change.key] }}.</p>{% endif %}
               {# The title and due date a parent may correct; the page signs what they show, so a save writes no other. #}{% set fields = note_fields[change.key] %}
-              <label>Title<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span> <input type="text" name="title-{{ change.key }}" value="{{ fields.title }}" maxlength="{{ title_max_length }}" autocomplete="off"></label>
-              <fieldset class="choice" id="when-{{ change.key }}">
+              <label>Title<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span> <input type="text" name="title-{{ change.key }}" value="{{ fields.title }}" maxlength="{{ title_max_length }}" autocomplete="off" id="title-{{ change.key }}"{% if problem_link and problem_link[0] == "title-" ~ change.key %} aria-describedby="problem-summary"{% endif %}></label>
+              <fieldset class="choice" id="when-{{ change.key }}" tabindex="-1"{% if problem_link and problem_link[0] == "when-" ~ change.key %} aria-describedby="problem-summary"{% endif %}>
                 <legend>Due date<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></legend>
                 {% for value, words, chosen in fields.choices %}<label><input type="radio" name="when-{{ change.key }}" value="{{ value }}"{% if chosen %} checked{% endif %}> <span>{{ words }}</span></label>
                 {% endfor %}<label><input type="radio" name="when-{{ change.key }}" value="other"{% if fields.other_chosen %} checked{% endif %}> <span>Another date</span></label>

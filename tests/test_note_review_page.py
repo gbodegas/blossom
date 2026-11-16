@@ -1184,3 +1184,436 @@ def test_an_untouched_review_with_note_fields_saves_in_one_press(tmp_path: pathl
     assert kept.headers["location"].endswith("added=3&updated=0&unchanged=0")
     assert rows["Map project"].due_date == datetime.date(2026, 11, 4)
     assert rows["Online practice"].due_date is None
+
+
+NOT_A_DUE_DATE = "Check the due date. Enter it as year, month, and day."
+FAR_DUE_DATE = "Check the due-date year. Enter a date within one year of today."
+LONG_TITLE = "A title is at most 200 characters."
+
+
+@pytest.mark.parametrize("path", ["keep", "find"])
+@pytest.mark.parametrize(
+    ("typed", "said"),
+    [("", NOT_A_DUE_DATE), ("soon", NOT_A_DUE_DATE), ("2028-11-04", FAR_DUE_DATE)],
+    ids=["empty", "not-a-date", "out-of-range"],
+)
+def test_another_date_that_cannot_be_read_is_refused_with_the_typing_kept(
+    tmp_path: pathlib.Path, path: str, typed: str, said: str
+) -> None:
+    """Another date chosen on a selected note with an empty box, a value that is no date, or
+    a date outside the school year, pressed with Save or Review changes: refused with the
+    page's sentence for that date, nothing written, the summary taking the focus and linking
+    to the card's due-date choices, and every tick, title and date as typed."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        mapped, quiz = key_of(page, "Map project"), key_of(page, "Quiz on unit two")
+        study = key_of(page, "Study for the vocabulary quiz on Thursday")
+        practice = key_of(page, "Online practice")
+        form = ticked_form(page) | {
+            f"when-{mapped}": "other",
+            f"when_other-{mapped}": typed,
+            f"title-{study}": "Vocabulary quiz",
+            f"when-{practice}": "2026-11-10",
+            f"take-{quiz}": "1",
+        }
+        if path == "find":
+            form["recheck"] = "1"
+        answer = client.post(f"/parent/inbox/{path}", data=form)
+        rows = store_of(client).all_assignments()
+
+    assert answer.status_code == 422
+    assert rows == []
+    assert (
+        f'{SUMMARY}{said} <a href="#when-{mapped}">Check this assignment</a></p>'
+    ) in answer.text
+    body = card(answer.text, "Map project")
+    assert f'id="when-{mapped}" tabindex="-1" aria-describedby="problem-summary"' in body
+    assert ("other", True) in when_options(body, mapped)
+    assert f'<input type="date" name="when_other-{mapped}" value="{typed}"' in body
+    assert f'<input type="text" name="title-{study}" value="Vocabulary quiz"' in answer.text
+    assert ("2026-11-10", True) in when_options(card(answer.text, "Online practice"), practice)
+    assert quiz in numbers(answer.text, TICKED)
+    assert 'id="card-' not in answer.text
+
+
+@pytest.mark.parametrize("path", ["keep", "find"])
+def test_a_title_longer_than_its_box_allows_is_refused_with_the_typing_kept(
+    tmp_path: pathlib.Path, path: str
+) -> None:
+    """A title longer than the box allows, sent by a form the page did not make, is refused
+    with the sentence the entry form uses for it, nothing written, the summary linking to
+    the title box, and every tick, title and date as typed."""
+    long = "x" * 201
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        mapped, practice = key_of(page, "Map project"), key_of(page, "Online practice")
+        form = ticked_form(page) | {f"title-{mapped}": long, f"when-{practice}": "2026-11-10"}
+        if path == "find":
+            form["recheck"] = "1"
+        answer = client.post(f"/parent/inbox/{path}", data=form)
+        rows = store_of(client).all_assignments()
+
+    assert answer.status_code == 422
+    assert rows == []
+    assert (
+        f'{SUMMARY}{LONG_TITLE} <a href="#title-{mapped}">Check this assignment</a></p>'
+    ) in answer.text
+    assert f'<input type="text" name="title-{mapped}" value="{long}"' in answer.text
+    assert f'id="title-{mapped}" aria-describedby="problem-summary"' in answer.text
+    assert ("2026-11-10", True) in when_options(card(answer.text, "Online practice"), practice)
+
+
+def test_an_edit_on_a_note_not_selected_does_not_hold_the_save_back(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An edit on a note left out of the save writes nothing, so Save goes ahead for the
+    selected notes in one press. The edit, an unreadable date among them, is kept as typed
+    on the page Review changes returns, and nothing is refused."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        quiz = key_of(page, "Quiz on unit two")
+        form = ticked_form(page) | {
+            f"title-{quiz}": "Unit two quiz",
+            f"when-{quiz}": "other",
+            f"when_other-{quiz}": "soon",
+        }
+        reviewed = client.post("/parent/inbox/find", data=form | {"recheck": "1"})
+        kept = client.post("/parent/inbox/keep", data=form)
+        rows = {row.title for row in store_of(client).all_assignments()}
+
+    assert reviewed.status_code == 200
+    assert 'id="problem-summary"' not in reviewed.text
+    body = card(reviewed.text, "Unit two quiz")
+    assert f'<input type="text" name="title-{quiz}" value="Unit two quiz"' in body
+    assert f'<input type="date" name="when_other-{quiz}" value="soon"' in body
+    assert ("other", True) in when_options(body, quiz)
+    assert quiz not in numbers(reviewed.text, TICKED)
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=3&updated=0&unchanged=0")
+    assert rows == {"Map project", "Study for the vocabulary quiz on Thursday", "Online practice"}
+
+
+NOTED_EDITS = {
+    "Map project": ("Map of the river", "other", "2026-11-06"),
+    "Reading log": ("Reading journal", "none", ""),
+}
+"""A title and another date typed on a selected note of ``NOTED``, and a title and no due date
+on one left out."""
+
+
+@pytest.mark.parametrize(
+    ("text", "before", "typing", "sent", "path", "status", "said"),
+    [
+        (
+            NOTED,
+            None,
+            NOTED_EDITS,
+            {"take-5": "1", "take-4": None, "link-0-0": "1"},
+            "keep",
+            422,
+            "The choices to link her notes could not be read",
+        ),
+        (
+            NOTED,
+            None,
+            NOTED_EDITS,
+            {"take-5": "1", "take-4": None, "made_with": "0.0"},
+            "keep",
+            409,
+            COULD_NOT_BE_VERIFIED,
+        ),
+        (
+            NOTED,
+            None,
+            NOTED_EDITS,
+            {"take-5": "1", "take-4": None, "find": "99"},
+            "find",
+            422,
+            "That press isn&#39;t one this review offered",
+        ),
+        (
+            NOTED,
+            None,
+            NOTED_EDITS,
+            {"take-5": "1", "take-4": None, "search-3": "map", "find": "3"},
+            "find",
+            200,
+            'id="search-hint-3"',
+        ),
+        (
+            WITH_A_QUESTION,
+            None,
+            {"Quiz on unit two": ("Unit two quiz", "other", "2026-11-09")},
+            {},
+            "keep",
+            200,
+            "A question above still needs your answer.",
+        ),
+        (
+            TWICE_NOTED,
+            None,
+            {"Reading log": ("Reading journal", "none", "")},
+            {"take-0": None},
+            "keep",
+            200,
+            SELECTIONS_CHANGE,
+        ),
+        (
+            NOTED,
+            OTHER_READING_LOG,
+            {"Quiz on unit two": ("Unit two quiz", "other", "2026-11-09")},
+            {},
+            "keep",
+            409,
+            NO_LONGER_MATCHES,
+        ),
+    ],
+    ids=[
+        "unreadable-links",
+        "unsigned",
+        "refused-press",
+        "search",
+        "open-question",
+        "selections-change",
+        "record-moved",
+    ],
+)
+def test_a_page_handed_back_carries_the_titles_and_dates_as_typed(
+    tmp_path: pathlib.Path,
+    text: str,
+    before: str | None,
+    typing: dict[str, tuple[str, str, str]],
+    sent: dict[str, str | None],
+    path: str,
+    status: int,
+    said: str,
+) -> None:
+    """A refused form, a search press, a question left open, and each changed-review refusal
+    write nothing of the text and show the review again with every tick, title and date as
+    the form sent them, on notes selected and notes left out."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": text}).text
+        form = ticked_form(page)
+        typed = {}
+        for title, (new_title, when, other) in typing.items():
+            key = min(
+                number
+                for number in numbers(page, r'name="title-(\d+)"')
+                if f'name="title-{number}" value="{title}"' in page
+            )
+            typed[key] = (new_title, when, other)
+            form |= {f"title-{key}": new_title, f"when-{key}": when, f"when_other-{key}": other}
+        for name, value in sent.items():
+            if value is None:
+                del form[name]
+            else:
+                form[name] = value
+        if before is not None:
+            assert client.post("/parent/inbox/keep", data={"text": before}).status_code == 303
+        answer = client.post(f"/parent/inbox/{path}", data=form)
+        rows = store_of(client).all_assignments()
+
+    assert answer.status_code == status
+    assert len(rows) == (0 if before is None else 1)
+    assert said in answer.text
+    for key, (new_title, when, other) in typed.items():
+        assert f'<input type="text" name="title-{key}" value="{new_title}"' in answer.text
+        assert (when, True) in when_options(answer.text, key)
+        assert f'<input type="date" name="when_other-{key}" value="{other}"' in answer.text
+    assert numbers(answer.text, TICKED) == {
+        int(name.removeprefix("take-")) for name in form if name.startswith("take-")
+    }
+
+
+TYPING_LOST = (
+    '<p class="helper" id="typing-lost">'
+    "Selections, titles, and due dates aren't kept when the text is edited.</p>"
+)
+
+
+def test_edit_the_text_says_the_selections_titles_and_dates_are_not_kept(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Beside Edit the text on a review with notes, one line says the selections, titles and
+    due dates are not kept, and the press names it. A review with no note has neither."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        plain = client.post("/parent/inbox/read", data={"text": NO_NOTE}).text
+
+    review = page.split('id="needs-review"', 1)[1].split("</section>", 1)[0]
+    assert review.count(TYPING_LOST) == 1
+    assert (
+        '<button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate '
+        'aria-describedby="typing-lost">Edit the text</button>'
+    ) in review
+    assert page.count('id="typing-lost"') == 1
+    assert "typing-lost" not in plain
+
+
+def test_the_page_that_reads_no_store_lists_each_title_and_date_as_sent(
+    tmp_path: pathlib.Path,
+) -> None:
+    """When a claim on record cannot be read, the page that reads no store says of each note
+    the title and due date the form sent, beside its tick, for a save and for a press; a first
+    reading sent none, and says none."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        mapped, quiz = key_of(page, "Map project"), key_of(page, "Quiz on unit two")
+        practice = key_of(page, "Online practice")
+        assert client.post("/parent/inbox/keep", data=ticked_form(page)).status_code == 303
+        claims_damaged(client)
+        form = ticked_form(page) | {
+            f"title-{mapped}": "Map of the river",
+            f"when-{mapped}": "other",
+            f"when_other-{mapped}": "2026-11-06",
+            f"when-{practice}": "2026-11-10",
+            f"title-{quiz}": "Unit two quiz",
+        }
+        saved = client.post("/parent/inbox/keep", data=form)
+        pressed = client.post("/parent/inbox/find", data=form | {"recheck": "1"})
+        first = client.post("/parent/inbox/read", data={"text": FIELDS})
+
+    def named(title: str) -> str:
+        return f'Title: <span class="authored-text">{title}</span>.'
+
+    def dated(day: str) -> str:
+        return f'Due date: <span class="authored-text">{day}</span>.'
+
+    for answer in (saved, pressed):
+        assert answer.status_code == 500
+        assert (
+            f"Card {mapped}: no answer about the assignment; selected to save. "
+            f"{named('Map of the river')} {dated('2026-11-06')}</li>"
+        ) in answer.text
+        assert (
+            f"Card {practice}: no answer about the assignment; selected to save. "
+            f"{named('Online practice')} {dated('2026-11-10')}</li>"
+        ) in answer.text
+        assert (
+            f"Card {quiz}: no answer about the assignment; not selected. "
+            f"{named('Unit two quiz')} Due date: none.</li>"
+        ) in answer.text
+    assert first.status_code == 500
+    assert "Title:" not in first.text
+    assert "Due date:" not in first.text
+
+
+CORRECTED = """Homework for Wren
+11/02/2026 - Monday
+Humanities -
+Study for the vocabulary quiz on Thursday. Map project due on Wednesday.
+
+08 Geometry -
+Quiz on unit two
+
+Music -
+Unit test today. No additional Music homework assigned.
+
+11/03/2026 - Tuesday
+Science -
+Online practice due Tuesday
+
+Art -
+Poster due Wednesday
+"""
+"""A note that names a date, a dated note, a note that may be homework, a note that says no
+homework is assigned, a note due on a weekday it was first listed on, and another dated
+note."""
+
+
+def test_corrections_stand_after_the_same_text_is_pasted_again(tmp_path: pathlib.Path) -> None:
+    """A title corrected, the named Thursday taken, the second Tuesday chosen, a date cleared
+    and the unclear note ticked, reviewed and saved: the same text pasted again shows each of
+    those notes already saved, under its saved title and with its saved date, asks nothing,
+    has nothing to save, and leaves the note that says no homework unselected."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": CORRECTED}).text
+        study = key_of(page, "Study for the vocabulary quiz on Thursday")
+        mapped, quiz = key_of(page, "Map project"), key_of(page, "Quiz on unit two")
+        practice, poster = key_of(page, "Online practice"), key_of(page, "Poster")
+        named = {study, mapped, quiz, practice, poster}
+        offered = numbers(page, r'<input type="hidden" name="offered-(\d+)" value="1">')
+        form = ticked_form(page) | {
+            f"title-{mapped}": "Map of the river",
+            f"when-{study}": "2026-11-05",
+            f"when-{practice}": "2026-11-10",
+            f"when-{poster}": "none",
+            f"take-{quiz}": "1",
+            "recheck": "1",
+        }
+        reviewed = client.post("/parent/inbox/find", data=form)
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        rows = {row.title: row for row in store_of(client).all_assignments()}
+        again = client.post("/parent/inbox/read", data={"text": CORRECTED}).text
+
+    left_out = offered - named
+    assert len(left_out) == 1
+    assert reviewed.status_code == 200
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=5&updated=0&unchanged=0")
+    assert {title: row.due_date for title, row in rows.items()} == {
+        "Study for the vocabulary quiz on Thursday": datetime.date(2026, 11, 5),
+        "Map of the river": datetime.date(2026, 11, 4),
+        "Quiz on unit two": None,
+        "Online practice": datetime.date(2026, 11, 10),
+        "Poster": None,
+    }
+    for title, due in (
+        ("Study for the vocabulary quiz on Thursday", "Due Thursday, November 5, 2026"),
+        ("Map project", "Due Wednesday, November 4, 2026"),
+        ("Online practice", "Due Tuesday, November 10, 2026"),
+    ):
+        body = card(again, title)
+        assert '<span class="pill">Already saved</span>' in body
+        assert due in body
+    for title in ("Quiz on unit two", "Poster"):
+        body = card(again, title)
+        assert '<span class="pill">Already saved</span>' in body
+        assert "Due " not in body.split('<p class="effect"', 1)[0]
+    assert (
+        'It\'s saved here as <span class="authored-text">Map of the river</span>, Humanities, '
+        "due Wednesday, November 4, 2026."
+    ) in card(again, "Map project")
+    assert not any(chosen for _, chosen in when_options(card(again, "Poster"), poster))
+    for asked in ("identity-question-", "occurrence-question-", "instructions-question-"):
+        assert asked not in again
+    assert "Everything here is saved already; there is nothing to save." in again
+    assert numbers(again, TICKED) == named
+    assert left_out <= numbers(again, r'<input type="hidden" name="offered-(\d+)" value="1">')
+
+
+def test_a_folded_note_carries_its_edits_to_the_save(tmp_path: pathlib.Path) -> None:
+    """A later note of the same work given another date, then answered as the same
+    assignment with its date changed, is folded into the earlier card: the page carries its
+    title and date as typed, and the save writes the one row with that date as the
+    family's."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": TWICE_NOTED}).text
+        form = ticked_form(page) | {
+            "when-1": "other",
+            "when_other-1": "2026-11-09",
+            "recheck": "1",
+        }
+        dated = client.post("/parent/inbox/find", data=form)
+        folded = client.post(
+            "/parent/inbox/find",
+            data=ticked_form(dated.text) | {"occurrence-1": "update", "recheck": "1"},
+        )
+        kept = client.post(
+            "/parent/inbox/keep",
+            data=ticked_form(folded.text) | {"apply-0-0": "1", "apply-0-1": "1"},
+        )
+        rows = store_of(client).all_assignments()
+
+    assert (
+        '<label><input type="radio" name="occurrence-1" value="update"> The same assignment; '
+        "change its due date from Friday, November 6, 2026 to Monday, November 9, 2026</label>"
+    ) in dated.text
+    assert '<input type="hidden" name="folded-1" value="0">' in folded.text
+    assert '<input type="hidden" name="title-1" value="Reading log">' in folded.text
+    assert '<input type="hidden" name="when-1" value="other">' in folded.text
+    assert '<input type="hidden" name="when_other-1" value="2026-11-09">' in folded.text
+    assert kept.status_code == 303
+    assert [(row.title, row.due_date, row.origins["due_date"]) for row in rows] == [
+        ("Reading log", datetime.date(2026, 11, 9), SourceChannel.PARENT_ENTRY)
+    ]

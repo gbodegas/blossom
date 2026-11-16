@@ -824,17 +824,38 @@ def edits_of(read: Read) -> dict[int, tuple[str, str]]:
 
 
 def edited(read: Read, page: PageMade) -> frozenset[int]:
-    """The keys of the readings made from teachers' notes whose title or due date, with the
-    form's answers applied, differs from what a signed page showed for them, or whose
-    due-date answer names no date a paste can mean. A form this process did not sign is
-    checked elsewhere, and gives none here."""
+    """The keys of the selected readings made from teachers' notes whose title or due date,
+    with the form's answers applied, differs from what a signed page showed for them, or
+    whose due-date answer names no date a paste can mean. A reading left out of the save
+    writes nothing, so its edits give none. A form this process did not sign is checked
+    elsewhere, and gives none here."""
     if not page.verified:
         return frozenset()
     return frozenset(
         key
         for key, shown in edits_of(read).items()
-        if key in read.dates_unread or page.edits.get(key) != shown
+        if key not in read.left_out and (key in read.dates_unread or page.edits.get(key) != shown)
     )
+
+
+def typing_refused(read: Read) -> tuple[int, Problem] | None:
+    """The first selected reading made from a teacher's note, by key, whose typed title is
+    longer than a title may be or whose due-date answer names no date a paste can mean, with
+    the problem named by the field it is about and said in the entry form's own sentence:
+    one that is no date, an empty box among them, or one outside a school year. A reading
+    left out of the save writes nothing, so nothing typed on it is refused."""
+    for answer in sorted(read.answers, key=lambda answer: answer.key):
+        key = answer.key
+        if key in read.left_out:
+            continue
+        if len(" ".join(answer.title.split())) > TITLE_MAX_LENGTH:
+            return key, Problem(f"title-{key}", LONG_TITLE)
+        if key in read.dates_unread:
+            given = answer.other if answer.when == ANOTHER_DATE else answer.when
+            day = _a_date(given, Problem(f"when-{key}", NOT_A_DUE_DATE))
+            far = isinstance(day, date)
+            return key, Problem(f"when-{key}", FAR_DUE_DATE if far else NOT_A_DUE_DATE)
+    return None
 
 
 @dataclass(frozen=True)
@@ -965,6 +986,28 @@ class AnswerKept:
     selected: bool | None = None
     """For a reading made from a teacher's note, whether it was selected to save; ``None``
     for any other card."""
+    title: str | None = None
+    """For a reading made from a teacher's note, the title typed in its box, as sent;
+    ``None`` when none was sent."""
+    due: str | None = None
+    """For a reading made from a teacher's note, the due date chosen, or typed beside
+    another date, as sent; ``None`` when none was sent."""
+    undated: bool = False
+    """Whether no due date was chosen for a reading made from a teacher's note."""
+
+
+TASK_FIELDS: Final = frozenset({"title", "when", "when_other"})
+"""The fields the review page writes on a card read from a teacher's note, under its key: the
+title box, the due-date choice, and the date typed beside another date."""
+
+
+def said_typed(answer: TaskAnswer) -> tuple[str | None, str | None, bool]:
+    """The title and due date an answer for a note's card was sent with, as a page that
+    reads no store says them: the title typed, or ``None`` for an empty box; the date
+    chosen, or typed beside another date, or ``None``; and whether no due date was chosen."""
+    undated = answer.when == NO_DUE_DATE
+    given = answer.other if answer.when == ANOTHER_DATE else answer.when
+    return answer.title or None, None if undated or not given else given, undated
 
 
 def answers_kept(
@@ -986,7 +1029,8 @@ def answers_kept(
     them (``identities``, ``linked``), made against what the page signed (``page``), so
     only choices it offered, each sent once, are said back. A tick on a reading made from a
     teacher's note is read from the two fields the page writes for it: the note it says it
-    offered is selected when its tick came with it."""
+    offered is selected when its tick came with it. Its title and due date are read from
+    the three fields the page writes for them, under a key the page could have written."""
     safe: dict[str, str] = {}
     for name, value in form.items():
         head, _, key = name.rpartition("-")
@@ -1006,6 +1050,17 @@ def answers_kept(
         for head, _, key in [name.rpartition("-")]
         if head == "offered" and review_key(key)
     }
+    typed_tasks = {
+        int(key): TaskAnswer(
+            int(key),
+            form.get(f"title-{key}", ""),
+            form.get(f"when-{key}", ""),
+            form.get(f"when_other-{key}", ""),
+        )
+        for name in form
+        for head, _, key in [name.rpartition("-")]
+        if head in TASK_FIELDS and review_key(key)
+    }
     return answers_shown(
         occurrences,
         kinds,
@@ -1018,6 +1073,7 @@ def answers_kept(
         picks,
         {key: target for key, (target, _) in not_taken.items()},
         ticks,
+        typed_tasks,
     )
 
 
@@ -1063,6 +1119,7 @@ def answers_shown(
     picks: Mapping[int, Pick] | None = None,
     unsaved_picks: Mapping[int, str] | None = None,
     ticks: Mapping[int, bool] | None = None,
+    typed_tasks: Mapping[int, TaskAnswer] | None = None,
 ) -> list[AnswerKept]:
     """The answers a review page was made with, in the same shape: an answer about the
     school's instructions by the words ticked, read off the wire before anything was
@@ -1072,7 +1129,7 @@ def answers_shown(
     of it together; which homework the card was said to be about; her notes ticked to
     link, in the words the page signed; homework chosen under another name that wasn't
     taken, by id; and for each reading made from a teacher's note, whether it was selected
-    to save (``ticks``)."""
+    to save (``ticks``) and the title and due date sent for it (``typed_tasks``)."""
     made = {key: UnsavedChoice.of(answer) for key, answer in (instructions or {}).items()}
     made.update(unsaved or {})
     chosen = {
@@ -1098,6 +1155,7 @@ def answers_shown(
     picks = picks or {}
     unsaved_picks = unsaved_picks or {}
     ticks = ticks or {}
+    as_typed = {key: said_typed(answer) for key, answer in (typed_tasks or {}).items()}
     keys = sorted(
         {
             *(occurrences or {}),
@@ -1108,6 +1166,7 @@ def answers_shown(
             *picks,
             *unsaved_picks,
             *ticks,
+            *as_typed,
         }
     )
     return [
@@ -1128,6 +1187,7 @@ def answers_shown(
             key in picks,
             unsaved_picks.get(key),
             ticks.get(key),
+            *as_typed.get(key, (None, None, False)),
         )
         for key in keys
     ]
@@ -1336,11 +1396,29 @@ def first_review(
 ) -> HTMLResponse:
     """What a paste or an entry was read as, before any answer is given on its cards; when the
     household's records can't be read for its review, the page that reads no store, with the
-    text as pasted or the entry as typed."""
+    text as pasted or the entry as typed. A note left out from the start that is saved
+    already is shown selected, as it was saved."""
     try:
-        return preview_page(request, state, read, draft)
+        return preview_page(request, state, saved_selected(state, read), draft)
     except READ_REFUSALS as error:
         return read_refused(request, state, draft, [], error)
+
+
+def saved_selected(state: ApplicationState, read: Read) -> Read:
+    """What was read, with each reading made from a teacher's note that is left out from the
+    start but saved already selected: a paste read again shows a note the family selected
+    and saved as saved, and leaves out only the notes not saved. A record that cannot be
+    read leaves the paste as it is, for the review to answer."""
+    if not read.left_out:
+        return read
+    try:
+        changes = changes_for(read.items, state.project_state, left_out=frozenset())
+    except (UnreadableClaim, UnreadableDecision, UnreadableInstruction):
+        return read
+    saved = {change.key for change in changes if change.state == KNOWN} & read.left_out
+    if not saved:
+        return read
+    return replace(read, left_out=read.left_out - saved)
 
 
 def preview_page(
@@ -1363,6 +1441,7 @@ def preview_page(
     focus: str | None = None,
     refused: str | None = None,
     check: Collection[int] | None = None,
+    typing: tuple[int, Problem] | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -1405,7 +1484,9 @@ def preview_page(
     ``check`` holds the cards a refusal is about when it is about what the page said of
     the readings made from teachers' notes. The summary then links to no question; it
     links to the card, with an id given to that card for it, only when there is exactly
-    one and the page shows it."""
+    one and the page shows it. ``typing`` holds the card and the problem of a title or due
+    date typed on a note that a refusal is about; the summary then links to that field
+    when the page shows its card."""
     picks = picks or {}
     held = still_unsaved(made, picks, identities)
     if search is not None and search.attempted is not None:
@@ -1453,6 +1534,7 @@ def preview_page(
                 picks,
                 not_taken,
                 ticks_of(read),
+                {answer.key: answer for answer in read.answers},
             ),
         )
     except UnreadableDecision:
@@ -1472,6 +1554,7 @@ def preview_page(
                 picks,
                 not_taken,
                 ticks_of(read),
+                {answer.key: answer for answer in read.answers},
             ),
             DECISION_UNREADABLE,
         )
@@ -1492,6 +1575,7 @@ def preview_page(
                 picks,
                 not_taken,
                 ticks_of(read),
+                {answer.key: answer for answer in read.answers},
             ),
             INSTRUCTION_UNREADABLE,
         )
@@ -1505,7 +1589,7 @@ def preview_page(
     said = unsaved_on(changes, unsaved or {}, carried)
     problem_target = None
     problem_link = None
-    if refused is not None and check is None:
+    if refused is not None and check is None and typing is None:
         stale = [change.key for change in changes if change.instructions_stale]
         asked = [change.key for change in changes if change.instructions_question]
         unanswered = [change.key for change in changes if change.instructions_asked]
@@ -1564,6 +1648,8 @@ def preview_page(
     if check is not None and len(check) == 1 and next(iter(check)) in cards:
         check_card = next(iter(check))
         problem_link = (f"card-{check_card}", CHECK_THIS_ASSIGNMENT)
+    if typing is not None and typing[0] in cards:
+        problem_link = (typing[1].field, CHECK_THIS_ASSIGNMENT)
     if search is not None and search.key in cards and cards[search.key].offers:
         view = found_view(state, cards[search.key], search, parent=parent)
         choosable[search.key] = list(view.rows)
@@ -1772,6 +1858,7 @@ def preview_or_recovery(
     focus: str | None = None,
     refused: str | None = None,
     check: Collection[int] | None = None,
+    typing: tuple[int, Problem] | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -1798,6 +1885,7 @@ def preview_or_recovery(
             focus=focus,
             refused=refused,
             check=check,
+            typing=typing,
             notice=notice,
             status_code=status_code,
         )
@@ -2056,6 +2144,33 @@ async def search_review(request: Request, state: State) -> Response:
                 notice=PRESS_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
+        typing = typing_refused(read) if action == "recheck" else None
+        if typing is not None:
+            # Review changes with a title or due date typed on a selected note that cannot
+            # be taken: the review again, said why, with everything as typed.
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="typed",
+                typing=typing,
+                notice=typing[1].message,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         return await asyncio.to_thread(
             preview_or_recovery,
             request,
@@ -2118,7 +2233,8 @@ async def keep_readings(request: Request, state: State) -> Response:
         answers = answers_sent(state, form, (await form_of(request)).multi_items(), draft)
         return await asyncio.to_thread(problem_page, request, state, draft, read, answers)
     now, today = moment_of(state, draft)
-    read = with_edits(form, selected(form, read), now=now, today=today)
+    ticked = selected(form, read)
+    read = with_edits(form, ticked, now=now, today=today)
     # Every answer about the school's instructions is read from the fields as sent, before
     # any is collapsed, and kept, contradictions included, in words a page that reads no
     # store can show: all of it before anything touches the store.
@@ -2289,6 +2405,32 @@ async def keep_readings(request: Request, state: State) -> Response:
                 notice=INSTRUCTION_FORM_UNREADABLE if unreadable else INSTRUCTIONS_CONTRADICT,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
+        typing = typing_refused(read)
+        if typing is not None:
+            # A title or due date typed on a selected note that cannot be taken: nothing is
+            # written, and the review comes back saying why, with everything as typed.
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="typed",
+                typing=typing,
+                notice=typing[1].message,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         changed = edited(read, page_made)
         if changed:
             # A title or due date other than the page showed: nothing is written, and the
@@ -2425,8 +2567,19 @@ async def keep_readings(request: Request, state: State) -> Response:
             # this process did not sign says nothing of that, so the review is checked
             # again. Otherwise the selections are named only when they are established as
             # the cause: with the ticks as the page signed them every note does what the
-            # page said. Any other mismatch is said without a cause.
+            # page said. Any other mismatch is said without a cause. A title or date typed on
+            # a note left out writes nothing, so the comparison takes each note's title and
+            # date as the page signed them.
             answered = {*occurrences, *identities, *picks, *instruction_answers}
+            as_shown = with_answers(
+                ticked,
+                [
+                    TaskAnswer(key, title, due or NO_DUE_DATE)
+                    for key, (title, due) in page_made.edits.items()
+                ],
+                now=now,
+                today=today,
+            )
 
             def by_the_selections() -> bool:
                 as_signed = frozenset(
@@ -2436,7 +2589,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                     return False
                 try:
                     before = changes_for(
-                        read.items,
+                        as_shown.items,
                         state.project_state,
                         occurrences=occurrences,
                         kinds=kinds,
