@@ -537,6 +537,72 @@ def test_a_note_naming_a_card_of_another_day_is_a_reading_of_its_own() -> None:
     assert noted.assignment_id != card.assignment_id
 
 
+DECEMBER_NOTE = "Homework for Wren\n12/15/2026 - Tuesday\nReligion -\n{}\n"
+"""A Tuesday in December with one note under it."""
+
+DECEMBER_NOW = datetime(2026, 12, 15, 20, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("words", "written"),
+    [
+        ("Essay due January 8, 2028.", date(2028, 1, 8)),
+        ("Essay due 1/8/1500.", date(1500, 1, 8)),
+        ("Essay due 8 de enero de 2028.", date(2028, 1, 8)),
+        ("Essay due January 8, 2028 at noon.", date(2028, 1, 8)),
+        ("Essay due January 8, 1500 at noon.", date(1500, 1, 8)),
+    ],
+    ids=["english", "numeric", "spanish", "english-then-prose", "no-count-no-school-year"],
+)
+def test_a_written_year_no_school_year_holds_leaves_the_note_undated_with_that_date_named(
+    words: str, written: date
+) -> None:
+    """A deadline read with its written year that falls outside a school year of the note's
+    first school day, the range a due date typed or chosen on the review must fall in, is no
+    deadline: the reading has no due date and no claim, its words stay its instruction for
+    review, and the date as written is named for the family to choose. No other year is put
+    in its place."""
+    read = read_text(DECEMBER_NOTE.format(words), now=DECEMBER_NOW, today=date(2026, 12, 15))
+
+    (reading,) = with_note_readings(read, now=DECEMBER_NOW)
+
+    task = reading.teacher_note
+    assert task is not None
+    assert (reading.due_date, reading.claims) == (None, ())
+    assert (task.deadline, task.deadline_words, task.choices, task.listed_after) == (
+        None,
+        None,
+        (),
+        (),
+    )
+    assert task.named == (written,)
+    assert reading.instructions == (
+        InstructionSeen(words, SourceChannel.LMS, None, date(2026, 12, 15)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("words", "deadline"),
+    [
+        ("Essay due January 8, 2026.", date(2026, 1, 8)),
+        ("Essay due 8 de enero del 2026.", date(2026, 1, 8)),
+        ("Essay due January 8.", date(2027, 1, 8)),
+        ("Essay due January 8, 1500 words.", date(2027, 1, 8)),
+    ],
+    ids=["english-near", "spanish-near", "yearless-rollover", "count"],
+)
+def test_a_deadline_within_a_school_year_of_the_note_is_kept(words: str, deadline: date) -> None:
+    """A written year near the note's school day, a January date read under a December
+    school day with no year, and a date followed by a count all keep their deadline."""
+    read = read_text(DECEMBER_NOTE.format(words), now=DECEMBER_NOW, today=date(2026, 12, 15))
+
+    (reading,) = with_note_readings(read, now=DECEMBER_NOW)
+
+    assert reading.teacher_note is not None
+    assert (reading.due_date, reading.teacher_note.deadline) == (deadline, deadline)
+    assert reading.teacher_note.named == ()
+
+
 NEXT_MONDAY = datetime(2026, 11, 9, 20, 0, tzinfo=UTC)
 """The moment a text of two school weeks is read: the Monday of its second week."""
 

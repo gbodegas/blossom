@@ -18,9 +18,10 @@ under is never taken for a deadline.
 
 Nothing here reads a clock or a store. "Today", "tomorrow" and a weekday are
 worked out from the first school day a task is listed under, and a month and
-day are read in that day's year unless a year within one year of it is written
-with them, except that January named under a school day in December is read in
-the next year.
+day are read in that day's year unless a year is written with them, except that
+January named under a school day in December is read in the next year. Four
+digits after a date's comma or space that a counting noun follows, such as
+"1500 words", count something and are no year.
 """
 
 import enum
@@ -124,14 +125,39 @@ _WEEKDAY: Final = re.compile(
     rf"(?:(?P<next>next)\s+)?(?P<weekday>{'|'.join(_WEEKDAYS)})\b", re.IGNORECASE
 )
 _BESIDE: Final = re.compile(r"\s*,?\s*")
+_COUNTING_NOUNS: Final = (
+    "words",
+    "word",
+    "pages",
+    "page",
+    "points",
+    "minutes",
+    "questions",
+    "problems",
+    "sentences",
+    "palabras",
+    "palabra",
+    "p\u00e1ginas",
+    "puntos",
+    "minutos",
+    "preguntas",
+    "problemas",
+    "oraciones",
+)
+"""The nouns that, right after four digits, make them a count and not a year."""
+_COUNTED: Final = rf"(?![^\S\n]+(?:{'|'.join(_COUNTING_NOUNS)})\b)"
+"""After four digits joined to a date by a comma or a space: no counting noun follows, so
+the digits are a year and not a count ("January 8, 1500 words")."""
 _EXPLICIT: Final = re.compile(
     rf"(?<![A-Za-z])(?P<english>{_months(_ENGLISH_MONTHS, tuple(_ENGLISH_SHORT))})"
-    r"\s+(?P<english_day>\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(?P<english_year>\d{4})\b)?"
+    r"\s+(?P<english_day>\d{1,2})(?:st|nd|rd|th)?\b"
+    rf"(?:,?\s+(?P<english_year>\d{{4}})\b{_COUNTED})?"
     r"|(?<![\d/])(?P<numeric_month>\d{1,2})/(?P<numeric_day>\d{1,2})"
     r"(?:/(?P<numeric_year>\d{4}))?(?![\d/])"
     rf"|(?<!\d)(?P<spanish_day>\d{{1,2}})\s+de\s+"
     rf"(?P<spanish>{_months(_SPANISH_MONTHS, tuple(_SPANISH_SHORT))})"
-    r"(?:(?:\s+del?\s+|,\s*)(?P<spanish_year>\d{4})\b)?",
+    r"(?:\s+del?\s+(?P<spanish_year>\d{4})\b"
+    rf"|,\s*(?P<spanish_listed_year>\d{{4}})\b{_COUNTED})?",
     re.IGNORECASE,
 )
 _CUE: Final = re.compile(r"\b(?:due|by)\b", re.IGNORECASE)
@@ -276,11 +302,12 @@ def _single(text: str) -> str:
 
 
 def _explicit_at(text: str, at: int, day: date) -> tuple[int, date] | None:
-    """The month and day written at a place and where it ends, in the year written with it
-    when that year is within one year of the school day's, or else in the school day's year,
-    except a January date read under a school day in December, which is in the following year.
-    A number written where a year goes that is further off ("January 8, 1500 words") is no
-    year."""
+    """The month and day written at a place and where it ends, in the year written with it,
+    or with none, in the school day's year, except a January date read under a school day in
+    December, which is in the following year. Four digits joined to the date by a comma or a
+    space with a counting noun right after them count something ("January 8, 1500 words")
+    and are no year; with any other words after them, after "de" or "del", or in the numeric
+    form, they are the year. A date not on the calendar is none."""
     found = _EXPLICIT.match(text, at)
     if found is None:
         return None
@@ -290,8 +317,13 @@ def _explicit_at(text: str, at: int, day: date) -> tuple[int, date] | None:
         month, number = _SPANISH[found["spanish"].lower().rstrip(".")], found["spanish_day"]
     else:
         month, number = int(found["numeric_month"]), found["numeric_day"]
-    written = found["english_year"] or found["numeric_year"] or found["spanish_year"]
-    if written and abs(int(written) - day.year) <= 1:
+    written = (
+        found["english_year"]
+        or found["numeric_year"]
+        or found["spanish_year"]
+        or found["spanish_listed_year"]
+    )
+    if written:
         year = int(written)
     else:
         year = day.year + 1 if (day.month, month) == (12, 1) else day.year

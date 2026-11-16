@@ -971,6 +971,41 @@ DECEMBER_TO_JANUARY = [
         date(2027, 1, 8),
         id="spanish-count-no-year",
     ),
+    pytest.param(
+        DECEMBER_15, "Essay due January 8 1500 words.", date(2027, 1, 8), id="english-space-count"
+    ),
+    pytest.param(
+        DECEMBER_15, "Essay due January 8, 1000 points.", date(2027, 1, 8), id="english-points"
+    ),
+    pytest.param(
+        DECEMBER_15,
+        "Essay due January 8, 2028 at noon.",
+        date(2028, 1, 8),
+        id="english-year-then-prose",
+    ),
+    pytest.param(
+        DECEMBER_15,
+        "Essay due 8 de enero de 2028, traigan el libro.",
+        date(2028, 1, 8),
+        id="spanish-year-then-prose",
+    ),
+    pytest.param(
+        DECEMBER_15,
+        "Essay due 8 de enero, 2028 traigan el libro.",
+        date(2028, 1, 8),
+        id="spanish-comma-year-then-prose",
+    ),
+    pytest.param(
+        DECEMBER_15, "Essay due January 8, 2028.", date(2028, 1, 8), id="english-far-year-written"
+    ),
+    pytest.param(DECEMBER_15, "Essay due 1/8/2028.", date(2028, 1, 8), id="numeric-far-year"),
+    pytest.param(DECEMBER_15, "Essay due 1/8/1500.", date(1500, 1, 8), id="numeric-always-a-year"),
+    pytest.param(
+        DECEMBER_15, "Essay due 8 de enero de 2028.", date(2028, 1, 8), id="spanish-de-far-year"
+    ),
+    pytest.param(
+        DECEMBER_15, "Essay due 8 de enero del 2028.", date(2028, 1, 8), id="spanish-del-far-year"
+    ),
     pytest.param(DECEMBER_15, "Essay due December 18", date(2026, 12, 18), id="december-stays"),
     pytest.param(DECEMBER_15, "Essay due February 3", date(2026, 2, 3), id="february-stays"),
     pytest.param(nov(16), "Essay due January 8", date(2026, 1, 8), id="november-school-day"),
@@ -983,8 +1018,12 @@ def test_a_january_date_read_under_a_december_school_day_is_in_the_following_yea
 ) -> None:
     """A month and day in January with no year, read under a school day in December, is in
     the following year, written in English, as numbers or in Spanish; a year written with it
-    wins, and no other month or school day moves. A weekday beside such a date that falls on
-    it in the following year gives that one date."""
+    wins, however far from the school day, and no other month or school day moves. A
+    four-digit number after a comma or a space with a counting noun right after it counts
+    something ("1500 words") and is no year; with other words after it ("at noon"), "de" or
+    "del" before it, or in the numeric form, it is the year. A weekday beside such a date
+    that falls on it in the following year gives that one date. The reader checks only that
+    the date is on the calendar."""
     (task,) = read_notes((note("Language Arts", day, words),))
 
     assert (task.name, task.standing) == ("Essay", HOMEWORK)

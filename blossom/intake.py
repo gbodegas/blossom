@@ -1282,10 +1282,13 @@ def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
     cards, in the order the notes give the tasks. One whose class and title a reading before
     it has carries its first school day and a mark of its words as its occurrence, so its
     id is its own. A suspect note is read as no task: its lines are text that needs review.
+    A deadline outside a school year of the task's first school day is named, not kept
+    (``_deadline_in_reach``).
     """
     items = list(read.items)
     made: list[Reading] = []
-    for task in read_notes([note.block for note in read.notes if not note.block.suspect]):
+    blocks = [note.block for note in read.notes if not note.block.suspect]
+    for task in map(_deadline_in_reach, read_notes(blocks)):
         place = the_one(
             [
                 index
@@ -1303,6 +1306,20 @@ def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
             reading = dataclasses.replace(reading, occurrence=_note_occurrence(task))
         made.append(reading)
     return (*items, *made)
+
+
+def _deadline_in_reach(task: NoteTask) -> NoteTask:
+    """A task with a deadline a due date can have: one within a school year of the task's
+    first school day, as ``within_a_school_year`` takes a due date chosen or typed on the
+    review. A deadline outside it, read with the year written with it, is no deadline: the
+    task keeps no deadline and that date, as written, is named for the family to choose. No
+    other year is put in its place."""
+    if task.deadline is None or within_a_school_year(task.deadline, task.first_day):
+        return task
+    named = task.named if task.deadline in task.named else (*task.named, task.deadline)
+    return dataclasses.replace(
+        task, deadline=None, deadline_words=None, choices=(), named=named, listed_after=()
+    )
 
 
 def with_notes(read: Read, *, now: datetime) -> Read:
