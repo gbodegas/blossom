@@ -1156,13 +1156,17 @@ def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
             continue
         reading = note_reading(task, now=now)
         if any(other.pair == reading.pair for other in (*items, *made)):
-            words = " ".join(task.words.split()).encode("utf-8")
-            mark = hashlib.sha256(words).hexdigest()[:8]
-            reading = dataclasses.replace(
-                reading, occurrence=f"{task.first_day.isoformat()}/{mark}"
-            )
+            reading = dataclasses.replace(reading, occurrence=_note_occurrence(task))
         made.append(reading)
     return (*items, *made)
+
+
+def _note_occurrence(task: NoteTask) -> str:
+    """What sets one task of the notes apart from every other of its class and title: its
+    first school day and a mark of its words, single-spaced. ``with_note_readings`` gives
+    it to a task whose name a reading before it has."""
+    words = " ".join(task.words.split()).encode("utf-8")
+    return f"{task.first_day.isoformat()}/{hashlib.sha256(words).hexdigest()[:8]}"
 
 
 def left_out_by_default(items: Sequence[Reading]) -> frozenset[int]:
@@ -1412,11 +1416,18 @@ class Change:
 
     @property
     def assignment_id(self) -> str:
-        """The row the reading lands in: the record's own when it has one, else a new one."""
+        """The row the reading lands in: the record's own when it has one, else a new one.
+        New work has an id that carries its due date; new work read from a teacher's note,
+        one that carries the note's first school day and a mark of its words."""
         if self.made_as is not None:
             return self.made_as
         if self.on_record is not None and self.occurrence != NEW_WORK:
             return self.on_record.assignment_id
+        note = self.reading.teacher_note
+        if self.occurrence == NEW_WORK and note is not None:
+            # New work read from a teacher's note is a row of that note: two notes of one
+            # name that settle one date are two rows.
+            return identity(self.reading.course, self.reading.title, _note_occurrence(note))
         if self.occurrence == NEW_WORK and self.reading.due_date is not None:
             return identity(
                 self.reading.course, self.reading.title, self.reading.due_date.isoformat()
@@ -2170,7 +2181,9 @@ def changes_for(
     an earlier new reading of the same text it asks whether it is the same
     assignment or new work, however near its date or with none; said to be the
     same with no date of its own, it leaves the first reading's due date as it
-    is.
+    is. Said to be new work, here or beside a saved row, it makes a row whose
+    id carries the note's first school day and a mark of its words, not its
+    date, so two notes of one name that settle one date are two rows.
     """
     occurrences = occurrences or {}
     kinds = kinds or {}

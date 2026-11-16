@@ -1214,3 +1214,132 @@ def test_a_second_note_of_a_name_with_no_date_beside_it_asks_in_words_of_its_own
         "Poster Due.",
         "Poster due Friday",
     ]
+
+
+TWO_LATER_NOTES: Final = (
+    AFTER_A_DUE_CARD
+    + "11/05/2026 - Thursday\n08 Geometry -\nPractice set 4 due Friday. Show your work.\n\n"
+)
+"""The week, then two notes on two later days that name Practice set 4 in different words
+and settle the same date, Friday, November 6."""
+
+BOTH_NEW: Final = {11: NEW_WORK, 12: NEW_WORK}
+"""Each of the two later notes answered as new work."""
+
+
+def two_later_notes() -> tuple[Reading, ...]:
+    """The readings of the week with its two later notes: thirteen, the notes' last."""
+    items = with_note_readings(read_text(TWO_LATER_NOTES, now=NOW, today=TODAY), now=NOW)
+    assert [item.pair for item in items[11:]] == [("08 Geometry", "Practice set 4")] * 2
+    assert [item.due_date for item in items[11:]] == [nov(6), nov(6)]
+    return items
+
+
+def test_two_notes_of_one_name_and_date_said_to_be_new_work_are_two_rows(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Two notes that name a card's work and settle the same date, each answered as new
+    work, are a row each, with ids of their own beside the card's: each row keeps its own
+    note's words as its one instruction, and no choice of instructions is asked. The same
+    answers sent again write nothing, and the text read again is known, each note on its
+    own row."""
+    items = two_later_notes()
+    card = by_pair(items)["08 Geometry", "Practice set 4"][0]
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        changes = changes_for(items, store, occurrences=BOTH_NEW)
+        kept = keep(items, store, occurrences=BOTH_NEW, now=NOW, today=TODAY)
+        saved = {row.assignment_id: row for row in store.all_assignments()}
+        words = store.school_instruction_readings([change.assignment_id for change in changes])
+        retried = keep(items, store, occurrences=BOTH_NEW, now=NOW, today=TODAY)
+        again = changes_for(items, store)
+        second = keep(items, store, now=NOW, today=TODAY)
+        count = len(store.all_assignments())
+    finally:
+        store.close()
+    one, other = (change.assignment_id for change in changes[11:])
+
+    assert [change.state for change in changes] == [NEW] * 13
+    assert not any(change.instructions_asked for change in changes)
+    assert len({card.assignment_id, one, other}) == 3
+    assert [one, other] == [item.assignment_id for item in items[11:]]
+    assert kept == Kept(added=13, updated=0, unchanged=0)
+    assert len(saved) == 13
+    assert [(saved[name].title, saved[name].due_date) for name in (one, other)] == [
+        ("Practice set 4", nov(6)),
+        ("Practice set 4", nov(6)),
+    ]
+    assert saved[card.assignment_id].due_date == nov(3)
+    assert {name: [each.text for each in words.readable[name].kept] for name in (one, other)} == {
+        one: ["Practice set 4 due Friday"],
+        other: ["Practice set 4 due Friday. Show your work."],
+    }
+    assert card.assignment_id not in words.readable
+    assert retried == Kept(added=0, updated=0, unchanged=13)
+    assert [change.state for change in again] == [KNOWN] * 13
+    assert [change.assignment_id for change in again[11:]] == [one, other]
+    assert second == Kept(added=0, updated=0, unchanged=13)
+    assert count == 13
+
+
+def test_the_same_two_readings_made_from_no_note_are_saved_as_they_read(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The two later readings with no note behind them are three days from the card, so
+    nothing is asked and an answer of new work is not read: each is saved new under the id
+    it reads with."""
+    items = two_later_notes()
+    plain = (*items[:11], *(dataclasses.replace(item, teacher_note=None) for item in items[11:]))
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        unanswered = changes_for(plain, store)
+        changes = changes_for(plain, store, occurrences=BOTH_NEW)
+        kept = keep(plain, store, occurrences=BOTH_NEW, now=NOW, today=TODAY)
+        saved = {row.assignment_id: row.due_date for row in store.all_assignments()}
+    finally:
+        store.close()
+
+    assert changes == unanswered
+    assert [change.state for change in changes] == [NEW] * 13
+    assert [change.occurrence for change in changes[11:]] == [None, None]
+    assert [change.assignment_id for change in changes] == [item.assignment_id for item in plain]
+    assert plain[11].assignment_id != plain[12].assignment_id
+    assert kept == Kept(added=13, updated=0, unchanged=0)
+    assert [saved[item.assignment_id] for item in plain[11:]] == [nov(6), nov(6)]
+
+
+def test_a_note_said_to_be_new_work_has_an_id_from_its_first_day_and_its_words(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note a week from the saved row of its name, answered as new work, makes a row
+    whose id carries the note's first school day and a mark of its words, as a note named
+    again in one text has it, whether or not the reading came with that mark. The same
+    reading made from no note has the id that carries its date. Saved, the note's row
+    stands beside the first, and the same answer sent again writes nothing."""
+    first = map_project()
+    later = note_reading(one_task("Humanities", nov(10), "Map project due on Wednesday"), now=NOW)
+    mark = hashlib.sha256(b"Map project due on Wednesday").hexdigest()[:8]
+    own = dataclasses.replace(later, occurrence=f"2026-11-10/{mark}")
+    plain = dataclasses.replace(later, teacher_note=None)
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        keep((first,), store, now=NOW, today=TODAY)
+        (noted,) = changes_for((later,), store, occurrences={0: NEW_WORK})
+        (marked,) = changes_for((own,), store, occurrences={0: NEW_WORK})
+        (dated,) = changes_for((plain,), store, occurrences={0: NEW_WORK})
+        made = keep((later,), store, occurrences={0: NEW_WORK}, now=NOW, today=TODAY)
+        retried = keep((later,), store, occurrences={0: NEW_WORK}, now=NOW, today=TODAY)
+        saved = {row.assignment_id: row.due_date for row in store.all_assignments()}
+    finally:
+        store.close()
+
+    assert made == Kept(added=1, updated=0, unchanged=0)
+    assert retried == Kept(added=0, updated=0, unchanged=1)
+    assert saved == {first.assignment_id: nov(4), noted.assignment_id: nov(11)}
+    assert later.occurrence is None
+    assert (noted.state, marked.state, dated.state) == (NEW, NEW, NEW)
+    assert (noted.occurrence, marked.occurrence, dated.occurrence) == (NEW_WORK,) * 3
+    assert noted.assignment_id == marked.assignment_id == own.assignment_id
+    assert noted.assignment_id != first.assignment_id
+    assert dated.assignment_id == dataclasses.replace(plain, occurrence="2026-11-11").assignment_id
+    assert dated.assignment_id != noted.assignment_id
