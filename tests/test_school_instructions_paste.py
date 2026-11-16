@@ -23,6 +23,8 @@ from markupsafe import escape
 
 from blossom.app import NOTHING_SAVED, create_app
 from blossom.intake import (
+    EMAIL_DATE_LINE,
+    PASTE_DAY,
     Change,
     ChangedSinceShown,
     Kept,
@@ -2558,3 +2560,160 @@ def test_a_choice_asked_about_other_homework_is_refused_when_its_card_folds(
     assert ticked(moved.text, "0") == []
     assert PRACTICE_SHOWN[0] in said_back_on(moved.text, "0")
     assert fresh.status_code == 303
+
+
+NOTES_UNDER_SUBJECTS = """Homework for Wren
+11/02/2026 - Monday
+08 Geometry - Due: Textbook page 12:
+Humanities -
+Study for the vocabulary quiz on Thursday. Map project due on Wednesday.
+
+Spanish - Assigned: Oral quiz: (Due:11/10/2026)
+Art -
+Please bring a shoebox by next Tuesday.
+
+11/05/2026 - Thursday
+Religion - Due: Short essay:
+Write 250 words on your question.
+
+Science -
+Reading log due today
+
+"""
+"""The summary's print view with what teachers type under a subject: two notes right under
+another subject's card, and one card with an instruction of its own."""
+
+
+def test_a_note_under_another_subject_is_never_saved_as_a_cards_instruction(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Through the review, the save and the same text read again: the words under another
+    subject's heading are shown as text that needs review and saved on no assignment, and the
+    card with its own instruction keeps it."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTES_UNDER_SUBJECTS}).text
+        kept = client.post("/parent/inbox/keep", data=review_form(page))
+        store = store_of(client)
+        rows = {row.title: row for row in store.all_assignments()}
+        said = store.school_instruction_readings(
+            [row.assignment_id for row in rows.values()]
+        ).readable
+        again = client.post("/parent/inbox/read", data={"text": NOTES_UNDER_SUBJECTS}).text
+        rows_written = tables(client)["school_instructions"]
+
+    cards = page.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[1]
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=3&updated=0&unchanged=0")
+    assert set(rows) == {"Textbook page 12", "Oral quiz", "Short essay"}
+    assert {
+        title: said[row.assignment_id].texts
+        for title, row in rows.items()
+        if row.assignment_id in said
+    } == {"Short essay": ("Write 250 words on your question.",)}
+    assert len(rows_written) == 1
+    for text in (page, again):
+        review = text.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[0]
+        for line in ("Humanities -", "Art -", "Science -", "Reading log due today"):
+            assert line in html.unescape(review)
+    for words in ("Humanities", "vocabulary quiz", "shoebox", "Reading log"):
+        assert words not in html.unescape(cards)
+    assert "3 assignments across 2 weeks: 0 new, 0 updates, 3 already saved." in " ".join(
+        again.split()
+    )
+
+
+A_DAY_THAT_IS_NO_DATE_IN_A_SHORT_PARAGRAPH = """Homework for Wren
+11/05/2026 - Thursday
+Science -
+Bring goggles
+Tuesday 9/1/2026
+Due: Orphan:
+13/45/2026 - Monday
+
+Math - Assigned: Sheet: (Due:11/20/2026)
+Art -
+Bring paint
+"""
+"""A text of both shapes: under the homework page's day a card's line with no course keeps
+its short paragraph for review, and in it stands a day, written the summary's way, whose
+digits name no date. After the blank come a card and another subject's heading and words."""
+
+
+def test_another_subjects_words_after_a_day_that_is_no_date_are_saved_on_no_card(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Through the review, the save and the same text read again: a day line that names no
+    date, kept in a card's short review paragraph, still says the summary's shape is in force,
+    so the next subject's heading and words are shown as text that needs review and saved on
+    no assignment."""
+    text = A_DAY_THAT_IS_NO_DATE_IN_A_SHORT_PARAGRAPH
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": text}).text
+        kept = client.post("/parent/inbox/keep", data=review_form(page))
+        store = store_of(client)
+        rows = {row.title: row for row in store.all_assignments()}
+        said = store.school_instruction_readings(
+            [row.assignment_id for row in rows.values()]
+        ).readable
+        again = client.post("/parent/inbox/read", data={"text": text}).text
+        rows_written = tables(client)["school_instructions"]
+
+    assert kept.status_code == 303
+    assert set(rows) == {"Sheet"}
+    taught = [said[row.assignment_id].texts for row in rows.values() if row.assignment_id in said]
+    assert taught == []
+    assert len(rows_written) == 0
+    for shown in (page, again):
+        review = shown.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[0]
+        for line in ("Due: Orphan:", "13/45/2026 - Monday", "Art -", "Bring paint"):
+            assert line in html.unescape(review)
+
+
+TWO_EMAILS = """Date: Tue, Sep 1, 2026
+Assignments:
+08/28 Math - A: Homework: Practice Grade: Missing
+
+Homework for Wren
+09/09/2026 - Wednesday
+{between}Date: Thu, Sep 10, 2026{mark}
+Assignments:
+09/09 Art - A: Homework: Collage Grade: Missing
+"""
+"""Two emails' Missing reports with the weekly summary between them: the later email's date
+line kept for review, after a subject's note or as a heading of its own."""
+
+
+@pytest.mark.parametrize(
+    ("between", "mark"),
+    [("Science -\nLab notes\n\n", ""), ("", " -")],
+    ids=["after-a-note", "shaped-as-a-heading"],
+)
+def test_a_report_after_an_email_date_line_kept_for_review_is_dated_by_the_paste(
+    tmp_path: pathlib.Path, between: str, mark: str
+) -> None:
+    """Through the review, the save and the same text read again: a later email's date line
+    kept for review is shown as text that needs review, the report after it is saved dated by
+    the day of the paste with that said as its source, and the earlier email's report keeps the
+    date of its own date line."""
+    text = TWO_EMAILS.format(between=between, mark=mark)
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": text}).text
+        kept = client.post("/parent/inbox/keep", data=review_form(page))
+        store = store_of(client)
+        rows = {row.title: row for row in store.all_assignments()}
+        reports = {title: store.status_reports(row.assignment_id) for title, row in rows.items()}
+        again = client.post("/parent/inbox/read", data={"text": text}).text
+        after = {title: store.status_reports(row.assignment_id) for title, row in rows.items()}
+
+    assert kept.status_code == 303
+    assert set(rows) == {"Practice", "Collage"}
+    assert [(r.reported_on, r.dated_by) for r in reports["Practice"]] == [
+        (date(2026, 9, 1), EMAIL_DATE_LINE)
+    ]
+    assert [(r.reported_on, r.dated_by) for r in reports["Collage"]] == [
+        (date(2026, 9, 24), PASTE_DAY)
+    ]
+    assert after == reports
+    for shown in (page, again):
+        review = shown.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[0]
+        assert f"Date: Thu, Sep 10, 2026{mark}" in html.unescape(review)

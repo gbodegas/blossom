@@ -27,12 +27,29 @@ The shapes, as the portal writes them:
   teacher's instruction may follow either kind of card, on lines of its own,
   and is kept with the assignment as written, line breaks and all. A
   backslash ending a line is the download's line break and is dropped; a
-  backslash anywhere else is the teacher's.
+  backslash anywhere else is the teacher's. What a teacher types for a
+  subject, apart from its cards, is written under the subject and a hyphen
+  on a line of their own, ``<Course> -``. That heading ends the card before
+  it, whose subject may be another, and opens a note. The heading and every
+  line after it are text that needs review, across blank lines and whatever
+  a line looks like, until a line that reads as a day, as a Missing line, or
+  as a card with its course on its line, which is read as what it is, or,
+  where the text opened with the summary's heading, until that same line
+  over its next week. A line only shaped like a day or a card stays with
+  the note. The heading is the summary's shape: where the homework page's
+  shape is in force, which only a day written as the page writes it with
+  digits that name a date puts in force, a line that ends in a hyphen is
+  read as any other line. A short line of a card's own instruction that
+  ends in such a hyphen reads as a heading too, and goes to review with
+  what follows it.
 - The email: ``MM/DD <Course> - <Section>: <Category>: <Title> Grade:
   Missing``, one line per assignment, under ``Assignments:``. Each such line
   is the school reporting the assignment missing, kept as a report with the
   day: the email's own date when the paste carries its date line, otherwise
-  the day it was pasted, and the report says which. The date beside the
+  the day it was pasted, and the report says which. A date line kept for
+  review in a teacher's note, or shaped as a subject heading, dates no
+  report: the reports after it are dated by the day of the paste until a
+  date line is read as one. The date beside the
   assignment is kept as the text it is, since the email does not say what it
   means; it is not a due date. Lines about work the text gives no date are
   read apart, since each can be about different homework under the name. A
@@ -173,6 +190,9 @@ HEADING_LINE: Final = re.compile(r"^Homework for\b", re.IGNORECASE)
 """The summary's heading, which carries her first name: read as nothing, outside a card."""
 CARD_LINE: Final = re.compile(r"^(?P<course>.+?)\s+-\s+(?P<card>(?:Assigned|Due)\s*:.*)$")
 """The summary's card, course and card on one line, split at the first joining dash."""
+SUBJECT_LINE: Final = re.compile(r"^.*[^\W_].*\s-$")
+"""The summary's heading over what a teacher typed for a subject: the subject, with a letter
+or a digit in it, then a hyphen that ends the line."""
 ASSIGNED_LINE: Final = re.compile(
     r"^Assigned:\s*(?P<title>.+):\s*\(Due:\s*(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\)\s*$"
 )
@@ -500,12 +520,35 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     A plain line just before a card's line is the card's course, on the
     homework page; the summary names the course on the card's own line.
     Plain lines just after a card are the teacher's instruction, until the
-    next card, day, or course line, or a blank; the same instruction under
-    both of an item's days is kept once. A line shaped like a day or a card
+    next card, day, course line, or subject heading, or a blank; the same
+    instruction under both of an item's days is kept once. Only a day
+    written as the homework page writes it, with digits that name a date,
+    puts the page's shape in force. A subject heading opens a note unless
+    that shape is in force: each line after the heading is text that needs
+    review, read as nothing else, across blank lines, until a line that
+    reads as a day, a Missing
+    line, or a card with its course on its line, which is read as what it
+    is, or until the line the text opened with as the summary's heading,
+    where a day whose digits name a date follows it. A line in a note that
+    is itself a heading, or only shaped like a day, a Missing line or a
+    card, stays with the note. A day whose digits name no date, there or
+    outside a note, ends the day in force and, written the summary's way,
+    the homework page's shape; written the page's way it leaves that shape
+    as it was and starts none.
+    Outside the homework page's shape, a line shaped as a heading is not read by
+    the rules for plain text outside a card. Where a heading has been read,
+    a card's line left for review for want of a course keeps the rest of its
+    paragraph for review with it, but for a line there that reads as a day,
+    a Missing line or a card with its course on its line, which is read as
+    what it is. A text with no heading-shaped line outside the homework
+    page's shape is read by the other rules alone. A line shaped like a day or a card
     that does not read as one is text that needs review, and it ends the
     card before it, so nothing after it is taken for that card's words. A
     mail program's date line outside a card dates the school's reports read
-    after it, and the other lines of a mail header are read as nothing. Each
+    after it, and the other lines of a mail header are read as nothing. One
+    kept for review, in a note or as a heading, dates none: the reports
+    after it are dated by the day of the paste until a date line is read
+    as one. Each
     Missing line is a reading of its own, apart from any card of its name,
     and the same line twice is one. Any
     other plain line outside a card needs review too. A card that names an
@@ -522,27 +565,80 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     day: date | None = None
     course: str | None = None
     last: _Draft | None = None
+    in_note = False
+    to_blank = False
+    headings_read = False
+    page_day = False
+    opening_heading: str | None = None
+    opening = next((index for index, line in enumerate(lines) if line), None)
     for index, line in enumerate(lines):
         number = index + 1
         if not line:
             last = None
+            if to_blank:
+                in_note = to_blank = False
             continue
-        if line.lower() in NOISE or WEEK_LINE.match(line):
+        ends_note = False
+        if in_note:
+            if line == opening_heading and _names_a_day(following[index]):
+                # The summary's own heading over its next week, the very line this text
+                # opened with, as read, before a day whose digits name a date: it ends
+                # the note and is read as nothing.
+                in_note = to_blank = False
+                continue
+            heading = not page_day and _is_subject_heading(line)
+            if heading or not _ends_a_note(line, day):
+                # In a note a line is the teacher's, whatever it looks like, unless it
+                # reads as a day, a Missing line or a card. A day that is no date still
+                # ends the day and the course in force, as it does outside a note, so no
+                # card after it takes an earlier one. Written the summary's way it ends
+                # the homework page's shape too; written the page's way it starts none,
+                # since here it is a teacher's line and under that shape no heading is
+                # read. A heading, which a line is only outside the homework page's
+                # shape, makes the note a subject's.
+                if _is_a_day(line):
+                    day = course = None
+                    page_day = page_day and bool(DAY_LINE.match(line))
+                if heading:
+                    to_blank = False
+                if mail_date(line) is not None:
+                    # A mail date line kept here may head another email, so an earlier
+                    # email's date is not taken for the reports after it: they are dated
+                    # by the day of the paste, and say so.
+                    reported_on, dated_by = today, PASTE_DAY
+                unread.append(Unread(number, line))
+                continue
+            # What ends a note is read below as what it is, past the rules for plain
+            # text outside a card.
+            in_note = to_blank = False
+            ends_note = True
+        # The four rules below read plain text outside a card as nothing or as the
+        # email's date. They pass over a line that ended a note and over a subject heading.
+        plain = not ends_note and (page_day or not _is_subject_heading(line))
+        if plain and (line.lower() in NOISE or WEEK_LINE.match(line)):
             last = None
             continue
-        if HEADING_LINE.match(line) and last is None:
+        if plain and HEADING_LINE.match(line) and last is None:
             # The summary's heading, outside a card; under a card the same
             # words are a teacher's instruction and are kept as one.
+            if index == opening:
+                opening_heading = line
             continue
-        if last is None and (sent := mail_date(line)) is not None:
+        if plain and last is None and (sent := mail_date(line)) is not None:
             # The email's date line, outside a card, dates the reports read
             # after it; under a card the same words are the teacher's.
             reported_on, dated_by = sent, EMAIL_DATE_LINE
             continue
-        if last is None and MAIL_HEADER.match(line):
+        if plain and last is None and MAIL_HEADER.match(line):
             continue
         if day_match := DAY_LINE.match(line) or SUMMARY_DAY_LINE.match(line):
             day = a_date(day_match.group("year"), day_match.group("month"), day_match.group("day"))
+            # The homework page's shape is put in force only by a day written the page's way
+            # whose digits name a date. A day that names no date may be a teacher's line
+            # under a card, and under the page's shape no subject heading is read: written
+            # the summary's way it ends that shape, written the page's way it leaves the
+            # shape as it was, as in a note.
+            page_day = bool(DAY_LINE.match(line)) and (day is not None or page_day)
             course = None
             last = None
             if day is None:
@@ -580,6 +676,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             when = a_date(assigned.group("year"), assigned.group("month"), assigned.group("day"))
             if card_course is None or when is None:
                 unread.append(Unread(number, line))
+                in_note = to_blank = headings_read and card_course is None
                 last = None
                 continue
             draft = _draft_for(
@@ -604,6 +701,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             title = due.group("title").strip()
             if card_course is None or day is None or not title:
                 unread.append(Unread(number, line))
+                in_note = to_blank = headings_read and card_course is None
                 last = None
                 continue
             draft = _draft_for(drafts, card_course, title, SourceChannel.LMS, number, day)
@@ -619,6 +717,21 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             # for review, and never a teacher's words.
             unread.append(Unread(number, line))
             last = None
+            continue
+        if not page_day and _is_subject_heading(line):
+            # The summary's heading over a teacher's note: neither it nor the note is
+            # the words of the card before it, whose subject may be another.
+            unread.append(Unread(number, line))
+            if mail_date(line) is not None:
+                # A mail date line shaped as a heading is kept for review with its note,
+                # as one kept in a note is, so the reports after it are dated by the day
+                # of the paste, and say so.
+                reported_on, dated_by = today, PASTE_DAY
+            course = None
+            last = None
+            in_note = True
+            to_blank = False
+            headings_read = True
             continue
         if _is_course_line(line, following[index]):
             course = line
@@ -741,6 +854,46 @@ def _is_course_line(line: str, following: str | None) -> bool:
     if len(line) > COURSE_LENGTH or line.endswith(":") or following is None:
         return False
     return bool(ASSIGNED_LINE.match(following) or DUE_LINE.match(following))
+
+
+def _is_subject_heading(line: str) -> bool:
+    """A short line that ends in a hyphen set off from the words before it: the summary's
+    heading over what a teacher typed for a subject."""
+    return len(line) <= COURSE_LENGTH and bool(SUBJECT_LINE.match(line))
+
+
+def _is_a_day(line: str | None) -> bool:
+    """Whether a line is written as a day, in either shape, whatever its digits."""
+    return line is not None and bool(DAY_LINE.match(line) or SUMMARY_DAY_LINE.match(line))
+
+
+def _names_a_day(line: str | None) -> bool:
+    """Whether a line is written as a day, in either shape, and its digits name a date."""
+    if line is None:
+        return False
+    found = DAY_LINE.match(line) or SUMMARY_DAY_LINE.match(line)
+    if found is None:
+        return False
+    return a_date(found.group("year"), found.group("month"), found.group("day")) is not None
+
+
+def _ends_a_note(line: str, day: date | None) -> bool:
+    """Whether a line in a note reads as what ends it: a day whose digits name a date, a
+    Missing line, or a card with its course on its line, an assigned card with a real due
+    date or a due card with a title under a day already read. The first shape a line has
+    decides, and the conditions are the ones ``read_text`` reads each of them by."""
+    if found := DAY_LINE.match(line) or SUMMARY_DAY_LINE.match(line):
+        return a_date(found.group("year"), found.group("month"), found.group("day")) is not None
+    if found := EMAIL_LINE.match(line):
+        return found.group("grade").strip().lower() == MISSING
+    if found := CARD_LINE.match(line):
+        body = found.group("card")
+        if assigned := ASSIGNED_LINE.match(body):
+            when = a_date(assigned.group("year"), assigned.group("month"), assigned.group("day"))
+            return when is not None
+        if due := DUE_LINE.match(body):
+            return day is not None and bool(due.group("title").strip())
+    return False
 
 
 def by_hand(
