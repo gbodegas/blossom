@@ -1832,12 +1832,14 @@ select {
 }
 
 /* A column is 13rem or wider where 13rem fits, and never wider than the form, so a phone
-   with large text gets one column the width of the card. */
+   with large text gets one column the width of the card. Each field is one group, its label
+   above its control and its help under it, and groups in one row start level, so a group
+   with help text never pulls a neighbor's label down beside that text. */
 .entry {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr));
   gap: 0.75rem 1rem;
-  align-items: end;
+  align-items: start;
 }
 
 /* On a phone with large text, a word such as "assignments" in a button can be wider than its
