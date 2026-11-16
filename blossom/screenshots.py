@@ -39,9 +39,10 @@ under several days, in this screenshot or another, are one task read from the ea
 those days, so another screenshot can change the day a note's weekday is read from. A task
 that joins exactly one card with a label in the same screenshots, as a pasted note joins a
 card (``intake.joins``), is that card's row; a task two such cards could take joins neither.
-The row takes the claim of a deadline the note settles and, when they say more than the name
-and the deadline statement, the task's words as an instruction, and keeps the key, cards and
-marks of its own cards.
+The row keeps the task among its reading's joined notes, and its reading, key, cards and marks
+as its own cards give them: the claim of a deadline the note settles and, when they say more
+than the name and the deadline statement, the task's words as an instruction are added only
+for a joined note the family selects.
 """
 
 import dataclasses
@@ -487,11 +488,11 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     teacher's note card under a
     readable day heading is read with the other note cards of its layer, its layer being how
     many note cards above it in its screenshot have its class, words and day; each task they
-    read as is a row whose key holds its standing, unless a row read from cards has its class
-    and title and was read under one of the school days the task is listed under: the first
-    such row takes what the note adds and keeps its key, cards and marks. Every other card
-    stays a visible item with its reason, never merged into another. ``now`` stamps the
-    claims and is in no key.
+    read as is a row whose key holds its standing, unless it joins the one row read from cards
+    that ``_named_card`` finds: that row keeps the task among its reading's joined notes and
+    keeps its reading, key, cards and marks as read, so what the note adds waits until the
+    family selects the note. Every other card stays a visible item with its
+    reason, never merged into another. ``now`` stamps the claims and is in no key.
     """
     images: dict[str, tuple[str, HomeworkReading | None]] = {}
     for stored in readings:
@@ -600,8 +601,9 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
         for task, note_marks, note_places in _note_tasks(sightings):
             named = _named_card(rows, read_under, task)
             if named is not None:
-                card_row = rows[named]
-                rows[named] = card_row._replace(reading=_with_note(card_row.reading, task, now))
+                as_read = rows[named].reading
+                kept = dataclasses.replace(as_read, joined_notes=(*as_read.joined_notes, task))
+                rows[named] = rows[named]._replace(reading=kept)
                 continue
             noted_reading = _in_round(note_reading(task, now=now), rounds)
             key = _key(_written(noted_reading, note_marks, layer, (), note=str(task.standing)))
@@ -896,6 +898,21 @@ def _named_card(
 def _under_any(read: frozenset[date], days: Collection[date]) -> bool:
     """Whether one of the school days a card row's cards were read under is among ``days``."""
     return not read.isdisjoint(days)
+
+
+def note_tag(task: NoteTask) -> str:
+    """A joined note's tag among its card's joined notes: the digest of its first school day
+    and its words, so a tick stays with its note whatever other notes join the card."""
+    return _key([task.first_day.isoformat(), task.words])[:16]
+
+
+def with_joined(reading: Reading, tags: Collection[str], now: datetime) -> Reading:
+    """The reading with what each joined note the family selected adds, by its ``note_tag``;
+    a tag none of its joined notes has is passed over. Its due date is never changed."""
+    for task in reading.joined_notes:
+        if note_tag(task) in tags:
+            reading = _with_note(reading, task, now)
+    return reading
 
 
 def _with_note(reading: Reading, task: NoteTask, now: datetime) -> Reading:

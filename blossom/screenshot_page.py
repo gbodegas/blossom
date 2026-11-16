@@ -22,8 +22,10 @@ from datetime import date
 from typing import Final
 
 from blossom.grades.draft import folded
+from blossom.intake import spoken_day
 from blossom.school_instructions import to_wire
 from blossom.screenshot_review import (
+    JOINED,
     KINDS,
     ChangeTold,
     Corrections,
@@ -41,6 +43,7 @@ from blossom.screenshot_review import (
     dest_kind,
     facts,
     field_most,
+    joined_subject,
     kind_question,
     offers,
     reference,
@@ -66,7 +69,7 @@ from blossom.screenshot_save import (
     unit_digests,
     unreadable_dates,
 )
-from blossom.screenshots import CardPlace, ScreenshotRow, UnreadCard
+from blossom.screenshots import CardPlace, ScreenshotRow, UnreadCard, note_tag
 
 SAID: Final = {
     "status": (
@@ -100,6 +103,10 @@ SAID: Final = {
     "type_helper": "Task: a form to sign, supplies to bring, or similar.",
     "due_differs": "Its due line and its day heading name different dates. Which due date does "
     "Blossom use?",
+    "joined_note": "The teacher's note for {day} also says: {words}",
+    "joined_tick": "Add this note to the assignment",
+    "joined_dates": "The card says due {due}; the teacher's note for {day} says {noted}.",
+    "joined_undated": "The card gives no due date; the teacher's note for {day} says {noted}.",
     "too_long": "Keep the {named} to {most:,} characters or fewer.",
     "nothing": "none",
     "lost_correction": "This card's corrections changed since you chose, so choose where it goes "
@@ -393,6 +400,44 @@ def due_option(piece: Piece, day: date) -> str:
     """One answer to which due date Blossom uses, by what said it."""
     lines = any(one.card == "due" and one.line_day == day for one in piece.seen)
     return f"Due {day_text(day)}, as the {'due line' if lines else 'day heading'} says"
+
+
+def joined_questions(
+    piece: Piece, values: Mapping[tuple[str, str], str], about: str
+) -> list["Question"]:
+    """A tick of its own for each note joined to the piece's card, unticked until the family
+    ticks it: the note's words, and both dates with where each was read where the note's
+    deadline is not the piece's due date. Leaving it unticked is an answer, so it is never
+    still to answer. Two notes of one tag share one tick."""
+    out: list[Question] = []
+    seen: set[str] = set()
+    for task in () if piece.reading is None else piece.reading.joined_notes:
+        tag = note_tag(task)
+        if tag in seen:
+            continue
+        seen.add(tag)
+        subject = joined_subject(piece.name, tag)
+        day = f"{task.first_day.strftime('%B')} {task.first_day.day}"
+        notes: tuple[tuple[str, str], ...] = ()
+        if task.deadline is not None and task.deadline != piece.due:
+            noted = spoken_day(task.deadline)
+            said = (
+                SAID["joined_undated"].format(day=day, noted=noted)
+                if piece.due is None
+                else SAID["joined_dates"].format(due=spoken_day(piece.due), day=day, noted=noted)
+            )
+            notes = ((said, ""),)
+        out.append(
+            Question(
+                answer_field("joined", subject),
+                SAID["joined_note"].format(day=day, words=task.words),
+                ((JOINED, SAID["joined_tick"], values.get(("joined", subject)) == JOINED),),
+                about=about,
+                notes=notes,
+                answered=True,
+            )
+        )
+    return out
 
 
 def confirm_question(
@@ -756,7 +801,7 @@ class Question:
     (resolved to that question's anchor once the page's questions are placed)."""
     answered: bool = False
     """For a field the reader wasn't sure of: whether a correction in the fold answers it, as
-    it does for the save, with no option checked."""
+    it does for the save, with no option checked. A joined note's tick is always answered."""
     unsaved: bool = False
     """Whether what's checked is a choice a refused press sent and the record doesn't hold."""
 
@@ -1532,6 +1577,7 @@ def rows_shown(
                     about=about,
                 )
             )
+        checks += joined_questions(piece, values, about)
         for (whose, field), host in confirm_on.items():
             if host != piece.name:
                 continue

@@ -17,7 +17,7 @@ import dataclasses
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any, Final, NamedTuple
 
@@ -37,6 +37,7 @@ from blossom.screenshots import (
     ScreenshotRow,
     cards_placed,
     homework_assembly,
+    with_joined,
 )
 from blossom.stores.import_drafts import Carry, StoredReading
 
@@ -1431,11 +1432,14 @@ def pieces_from(
     now: datetime,
     corrections: Corrections | None = None,
     due_read: Mapping[str, str] | None = None,
+    joined: Collection[tuple[str, str]] = (),
 ) -> tuple[list[Piece], list[ScreenshotRow], list[ScreenshotRow]]:
     """The review's pieces, the rows still asking the split question, and every row. A row
     answered "These are different assignments" gives one piece per assigned day and one for its
     undated cards, each read from its own cards and dated by them alone. Each piece keeps its
-    fields with no correction beside the corrected ones."""
+    fields with no correction beside the corrected ones. A piece takes what each joined note
+    the family selected adds, by piece name and note tag in ``joined`` (``with_joined``), before
+    its corrections, so the page, a refusal and the save read one reading."""
     rows = list(homework_assembly(list(readings), now=now).rows)
     placed = cards_placed(readings)
     corrections = corrections or {}
@@ -1456,8 +1460,9 @@ def pieces_from(
         fields = corrections.get(row.key) or {}
         carried = tuple(c for c in bare if usable_correction(f := wordless_field(c), fields.get(f)))
         mine = [card for card in (*wordless, *carried) if card in cards]
+        tags = {tag for piece_name, tag in joined if piece_name == name}
         fixed = corrected(
-            reading,
+            with_joined(reading, tags, now) if tags else reading,
             corrections.get(row.key),
             corrections.get(dates_key(name)),
             texts,
@@ -1595,7 +1600,30 @@ def answer_names(kind: str, subject: str) -> list[str]:
         return [subject]
     if kind in ("due", "assigned", "instructions"):
         return list(json.loads(subject)[1])
+    if kind == "joined":
+        found = joined_of(subject)
+        return [] if found is None else [found[0]]
     return []
+
+
+JOINED: Final = "1"
+"""The value of a ticked joined note: the one option of its question."""
+
+
+def joined_subject(name: str, tag: str) -> str:
+    """The subject of a joined note's tick: its piece's name and the note's ``note_tag``."""
+    return json.dumps([name, tag], separators=(",", ":"))
+
+
+def joined_of(subject: str) -> tuple[str, str] | None:
+    """A joined note's tick's piece name and note tag, or None for a subject no page writes."""
+    try:
+        found = json.loads(subject)
+    except ValueError:
+        return None
+    if not isinstance(found, list) or len(found) != 2 or not all(isinstance(x, str) for x in found):
+        return None
+    return found[0], found[1]
 
 
 def unnamed(readings: Sequence[StoredReading]) -> frozenset[tuple[str, str]]:
@@ -1662,7 +1690,7 @@ def cleared(
                 delete.add((kind, subject))
                 marks.add(subject)
         elif (
-            kind in ("due", "assigned", "instructions")
+            kind in ("due", "assigned", "instructions", "joined")
             or (kind == "kind" and subject.startswith("["))
         ) and any(hit(name) for name in answer_names(kind, subject)):
             delete.add((kind, subject))

@@ -43,6 +43,7 @@ from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionChoice
 from blossom.screenshot_review import (
     DATE_FIELDS,
+    JOINED,
     KINDS,
     PIECE_DATES,
     Corrections,
@@ -62,6 +63,7 @@ from blossom.screenshot_review import (
     holds_note,
     instruction_field,
     instruction_index,
+    joined_of,
     pieces_from,
     preview,
     slot_id,
@@ -691,8 +693,13 @@ def review_state(
         subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
     }
     due_read = {subject: value for (kind, subject), value in values.items() if kind == "due_read"}
+    joined = {
+        found
+        for (kind, subject), value in values.items()
+        if kind == "joined" and value == JOINED and (found := joined_of(subject)) is not None
+    }
     pieces, asking, every_row = pieces_from(
-        tables.readings, split, tables.discards, now, corrections, due_read
+        tables.readings, split, tables.discards, now, corrections, due_read, joined
     )
     by_name = {p.name: p for p in pieces}
     saved = {name: target for name, target in tables.saved.items() if name in by_name}

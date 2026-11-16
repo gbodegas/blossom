@@ -72,6 +72,7 @@ ANSWER_KINDS: Final = frozenset(
         "name",
         "confirm",
         "due_read",
+        "joined",
     }
 )
 SIGNED: Final = ("version", "progress_revision", "acceptance", "asked", "defaults", "identity")
@@ -132,9 +133,14 @@ class ReviewPost:
         return bool(self.too_long or self.needed or self.both or self.conflicted or self.unresolved)
 
 
-WITHDRAWABLE: Final = ("answer:confirm:", "answer:instructions:", "answer:name:missing")
+WITHDRAWABLE: Final = (
+    "answer:confirm:",
+    "answer:instructions:",
+    "answer:name:missing",
+    "answer:joined:",
+)
 """The answer fields, by prefix, a press takes back when it posts none of their boxes: each is
-a set of checkboxes, so a box left unticked sends nothing."""
+a set of checkboxes, so a box left unticked sends nothing. A joined note's tick is one."""
 
 
 def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:

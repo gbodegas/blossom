@@ -41287,7 +41287,7 @@ def test_notes_that_may_be_homework_or_say_none_start_unticked_under_their_own_h
     assert UNIT_TICK.findall(none_assigned) == [""]
 
 
-def test_a_note_read_as_homework_is_ticked_under_what_saving_adds(
+def test_a_note_read_as_homework_is_listed_under_what_saving_adds(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     answer = with_notes(note_card("Math 8", "Study the vocabulary on page 12.", 450))
@@ -41516,3 +41516,235 @@ def test_a_save_with_no_group_ticked_writes_nothing_and_says_so(
 
     assert rows == []
     assert says(after, imports.PRESS_SAID["none_chosen"])
+
+
+# ------------------------------------------------------------------ a note joined to its card
+
+ESSAY_NOTE: Final = "Short essay due Wednesday. Write 250 words on your question."
+"""Religion 8's note under Monday 10/5/2026: due Wednesday 10/7, two days before its card."""
+JOINED_TICK: Final = re.compile(
+    r'<input type="checkbox" name="answer:joined:[^"]*" value="1"( checked)?>'
+)
+
+
+def essay_answer() -> dict[str, object]:
+    """Religion 8's "Short essay" card, assigned Monday 10/5/2026 and due Friday 10/9, with
+    the teacher's note for that day naming it."""
+    card = homework_card(
+        course="Religion 8",
+        title="Short essay",
+        instruction=None,
+        footer="Due (10/9/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    return homework_answer(cards=[card, note_card("Religion 8", ESSAY_NOTE, 300)])
+
+
+def joined_field(page: str) -> str:
+    [subject] = fields_named(review_form(page), "answer:joined:")
+    return f"answer:joined:{subject}"
+
+
+def essay_row(browser: TestClient) -> tuple[Any, set[tuple[str, str | None]], list[str]]:
+    """The saved essay, its due-date claims and the words of its school instructions."""
+    record = state_of(browser).project_state
+    [row] = [a for a in record.all_assignments() if a.course == "Religion 8"]
+    claims = {(c.asserted_value, c.seen_in) for c in record.deadline_records(row.assignment_id)}
+    readable = record.school_instruction_readings([row.assignment_id]).readable
+    found = readable.get(row.assignment_id)
+    return row, claims, [] if found is None else [each.text for each in found.kept]
+
+
+def test_a_joined_note_has_a_tick_of_its_own_with_its_words_and_both_dates(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The note joins its card's group, unticked, with its words and both dates and where each
+    was read; the group itself starts ticked and the note is no group of its own."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+
+    form = review_form(page)
+    shown = html.unescape(form)
+    assert JOINED_TICK.findall(form) == [""]
+    assert len(units_on(page)) == 1
+    assert UNIT_TICK.findall(form) == [" checked"]
+    assert 'id="may-be-heading"' not in page
+    assert f"The teacher's note for October 5 also says: {ESSAY_NOTE}" in shown
+    assert (
+        "The card says due Friday, October 9, 2026; the teacher's note for October 5 says "
+        "Wednesday, October 7, 2026."
+    ) in shown
+    assert "Add this note to the assignment" in shown
+    assert shown.count(ESSAY_NOTE) == 1
+
+
+def test_a_joined_notes_tick_is_kept_for_later_on_reopening_and_through_a_refusal(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticked and kept with the review's answers, the tick comes back ticked; Save review for
+    later keeps it on reopening; a Save refused for a title box too long or cleared keeps it as
+    sent; left unticked, it is taken back. Nothing is saved on the way."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        field = joined_field(page)
+        kept = followed(
+            browser, send(browser, draft_id, page_post(page, "keep", choose={field: "1"}))
+        )
+        held = stored_answers(browser, draft_id)
+        reopened = kept_for_later(browser, draft_id, kept, {})
+        title = f"correct:{box_subject(reopened, 'title')}"
+        refused = [
+            send(
+                browser,
+                draft_id,
+                page_post(reopened, "save", typed={title: typed}, tick=units_on(reopened)),
+            )
+            for typed in ("x" * (TITLE_MOST + 1), "")
+        ]
+        taken_back = followed(
+            browser,
+            send(browser, draft_id, [(n, v) for n, v in page_post(reopened, "keep") if n != field]),
+        )
+        after = stored_answers(browser, draft_id)
+        record = state_of(browser).project_state
+        rows = [a for a in record.all_assignments() if a.course == "Religion 8"]
+
+    assert JOINED_TICK.findall(review_form(kept)) == [" checked"]
+    assert [value for (kind, _), value in held.items() if kind == "joined"] == ["1"]
+    assert JOINED_TICK.findall(review_form(reopened)) == [" checked"]
+    assert [answer.status_code for answer in refused] == [422, 422]
+    assert [JOINED_TICK.findall(review_form(answer.text)) for answer in refused] == [
+        [" checked"],
+        [" checked"],
+    ]
+    assert JOINED_TICK.findall(review_form(taken_back)) == [""]
+    assert [kind for kind, _ in after if kind == "joined"] == []
+    assert rows == []
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_a_joined_note_adds_its_claim_and_words_on_save_only_when_selected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, selected: bool
+) -> None:
+    """Saved unticked, the card is saved as read; ticked, the note's date is one more claim,
+    seen in the teacher's note, and its words an instruction; the card's due date stays."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        if selected:
+            choose = {joined_field(page): "1"}
+            page = followed(
+                browser, send(browser, draft_id, page_post(page, "keep", choose=choose))
+            )
+        saved = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        )
+        row, claims, words = essay_row(browser)
+
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert row.due_date == date(2026, 10, 9)
+    assert (("2026-10-07", intake.TEACHER_NOTE) in claims) is selected
+    assert words == ([ESSAY_NOTE] if selected else [])
+
+
+def test_a_familys_due_date_stays_when_a_selected_joined_note_is_saved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The family's essay due Thursday 10/8, read again with its card and a selected joined
+    note: the save keeps the family's date and the family as where it came from, with the
+    note's date one more claim beside it."""
+    from blossom.reconciliation import SourceChannel
+
+    typed_at = datetime(2026, 10, 5, 18, 0, tzinfo=UTC)
+    with here(open_settings(tmp_path)) as browser:
+        record = state_of(browser).project_state
+        hers = intake.by_hand(
+            "Religion 8", "Short essay", date(2026, 10, 8), None, None, now=typed_at
+        )
+        intake.keep((hers,), record, now=typed_at, today=date(2026, 10, 5))
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        existing = json.dumps({"existing": hers.assignment_id}, separators=(",", ":"))
+        choose = {joined_field(page): "1", f"answer:destination:{piece}": existing}
+        page = followed(browser, send(browser, draft_id, page_post(page, "keep", choose=choose)))
+        [due] = [f"answer:due:{s}" for s in fields_named(review_form(page), "answer:due:")]
+        [as_saved] = [value for value, _ in options_of(page, due) if "2026-10-08" in value]
+        page = followed(
+            browser, send(browser, draft_id, page_post(page, "keep", choose={due: as_saved}))
+        )
+        saved = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        )
+        row, claims, _ = essay_row(browser)
+
+    assert JOINED_TICK.findall(review_form(page)) == [" checked"]
+    assert says(saved, imports.counted(0, 1, 0, 0))
+    assert row.assignment_id == hers.assignment_id
+    assert row.due_date == date(2026, 10, 8)
+    assert row.origins["due_date"] is SourceChannel.PARENT_ENTRY
+    assert ("2026-10-07", intake.TEACHER_NOTE) in claims
+
+
+MAP_NOTE: Final = "Map project due on Wednesday."
+"""Humanities 8's note under Monday 10/5/2026 and Thursday 10/8: due Wednesday 10/7."""
+
+
+def map_answers() -> tuple[dict[str, object], dict[str, object]]:
+    """The note alone under Monday 10/5/2026, and under Thursday 10/8 beside the "Map project"
+    card assigned that day and due 10/15: the card is not of the note's first listing day and
+    its due date is not the note's, so the note joins no card."""
+    card = homework_card(
+        course="Humanities 8",
+        title="Map project",
+        instruction=None,
+        footer="Due (10/15/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    monday = homework_answer(cards=[note_card("Humanities 8", MAP_NOTE, 200)])
+    thursday = homework_answer(
+        headings=[{"text": "Thursday 10/8/2026", "y": 150, "uncertain": None}],
+        cards=[card, note_card("Humanities 8", MAP_NOTE, 300)],
+    )
+    return monday, thursday
+
+
+def test_a_note_that_joins_no_card_of_its_name_asks_same_or_new_with_both_dates(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The note and the card of its name are two groups, each showing its own due date, and
+    each asks where it goes, the same new assignment or another, with nothing chosen; sent to
+    the same one, the review asks which due date it takes, both dates offered. Nothing is
+    saved on the way."""
+    monday, thursday = map_answers()
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, thursday))
+        page = her_name_answered(browser, draft_id, page)
+        pieces = [
+            f"answer:destination:{p}"
+            for p in fields_named(review_form(page), "answer:destination:")
+        ]
+        offered = [options_of(page, field) for field in pieces]
+        [slot, *_] = [value for value, _ in offered[0] if '"new"' in value]
+        same = followed(
+            browser,
+            send(browser, draft_id, page_post(page, "keep", choose=dict.fromkeys(pieces, slot))),
+        )
+        [due] = [f"answer:due:{s}" for s in fields_named(review_form(same), "answer:due:")]
+        dates = sorted(value for value, _ in options_of(same, due))
+        record = state_of(browser).project_state
+        rows = [a for a in record.all_assignments() if a.course == "Humanities 8"]
+
+    shown = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", review_form(page))))
+    assert len(pieces) == 2
+    assert [[checked for _, checked in each] for each in offered] == [[False, False]] * 2
+    assert "Due Wednesday, October 7 From the school: Map project due on Wednesday." in shown
+    assert "Due Thursday, October 15 Assigned Thursday, October 8." in shown
+    assert shown.count("A new Map project (1) A new Map project (2)") == 2
+    assert [d for d in dates if "2026-10-07" in d or "2026-10-15" in d] == dates
+    assert len(dates) == 2
+    assert rows == []

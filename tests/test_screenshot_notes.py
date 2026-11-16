@@ -404,7 +404,9 @@ def test_a_note_naming_a_card_of_another_day_stays_a_note_row() -> None:
         assert task.seen_on == (date(2026, 11, 17),)
 
 
-def test_a_note_that_says_more_adds_its_deadline_claim_and_its_words_to_the_card() -> None:
+def test_a_note_that_says_more_is_kept_on_the_card_as_read() -> None:
+    """A note that joins its card adds nothing to it as read: its deadline claim and its words
+    wait in the card's joined notes until the family selects the note."""
     found = assembled("more", shot(essay(), note("Religion 8", instruction=ESSAY_MORE, y_top=300)))
     alone = essay_alone("more")
 
@@ -417,13 +419,12 @@ def test_a_note_that_says_more_adds_its_deadline_claim_and_its_words_to_the_card
         alone.layer,
     )
     assert row.reading.due_date == date(2026, 11, 18)
-    assert [(c.channel, c.asserted_value, c.seen_in) for c in row.reading.claims] == [
-        (c.channel, c.asserted_value, c.seen_in) for c in alone.reading.claims
-    ] + [(SourceChannel.LMS, "2026-11-18", TEACHER_NOTE)]
-    assert row.reading.instructions == (
-        *alone.reading.instructions,
-        InstructionSeen(ESSAY_MORE, SourceChannel.LMS, None, date(2026, 11, 16)),
-    )
+    assert row.reading.claims == alone.reading.claims
+    assert row.reading.instructions == alone.reading.instructions
+    assert [(task.words, task.deadline) for task in row.reading.joined_notes] == [
+        (ESSAY_MORE, date(2026, 11, 18))
+    ]
+    assert alone.reading.joined_notes == ()
 
 
 def test_a_note_in_another_class_with_the_card_s_title_stays_a_note_row() -> None:
