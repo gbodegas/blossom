@@ -108,7 +108,9 @@
         {# So do its title and due date, as typed. #}{% set fields = note_fields[change.key] %}
         <input type="hidden" name="title-{{ change.key }}" value="{{ fields.title }}">{% if fields.chosen %}
         <input type="hidden" name="when-{{ change.key }}" value="{{ fields.chosen }}">{% endif %}
-        <input type="hidden" name="when_other-{{ change.key }}" value="{{ fields.other }}">{% endif %}
+        <input type="hidden" name="when_other-{{ change.key }}" value="{{ fields.other }}">{% endif %}{% for task in change.reading.joined_notes %}{% if (change.key, loop.index0) in joined_ticked %}
+        {# A note joined to a folded card travels with it, ticked as it was. #}
+        <input type="hidden" name="join-{{ change.key }}-{{ loop.index0 }}" value="1">{% endif %}{% endfor %}
       {% endfor %}
       {% if folded %}
         <p class="note">{{ folded|length }} card{% if folded|length != 1 %}s{% endif %} folded into the card for the same assignment, as you said.</p>
@@ -343,8 +345,14 @@
                 {% endfor %}
               {% endif %}{% if reading.teacher_note and not reading.instructions %}
               {# A note saved before brings no instruction to decide again; its words are shown all the same, so no line of the text goes unshown. #}
-              <p class="from-teacher">From the school: <q class="authored-text">{{ reading.teacher_note.words }}</q> <span class="source">Read in the school's note for {{ reading.teacher_note.first_day.strftime("%B") }} {{ reading.teacher_note.first_day.day }}.</span></p>{% endif %}{% for task in reading.joined_notes %}{% if task.words not in (reading.instructions|map(attribute="text")|list) %}
-              <p class="source">The teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} also says: <q class="authored-text">{{ task.words }}</q></p>{% endif %}{% endfor %}{% if reading.teacher_note and reading.due_date and reading.due_date == reading.teacher_note.deadline %}{# Said only while the due date is the note's own, so it never outlives a date the family changed or cleared. #}{% for day in reading.teacher_note.listed_after %}
+              <p class="from-teacher">From the school: <q class="authored-text">{{ reading.teacher_note.words }}</q> <span class="source">Read in the school's note for {{ reading.teacher_note.first_day.strftime("%B") }} {{ reading.teacher_note.first_day.day }}.</span></p>{% endif %}{% for task in reading.joined_notes %}{% set place = loop.index0 %}{% if task.words not in (reading.instructions|map(attribute="text")|list) %}
+              <p class="source">The teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} also says: <q class="authored-text">{{ task.words }}</q></p>{% endif %}{% if task.deadline and task.deadline != reading.due_date %}
+              {# Both dates and where each was read, before anything is saved; a selected note's date is the school's evidence and never the card's due date. #}
+              <p class="source">{% if reading.due_date %}The card says due {{ spoken_day(reading.due_date) }}{% else %}The card gives no due date{% endif %}; the teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} says {{ spoken_day(task.deadline) }}.</p>{% endif %}
+              {# A joined note adds nothing to the card until it is selected; the page signs its tick as shown. #}
+              <div class="choice">
+                <label><input type="checkbox" name="join-{{ change.key }}-{{ place }}" value="1"{% if (change.key, place) in joined_ticked %} checked{% endif %}> <span>Add this note to the assignment<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
+              </div>{% endfor %}{% if reading.teacher_note and reading.due_date and reading.due_date == reading.teacher_note.deadline %}{# Said only while the due date is the note's own, so it never outlives a date the family changed or cleared. #}{% for day in reading.teacher_note.listed_after %}
               <p class="source">Still listed on {{ spoken_day(day) }}, after its due date of {{ spoken_day(reading.teacher_note.deadline) }}.</p>{% endfor %}{% endif %}
               {% if change.note_change == "kept" and change.standing and change.standing.note %}
                 <p class="from-teacher">Her note: <q class="authored-text">{{ change.standing.note }}</q></p>

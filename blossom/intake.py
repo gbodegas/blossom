@@ -410,8 +410,8 @@ class Read:
     """Everything one paste says: the readings, the lines that need review, each subject's
     note as a block, in the order the notes open, the keys of the readings left out of a
     save unless someone selects them, the title and due-date answers sent for the readings
-    made from teachers' notes, as typed, and the keys whose due-date answer names no date
-    a paste can mean."""
+    made from teachers' notes, as typed, the keys whose due-date answer names no date
+    a paste can mean, and the notes joined to a card that the family selected to add to it."""
 
     items: tuple[Reading, ...]
     unread: tuple[Unread, ...]
@@ -419,6 +419,9 @@ class Read:
     left_out: frozenset[int] = frozenset()
     answers: tuple[TaskAnswer, ...] = ()
     dates_unread: frozenset[int] = frozenset()
+    joined: frozenset[tuple[int, int]] = frozenset()
+    """Each note joined to a card that is selected, by the card's key and the note's place
+    among the card's ``joined_notes``. A joined note starts unselected."""
 
 
 def kind_of(title: str) -> AssignmentKind:
@@ -1165,8 +1168,16 @@ def with_answers(read: Read, answers: Sequence[TaskAnswer], *, now: datetime, to
     goes through ``with_family_deadline``, so the date the note settles, or none where it
     settles none, leaves the reading the school's. No choice leaves the date as read. A date
     that reads as none a paste can mean is not applied, and its key is in ``dates_unread``.
-    Nothing is changed in place."""
+
+    Each note joined to a card that ``read.joined`` holds adds to that card what ``_joined``
+    adds: the claim of its deadline, seen in the teacher's note, and its words where they
+    say more. The card's due date is its own. A joined note not selected adds nothing, so
+    the page, Review changes, a refusal and the save all compare one reading. Applying this
+    again adds nothing more. Nothing is changed in place."""
     items = list(read.items)
+    for card, place in sorted(read.joined):
+        if 0 <= card < len(items) and 0 <= place < len(items[card].joined_notes):
+            items[card] = _joined(items[card], items[card].joined_notes[place], now)
     kept: list[TaskAnswer] = []
     unread: set[int] = set()
     for answer in answers:
@@ -1185,7 +1196,7 @@ def with_answers(read: Read, answers: Sequence[TaskAnswer], *, now: datetime, to
                 unread.add(answer.key)
         items[answer.key] = reading
     if not kept:
-        return read
+        return read if tuple(items) == read.items else dataclasses.replace(read, items=tuple(items))
     return dataclasses.replace(
         read, items=tuple(items), answers=tuple(kept), dates_unread=frozenset(unread)
     )
@@ -1225,11 +1236,11 @@ def _read_under(card: Reading, days: Collection[date]) -> bool:
 
 
 def _joined(card: Reading, task: NoteTask, now: datetime) -> Reading:
-    """A card's reading with what a note about the same assignment adds: the claim of a
-    deadline the note settles, seen in the teacher's note, and the task's words as one more
-    instruction when they say more than the name and the deadline statement. A claim or an
-    instruction the card has is not added twice. The task itself is carried in
-    ``joined_notes``, whatever its words say."""
+    """A card's reading with what a note about the same assignment adds once the family
+    selects it: the claim of a deadline the note settles, seen in the teacher's note, and the
+    task's words as one more instruction when they say more than the name and the deadline
+    statement. A claim or an instruction the card has is not added twice, so applying it
+    again changes nothing. The card's due date and joined notes are as they were."""
     claims, instructions = card.claims, card.instructions
     if task.deadline is not None:
         noted = claim(SourceChannel.LMS, task.deadline, TEACHER_NOTE, now, PORTAL_CONFIDENCE)
@@ -1237,9 +1248,7 @@ def _joined(card: Reading, task: NoteTask, now: datetime) -> Reading:
             claims += (noted,)
     if _says_more(task) and all(seen.text != task.words for seen in instructions):
         instructions += (InstructionSeen(task.words, SourceChannel.LMS, None, task.first_day),)
-    return dataclasses.replace(
-        card, claims=claims, instructions=instructions, joined_notes=(*card.joined_notes, task)
-    )
+    return dataclasses.replace(card, claims=claims, instructions=instructions)
 
 
 def joins(card: Reading, task: NoteTask, read_under: Callable[[Collection[date]], bool]) -> bool:
@@ -1267,11 +1276,12 @@ def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
     their places, then one reading for each task that is no card's.
 
     A task that ``joins`` exactly one card is that card's assignment: the card's reading
-    takes what the note adds and stays where it is. A task two cards could take joins
-    neither. Every other task is a reading of its own, after the cards, in the
-    order the notes give the tasks. One whose class and title a reading before it has
-    carries its first school day and a mark of its words as its occurrence, so its id is
-    its own. A suspect note is read as no task: its lines are text that needs review.
+    stays where it is, as read, with the task among its ``joined_notes``; what the note adds
+    is applied only for a joined note the family selects (``with_answers``). A task two
+    cards could take joins neither. Every other task is a reading of its own, after the
+    cards, in the order the notes give the tasks. One whose class and title a reading before
+    it has carries its first school day and a mark of its words as its occurrence, so its
+    id is its own. A suspect note is read as no task: its lines are text that needs review.
     """
     items = list(read.items)
     made: list[Reading] = []
@@ -1284,7 +1294,9 @@ def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
             ]
         )
         if place is not None:
-            items[place] = _joined(items[place], task, now)
+            items[place] = dataclasses.replace(
+                items[place], joined_notes=(*items[place].joined_notes, task)
+            )
             continue
         reading = note_reading(task, now=now)
         if any(other.pair == reading.pair for other in (*items, *made)):

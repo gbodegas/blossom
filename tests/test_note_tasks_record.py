@@ -369,12 +369,13 @@ whether the note's words say more than the name and the deadline statement."""
 
 
 @pytest.mark.parametrize(("note", "title", "adds"), SAYS_MORE)
-def test_a_note_naming_the_card_of_its_day_is_that_card_and_adds_only_what_it_says(
+def test_a_note_naming_the_card_of_its_day_is_that_card_as_read(
     note: str, title: str, adds: bool
 ) -> None:
     """A task named as a formal card of the same class and school day is that card's
-    assignment: no reading of its own, and its words are one more instruction only when
-    they say more than the name and the deadline statement."""
+    assignment: no reading of its own. As read, the card is exactly as the school's card
+    gave it, with the task among its joined notes: the note adds nothing until the family
+    selects it."""
     read = read_text(week_with(note, title), now=NOW, today=TODAY)
     card = by_pair(read.items)["Religion", title][0]
     (task,) = [item for item in read_notes([n.block for n in read.notes]) if item.name == title]
@@ -385,27 +386,136 @@ def test_a_note_naming_the_card_of_its_day_is_that_card_and_adds_only_what_it_sa
     assert len(items) == len(read.items) + 7
     assert items.index(joined) == read.items.index(card)
     assert joined.teacher_note is None
+    assert joined.joined_notes == (task,)
+    assert joined.claims == card.claims
+    assert joined.instructions == card.instructions
+    assert joined == card
+
+
+@pytest.mark.parametrize(("note", "title", "adds"), SAYS_MORE)
+def test_a_selected_joined_note_adds_only_what_it_says(note: str, title: str, adds: bool) -> None:
+    """Once the family selects a note joined to its card, the card takes the claim of a
+    deadline the note settles, seen in the teacher's note, and the note's words as one more
+    instruction only when they say more than the name and the deadline statement. Its due
+    date stays the card's, applying the answers again adds nothing, and a note left
+    unselected leaves the card as read."""
+    read = read_text(week_with(note, title), now=NOW, today=TODAY)
+    card = by_pair(read.items)["Religion", title][0]
+    key = read.items.index(card)
+    noted = with_notes(read, now=NOW)
+    (task,) = noted.items[key].joined_notes
+
+    chosen = with_answers(
+        dataclasses.replace(noted, joined=frozenset({(key, 0)})), [], now=NOW, today=TODAY
+    )
+    left = with_answers(noted, [], now=NOW, today=TODAY)
+
     more = (InstructionSeen(task.words, SourceChannel.LMS, None, nov(3)),) if adds else ()
-    assert joined.instructions == card.instructions + more
-    assert dataclasses.replace(joined, claims=card.claims, instructions=card.instructions) == card
+    claimed = (
+        [(SourceChannel.LMS, task.deadline.isoformat(), TEACHER_NOTE, PORTAL_CONFIDENCE)]
+        if task.deadline is not None
+        else []
+    )
+    assert chosen.items[key].instructions == card.instructions + more
+    assert said(chosen.items[key]) == said(card) + claimed
+    assert chosen.items[key].due_date == card.due_date
+    assert chosen.items[key].joined_notes == (task,)
+    assert with_answers(chosen, [], now=NOW, today=TODAY).items == chosen.items
+    assert said(left.items[key]) == said(card)
+    assert left.items[key].instructions == card.instructions
 
 
-def test_a_joined_note_with_a_deadline_adds_its_claim_and_one_without_adds_none() -> None:
-    """The card keeps its own claims; a deadline the note settles is one more, seen in the
-    teacher's note, and a note that settles none leaves the card exactly as read."""
+JOINED_NOTE = (
+    "Homework for Wren\n11/03/2026 - Tuesday\nReligion -\n{}\nReligion - Due: Short essay:\n"
+)
+"""A Tuesday with a note above the formal card of its name, which carries no instruction."""
+
+
+@pytest.mark.parametrize("selected", [False, True], ids=["unselected", "selected"])
+def test_a_joined_note_adds_its_claim_and_words_on_save_only_when_selected(
+    tmp_path: pathlib.Path, selected: bool
+) -> None:
+    """A card with a joined note that names a deadline and says more is saved as read while
+    the note is unselected: no claim of the note's and no instruction. Selected, the note's
+    deadline is one more claim, seen in the teacher's note, and its words are an
+    instruction of the row; the row's due date is the card's either way."""
+    text = JOINED_NOTE.format("Short essay due Friday. Write it in ink.")
+    read = with_notes(read_text(text, now=NOW, today=TODAY), now=NOW)
+    chosen = with_answers(
+        dataclasses.replace(read, joined=frozenset({(0, 0)} if selected else ())),
+        [],
+        now=NOW,
+        today=TODAY,
+    )
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        kept = keep(chosen.items, store, left_out=chosen.left_out, now=NOW, today=TODAY)
+        (row,) = store.all_assignments()
+        claims = store.deadline_records(row.assignment_id)
+        instructions = store.school_instruction_readings([row.assignment_id])
+    finally:
+        store.close()
+
+    readable = instructions.readable.get(row.assignment_id)
+    assert len(read.items) == 1
+    assert kept == Kept(added=1, updated=0, unchanged=0)
+    assert row.due_date == nov(3)
+    noted = ("2026-11-06", TEACHER_NOTE) in {(each.asserted_value, each.seen_in) for each in claims}
+    assert noted is selected
+    assert ([] if readable is None else [each.text for each in readable.kept]) == (
+        ["Short essay due Friday. Write it in ink."] if selected else []
+    )
+
+
+def test_a_familys_due_date_stays_when_a_selected_joined_note_is_saved(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A row the family dated Wednesday, read again under a Tuesday card with a selected
+    joined note that says Friday: the save keeps the family's due date and the family as
+    where it came from, with the note's date one more claim beside it."""
+    read = with_notes(
+        read_text(JOINED_NOTE.format("Short essay due Friday."), now=NOW, today=TODAY), now=NOW
+    )
+    chosen = with_answers(
+        dataclasses.replace(read, joined=frozenset({(0, 0)})), [], now=NOW, today=TODAY
+    )
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        name = parents_row(store, "Religion", "Short essay", nov(4), None)
+        (change,) = changes_for(chosen.items, store)
+        identities = (
+            {0: IdentityAnswer(name, change.identity_shown, change.identity_basis)}
+            if change.identity_asked
+            else {}
+        )
+        kept = keep(chosen.items, store, identities=identities, now=NOW, today=TODAY)
+        row = store.one_assignment(name)
+        claims = store.deadline_records(name)
+    finally:
+        store.close()
+
+    assert kept == Kept(added=0, updated=1, unchanged=0)
+    assert row is not None
+    assert row.due_date == nov(4)
+    assert row.origins["due_date"] == SourceChannel.PARENT_ENTRY
+    assert ("2026-11-06", TEACHER_NOTE) in {(each.asserted_value, each.seen_in) for each in claims}
+
+
+def test_a_joined_note_with_a_deadline_adds_no_claim_as_read() -> None:
+    """As read, the card keeps its own claims and due date whatever deadline a joined note
+    settles: the note's deadline is no claim of the card's until the family selects it."""
     dated = read_text(week_with("Short essay due Friday."), now=NOW, today=TODAY)
     undated = read_text(week_with("Short essay Due."), now=NOW, today=TODAY)
     card = by_pair(dated.items)["Religion", "Short essay"][0]
 
-    (with_claim,) = by_pair(with_note_readings(dated, now=NOW))["Religion", "Short essay"]
+    (with_note,) = by_pair(with_note_readings(dated, now=NOW))["Religion", "Short essay"]
     (as_read,) = by_pair(with_note_readings(undated, now=NOW))["Religion", "Short essay"]
 
-    assert said(with_claim) == [
-        *said(card),
-        (SourceChannel.LMS, "2026-11-06", TEACHER_NOTE, PORTAL_CONFIDENCE),
-    ]
-    assert with_claim.due_date == card.due_date == nov(3)
+    assert said(with_note) == said(card)
+    assert [task.deadline for task in with_note.joined_notes] == [nov(6)]
+    assert with_note.due_date == card.due_date == nov(3)
     assert as_read == by_pair(undated.items)["Religion", "Short essay"][0]
+    assert said(as_read) == said(by_pair(undated.items)["Religion", "Short essay"][0])
 
 
 def test_a_note_naming_a_card_of_another_day_is_a_reading_of_its_own() -> None:

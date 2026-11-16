@@ -97,8 +97,8 @@ def client_in(tmp_path: pathlib.Path, today: str = "2026-11-03") -> TestClient:
 
 def ticked_form(page: str) -> dict[str, str]:
     """The review form as a browser sends it back untouched: the hidden fields, each
-    select's chosen option, each ticked box of a note, each note's title box, chosen due
-    date and date box, and the text."""
+    select's chosen option, each ticked box of a note or of a note joined to a card, each
+    note's title box, chosen due date and date box, and the text."""
     fields = {
         name: html.unescape(value)
         for name, value in re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', page)
@@ -107,7 +107,9 @@ def ticked_form(page: str) -> dict[str, str]:
         chosen = re.search(r'<option value="([^"]+)" selected>', body)
         assert chosen is not None, name
         fields[name] = chosen.group(1)
-    for name in re.findall(r'<input type="checkbox" name="(take-\d+)" value="1" checked>', page):
+    for name in re.findall(
+        r'<input type="checkbox" name="(take-\d+|join-\d+-\d+)" value="1" checked>', page
+    ):
         fields[name] = "1"
     for name, value in re.findall(
         r'<input type="(?:text|date)" name="((?:title|when_other)-\d+)" value="([^"]*)"', page
@@ -567,16 +569,45 @@ def test_a_find_press_shows_the_ticks_as_they_were_sent(tmp_path: pathlib.Path) 
     assert "3 assignments: 3 new, 0 updates, 0 already saved." in " ".join(found.text.split())
 
 
-def test_a_note_that_says_more_than_its_cards_name_is_listed_once_on_that_card(
+def test_a_note_that_says_more_than_its_cards_name_adds_nothing_until_selected(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A note above the card of the same name and day whose words say more is one more
-    instruction of that card, so the card asks which of the two apply. Each is listed once
-    with where it was read, the card's own on the school's card and the note's in the
-    school's note, and the note is not repeated as a line of the teacher's note."""
+    """A note above the card of the same name and day whose words say more adds nothing to
+    the card as read: the card asks no question about the school's instructions, lists its
+    own, and shows the note's words once, as a line of the teacher's note."""
     text = NOTED.replace("Short essay Due.", "Short essay due today. Write it in ink.")
     with client_in(tmp_path) as client:
         page = client.post("/parent/inbox/read", data={"text": text}).text
+
+    shown = card(page, "Short essay")
+
+    assert "which apply now?" not in shown
+    assert "Read on the school&#39;s card for November 3." in shown or (
+        "Read on the school's card for November 3." in shown
+    )
+    assert "Read in the school's note" not in html.unescape(shown)
+    assert html.unescape(shown).count("Short essay due today. Write it in ink.") == 1
+    assert (
+        "The teacher's note for November 3 also says: "
+        '<q class="authored-text">Short essay due today. Write it in ink.</q>'
+    ) in html.unescape(shown)
+    assert 'name="take-' not in shown
+    assert len(re.findall(r"<h2>Short essay</h2>", page)) == 1
+
+
+def test_a_selected_note_that_says_more_is_listed_once_on_that_card(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Once the family selects the note above the card of the same name and day, its words
+    are one more instruction of that card, so the card asks which of the two apply. Each is
+    listed once with where it was read, the card's own on the school's card and the note's
+    in the school's note, and the note is not repeated as a line of the teacher's note."""
+    text = NOTED.replace("Short essay Due.", "Short essay due today. Write it in ink.")
+    with client_in(tmp_path) as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+        (tick,) = re.findall(r'name="(join-\d+-0)"', card(first, "Short essay"))
+        form = ticked_form(first) | {tick: "1", "recheck": "1"}
+        page = client.post("/parent/inbox/find", data=form).text
 
     shown = card(page, "Short essay")
     listed = re.findall(
@@ -596,7 +627,164 @@ def test_a_note_that_says_more_than_its_cards_name_is_listed_once_on_that_card(
     ]
     assert "also says" not in page
     assert 'name="take-' not in shown
+    assert joined_ticks(shown) == {tick: True}
     assert len(re.findall(r"<h2>Short essay</h2>", page)) == 1
+
+
+DATED_APART = NOTED.replace("Short essay Due.", "Short essay due Friday.")
+"""The two days, with the note above the Tuesday's card naming a deadline of its own, the
+Friday, where the card says the Tuesday."""
+JOINED_TICK = r'<input type="checkbox" name="(join-\d+-\d+)" value="1"( checked)?>'
+ADD_THIS_NOTE = "Add this note to the assignment"
+
+
+def joined_ticks(page: str) -> dict[str, bool]:
+    """Each joined note's tick on a page, by its name, with whether it is ticked."""
+    return {name: bool(checked) for name, checked in re.findall(JOINED_TICK, page)}
+
+
+def signed_joins(page: str) -> list[list[int]]:
+    """The joined notes the page signed, each as its card, its place and whether ticked."""
+    found = re.search(r'name="made_with" value="([^"]*)"', page)
+    assert found is not None
+    made = html.unescape(found.group(1)).rpartition(".")[0]
+    signed: list[list[int]] = json.loads(made.partition(";")[2]).get("joined", [])
+    return signed
+
+
+def test_a_joined_note_has_a_tick_of_its_own_with_its_words_and_both_dates(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note joined to its card shows on that card with its own tick, unselected, its
+    words, and, where its deadline is not the card's due date, both dates with where each
+    was read; the page signs the tick as shown. A joined note whose deadline is the card's,
+    or that names none, shows no second date."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": DATED_APART}).text
+        undated = client.post("/parent/inbox/read", data={"text": NOTED}).text
+
+    shown = card(page, "Short essay")
+
+    assert joined_ticks(shown) == {"join-1-0": False}
+    assert (
+        f'<span>{ADD_THIS_NOTE}<span class="visually-hidden"> for Short essay, Religion</span>'
+    ) in shown
+    assert (
+        "The teacher's note for November 3 also says: "
+        '<q class="authored-text">Short essay due Friday.</q>'
+    ) in html.unescape(shown)
+    assert (
+        "The card says due Tuesday, November 3, 2026; the teacher's note for November 3 says "
+        "Friday, November 6, 2026."
+    ) in html.unescape(shown)
+    assert signed_joins(page) == [[1, 0, 0]]
+    assert joined_ticks(card(undated, "Short essay")) == {"join-1-0": False}
+    assert "The card says" not in undated
+    assert page.count(ADD_THIS_NOTE) == 1
+
+
+@pytest.mark.parametrize(
+    ("sent", "path", "status"),
+    [
+        ({"recheck": "1"}, "find", 200),
+        ({"link-0-0": "1"}, "keep", 422),
+        ({"find": "99"}, "find", 422),
+        ({"recheck": "1", "made_with": "0.0"}, "find", 200),
+        ({}, "keep", 200),
+        ({"made_with": "0.0"}, "keep", 409),
+    ],
+    ids=[
+        "review-changes",
+        "refused-save",
+        "refused-press",
+        "restart",
+        "changed-tick-saved",
+        "restart-saved",
+    ],
+)
+def test_a_joined_notes_tick_comes_back_as_sent(
+    tmp_path: pathlib.Path, sent: dict[str, str], path: str, status: int
+) -> None:
+    """A joined note's tick sent with Review changes, a refused save or press, a Save the
+    page did not sign that tick for, or a page made before the application started again,
+    writes nothing and comes back ticked, signed as the returned page shows it."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": DATED_APART}).text
+        form = ticked_form(page) | {"join-1-0": "1"} | sent
+        answer = client.post(f"/parent/inbox/{path}", data=form)
+        rows = store_of(client).all_assignments()
+
+    assert answer.status_code == status
+    assert rows == []
+    assert joined_ticks(card(answer.text, "Short essay")) == {"join-1-0": True}
+    assert signed_joins(answer.text) == [[1, 0, 1]]
+
+
+def teacher_note_claims(client: TestClient) -> dict[str, list[str]]:
+    """The dates claimed in a teacher's note on record, by the title of their homework."""
+    store = store_of(client)
+    return {
+        row.title: [
+            each.asserted_value
+            for each in store.deadline_records(row.assignment_id)
+            if each.seen_in == "the teacher's note"
+        ]
+        for row in store.all_assignments()
+    }
+
+
+def test_a_joined_note_saves_its_date_only_once_selected_and_saved_again(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An untouched Save writes the card with nothing of its joined note. Ticked and pressed
+    with Save, the tick is no selection the page signed: nothing is written, the page says
+    the selections change what saving does, and the tick comes back. That page saved again
+    writes the note's date as a claim beside the card's own due date, which stays."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": DATED_APART}).text
+        changed = client.post("/parent/inbox/keep", data=ticked_form(page) | {"join-1-0": "1"})
+        written_before = store_of(client).all_assignments()
+        retried = client.post("/parent/inbox/keep", data=ticked_form(changed.text))
+        due = {row.title: row.due_date for row in store_of(client).all_assignments()}
+        claimed = teacher_note_claims(client)
+    (tmp_path / "untouched").mkdir()
+    with client_in(tmp_path / "untouched") as client:
+        page = client.post("/parent/inbox/read", data={"text": DATED_APART}).text
+        untouched = client.post("/parent/inbox/keep", data=ticked_form(page))
+        left = teacher_note_claims(client)
+
+    assert changed.status_code == 200
+    assert SELECTIONS_CHANGE in changed.text
+    assert written_before == []
+    assert joined_ticks(card(changed.text, "Short essay")) == {"join-1-0": True}
+    assert retried.status_code == 303
+    assert claimed["Short essay"] == ["2026-11-06"]
+    assert due["Short essay"] == datetime.date(2026, 11, 3)
+    assert untouched.status_code == 303
+    assert left["Short essay"] == []
+
+
+def test_the_page_that_reads_no_store_lists_a_joined_notes_tick(tmp_path: pathlib.Path) -> None:
+    """With a claim on record that cannot be read, the page that reads no store says which
+    joined note was selected to add to its card, for a save and for a press, and says
+    nothing of one left unselected."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": DATED_APART}).text
+        assert client.post("/parent/inbox/keep", data=ticked_form(page)).status_code == 303
+        claims_damaged(client)
+        form = ticked_form(page) | {"join-1-0": "1"}
+        saved = client.post("/parent/inbox/keep", data=form)
+        pressed = client.post("/parent/inbox/find", data=form | {"recheck": "1"})
+        untouched = client.post("/parent/inbox/keep", data=ticked_form(page))
+
+    for answer in (saved, pressed):
+        assert answer.status_code == 500
+        assert (
+            "Card 1: no answer about the assignment. Teacher's note 1 on this card "
+            "selected to add to the assignment."
+        ) in answer.text
+    assert untouched.status_code == 500
+    assert "Card 1:" not in untouched.text
 
 
 TWICE_NOTED = """Homework for Wren

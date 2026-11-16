@@ -387,6 +387,9 @@ class PageMade:
     edits: dict[int, tuple[str, str]] = field(default_factory=dict)
     """For each reading made from a teacher's note, the title and due date the page showed
     for it, as ``edits_of`` puts them."""
+    joined: dict[tuple[int, int], bool] = field(default_factory=dict)
+    """For each note joined to a card, by the card's key and the note's place, whether the
+    page showed its tick ticked."""
     verified: bool = field(default=True, compare=False)
     """Whether the form carried this process's signature for its draft. A form without one,
     such as a page made before the application started again, is read as a page that asked
@@ -409,11 +412,13 @@ def made_with_field(
     unsaved_picks: Mapping[int, tuple[str, str]] | None = None,
     tasks: Mapping[int, str] | None = None,
     edits: Mapping[int, tuple[str, str]] | None = None,
+    joined: Mapping[tuple[int, int], bool] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
     ties it to the page's draft. What the page said of the readings made from teachers'
     notes (``tasks``), and the title and due date it showed for each (``edits``), are
-    written only when there are such readings."""
+    written only when there are such readings; whether each note joined to a card was shown
+    ticked (``joined``), only when there are such notes."""
     answers = ",".join(f"{card}:{value}" for card, value in sorted((occurrences or {}).items()))
     context = {
         "asked": sorted([card, *question] for card, question in (asked or {}).items()),
@@ -441,6 +446,10 @@ def made_with_field(
     if tasks:
         context["tasks"] = sorted([card, said] for card, said in tasks.items())
         context["edits"] = sorted([card, *shown] for card, shown in (edits or {}).items())
+    if joined:
+        context["joined"] = sorted(
+            [card, place, int(ticked)] for (card, place), ticked in joined.items()
+        )
     made = f"{answers};{json.dumps(context, separators=(',', ':'))}"
     return f"{made}.{_made_with_check(key, draft, made)}"
 
@@ -500,6 +509,9 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
     }
     tasks = {int(card): str(said) for card, said in context.get("tasks", [])}
     edits = {int(card): (str(title), str(due)) for card, title, due in context.get("edits", [])}
+    joined = {
+        (int(card), int(place)): bool(ticked) for card, place, ticked in context.get("joined", [])
+    }
     return PageMade(
         occurrences,
         asked,
@@ -514,6 +526,7 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         unsaved_picks,
         tasks,
         edits,
+        joined,
     )
 
 
@@ -766,7 +779,9 @@ def selected(form: Mapping[str, str], read: Read) -> Read:
     The page sends ``offered-<key>`` beside each tick it shows and ``take-<key>`` for a
     ticked one. A note reading the form says was offered is left out of the save unless
     its tick came with it; one the form does not name keeps its place from the start. A
-    key that is no note reading's is ignored.
+    key that is no note reading's is ignored. A note joined to a card is selected when the
+    form sends ``join-<card>-<place>`` for it, ticked; a name that is no joined note's is
+    ignored.
     """
     left_out = set(read.left_out)
     for name in form:
@@ -780,9 +795,43 @@ def selected(form: Mapping[str, str], read: Read) -> Read:
             left_out.discard(key)
         else:
             left_out.add(key)
-    if left_out == read.left_out:
+    joined = frozenset(
+        (card, place)
+        for card, place in joins_sent(form)
+        if card < len(read.items) and place < len(read.items[card].joined_notes)
+    )
+    if left_out == read.left_out and joined == read.joined:
         return read
-    return replace(read, left_out=frozenset(left_out))
+    return replace(read, left_out=frozenset(left_out), joined=joined)
+
+
+def joins_sent(form: Mapping[str, str]) -> set[tuple[int, int]]:
+    """Each joined note's tick a form sends ticked, ``join-<card>-<place>``, by the card's
+    key and the note's place, whatever the page showed."""
+    sent: set[tuple[int, int]] = set()
+    for name, value in form.items():
+        head, _, rest = name.partition("-")
+        card, _, place = rest.partition("-")
+        if head == "join" and value == "1" and review_key(card) and review_key(place):
+            sent.add((int(card), int(place)))
+    return sent
+
+
+def joins_moved(read: Read, page: PageMade) -> frozenset[int]:
+    """The keys of the cards with a joined note whose tick, as sent, is not the one the page
+    signed for it: ticked where the page showed it unticked or did not show it, or unticked
+    where the page showed it ticked. A form this process did not sign showed none ticked."""
+    signed = {join for join, ticked in page.joined.items() if ticked and page.verified}
+    return frozenset(card for card, _ in read.joined.symmetric_difference(signed))
+
+
+def joined_of(read: Read) -> dict[int, tuple[int, ...]]:
+    """For each card with a joined note selected, by its key, the places of those notes,
+    counted from one, as a page that reads no store says them."""
+    places: dict[int, list[int]] = {}
+    for card, place in sorted(read.joined):
+        places.setdefault(card, []).append(place + 1)
+    return {card: tuple(each) for card, each in places.items()}
 
 
 def ticks_of(read: Read) -> dict[int, bool]:
@@ -994,6 +1043,9 @@ class AnswerKept:
     another date, as sent; ``None`` when none was sent."""
     undated: bool = False
     """Whether no due date was chosen for a reading made from a teacher's note."""
+    joined: tuple[int, ...] = ()
+    """For a card, the places, counted from one, of the notes joined to it that were
+    selected to add to it."""
 
 
 TASK_FIELDS: Final = frozenset({"title", "when", "when_other"})
@@ -1030,7 +1082,8 @@ def answers_kept(
     only choices it offered, each sent once, are said back. A tick on a reading made from a
     teacher's note is read from the two fields the page writes for it: the note it says it
     offered is selected when its tick came with it. Its title and due date are read from
-    the three fields the page writes for them, under a key the page could have written."""
+    the three fields the page writes for them, under a key the page could have written. A
+    note joined to a card is selected when its tick came ticked."""
     safe: dict[str, str] = {}
     for name, value in form.items():
         head, _, key = name.rpartition("-")
@@ -1061,6 +1114,9 @@ def answers_kept(
         for head, _, key in [name.rpartition("-")]
         if head in TASK_FIELDS and review_key(key)
     }
+    joined: dict[int, list[int]] = {}
+    for card, place in sorted(joins_sent(form)):
+        joined.setdefault(card, []).append(place + 1)
     return answers_shown(
         occurrences,
         kinds,
@@ -1074,6 +1130,7 @@ def answers_kept(
         {key: target for key, (target, _) in not_taken.items()},
         ticks,
         typed_tasks,
+        {card: tuple(places) for card, places in joined.items()},
     )
 
 
@@ -1120,6 +1177,7 @@ def answers_shown(
     unsaved_picks: Mapping[int, str] | None = None,
     ticks: Mapping[int, bool] | None = None,
     typed_tasks: Mapping[int, TaskAnswer] | None = None,
+    joined: Mapping[int, tuple[int, ...]] | None = None,
 ) -> list[AnswerKept]:
     """The answers a review page was made with, in the same shape: an answer about the
     school's instructions by the words ticked, read off the wire before anything was
@@ -1129,7 +1187,8 @@ def answers_shown(
     of it together; which homework the card was said to be about; her notes ticked to
     link, in the words the page signed; homework chosen under another name that wasn't
     taken, by id; and for each reading made from a teacher's note, whether it was selected
-    to save (``ticks``) and the title and due date sent for it (``typed_tasks``)."""
+    to save (``ticks``) and the title and due date sent for it (``typed_tasks``); and for
+    each card, the notes joined to it that were selected to add to it (``joined``)."""
     made = {key: UnsavedChoice.of(answer) for key, answer in (instructions or {}).items()}
     made.update(unsaved or {})
     chosen = {
@@ -1155,6 +1214,7 @@ def answers_shown(
     picks = picks or {}
     unsaved_picks = unsaved_picks or {}
     ticks = ticks or {}
+    joined = joined or {}
     as_typed = {key: said_typed(answer) for key, answer in (typed_tasks or {}).items()}
     keys = sorted(
         {
@@ -1167,6 +1227,7 @@ def answers_shown(
             *unsaved_picks,
             *ticks,
             *as_typed,
+            *joined,
         }
     )
     return [
@@ -1188,6 +1249,7 @@ def answers_shown(
             unsaved_picks.get(key),
             ticks.get(key),
             *as_typed.get(key, (None, None, False)),
+            joined.get(key, ()),
         )
         for key in keys
     ]
@@ -1454,9 +1516,10 @@ def preview_page(
     comparison, and the page that reads no store keeps the draft.
 
     A reading made from a teacher's note carries a tick, set unless ``read.left_out`` holds
-    its key. The notes that may be homework and the notes that say none is assigned are
-    shown after the weeks, each kind under its own heading, and every count is of the
-    selected readings only. A note not selected that would ask, once selected, whether it is
+    its key; so does each note joined to a card, set when ``read.joined`` holds it, and the
+    page signs each as shown. The notes that may be homework and the notes that say none is
+    assigned are shown after the weeks, each kind under its own heading, and every count is
+    of the selected readings only. A note not selected that would ask, once selected, whether it is
     the same assignment as a card of its name in the text asks it on its card, with both
     dates, and an answer given there stays chosen.
 
@@ -1543,6 +1606,7 @@ def preview_page(
                 not_taken,
                 ticks_of(read),
                 {answer.key: answer for answer in read.answers},
+                joined_of(read),
             ),
         )
     except UnreadableDecision:
@@ -1563,6 +1627,7 @@ def preview_page(
                 not_taken,
                 ticks_of(read),
                 {answer.key: answer for answer in read.answers},
+                joined_of(read),
             ),
             DECISION_UNREADABLE,
         )
@@ -1584,6 +1649,7 @@ def preview_page(
                 not_taken,
                 ticks_of(read),
                 {answer.key: answer for answer in read.answers},
+                joined_of(read),
             ),
             INSTRUCTION_UNREADABLE,
         )
@@ -1817,7 +1883,13 @@ def preview_page(
                 wanted,
                 tasks,
                 edits_of(read),
+                {
+                    (change.key, place): (change.key, place) in read.joined
+                    for change in changes
+                    for place in range(len(change.reading.joined_notes))
+                },
             ),
+            "joined_ticked": read.joined,
             "note_tasks": bool(tasks),
             # The notes read, told apart from the ones selected to save.
             "notes_found": (
@@ -2516,6 +2588,34 @@ async def keep_readings(request: Request, state: State) -> Response:
                 refused="edited",
                 check=changed,
                 notice=EDITS_IN_REVIEW,
+            )
+        joins_changed = joins_moved(read, page_made)
+        if joins_changed:
+            # A joined note ticked or unticked other than the page signed: the page said
+            # nothing of what that tick does, so nothing is written, and the review comes
+            # back with the ticks as sent, signed, for a Save that writes them.
+            verified = page_made.verified
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="stale",
+                check=joins_changed if verified else frozenset(),
+                notice=SELECTIONS_CHANGE if verified else REVIEW_UNVERIFIED,
+                status_code=status.HTTP_200_OK if verified else status.HTTP_409_CONFLICT,
             )
 
         def saved() -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
