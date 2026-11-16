@@ -18,10 +18,10 @@
     would do: save it as new, add a date beside the saved one, fill in what
     the record lacks, or nothing, because it is saved already. A card read
     from a teacher's note shows the note's words, a tick, and a title and a
-    due date the family may correct; homework read from a note starts
-    selected, notes that may be homework or say none is assigned are under their own
-    headings and start unselected unless saved already, and a note's card
-    that is not selected saves nothing. Lines the reader did not take are
+    due date the family may correct; every note starts unselected unless
+    saved already, homework read from a note is with the cards, notes that
+    may be homework or say none is assigned are under their own headings,
+    and a note's card that is not selected saves nothing. Lines the reader did not take are
     listed first, so nothing is dropped in silence, and a question the record
     cannot settle is asked before anything is written.
   #}
@@ -47,7 +47,10 @@
       {{ counts.new }} new, {{ counts.updated }} update{% if counts.updated != 1 %}s{% endif %}, {{ counts.unchanged }} already saved{% if counts.review %}, {{ counts.review }} need{% if counts.review == 1 %}s{% endif %} your answer{% endif %}.
       Nothing is saved until Save is pressed.
     </p>
-  {% endif %}
+  {% endif %}{% if note_tasks %}
+  {# The notes read, told apart from the ones selected, so a review with none selected is not taken for a failed reading. #}
+  {% set found, chosen_notes = notes_found %}
+  <p class="note" id="notes-found">Read {{ found }} note{% if found != 1 %}s{% endif %} from the school's text; {% if chosen_notes == 0 %}none is selected yet{% elif chosen_notes == 1 %}1 is selected{% else %}{{ chosen_notes }} are selected{% endif %}.</p>{% endif %}
 
   <form method="post" action="/parent/inbox/keep" class="review-form">
     {% for name, value in draft.items() %}
@@ -139,7 +142,7 @@
                 </dl>
               {% else %}
                 <p class="due">
-                  {% if reading.due_date %}Due {{ spoken_day(reading.due_date) }}{% elif reading.origin == "PARENT_ENTRY" %}No due date given{% else %}No due date in the text{% endif %}
+                  {% if reading.due_date %}Due {{ spoken_day(reading.due_date) }}{% elif reading.teacher_note %}No due date{% elif reading.origin == "PARENT_ENTRY" %}No due date given{% else %}No due date in the text{% endif %}
                   {% if reading.assigned_on %}<span class="source">Assigned {{ spoken_day(reading.assigned_on) }}</span>{% endif %}
                 </p>
               {% endif %}
@@ -341,8 +344,8 @@
               {% endif %}{% if reading.teacher_note and not reading.instructions %}
               {# A note saved before brings no instruction to decide again; its words are shown all the same, so no line of the text goes unshown. #}
               <p class="from-teacher">From the school: <q class="authored-text">{{ reading.teacher_note.words }}</q> <span class="source">Read in the school's note for {{ reading.teacher_note.first_day.strftime("%B") }} {{ reading.teacher_note.first_day.day }}.</span></p>{% endif %}{% for task in reading.joined_notes %}{% if task.words not in (reading.instructions|map(attribute="text")|list) %}
-              <p class="source">The teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} also says: <q class="authored-text">{{ task.words }}</q></p>{% endif %}{% endfor %}{% if reading.teacher_note %}{% for day in reading.teacher_note.listed_after %}
-              <p class="source">Still listed on {{ spoken_day(day) }}, after that date.</p>{% endfor %}{% endif %}
+              <p class="source">The teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} also says: <q class="authored-text">{{ task.words }}</q></p>{% endif %}{% endfor %}{% if reading.teacher_note and reading.due_date and reading.due_date == reading.teacher_note.deadline %}{# Said only while the due date is the note's own, so it never outlives a date the family changed or cleared. #}{% for day in reading.teacher_note.listed_after %}
+              <p class="source">Still listed on {{ spoken_day(day) }}, after its due date of {{ spoken_day(reading.teacher_note.deadline) }}.</p>{% endfor %}{% endif %}
               {% if change.note_change == "kept" and change.standing and change.standing.note %}
                 <p class="from-teacher">Her note: <q class="authored-text">{{ change.standing.note }}</q></p>
               {% endif %}

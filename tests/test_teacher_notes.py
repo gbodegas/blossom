@@ -930,3 +930,58 @@ def test_a_task_carries_the_line_of_the_note_it_was_first_listed_under() -> None
     tasks = read_notes((first, again))
 
     assert [task.line for task in tasks] == [14]
+
+
+DECEMBER_15 = date(2026, 12, 15)
+"""A Tuesday in December 2026; January 8, 2027 is a Friday, January 8, 2026 a Thursday."""
+
+DECEMBER_TO_JANUARY = [
+    pytest.param(DECEMBER_15, "Essay due January 8", date(2027, 1, 8), id="english"),
+    pytest.param(DECEMBER_15, "Essay due 1/8", date(2027, 1, 8), id="numeric"),
+    pytest.param(DECEMBER_15, "Essay due 8 de enero", date(2027, 1, 8), id="spanish"),
+    pytest.param(DECEMBER_15, "Essay due 8 de ene.", date(2027, 1, 8), id="spanish-short"),
+    pytest.param(
+        DECEMBER_15, "Essay due 8 de enero de 2026", date(2026, 1, 8), id="spanish-year-written"
+    ),
+    pytest.param(
+        DECEMBER_15, "Essay due 8 de enero de 2027", date(2027, 1, 8), id="spanish-next-year"
+    ),
+    pytest.param(
+        DECEMBER_15, "Essay due January 8, 2026", date(2026, 1, 8), id="english-year-written"
+    ),
+    pytest.param(DECEMBER_15, "Essay due 1/8/2026", date(2026, 1, 8), id="numeric-year-written"),
+    pytest.param(
+        DECEMBER_15, "Essay due Friday, January 8", date(2027, 1, 8), id="weekday-beside-date"
+    ),
+    pytest.param(DECEMBER_15, "Essay due December 18", date(2026, 12, 18), id="december-stays"),
+    pytest.param(DECEMBER_15, "Essay due February 3", date(2026, 2, 3), id="february-stays"),
+    pytest.param(nov(16), "Essay due January 8", date(2026, 1, 8), id="november-school-day"),
+]
+
+
+@pytest.mark.parametrize(("day", "words", "deadline"), DECEMBER_TO_JANUARY)
+def test_a_january_date_read_under_a_december_school_day_is_in_the_following_year(
+    day: date, words: str, deadline: date
+) -> None:
+    """A month and day in January with no year, read under a school day in December, is in
+    the following year, written in English, as numbers or in Spanish; a year written with it
+    wins, and no other month or school day moves. A weekday beside such a date that falls on
+    it in the following year gives that one date."""
+    (task,) = read_notes((note("Language Arts", day, words),))
+
+    assert (task.name, task.standing) == ("Essay", HOMEWORK)
+    assert (task.deadline, task.choices) == (deadline, ())
+
+
+MIXED = "No homework due tomorrow, but the essay is due Friday."
+"""A note that says no homework is due one day and sets a deadline for another day."""
+
+
+def test_a_no_homework_statement_followed_by_a_deadline_is_unclear_with_that_date_named() -> None:
+    """Words that say no homework is due one day and then set a deadline are unclear, never
+    "no homework", and the date of that later deadline is named for review."""
+    (task,) = read_notes((note("Language Arts", nov(2), MIXED),))
+
+    assert task.standing is UNCLEAR
+    assert (task.deadline, task.choices) == (None, ())
+    assert task.named == (nov(6),)

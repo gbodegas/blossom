@@ -128,7 +128,8 @@ _EXPLICIT: Final = re.compile(
     r"|(?<![\d/])(?P<numeric_month>\d{1,2})/(?P<numeric_day>\d{1,2})"
     r"(?:/(?P<numeric_year>\d{4}))?(?![\d/])"
     rf"|(?<!\d)(?P<spanish_day>\d{{1,2}})\s+de\s+"
-    rf"(?P<spanish>{_months(_SPANISH_MONTHS, tuple(_SPANISH_SHORT))})",
+    rf"(?P<spanish>{_months(_SPANISH_MONTHS, tuple(_SPANISH_SHORT))})"
+    r"(?:\s+de\s+(?P<spanish_year>\d{4})\b)?",
     re.IGNORECASE,
 )
 _CUE: Final = re.compile(r"\b(?:due|by)\b", re.IGNORECASE)
@@ -274,7 +275,8 @@ def _single(text: str) -> str:
 
 def _explicit_at(text: str, at: int, day: date) -> tuple[int, date] | None:
     """The month and day written at a place and where it ends, in the year written with it
-    or, with none, in the school day's year."""
+    or, with none, in the school day's year, except a January date read under a school day in
+    December, which is in the following year."""
     found = _EXPLICIT.match(text, at)
     if found is None:
         return None
@@ -284,7 +286,11 @@ def _explicit_at(text: str, at: int, day: date) -> tuple[int, date] | None:
         month, number = _SPANISH[found["spanish"].lower().rstrip(".")], found["spanish_day"]
     else:
         month, number = int(found["numeric_month"]), found["numeric_day"]
-    year = int(found["english_year"] or found["numeric_year"] or day.year)
+    written = found["english_year"] or found["numeric_year"] or found["spanish_year"]
+    if written:
+        year = int(written)
+    else:
+        year = day.year + 1 if (day.month, month) == (12, 1) else day.year
     try:
         return found.end(), date(year, month, int(number))
     except ValueError:
@@ -492,8 +498,10 @@ def _reading(units: Sequence[_Unit], paragraphs: Sequence[str]) -> _Reading:
     """One task from the pieces that make it up.
 
     Words that say no homework is assigned are not an assignment unless they also set work:
-    an opening word that asks for a task anywhere in them, or a deadline statement after
-    more words than the ones that say no homework. Words that set work as well are unclear.
+    an opening word that asks for a task anywhere in them, a deadline statement after more
+    words than the ones that say no homework, or a later deadline statement after the one
+    that says no homework. Words that set work as well are unclear, and the date each later
+    deadline statement settles is named for review.
     """
     first = units[0]
     words = _words(units, paragraphs)
@@ -503,14 +511,16 @@ def _reading(units: Sequence[_Unit], paragraphs: Sequence[str]) -> _Reading:
     says_none = bool(_NO_HOMEWORK.search(name if first.statements else words))
     opens = _opens(words)
     unsure = any(unit.unsure for unit in units)
+    named = {day for unit in units for day in unit.named}
     if not statements:
         if says_none:
             standing = Standing.UNCLEAR if _sets_work(words) else Standing.NOT_ASSIGNMENT
         else:
             standing = Standing.HOMEWORK if opens else Standing.UNCLEAR
     elif says_none:
-        alone = _NO_HOMEWORK.fullmatch(name) is not None
+        alone = _NO_HOMEWORK.fullmatch(name) is not None and len(statements) == 1
         standing = Standing.NOT_ASSIGNMENT if alone and not _sets_work(words) else Standing.UNCLEAR
+        named |= {statement.dates[0] for statement in statements[1:] if len(statement.dates) == 1}
     elif len(statements) > 1 or unsure or (first.statements and not before):
         standing = Standing.UNCLEAR
     else:
@@ -523,7 +533,7 @@ def _reading(units: Sequence[_Unit], paragraphs: Sequence[str]) -> _Reading:
         deadline=dates[0] if len(dates) == 1 else None,
         deadline_words=statements[0].words if len(statements) == 1 else None,
         choices=dates if len(dates) > 1 else (),
-        named=tuple(sorted({named for unit in units for named in unit.named})),
+        named=tuple(sorted(named)),
     )
 
 

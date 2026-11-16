@@ -841,7 +841,8 @@ class UnitShown:
     ticked: bool
     """Ticked on the page, for display only: with saved progress, when its selection names every
     row of the group and the group is open and can be ticked; with none, every group that can be
-    ticked and holds no teacher's note read as unclear or as no homework."""
+    ticked and holds no teacher's note, of any standing, that is not saved already with nothing
+    new to write."""
     waits: tuple[str, ...]
     refusals: tuple[str, ...]
     offers: tuple[OfferShown, ...]
@@ -1622,11 +1623,14 @@ def rows_shown(
         last_open = set(unit.unit) >= {p.name for p in open_pieces}
         blocks: list[tuple[int, BlockShown]] = []
         placed: set[str] = set()
+        saved_already: set[str] = set()
         still_any = False
         for dest, names_there in state.validation.destinations.items():
             if not set(names_there) <= set(unit.unit) or dest not in previews:
                 continue
             entry = previews[dest]
+            if entry.nothing_new:
+                saved_already |= set(entry.pieces)
             members = sorted((state.by_name[n] for n in entry.pieces), key=first_card)
             still = _still_open(entry, members, values, waiting, corrections)
             still_any = still_any or bool(still)
@@ -1679,7 +1683,7 @@ def rows_shown(
                 tickable,
                 tickable
                 and (
-                    not note
+                    not _new_note(held, saved_already)
                     if selected is None
                     else {state.by_name[name].key for name in unit.unit} <= selected
                 ),
@@ -2174,6 +2178,12 @@ def _still_open(
 def _from_a_note(piece: Piece) -> bool:
     """Whether a piece was read from a teacher's note."""
     return piece.reading is not None and piece.reading.teacher_note is not None
+
+
+def _new_note(pieces: Iterable[Piece], saved_already: set[str]) -> bool:
+    """Whether a group holds a piece read from a teacher's note, whatever its standing, that
+    is not saved already with nothing new to write."""
+    return any(_from_a_note(piece) and piece.name not in saved_already for piece in pieces)
 
 
 def _note_standing(pieces: Iterable[Piece]) -> str:

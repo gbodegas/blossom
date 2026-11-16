@@ -67,6 +67,7 @@ from tests.support import (
     store_of,
     whole_form,
 )
+from tests.test_note_review_page import homework_selected
 
 A = "Patterns, if-then statements, first proofs."
 B = "Patterns and if-then statements only."
@@ -2589,10 +2590,11 @@ def test_a_note_under_another_subject_is_never_saved_as_a_cards_instruction(
 ) -> None:
     """Through the review, the save and the same text read again: the words under another
     subject's heading are homework of their own, each on a card of its subject with its
-    words and saved as its own assignment with one press. None of them is on a card of the
-    school's or saved as its instruction, and the card with its own instruction keeps it."""
+    words, and once the family selects them each is saved as its own assignment. None of
+    them is on a card of the school's or saved as its instruction, and the card with its
+    own instruction keeps it."""
     with client_in(tmp_path) as client:
-        page = client.post("/parent/inbox/read", data={"text": NOTES_UNDER_SUBJECTS}).text
+        page = homework_selected(client, NOTES_UNDER_SUBJECTS)
         kept = client.post("/parent/inbox/keep", data=review_form(page))
         store = store_of(client)
         rows = {row.title: row for row in store.all_assignments()}
@@ -2664,7 +2666,7 @@ def test_another_subjects_words_after_a_day_that_is_no_date_are_saved_on_no_card
     card, and no card's instruction."""
     text = A_DAY_THAT_IS_NO_DATE_IN_A_SHORT_PARAGRAPH
     with client_in(tmp_path) as client:
-        page = client.post("/parent/inbox/read", data={"text": text}).text
+        page = homework_selected(client, text)
         kept = client.post("/parent/inbox/keep", data=review_form(page))
         store = store_of(client)
         rows = {row.title: row for row in store.all_assignments()}

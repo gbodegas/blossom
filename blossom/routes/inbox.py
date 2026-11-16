@@ -1795,6 +1795,15 @@ def preview_page(
                 edits_of(read),
             ),
             "note_tasks": bool(tasks),
+            # The notes read, told apart from the ones selected to save.
+            "notes_found": (
+                len(tasks),
+                sum(
+                    1
+                    for change in changes
+                    if change.reading.teacher_note is not None and not change.left_out
+                ),
+            ),
             "note_fields": note_fields(changes, read),
             "title_max_length": TITLE_MAX_LENGTH,
             "check_card": check_card,

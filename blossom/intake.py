@@ -1311,13 +1311,9 @@ def _note_occurrence(task: NoteTask) -> str:
 
 
 def left_out_by_default(items: Sequence[Reading]) -> frozenset[int]:
-    """The keys of the readings left out of a save unless someone selects them: those made
-    from a teacher's note whose task is unclear or not an assignment."""
-    return frozenset(
-        key
-        for key, item in enumerate(items)
-        if item.teacher_note is not None and item.teacher_note.standing is not Standing.HOMEWORK
-    )
+    """The keys of the readings left out of a save unless someone selects them: every one
+    made from a teacher's note, whatever its standing. A card starts selected."""
+    return frozenset(key for key, item in enumerate(items) if item.teacher_note is not None)
 
 
 def a_year_from(today: date, years: int) -> date:

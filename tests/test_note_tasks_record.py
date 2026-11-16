@@ -344,14 +344,14 @@ def test_the_cards_come_first_as_read_and_each_task_of_the_notes_is_one_reading(
     assert made[3].at_line == 12
 
 
-def test_only_the_note_readings_that_are_not_homework_are_left_out_by_default() -> None:
-    """The keys left out before anyone chooses are those of note readings whose task is
-    unclear or not an assignment; no card's key is among them."""
+def test_every_note_reading_is_left_out_by_default() -> None:
+    """The keys left out before anyone chooses are those of every note reading, whatever
+    its standing; no card's key is among them."""
     read = read_text(WEEK, now=NOW, today=TODAY)
     none = one_task("Religion", nov(12), NO_HOMEWORK)
     items = (*with_note_readings(read, now=NOW), note_reading(none, now=NOW))
 
-    assert left_out_by_default(items) == frozenset({8, 11})
+    assert left_out_by_default(items) == frozenset({4, 5, 6, 7, 8, 9, 10, 11})
     assert items[8].pair == ("08 Geometry", "Quiz on unit two")
     assert left_out_by_default(read.items) == frozenset()
 
@@ -531,7 +531,7 @@ def test_a_reading_left_out_is_shown_as_not_selected_and_nothing_else_changes(
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     try:
         whole = changes_for(items, store)
-        changes = changes_for(items, store, left_out=left_out_by_default(items))
+        changes = changes_for(items, store, left_out=frozenset({8}))
     finally:
         store.close()
     out = changes[8]
@@ -1444,7 +1444,7 @@ def test_a_paste_with_no_note_comes_back_as_the_same_read() -> None:
 
 def test_the_notes_read_as_tasks_take_their_lines_out_of_the_text_for_review() -> None:
     """With its notes read as tasks a paste holds the cards and the note readings, leaves
-    out the readings that are not homework, and lists for review every line but the lines
+    out every note reading, and lists for review every line but the lines
     of the notes: the lines for review lose exactly those."""
     read = read_text(WEEK, now=NOW, today=TODAY)
     in_notes = {line for note in read.notes for line in note.lines}
@@ -1452,7 +1452,7 @@ def test_the_notes_read_as_tasks_take_their_lines_out_of_the_text_for_review() -
     noted = with_notes(read, now=NOW)
 
     assert noted.items == with_note_readings(read, now=NOW)
-    assert noted.left_out == left_out_by_default(noted.items) == frozenset({8})
+    assert noted.left_out == left_out_by_default(noted.items) == frozenset(range(4, 11))
     assert noted.notes == read.notes
     assert len(in_notes) == 14
     assert in_notes <= {item.line for item in read.unread}

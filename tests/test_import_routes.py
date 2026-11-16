@@ -41325,9 +41325,9 @@ def project_answer(where: str) -> dict[str, object]:
 
 
 def kept_for_later(browser: TestClient, draft_id: str, page: str, typed: Mapping[str, str]) -> str:
-    """Save review for later with its groups ticked as shown and this typing, and the review
+    """Save review for later with every group ticked and this typing, and the review
     opened again."""
-    sent = send(browser, draft_id, page_post(page, "later", typed=typed, tick=ticked_on(page)))
+    sent = send(browser, draft_id, page_post(page, "later", typed=typed, tick=units_on(page)))
     assert sent.status_code in (200, 303), sent.text
     return loaded(browser, draft_id)
 
@@ -41345,13 +41345,13 @@ def test_an_undated_note_read_as_homework_saves_in_one_press_with_no_due_date(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, answer))
         page = her_name_answered(browser, draft_id, page)
-        ticked = ticked_on(page)
+        ticked = units_on(page)
         saved = send(browser, draft_id, page_post(page, "save", tick=ticked))
         after = followed(browser, saved)
         record = state_of(browser).project_state
         rows = [(a.title, a.due_date) for a in record.all_assignments() if a.course == "Spanish 8"]
 
-    assert UNIT_TICK.findall(review_form(page)) == [" checked"]
+    assert UNIT_TICK.findall(review_form(page)) == [""]
     assert len(ticked) == 1
     assert "A due date is needed." not in page
     assert "A due date is needed." not in after
@@ -41429,3 +41429,71 @@ def test_a_corrected_note_kept_for_later_saves_and_reads_again_as_already_saved(
     assert says(resaved, imports.counted(0, 0, 1, 0))
     assert [d for found in decided.values() for d in found if d.kind == "renamed"] == []
     assert last == first
+
+
+# ------------------------------------------------------------------ a note starts unticked
+
+
+def answered(browser: TestClient, draft_id: str, page: str) -> str:
+    """The review with her name answered where it asks."""
+    if fields_named(review_form(page), "answer:name:"):
+        return her_name_answered(browser, draft_id, page)
+    return page
+
+
+def test_every_group_holding_a_note_starts_unticked_dated_or_not(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A group holding a teacher's note read as homework starts unticked, with a due date
+    read or with none; the default list's cards start ticked."""
+    study = note_card("Spanish 8", "Study the vocabulary on page 12.", 450)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, with_notes(study)))
+        page = answered(browser, draft_id, page)
+        dated_id, dated = read_review(browser, monkeypatch, (RED, project_answer("title")))
+        dated = answered(browser, dated_id, dated)
+
+    assert "Study the vocabulary on page 12" in section_of(page, "saving-heading")
+    assert UNIT_TICK.findall(section_of(page, "saving-heading")) == [" checked", " checked", ""]
+    assert UNIT_TICK.findall(review_form(dated)) == [""]
+    assert ticked_on(dated) == []
+
+
+def test_a_note_saved_and_read_again_is_ticked_as_already_saved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A note ticked and saved, read again from the same screenshot, starts ticked as
+    already saved, and its save writes nothing new."""
+    answer = project_answer("title")
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, page)
+        sent = page_post(page, "save", tick=units_on(page))
+        saved = followed(browser, send(browser, draft_id, sent))
+        second_id, again = read_review(browser, monkeypatch, (RED, answer))
+        again = answered(browser, second_id, again)
+        resaved = followed(
+            browser, send(browser, second_id, page_post(again, "save", tick=ticked_on(again)))
+        )
+        rows = humanities(browser)
+
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert screenshot_page.SAID["already"] in html.unescape(review_form(again))
+    assert UNIT_TICK.findall(review_form(again)) == [" checked"]
+    assert says(resaved, imports.counted(0, 0, 1, 0))
+    assert rows == [("The class project", date(2026, 10, 5))]
+
+
+def test_a_save_with_no_group_ticked_writes_nothing_and_says_so(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Save pressed on a review whose only group, a teacher's note, is left unticked writes
+    nothing, and the page asks for at least one assignment."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, project_answer("title")))
+        page = answered(browser, draft_id, page)
+        after = followed(browser, send(browser, draft_id, page_post(page, "save", tick=[])))
+        rows = humanities(browser)
+
+    assert rows == []
+    assert says(after, imports.PRESS_SAID["none_chosen"])
