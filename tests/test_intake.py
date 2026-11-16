@@ -275,6 +275,662 @@ Two colors at least.
     ]
 
 
+NOTES_WEEK = """Homework for Wren
+11/02/2026 - Monday
+08 Geometry - Assigned: Practice set 4: (Due:11/03/2026)
+08 Geometry - Due: Textbook page 12:
+Humanities -
+Study for the vocabulary quiz on Thursday. Map project due on Wednesday.
+
+Science -
+Lab notebook due Tuesday
+
+Spanish - Assigned: Oral quiz: (Due:11/10/2026)
+Art -
+Please bring a shoebox by next Tuesday.
+
+11/03/2026 - Tuesday
+08 Geometry -
+Quiz on unit two
+
+Sections 2 and 3
+
+08 Geometry - Due: Practice set 4:
+Humanities -
+Study for the vocabulary quiz on Thursday. Map project due on Wednesday.
+
+Religion - Due: Short essay:
+Write 250 words on your question.
+
+Science -
+Reading log due today
+
+Online practice due Tuesday
+
+"""
+"""A week of the summary as its print view writes it, with what teachers type under a
+subject: the subject and a hyphen on a line of their own, then the note, a blank line after
+each of its paragraphs. A card's own instruction sits under the card with no subject between."""
+
+
+def test_a_subject_heading_ends_the_card_before_it_and_its_note_is_no_cards_words() -> None:
+    """A teacher's note under another subject is never the instruction of the card above it,
+    and a card keeps the instruction that is its own. No line of the text is dropped: each is
+    the summary's heading, a day, a card, a card's own instruction, or listed for review."""
+    read = read_text(NOTES_WEEK, now=NOW, today=TODAY)
+    items = by_pair(read.items)
+    written = [line for line in NOTES_WEEK.splitlines() if line.strip()]
+    heading, days, cards, own_instruction = 1, 2, 5, 1
+
+    assert set(items) == {
+        ("08 Geometry", "Practice set 4"),
+        ("08 Geometry", "Textbook page 12"),
+        ("Spanish", "Oral quiz"),
+        ("Religion", "Short essay"),
+    }
+    assert words(items["Religion", "Short essay"]) == ("Write 250 words on your question.",)
+    assert words(items["08 Geometry", "Practice set 4"]) == ()
+    assert words(items["08 Geometry", "Textbook page 12"]) == ()
+    assert words(items["Spanish", "Oral quiz"]) == ()
+    assert [(u.line, u.text) for u in read.unread] == [
+        (5, "Humanities -"),
+        (6, "Study for the vocabulary quiz on Thursday. Map project due on Wednesday."),
+        (8, "Science -"),
+        (9, "Lab notebook due Tuesday"),
+        (12, "Art -"),
+        (13, "Please bring a shoebox by next Tuesday."),
+        (16, "08 Geometry -"),
+        (17, "Quiz on unit two"),
+        (19, "Sections 2 and 3"),
+        (22, "Humanities -"),
+        (23, "Study for the vocabulary quiz on Thursday. Map project due on Wednesday."),
+        (28, "Science -"),
+        (29, "Reading log due today"),
+        (31, "Online practice due Tuesday"),
+    ]
+    assert len(written) == heading + days + cards + own_instruction + len(read.unread)
+
+
+def test_a_subject_heading_right_under_a_cards_instruction_ends_it_there() -> None:
+    text = """Homework for Wren
+11/05/2026 - Thursday
+Religion - Due: Short essay:
+Write 250 words on your question.
+Science -
+Reading log due today
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert words(by_pair(read.items)["Religion", "Short essay"]) == (
+        "Write 250 words on your question.",
+    )
+    assert [(u.line, u.text) for u in read.unread] == [
+        (5, "Science -"),
+        (6, "Reading log due today"),
+    ]
+
+
+def test_a_teachers_line_with_a_hyphen_in_it_stays_the_cards_words() -> None:
+    """A hyphen inside a line, a line that is only a hyphen, and a long line that happens to
+    end in one are a teacher's words: a subject heading is short, and ends in its hyphen."""
+    long_line = "Finish the reading and bring the questions you could not answer to class -"
+    text = f"""Homework for Wren
+11/05/2026 - Thursday
+Religion - Due: Short essay:
+Pages 4 - 9 of the reader.
+-
+{long_line}
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert len(long_line) > 60
+    assert read.unread == ()
+    assert words(by_pair(read.items)["Religion", "Short essay"]) == (
+        f"Pages 4 - 9 of the reader.\n-\n{long_line}",
+    )
+
+
+def test_under_the_homework_pages_day_a_hyphen_ended_line_is_read_as_before() -> None:
+    """A subject heading is the summary's shape. Under a day written as the homework page
+    writes it, weekday first, a line ending in a hyphen is read as it was before: here as the
+    course on the line above a card, hyphen and all."""
+    text = """Tuesday 9/1/2026
+08 Geometry
+Due: Book Covers:
+Science -
+Due: Lab report:
+Bring the graph.
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert [item.pair for item in read.items] == [
+        ("08 Geometry", "Book Covers"),
+        ("Science -", "Lab report"),
+    ]
+    assert words(read.items[1]) == ("Bring the graph.",)
+    assert read.unread == ()
+
+
+def test_the_lines_under_a_subject_heading_are_kept_whatever_they_look_like() -> None:
+    """Under a subject heading, words the reader takes for the summary's heading, a mail
+    header, a mail date line or the portal's own words elsewhere are a teacher's words: none
+    is read as nothing, none dates a later report, and a line over a card's line names no
+    course for it."""
+    text = """Homework for Wren
+11/05/2026 - Thursday
+Religion - Due: Short essay:
+Science -
+Homework for tonight: finish the lab write-up
+Mon, Nov 9, 2026 is the unit test
+Subject: verbs
+Classes
+Lab report
+Due: Friday
+Include your graph.
+
+09/09 Math - A: Homework: Practice Grade: Missing
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert set(items) == {("Religion", "Short essay"), ("Math", "Practice")}
+    assert words(items["Religion", "Short essay"]) == ()
+    assert [(u.line, u.text) for u in read.unread] == [
+        (4, "Science -"),
+        (5, "Homework for tonight: finish the lab write-up"),
+        (6, "Mon, Nov 9, 2026 is the unit test"),
+        (7, "Subject: verbs"),
+        (8, "Classes"),
+        (9, "Lab report"),
+        (10, "Due: Friday"),
+        (11, "Include your graph."),
+    ]
+    report = items["Math", "Practice"].reports[0]
+    assert (report.reported_on, report.dated_by) == (TODAY, PASTE_DAY)
+
+
+def test_a_day_a_card_and_a_missing_line_that_read_end_a_note_with_no_blank_between() -> None:
+    """Right under a subject heading, with no blank line between, a day, a card with its
+    course and a Missing line are read as themselves; a heading under a heading is kept for
+    review like the one above it."""
+    text = """Homework for Wren
+11/05/2026 - Thursday
+Science -
+11/06/2026 - Friday
+Art -
+Spanish - Due: Quiz:
+Science -
+09/09 Math - A: Homework: Practice Grade: Missing
+Art -
+Humanities -
+Read chapter two.
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert set(items) == {("Spanish", "Quiz"), ("Math", "Practice")}
+    assert items["Spanish", "Quiz"].due_date == date(2026, 11, 6)
+    assert [(u.line, u.text) for u in read.unread] == [
+        (3, "Science -"),
+        (5, "Art -"),
+        (7, "Science -"),
+        (9, "Art -"),
+        (10, "Humanities -"),
+        (11, "Read chapter two."),
+    ]
+
+
+UNDER_A_HEADING = """Homework for Wren
+11/05/2026 - Thursday
+Religion - Due: Short essay:
+Science -
+{line}
+Subject: fractions review
+Date: Nov 9, 2026
+Homework for tonight is the lab
+
+Math - Due: Sheet 4:
+09/09 Math - A: Homework: Practice Grade: Missing
+"""
+"""A subject heading, one line to try right under it, then three lines the reader takes for
+a mail header, a mail date line and the summary's heading where they stand outside a card;
+after the blank, a card that tells which day is in force and a Missing line that tells which
+day the reports are dated by."""
+
+KEPT_UNDER_A_HEADING = [
+    (6, "Subject: fractions review"),
+    (7, "Date: Nov 9, 2026"),
+    (8, "Homework for tonight is the lab"),
+]
+
+
+def after_the_blank(read: object) -> tuple[date | None, date, str]:
+    """The due date of the card after the blank, and the day and source of the Missing
+    report's date."""
+    items = by_pair(read.items)  # type: ignore[attr-defined]
+    report = items["Math", "Practice"].reports[0]
+    return items["Math", "Sheet 4"].due_date, report.reported_on, report.dated_by
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Homework for tonight -",
+        "Date: Nov 9, 2026 -",
+        "Subject: verbs -",
+        "Due: Friday -",
+        "Math - Due: Sheet 3 -",
+        "11/09 Math: Homework: Sheet Grade: -",
+    ],
+)
+def test_a_heading_shaped_line_under_a_heading_stays_with_the_note(line: str) -> None:
+    """A line under a subject heading that is itself shaped as a heading is kept for review
+    and the note goes on, whatever else it is shaped like and whatever words it begins with."""
+    read = read_text(UNDER_A_HEADING.format(line=line), now=NOW, today=TODAY)
+
+    assert [(u.line, u.text) for u in read.unread] == [
+        (4, "Science -"),
+        (5, line),
+        *KEPT_UNDER_A_HEADING,
+    ]
+    assert words(by_pair(read.items)["Religion", "Short essay"]) == ()
+    assert after_the_blank(read) == (date(2026, 11, 5), TODAY, PASTE_DAY)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Chapter 5 - Assigned: Worksheet: (Due:13/45/2026)",
+        "Chapter 5 - Assigned: tomorrow",
+        "Chapter 5 - Due:",
+        "11/09 Science - A: Homework: Lab 3 Grade: 95",
+        "11/09 Math - Due: Sheet 3: Homework: Lab Grade: 95",
+    ],
+)
+def test_a_line_shaped_like_structure_that_does_not_read_stays_with_the_note(line: str) -> None:
+    """Under a subject heading, a card with an impossible date, a body that is neither kind
+    or no title, and a Missing-shaped line of another grade, the last also where it is shaped
+    like a card, are kept for review. The note goes on and nothing else changes: the day in
+    force stays, and no report is dated."""
+    read = read_text(UNDER_A_HEADING.format(line=line), now=NOW, today=TODAY)
+
+    assert [(u.line, u.text) for u in read.unread] == [
+        (4, "Science -"),
+        (5, line),
+        *KEPT_UNDER_A_HEADING,
+    ]
+    assert after_the_blank(read) == (date(2026, 11, 5), TODAY, PASTE_DAY)
+
+
+@pytest.mark.parametrize("line", ["Friday 13/45/2026", "13/45/2026 - Friday"])
+def test_a_day_that_is_no_date_in_a_note_is_kept_and_ends_the_day_in_force(line: str) -> None:
+    """A day line whose digits name no date is kept for review in a note, as anywhere, and
+    as anywhere it ends the day in force: the due card after it takes no earlier day, so it
+    is kept for review too, and the note goes on."""
+    read = read_text(UNDER_A_HEADING.format(line=line), now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert [(u.line, u.text) for u in read.unread] == [
+        (4, "Science -"),
+        (5, line),
+        *KEPT_UNDER_A_HEADING,
+        (10, "Math - Due: Sheet 4:"),
+    ]
+    assert set(items) == {("Religion", "Short essay"), ("Math", "Practice")}
+    report = items["Math", "Practice"].reports[0]
+    assert (report.reported_on, report.dated_by) == (TODAY, PASTE_DAY)
+
+
+def test_a_due_card_under_a_heading_with_no_day_read_stays_with_the_note() -> None:
+    text = """Homework for Wren
+Science -
+Chapter 5 - Due: Friday
+Subject: fractions review
+Date: Nov 9, 2026
+
+09/09 Math - A: Homework: Practice Grade: Missing
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert [(u.line, u.text) for u in read.unread] == [
+        (2, "Science -"),
+        (3, "Chapter 5 - Due: Friday"),
+        (4, "Subject: fractions review"),
+        (5, "Date: Nov 9, 2026"),
+    ]
+    report = read.items[0].reports[0]
+    assert (report.reported_on, report.dated_by) == (TODAY, PASTE_DAY)
+
+
+@pytest.mark.parametrize(
+    ("line", "card"),
+    [
+        ("Homework for tonight - Due: tomorrow", ("Homework for tonight", "tomorrow")),
+        ("Date: Nov 9, 2026 - Due: quiz", ("Date: Nov 9, 2026", "quiz")),
+        ("Subject: verbs - Due: quiz", ("Subject: verbs", "quiz")),
+    ],
+)
+def test_a_card_with_its_course_under_a_heading_is_read_as_the_card_it_is_shaped_as(
+    line: str, card: tuple[str, str]
+) -> None:
+    """A line under a subject heading in the summary's own card shape, under a day already
+    read, is read as that card whatever words it begins with: it ends the note, and the lines
+    after it are that card's instruction. None is read as nothing and no report is re-dated."""
+    read = read_text(UNDER_A_HEADING.format(line=line), now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert [(u.line, u.text) for u in read.unread] == [(4, "Science -")]
+    assert items[card].due_date == date(2026, 11, 5)
+    assert words(items[card]) == (
+        "Subject: fractions review\nDate: Nov 9, 2026\nHomework for tonight is the lab",
+    )
+    assert after_the_blank(read) == (date(2026, 11, 5), TODAY, PASTE_DAY)
+
+
+@pytest.mark.parametrize(
+    "day_line", ["Friday 11/13/2026", "11/13/2026 - Friday", "- 11/13/2026 - Friday"]
+)
+def test_a_line_that_reads_as_a_day_under_a_heading_ends_the_note_and_is_the_day(
+    day_line: str,
+) -> None:
+    text = f"""Homework for Wren
+11/05/2026 - Thursday
+Science -
+Lab notes
+{day_line}
+Math - Due: Sheet 4:
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert [(item.pair, item.due_date) for item in read.items] == [
+        (("Math", "Sheet 4"), date(2026, 11, 13))
+    ]
+    assert [(u.line, u.text) for u in read.unread] == [(3, "Science -"), (4, "Lab notes")]
+
+
+def test_an_assigned_card_under_a_heading_reads_with_no_day_read_above() -> None:
+    text = """Homework for Wren
+Science -
+Math - Assigned: Sheet 3: (Due:11/09/2026)
+Show your work.
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert [(item.pair, item.due_date) for item in read.items] == [
+        (("Math", "Sheet 3"), date(2026, 11, 9))
+    ]
+    assert words(read.items[0]) == ("Show your work.",)
+    assert [(u.line, u.text) for u in read.unread] == [(2, "Science -")]
+
+
+def test_a_note_is_kept_whole_across_its_blank_lines() -> None:
+    """A teacher's note runs across its blank lines, and across a line holding only the
+    download's line-break mark, until a line that reads as a day, a Missing line or a card
+    with its course. Every line of it is kept for review whatever it begins with: none is
+    read as the summary's heading, a mail header or a card with no course on its line."""
+    text = """Homework for Wren
+11/05/2026 - Thursday
+Science -
+Lab notes
+\\
+Subject: second part
+
+Homework for tonight: third part
+Still the third part
+
+Due: Friday
+Homework for the weekend: finish the graph
+Religion - Due: Short essay:
+Write 250 words.
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert [item.pair for item in read.items] == [("Religion", "Short essay")]
+    assert words(read.items[0]) == ("Write 250 words.",)
+    assert [(u.line, u.text) for u in read.unread] == [
+        (3, "Science -"),
+        (4, "Lab notes"),
+        (6, "Subject: second part"),
+        (8, "Homework for tonight: third part"),
+        (9, "Still the third part"),
+        (11, "Due: Friday"),
+        (12, "Homework for the weekend: finish the graph"),
+    ]
+
+
+def test_the_summarys_own_heading_over_its_next_week_ends_a_note() -> None:
+    """The summary's heading, the line this text opened with, ends a note where a day line
+    follows it, and is read as nothing. A teacher's line that only begins with the same two
+    words stays with the note, even right before a day."""
+    text = """Homework for Wren
+11/05/2026 - Thursday
+Science -
+Lab notes
+Homework for tonight: read chapter 4
+Homework for Monday
+
+11/06/2026 - Friday
+Science -
+More notes
+
+
+Homework for Wren
+
+11/09/2026 - Monday
+Math - Due: Sheet 4:
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert [(item.pair, item.due_date) for item in read.items] == [
+        (("Math", "Sheet 4"), date(2026, 11, 9))
+    ]
+    assert [(u.line, u.text) for u in read.unread] == [
+        (3, "Science -"),
+        (4, "Lab notes"),
+        (5, "Homework for tonight: read chapter 4"),
+        (6, "Homework for Monday"),
+        (9, "Science -"),
+        (10, "More notes"),
+    ]
+
+
+def test_only_the_line_a_text_opens_with_is_known_as_the_summarys_heading() -> None:
+    """Inside a note, the line taken for the summary's own heading is the one the text opened
+    with. A line elsewhere that is read as nothing for beginning with the same two words is
+    not it, so its copy in a note is kept, even with a day line after it."""
+    text = """11/05/2026 - Thursday
+Homework for the weekend
+
+Science -
+Lab notes
+Homework for the weekend
+11/06/2026 - Friday
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert read.items == ()
+    assert [(u.line, u.text) for u in read.unread] == [
+        (4, "Science -"),
+        (5, "Lab notes"),
+        (6, "Homework for the weekend"),
+    ]
+
+
+def test_under_the_summarys_days_a_heading_shaped_line_is_not_read_as_plain_text() -> None:
+    """Where no homework-page day is in force, a line in a subject heading's shape that begins
+    with a mail word or the summary's heading words is a heading, unless it is also shaped as
+    a card: it is kept for review with its note, and dates no report."""
+    text = """Date: Nov 9, 2026 -
+Bring the form.
+
+Homework for tonight -
+Finish the lab.
+
+09/09 Math - A: Homework: Practice Grade: Missing
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert [(u.line, u.text) for u in read.unread] == [
+        (1, "Date: Nov 9, 2026 -"),
+        (2, "Bring the form."),
+        (4, "Homework for tonight -"),
+        (5, "Finish the lab."),
+    ]
+    report = read.items[0].reports[0]
+    assert (report.reported_on, report.dated_by) == (TODAY, PASTE_DAY)
+
+
+def test_under_the_homework_pages_day_a_heading_shaped_mail_line_is_read_as_nothing() -> None:
+    """Under a day written as the homework page writes it, a hyphen-ended line is no heading,
+    so one that begins with a mail word is read as nothing there, as any such line is."""
+    text = """Tuesday 9/1/2026
+Subject: verbs -
+plain words
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert read.items == ()
+    assert [(u.line, u.text) for u in read.unread] == [(3, "plain words")]
+
+
+def test_a_line_shaped_as_a_heading_and_as_a_card_is_read_as_the_card() -> None:
+    """Outside a note, under a day already read, a line that ends in a hyphen and is also in
+    the summary's card shape is read as that card, whatever words it begins with, and the
+    line after it is the card's instruction."""
+    text = """11/05/2026 - Thursday
+Homework for tonight - Due: sheet -
+words
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert [(item.pair, item.due_date) for item in read.items] == [
+        (("Homework for tonight", "sheet -"), date(2026, 11, 5))
+    ]
+    assert words(read.items[0]) == ("words",)
+    assert read.unread == ()
+
+
+def test_under_a_page_day_a_hyphen_ended_line_in_a_short_note_is_no_heading() -> None:
+    """A subject's note under the summary's day, then a day as the homework page writes it:
+    there a card's line with no course opens its short note, a hyphen-ended line in it is
+    kept for review as any other line, and the note ends at its blank line, so the page's
+    course and card after it are read."""
+    text = """Homework for Wren
+11/05/2026 - Thursday
+Science -
+Bring goggles
+Tuesday 9/1/2026
+Due: Orphan:
+Topic -
+
+08 Geometry
+Due: Book Covers:
+Cover them.
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert [(item.pair, item.due_date) for item in read.items] == [
+        (("08 Geometry", "Book Covers"), date(2026, 9, 1))
+    ]
+    assert words(read.items[0]) == ("Cover them.",)
+    assert [(u.line, u.text) for u in read.unread] == [
+        (3, "Science -"),
+        (4, "Bring goggles"),
+        (6, "Due: Orphan:"),
+        (7, "Topic -"),
+    ]
+
+
+AFTER_A_NOTE_ENDED = """Homework for Wren
+11/05/2026 - Thursday
+{note}Religion - Due: Short essay:
+
+Assigned: Poster: (Due:11/09/2026)
+Subject: bring colors
+Classes
+Date: Nov 9, 2026
+
+09/09 Math - A: Homework: Practice Grade: Missing
+"""
+"""A card's line with no course on it and no course above it, then three lines the reader
+takes for a mail header, the portal's own word and a mail date line where they stand outside
+a card; with or without a subject's note earlier in the text."""
+
+
+def test_after_a_note_a_card_line_with_no_course_keeps_its_paragraph_for_review() -> None:
+    """Where a subject heading has been read, a card's line left for review for want of a
+    course opens a short note of its own: the lines after it, up to the blank line, are kept
+    for review, none read as nothing and none dating the reports."""
+    read = read_text(AFTER_A_NOTE_ENDED.format(note="Science -\nLab notes\n"), now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert [(u.line, u.text) for u in read.unread] == [
+        (3, "Science -"),
+        (4, "Lab notes"),
+        (7, "Assigned: Poster: (Due:11/09/2026)"),
+        (8, "Subject: bring colors"),
+        (9, "Classes"),
+        (10, "Date: Nov 9, 2026"),
+    ]
+    assert words(items["Religion", "Short essay"]) == ()
+    report = items["Math", "Practice"].reports[0]
+    assert (report.reported_on, report.dated_by) == (TODAY, PASTE_DAY)
+
+
+def test_a_text_with_no_subject_heading_is_read_by_the_other_rules_alone() -> None:
+    """The same text with no subject heading in it is read by the other rules alone: the
+    card's line with no course is kept for review, the mail header and the portal's own word
+    are read as nothing, and the mail date line dates the report."""
+    read = read_text(AFTER_A_NOTE_ENDED.format(note=""), now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert [(u.line, u.text) for u in read.unread] == [(5, "Assigned: Poster: (Due:11/09/2026)")]
+    report = items["Math", "Practice"].reports[0]
+    assert (report.reported_on, report.dated_by) == (date(2026, 11, 9), EMAIL_DATE_LINE)
+
+
+def test_a_subject_heading_is_short_and_has_a_word_before_its_hyphen() -> None:
+    """Sixty characters is a heading and sixty-one is a teacher's line; a hyphen after a
+    bullet, another hyphen or underscores, with no letter or digit before it, is no heading."""
+    sixty = "A" * 58 + " -"
+    longer = "A" * 59 + " -"
+    under = "Homework for Wren\n11/05/2026 - Thursday\nReligion - Due: Short essay:\n"
+
+    short = read_text(under + sixty + "\n", now=NOW, today=TODAY)
+    long = read_text(under + longer + "\n", now=NOW, today=TODAY)
+    marks = read_text(under + "* -\n- -\n___ -\n", now=NOW, today=TODAY)
+
+    assert (len(sixty), len(longer)) == (60, 61)
+    assert [(u.line, u.text) for u in short.unread] == [(4, sixty)]
+    assert words(short.items[0]) == ()
+    assert long.unread == ()
+    assert words(long.items[0]) == (longer,)
+    assert marks.unread == ()
+    assert words(marks.items[0]) == ("* -\n- -\n___ -",)
+
+
+def test_a_short_line_of_a_cards_instruction_that_ends_in_a_hyphen_goes_to_review() -> None:
+    """A teacher's short line that ends in a hyphen set off by a space reads as a subject
+    heading, so it and the rest of its paragraph are shown for review and not kept as the
+    card's words: nothing is dropped, and the lines before it stay the card's."""
+    text = """Homework for Wren
+11/05/2026 - Thursday
+Religion - Due: Short essay:
+Write 250 words.
+Choose one question -
+Why do people tell stories?
+What makes a rule fair?
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert words(read.items[0]) == ("Write 250 words.",)
+    assert [(u.line, u.text) for u in read.unread] == [
+        (5, "Choose one question -"),
+        (6, "Why do people tell stories?"),
+        (7, "What makes a rule fair?"),
+    ]
+
+
 def test_the_missing_email_is_a_report_with_its_day_and_never_a_due_date() -> None:
     read = read_text(EMAIL, now=NOW, today=TODAY)
     items = by_pair(read.items)

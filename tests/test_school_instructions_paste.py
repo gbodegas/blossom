@@ -2558,3 +2558,63 @@ def test_a_choice_asked_about_other_homework_is_refused_when_its_card_folds(
     assert ticked(moved.text, "0") == []
     assert PRACTICE_SHOWN[0] in said_back_on(moved.text, "0")
     assert fresh.status_code == 303
+
+
+NOTES_UNDER_SUBJECTS = """Homework for Wren
+11/02/2026 - Monday
+08 Geometry - Due: Textbook page 12:
+Humanities -
+Study for the vocabulary quiz on Thursday. Map project due on Wednesday.
+
+Spanish - Assigned: Oral quiz: (Due:11/10/2026)
+Art -
+Please bring a shoebox by next Tuesday.
+
+11/05/2026 - Thursday
+Religion - Due: Short essay:
+Write 250 words on your question.
+
+Science -
+Reading log due today
+
+"""
+"""The summary's print view with what teachers type under a subject: two notes right under
+another subject's card, and one card with an instruction of its own."""
+
+
+def test_a_note_under_another_subject_is_never_saved_as_a_cards_instruction(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Through the review, the save and the same text read again: the words under another
+    subject's heading are shown as text that needs review and saved on no assignment, and the
+    card with its own instruction keeps it."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTES_UNDER_SUBJECTS}).text
+        kept = client.post("/parent/inbox/keep", data=review_form(page))
+        store = store_of(client)
+        rows = {row.title: row for row in store.all_assignments()}
+        said = store.school_instruction_readings(
+            [row.assignment_id for row in rows.values()]
+        ).readable
+        again = client.post("/parent/inbox/read", data={"text": NOTES_UNDER_SUBJECTS}).text
+        rows_written = tables(client)["school_instructions"]
+
+    cards = page.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[1]
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=3&updated=0&unchanged=0")
+    assert set(rows) == {"Textbook page 12", "Oral quiz", "Short essay"}
+    assert {
+        title: said[row.assignment_id].texts
+        for title, row in rows.items()
+        if row.assignment_id in said
+    } == {"Short essay": ("Write 250 words on your question.",)}
+    assert len(rows_written) == 1
+    for text in (page, again):
+        review = text.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[0]
+        for line in ("Humanities -", "Art -", "Science -", "Reading log due today"):
+            assert line in html.unescape(review)
+    for words in ("Humanities", "vocabulary quiz", "shoebox", "Reading log"):
+        assert words not in html.unescape(cards)
+    assert "3 assignments across 2 weeks: 0 new, 0 updates, 3 already saved." in " ".join(
+        again.split()
+    )
