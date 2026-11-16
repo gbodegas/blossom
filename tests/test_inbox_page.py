@@ -157,7 +157,7 @@ def test_the_family_page_offers_the_paste_box_and_the_entry_form(tmp_path: pathl
     assert 'id="entry-course" type="text" name="course"' in page
     assert '<label for="entry-due_date">Due date (optional)</label>' in page
     assert '<label for="entry-assigned_on">Assigned date (optional)</label>' in page
-    assert '<select id="entry-kind" name="kind">' in page
+    assert '<select id="entry-kind" name="kind" aria-describedby="entry-kind-help">' in page
     assert f'name="note" rows="3" maxlength="{NOTE_MAX_LENGTH}"' in page
     assert "No open help requests." in page
     assert "No plans need your review." in page
@@ -354,6 +354,53 @@ FIELD_PROBLEMS = {
         "entry-note",
     ),
 }
+
+
+def test_each_label_of_the_entry_form_is_in_one_group_with_its_field_and_its_help(
+    tmp_path: pathlib.Path,
+) -> None:
+    """In the entry form's markup a label, its control and the help under it are one group,
+    in that order, and no label stands outside a group. The due date and the type each name
+    their own help text, beside the problem line when that field is refused."""
+    refusals = {
+        "due_date": {"course": "Spanish", "title": "Vocabulary list", "due_date": "next friday"},
+        "kind": {"course": "Spanish", "title": "Vocabulary list", "kind": "CHORE"},
+    }
+    with TestClient(
+        create_app(settings_in(tmp_path)), follow_redirects=False, headers=SAME_ORIGIN
+    ) as client:
+        page = client.get("/parent", headers=PAGE).text
+        refused = {
+            name: client.post("/parent/inbox/enter", data=data).text
+            for name, data in refusals.items()
+        }
+
+    form = page.split('action="/parent/inbox/enter"', 1)[1].split("</form>", 1)[0]
+    groups = re.findall(r'<div class="field(?: span-all)?">(.*?)</div>', form, re.S)
+    inside = [re.findall(r"<(label|input|select|textarea|p)\b", group) for group in groups]
+    assert inside == [
+        ["label", "input"],
+        ["label", "input"],
+        ["label", "input"],
+        ["label", "input", "p"],
+        ["label", "select", "p"],
+        ["label", "textarea"],
+    ]
+    assert re.findall(r'<label for="([^"]+)"', form) == re.findall(
+        r'<(?:input|select|textarea) id="([^"]+)"', form
+    )
+    assert "<label" not in re.sub(
+        r'<div class="field(?: span-all)?">.*?</div>', "", form, flags=re.S
+    )
+    assert 'name="due_date" value="" aria-describedby="entry-due_date-help">' in form
+    assert '<select id="entry-kind" name="kind" aria-describedby="entry-kind-help">' in form
+    for name in ("due_date", "kind"):
+        assert form.count(f'aria-describedby="entry-{name}-help"') == 1
+        assert form.count(f'<p class="helper" id="entry-{name}-help">') == 1
+        other = refused["kind" if name == "due_date" else "due_date"]
+        assert f'aria-describedby="entry-{name}-help"' in other
+        marked = f'aria-invalid="true" aria-describedby="problem entry-{name}-help" autofocus'
+        assert marked in refused[name]
 
 
 @pytest.mark.parametrize("field", list(FIELD_PROBLEMS))
