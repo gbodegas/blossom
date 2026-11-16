@@ -595,6 +595,11 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                     page_day = page_day and bool(DAY_LINE.match(line))
                 if heading:
                     to_blank = False
+                if mail_date(line) is not None:
+                    # A mail date line kept here may head another email, so an earlier
+                    # email's date is not taken for the reports after it: they are dated
+                    # by the day of the paste, and say so.
+                    reported_on, dated_by = today, PASTE_DAY
                 unread.append(Unread(number, line))
                 continue
             # What ends a note is read below as what it is, past the rules for plain
@@ -711,6 +716,11 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             # The summary's heading over a teacher's note: neither it nor the note is
             # the words of the card before it, whose subject may be another.
             unread.append(Unread(number, line))
+            if mail_date(line) is not None:
+                # A mail date line shaped as a heading is kept for review with its note,
+                # as one kept in a note is, so the reports after it are dated by the day
+                # of the paste, and say so.
+                reported_on, dated_by = today, PASTE_DAY
             course = None
             last = None
             in_note = True
