@@ -46,7 +46,10 @@ The shapes, as the portal writes them:
   Missing``, one line per assignment, under ``Assignments:``. Each such line
   is the school reporting the assignment missing, kept as a report with the
   day: the email's own date when the paste carries its date line, otherwise
-  the day it was pasted, and the report says which. The date beside the
+  the day it was pasted, and the report says which. A date line kept for
+  review in a teacher's note, or shaped as a subject heading, dates no
+  report: the reports after it are dated by the day of the paste until a
+  date line is read as one. The date beside the
   assignment is kept as the text it is, since the email does not say what it
   means; it is not a due date. Lines about work the text gives no date are
   read apart, since each can be about different homework under the name. A
@@ -542,7 +545,10 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     that does not read as one is text that needs review, and it ends the
     card before it, so nothing after it is taken for that card's words. A
     mail program's date line outside a card dates the school's reports read
-    after it, and the other lines of a mail header are read as nothing. Each
+    after it, and the other lines of a mail header are read as nothing. One
+    kept for review, in a note or as a heading, dates none: the reports
+    after it are dated by the day of the paste until a date line is read
+    as one. Each
     Missing line is a reading of its own, apart from any card of its name,
     and the same line twice is one. Any
     other plain line outside a card needs review too. A card that names an
