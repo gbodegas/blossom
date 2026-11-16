@@ -889,6 +889,37 @@ def test_where_an_instruction_was_read_is_said_as_far_as_it_is_known(
     assert boxes(cardless)[0][2] == "Applies now. Where it was read is not known."
 
 
+def test_an_instruction_read_in_a_teacher_s_note_names_the_note_s_day(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An instruction kept with a school day and no card was read in the teacher's note listed
+    under that day; one read on a card keeps the card's words."""
+    with client_for(open_household(tmp_path)) as client:
+        store = store_of(client)
+        store.settle_school_instructions(
+            ESSAY_ID,
+            [InstructionSeen(A, SourceChannel.LMS, None, date(2026, 8, 17))],
+            None,
+            authored_by="parent",
+            now=NOW,
+            today=TODAY,
+        )
+        store.settle_school_instructions(
+            ESSAY_ID,
+            [InstructionSeen(B, SourceChannel.LMS, "due", date(2026, 8, 21))],
+            InstructionChoice(1, (A, B), frozenset({A})),
+            authored_by="parent",
+            now=NOW,
+            today=TODAY,
+        )
+        page = client.get(PAGE, headers=PAGE_HEADERS).text
+
+    assert [(text, said) for text, _, said in boxes(page)] == [
+        (A, "Applies now. Read in the school's note for August 17."),
+        (B, "Earlier, does not apply now. Read on the school's card for August 21."),
+    ]
+
+
 # ------------------------------------------------------------------ a result only a save writes
 
 

@@ -619,8 +619,9 @@ UNREAD_SAID: Final = {
         "Look at the screenshot and enter it by hand if it's homework.",
     ),
     "no_day": (
-        "Homework read, but its date couldn't be told",
-        "No date was on the card or in a heading above it in this screenshot.",
+        "Read, but its date couldn't be told",
+        "No date was on the card or in a heading above it in this screenshot. "
+        "A teacher's note is read only under a day heading.",
     ),
     "clipped": (
         "Cut off at the screenshot's edge",

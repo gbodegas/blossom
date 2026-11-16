@@ -14,12 +14,16 @@
 
   {#
     Nothing is saved yet. Each card says what the text says about one
-    assignment and, against the record as it is now, exactly what saving
+    assignment and, against the record as it stands, exactly what saving
     would do: save it as new, add a date beside the saved one, fill in what
-    the record lacks, or nothing, because it is saved already. Lines the
-    reader did not take are listed first, so nothing is dropped in silence,
-    and a question the record cannot settle is asked before anything is
-    written.
+    the record lacks, or nothing, because it is saved already. A card read
+    from a teacher's note shows the note's words, a tick, and a title and a
+    due date the family may correct; homework read from a note starts
+    selected, notes that may be homework or say none is assigned are under their own
+    headings and start unselected unless saved already, and a note's card
+    that is not selected saves nothing. Lines the reader did not take are
+    listed first, so nothing is dropped in silence, and a question the record
+    cannot settle is asked before anything is written.
   #}
   {#
     A page returned for an answer about the school's instructions puts the
@@ -399,8 +403,10 @@
           {% endif %}{% if note_tasks %}
           {# A press that shows the review again with the selections as sent and writes nothing. #}
           <button type="submit" class="secondary" formaction="/parent/inbox/find" formnovalidate name="recheck" value="1">Review changes</button>{% endif %}
-          <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate>Edit</button>
-        </div>
+          <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate{% if note_tasks %} aria-describedby="edit-typing-lost"{% endif %}>Edit</button>
+        </div>{% if note_tasks %}
+        {# This Edit reads the text again from the start as Edit the text does, so it says the same beside it. #}
+        <p class="helper" id="edit-typing-lost">Selections, titles, and due dates aren't kept when the text is edited.</p>{% endif %}
         <p class="return"><a class="cancel" href="/parent">Cancel import</a></p>
       </div>
     </aside>

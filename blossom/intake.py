@@ -30,18 +30,17 @@ The shapes, as the portal writes them:
   backslash anywhere else is the teacher's. What a teacher types for a
   subject, apart from its cards, is written under the subject and a hyphen
   on a line of their own, ``<Course> -``. That heading ends the card before
-  it, whose subject may be another, and opens a note. The heading and every
-  line after it are text that needs review, across blank lines and whatever
-  a line looks like, until a line that reads as a day, as a Missing line, or
-  as a card with its course on its line, which is read as what it is, or,
-  where the text opened with the summary's heading, until that same line
-  over its next week. A line only shaped like a day or a card stays with
-  the note. The heading is the summary's shape: where the homework page's
-  shape is in force, which only a day written as the page writes it with
-  digits that name a date puts in force, a line that ends in a hyphen is
-  read as any other line. A short line of a card's own instruction that
-  ends in such a hyphen reads as a heading too, and goes to review with
-  what follows it.
+  it, whose subject may be another, and opens a note. The note holds the
+  heading and every line after it, across blank lines and whatever a line
+  looks like, until a line that reads as a day, as a Missing line, or as a
+  card with its course on its line, which is read as what it is, or, where
+  the text opened with the summary's heading, until that same line over its
+  next week. A line only shaped like a day or a card stays with the note.
+  The heading is the summary's shape: where the homework page's shape is in
+  force, which only a day written as the page writes it with digits that
+  name a date puts in force, a line that ends in a hyphen is read as any
+  other line. A short line of a card's own instruction that ends in such a
+  hyphen reads as a heading too, and opens a note of what follows it.
 - The email: ``MM/DD <Course> - <Section>: <Category>: <Title> Grade:
   Missing``, one line per assignment, under ``Assignments:``. Each such line
   is the school reporting the assignment missing, kept as a report with the
@@ -55,6 +54,24 @@ The shapes, as the portal writes them:
   read apart, since each can be about different homework under the name. A
   line in that shape with any other grade is not the "Missing" email and is
   left for review.
+
+A teacher's note is read as tasks by the rules ``teacher_notes`` holds, each
+with the words it was read from, a standing (homework, not an assignment, or
+unclear), and a deadline only where its words settle one date. A task with
+the class and title of a card read under a school day the task is listed
+under is that card's assignment: the card takes the claim of a deadline the
+note settles and, where they say more than the name and the deadline
+statement, the task's words as one more instruction. Every other task is a
+reading of its own, its words kept as the school's instruction under the
+first school day it is listed under, with no card. A reading of a task that
+is unclear or not an assignment is left out of a save unless someone selects
+it. Before a save the family may correct a task's title and due date; a due
+date other than the one the note settles is the family's entry, not the
+school's claim. A task saved before is found again by its class, its words
+and that first school day, whatever its title or due date, and its class and
+title alone never put it on a row. A note with no words under its heading,
+or with a line only shaped like a day, a Missing line or a card, is read as
+no task, and its lines are text that needs review.
 
 One item appears under an assigned day and under a due day, often in two
 weeks, and is one assignment matched by its course and title, exactly as the

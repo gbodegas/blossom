@@ -1450,6 +1450,40 @@ def test_edit_the_text_says_the_selections_titles_and_dates_are_not_kept(
     assert "typing-lost" not in plain
 
 
+EDIT_TYPING_LOST = (
+    '<p class="helper" id="edit-typing-lost">'
+    "Selections, titles, and due dates aren't kept when the text is edited.</p>"
+)
+
+
+def test_the_save_panel_s_edit_says_the_selections_titles_and_dates_are_not_kept(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The save panel's Edit reads the text again as Edit the text does. On a review with
+    notes the panel shows the same line beside it once, and the press names it, whether or not
+    the page has lines to review. A review with no note has neither."""
+    with client_in(tmp_path) as client:
+        with_lines = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        notes_only = client.post("/parent/inbox/read", data={"text": ONE_UNCLEAR_NOTE}).text
+        plain = client.post("/parent/inbox/read", data={"text": NO_NOTE}).text
+
+    assert 'id="needs-review"' in with_lines
+    assert 'id="needs-review"' not in notes_only
+    for page in (with_lines, notes_only):
+        panel = page.split('<aside class="review-aside"', 1)[1].split("</aside>", 1)[0]
+        assert panel.count(EDIT_TYPING_LOST) == 1
+        assert (
+            '<button type="submit" class="secondary" formaction="/parent/inbox/edit" '
+            'formnovalidate aria-describedby="edit-typing-lost">Edit</button>'
+        ) in panel
+        assert page.count('id="edit-typing-lost"') == 1
+    assert "edit-typing-lost" not in plain
+    assert (
+        '<button type="submit" class="secondary" formaction="/parent/inbox/edit" '
+        "formnovalidate>Edit</button>"
+    ) in plain
+
+
 def test_the_page_that_reads_no_store_lists_each_title_and_date_as_sent(
     tmp_path: pathlib.Path,
 ) -> None:

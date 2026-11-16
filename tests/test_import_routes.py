@@ -2432,7 +2432,7 @@ def test_cards_that_couldn_t_be_read_are_listed_with_their_reason_text_and_place
     assert "Screenshot 1: Text Blossom couldn't read" in shown
     assert "Look at the screenshot and enter it by hand if it's homework." in shown
     assert "Card 2: English 8 · Complete pages 12 to 14. · Due (10/8/2026)" in shown
-    assert "Screenshot 1: Homework read, but its date couldn't be told" in shown
+    assert "Screenshot 1: Read, but its date couldn't be told" in shown
     assert "No date was on the card or in a heading above it in this screenshot." in shown
     assert "Card 3: Science 8 · Vocab 4" in shown
     assert shown.count('form="leave-item-') == 2
@@ -41279,6 +41279,28 @@ def test_a_note_read_as_homework_is_ticked_under_what_saving_adds(
     assert 'id="no-homework-heading"' not in page
     assert "Study the vocabulary on page 12" in section_of(page, "saving-heading")
     assert lines_in(TOLD.search(page)) == [imports.read_said_line(1, 3)]
+
+
+def test_a_note_with_no_day_heading_is_listed_under_words_true_for_a_note(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A teacher's note card with no day heading above it is listed among the cards whose
+    date couldn't be told, under words that call it neither homework nor a card's date."""
+    answer = homework_answer(
+        headings=[], cards=[note_card("Spanish 8", "Study the vocabulary on page 12.", 200)]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, answer))
+
+    shown = html.unescape(page)
+    group = shown.split("Screenshot 1: Read, but its date couldn't be told</h3>", 1)[1]
+    assert "Homework read" not in shown
+    said, cards = group.split("</ul>", 1)[0].split("<ul>", 1)
+    assert cards.count("Card 1: Spanish 8 · Study the vocabulary on page 12.") == 1
+    assert said.strip() == (
+        '<p class="note">No date was on the card or in a heading above it in this screenshot. '
+        "A teacher's note is read only under a day heading.</p>"
+    )
 
 
 # ------------------------------------------------------------------ corrections to a note
