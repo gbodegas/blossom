@@ -1797,9 +1797,24 @@ form.inline button {
   }
 }
 
-/* On Review assignments, the save button's words break where they must. */
+/* On Review assignments, the buttons of the save panel keep their words whole. A button that
+   does not fit beside its neighbor takes the next line. Where the screen is narrow for the
+   size of its text, a button's side padding and the panel's give way before any word breaks,
+   as a page's heading reaches into its margin. Every screen 347 pixels or wider with ordinary
+   text, and 694 pixels or wider with text at 200%, keeps both paddings as they are. A word
+   wider than the panel itself breaks where it must. The corners are rounded for one line of
+   words: a button on one line is the pill every button is, and a button on two or three lines
+   keeps the word on its last line inside its fill. */
 .review-actions button {
+  flex: 0 0 auto;
+  max-width: 100%;
+  padding-inline: clamp(0.2rem, 12vw - 1.2rem, 1.35rem);
+  border-radius: 1.5rem;
   overflow-wrap: anywhere;
+}
+
+.review-aside .panel {
+  padding-inline: clamp(0.3rem, 12vw - 1rem, 1.6rem);
 }
 
 /* ------------------------------------------------------------- the way in */
