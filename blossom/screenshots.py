@@ -36,8 +36,11 @@ is read by the rules ``teacher_notes`` holds for a pasted note, with the note ca
 layer read together. A note's row takes its day from the heading above it in its own
 screenshot, as any card does, with one exception: the same words of the same class listed
 under several days, in this screenshot or another, are one task read from the earliest of
-those days, so another screenshot can change the day a note's weekday is read from. A note
-card is never joined to a card that has a label.
+those days, so another screenshot can change the day a note's weekday is read from. A task a
+note names as a card with a label, of the same class and read under one of the school days the
+task is listed under, in the same screenshots, is that card's row: the row takes the claim of a
+deadline the note settles and, when they say more than the name and the deadline statement,
+the task's words as an instruction, and keeps the key, cards and marks of its own cards.
 """
 
 import dataclasses
@@ -54,11 +57,16 @@ from blossom.grades.draft import folded
 from blossom.intake import (
     ANOTHER_OCCURRENCE,
     DAY_LINE,
+    PORTAL_CONFIDENCE,
+    TEACHER_NOTE,
     PortalCard,
     Reading,
     a_date,
+    claim,
     note_reading,
+    pair,
     read_cards,
+    says_more,
 )
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionSeen, instruction_words
@@ -354,9 +362,10 @@ class AssignedDay(NamedTuple):
 
 
 class ScreenshotRow(NamedTuple):
-    """One row the screenshots read as: its key (what it would write and its layer), the
-    reading it would write, the fields marked uncertain on any card it came from, the day
-    heading among them, and every distinct assigned date its assigned cards were read under.
+    """One row the screenshots read as: its key (what its own cards would write and its
+    layer), the reading it would write, the fields marked uncertain on any card it came from,
+    the day heading among them, and every distinct assigned date its assigned cards were read
+    under.
     ``layer`` and ``sources`` say which copy it is and where its cards were read; neither is
     in the key."""
 
@@ -469,8 +478,11 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     instructions once for each day, and its key holds the dates. A teacher's note card under a
     readable day heading is read with the other note cards of its layer, its layer being how
     many note cards above it in its screenshot have its class, words and day; each task they
-    read as is a row whose key holds its standing. Every other card stays a visible item with
-    its reason, never merged into another. ``now`` stamps the claims and is in no key.
+    read as is a row whose key holds its standing, unless a row read from cards has its class
+    and title and was read under one of the school days the task is listed under: the first
+    such row takes what the note adds and keeps its key, cards and marks. Every other card
+    stays a visible item with its reason, never merged into another. ``now`` stamps the
+    claims and is in no key.
     """
     images: dict[str, tuple[str, HomeworkReading | None]] = {}
     for stored in readings:
@@ -542,17 +554,24 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
         in_layer[row.key] = 0
         rows.append(row)
 
+    read_under: dict[str, frozenset[date]] = {}
     for _, layer, members in groups:
         assigned = _assigned_days(members)
         cards_read = read_cards([portal for _, portal, _, _ in members], now=now)
         marks_of: list[set[str]] = [set() for _ in cards_read.readings]
         places_of: list[set[CardPlace]] = [set() for _ in cards_read.readings]
-        for (_, _, marks, place), joined in zip(members, cards_read.joined, strict=True):
+        days_of: list[set[date]] = [set() for _ in cards_read.readings]
+        for (_, portal, marks, place), joined in zip(members, cards_read.joined, strict=True):
             marks_of[joined] |= marks
             places_of[joined].add(place)
-        for read, marked, places in zip(cards_read.readings, marks_of, places_of, strict=True):
+            if portal.day is not None:
+                days_of[joined].add(portal.day)
+        for read, marked, places, days in zip(
+            cards_read.readings, marks_of, places_of, days_of, strict=True
+        ):
             written = _in_round(_unsettled(read, assigned, members), rounds)
             key = _key(_written(written, frozenset(marked), layer, assigned))
+            read_under.setdefault(key, frozenset(days))
             keep(
                 ScreenshotRow(
                     key, written, frozenset(marked), assigned, layer, tuple(sorted(places))
@@ -560,6 +579,11 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
             )
     for layer, sightings in sorted(noted.items()):
         for task, note_marks, note_places in _note_tasks(sightings):
+            named = _named_card(rows, read_under, task)
+            if named is not None:
+                card_row = rows[named]
+                rows[named] = card_row._replace(reading=_with_note(card_row.reading, task, now))
+                continue
             noted_reading = _in_round(note_reading(task, now=now), rounds)
             key = _key(_written(noted_reading, note_marks, layer, (), note=str(task.standing)))
             keep(ScreenshotRow(key, noted_reading, note_marks, (), layer, note_places))
@@ -819,6 +843,40 @@ def _note_tasks(
         marks = frozenset(mark for seen in sources for mark in seen.marks)
         out.append((task, marks, tuple(sorted(seen.place for seen in sources))))
     return out
+
+
+def _named_card(
+    rows: Sequence[ScreenshotRow], read_under: dict[str, frozenset[date]], task: NoteTask
+) -> int | None:
+    """Where the row of the card a note's task names is among ``rows``: the first row read from
+    cards with the task's class and title whose cards were read under one of the school days
+    the task is listed under. ``read_under`` holds those days by row key, for card rows alone.
+    ``None`` when no such row was read."""
+    name = pair(task.subject, task.name)
+    return next(
+        (
+            index
+            for index, row in enumerate(rows)
+            if row.reading.pair == name
+            and not read_under.get(row.key, frozenset()).isdisjoint(task.seen_on)
+        ),
+        None,
+    )
+
+
+def _with_note(reading: Reading, task: NoteTask, now: datetime) -> Reading:
+    """A card's reading with what a note naming it adds, as a pasted note adds it: the claim of
+    a deadline the note settles, seen in the teacher's note, and the task's words as one more
+    instruction when they say more than the name and the deadline statement. A claim or an
+    instruction the reading has is not added twice."""
+    claims, instructions = reading.claims, reading.instructions
+    if task.deadline is not None:
+        noted = claim(SourceChannel.LMS, task.deadline, TEACHER_NOTE, now, PORTAL_CONFIDENCE)
+        if noted not in claims:
+            claims += (noted,)
+    if says_more(task) and all(seen.text != task.words for seen in instructions):
+        instructions += (InstructionSeen(task.words, SourceChannel.LMS, None, task.first_day),)
+    return dataclasses.replace(reading, claims=claims, instructions=instructions)
 
 
 def _as_item(item: _Seen) -> dict[str, object]:

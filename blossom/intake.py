@@ -1181,6 +1181,10 @@ def _says_more(task: NoteTask) -> bool:
     return IS_OR_ARE.sub("", rest).rstrip(STATEMENT_END) != task.name
 
 
+says_more = _says_more
+"""``_says_more`` by the name the screenshot path's join uses."""
+
+
 def _read_under(card: Reading, days: Collection[date]) -> bool:
     """Whether a card's reading was read under one of the school days: assigned on it, or
     due on it by the day's header."""

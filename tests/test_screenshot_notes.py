@@ -288,6 +288,117 @@ def test_three_formal_keys_are_the_literal_keys_pinned_here() -> None:
     assert [row.key for row in homework_rows(stored("worksheet", worksheet))] == [WORKSHEET_KEY]
 
 
+# ------------------------------------------------------------------ a note naming its card
+
+
+ESSAY_DUE = "Short essay Due."
+ESSAY_MORE = "Short essay due Wednesday. Write 250 words on your question."
+
+
+def essay(y_top: int = 200) -> dict[str, object]:
+    """Religion 8's "Short essay", assigned on the day it is listed under and due 11/18."""
+    return homework_card(
+        badge="ASSIGNED",
+        course="Religion 8",
+        title="Short essay",
+        instruction=None,
+        footer="Due (11/18/2026)",
+        y_top=y_top,
+        y_bottom=y_top + 80,
+    )
+
+
+def essay_alone(label: str) -> ScreenshotRow:
+    """The essay card's row read with no note, from an image of the same label."""
+    return only_row(assembled(label, shot(essay())))
+
+
+def two_days(*cards: dict[str, object]) -> dict[str, object]:
+    """One screenshot with Monday 11/16 at the top and Tuesday 11/17 from y 250 down."""
+    headings = [
+        {"text": MONDAY, "y": 150, "uncertain": None},
+        {"text": TUESDAY, "y": 250, "uncertain": None},
+    ]
+    return homework_answer(headings=headings, cards=list(cards))
+
+
+def test_a_note_naming_its_card_under_the_same_day_is_that_card_s_row() -> None:
+    faint = [{"field": "title", "reason": "faint"}]
+    found = assembled(
+        "essay", shot(essay(), note("Religion 8", title=ESSAY_DUE, y_top=300, uncertain=faint))
+    )
+
+    row = only_row(found)
+    assert row.reading.teacher_note is None
+    assert row == essay_alone("essay")
+
+
+def test_a_note_naming_a_card_of_another_day_stays_a_note_row() -> None:
+    cases = {
+        "one-shot": [two_days(essay(), note("Religion 8", title=ESSAY_DUE, y_top=300))],
+        "two-shots": [shot(essay()), shot(note("Religion 8", title=ESSAY_DUE), day=TUESDAY)],
+    }
+    for label, shots in cases.items():
+        found = assembled(label, *shots)
+        formal_rows = [row for row in found.rows if row.reading.teacher_note is None]
+        notes = [row for row in found.rows if row.reading.teacher_note is not None]
+
+        assert found.unread == ()
+        assert [row.key for row in formal_rows] == [essay_alone(label).key]
+        assert formal_rows[0].reading == essay_alone(label).reading
+        assert [(row.reading.course, row.reading.title) for row in notes] == [
+            ("Religion 8", "Short essay")
+        ]
+        task = notes[0].reading.teacher_note
+        assert task is not None
+        assert task.seen_on == (date(2026, 11, 17),)
+
+
+def test_a_note_that_says_more_adds_its_deadline_claim_and_its_words_to_the_card() -> None:
+    found = assembled("more", shot(essay(), note("Religion 8", instruction=ESSAY_MORE, y_top=300)))
+    alone = essay_alone("more")
+
+    row = only_row(found)
+    assert row.reading.teacher_note is None
+    assert (row.key, row.sources, row.marks, row.layer) == (
+        alone.key,
+        alone.sources,
+        alone.marks,
+        alone.layer,
+    )
+    assert row.reading.due_date == date(2026, 11, 18)
+    assert [(c.channel, c.asserted_value, c.seen_in) for c in row.reading.claims] == [
+        (c.channel, c.asserted_value, c.seen_in) for c in alone.reading.claims
+    ] + [(SourceChannel.LMS, "2026-11-18", TEACHER_NOTE)]
+    assert row.reading.instructions == (
+        *alone.reading.instructions,
+        InstructionSeen(ESSAY_MORE, SourceChannel.LMS, None, date(2026, 11, 16)),
+    )
+
+
+def test_a_note_in_another_class_with_the_card_s_title_stays_a_note_row() -> None:
+    found = assembled("other", shot(essay(), note("English 8", title=ESSAY_DUE, y_top=300)))
+
+    assert found.unread == ()
+    assert sorted((row.reading.course, row.reading.teacher_note is None) for row in found.rows) == [
+        ("English 8", False),
+        ("Religion 8", True),
+    ]
+    [formal_row] = [row for row in found.rows if row.reading.teacher_note is None]
+    assert formal_row == essay_alone("other")
+
+
+def test_a_joined_card_keeps_its_literal_key_in_every_order_of_the_images() -> None:
+    worksheet = shot(formal("Math 8", "Worksheet 3", 200))
+    named = shot(note("Math 8", title="Worksheet 3 Due.", y_top=200))
+
+    found = assembled("joined", worksheet, named)
+
+    assert found.unread == ()
+    assert [row.key for row in found.rows] == [WORKSHEET_KEY]
+    assert [row.key for row in homework_rows(stored("joined", worksheet, named))] == [WORKSHEET_KEY]
+
+
 # ------------------------------------------------------------------ the text path's words
 
 
