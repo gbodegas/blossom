@@ -18,7 +18,8 @@ under is never taken for a deadline.
 
 Nothing here reads a clock or a store. "Today", "tomorrow" and a weekday are
 worked out from the first school day a task is listed under, and a month and
-day are read in that day's year unless a year is written with them.
+day are read in that day's year unless a year is written with them, except
+that January named under a school day in December is read in the next year.
 """
 
 import enum
@@ -129,7 +130,7 @@ _EXPLICIT: Final = re.compile(
     r"(?:/(?P<numeric_year>\d{4}))?(?![\d/])"
     rf"|(?<!\d)(?P<spanish_day>\d{{1,2}})\s+de\s+"
     rf"(?P<spanish>{_months(_SPANISH_MONTHS, tuple(_SPANISH_SHORT))})"
-    r"(?:\s+de\s+(?P<spanish_year>\d{4})\b)?",
+    r"(?:(?:\s+del?\s+|,\s*)(?P<spanish_year>\d{4})\b)?",
     re.IGNORECASE,
 )
 _CUE: Final = re.compile(r"\b(?:due|by)\b", re.IGNORECASE)

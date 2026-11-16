@@ -105,8 +105,8 @@ SAID: Final = {
     "Blossom use?",
     "joined_note": "The teacher's note for {day} also says: {words}",
     "joined_tick": "Add this note to the assignment",
-    "joined_dates": "The card says due {due}; the teacher's note for {day} says {noted}.",
-    "joined_undated": "The card gives no due date; the teacher's note for {day} says {noted}.",
+    "joined_dates": "Due date on this review: {due}. The teacher's note for {day} says {noted}.",
+    "joined_undated": "No due date on this review. The teacher's note for {day} says {noted}.",
     "too_long": "Keep the {named} to {most:,} characters or fewer.",
     "nothing": "none",
     "lost_correction": "This card's corrections changed since you chose, so choose where it goes "

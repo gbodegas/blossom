@@ -41573,8 +41573,8 @@ def test_a_joined_note_has_a_tick_of_its_own_with_its_words_and_both_dates(
     assert 'id="may-be-heading"' not in page
     assert f"The teacher's note for October 5 also says: {ESSAY_NOTE}" in shown
     assert (
-        "The card says due Friday, October 9, 2026; the teacher's note for October 5 says "
-        "Wednesday, October 7, 2026."
+        "Due date on this review: Friday, October 9, 2026. The teacher's note for October 5 "
+        "says Wednesday, October 7, 2026."
     ) in shown
     assert "Add this note to the assignment" in shown
     assert shown.count(ESSAY_NOTE) == 1
