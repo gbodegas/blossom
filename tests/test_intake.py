@@ -1136,6 +1136,141 @@ Bring a ruler -
     ]
 
 
+SUMMARY_WITH_NO_SUCH_DAY_UNDER_A_CARD = """Homework for Wren
+11/05/2026 - Thursday
+Religion - Due: Short essay:
+Friday 11/31/2026
+Spanish - Assigned: Oral quiz: (Due:11/10/2026)
+Art -
+Bring a shoebox
+"""
+
+SUMMARY_OPENING_WITH_NO_SUCH_DAY = """Homework for Wren
+Friday 11/31/2026
+Spanish - Assigned: Oral quiz: (Due:11/10/2026)
+Art -
+Bring a shoebox
+"""
+
+
+@pytest.mark.parametrize(
+    ("text", "cards", "for_review"),
+    [
+        (
+            SUMMARY_WITH_NO_SUCH_DAY_UNDER_A_CARD,
+            [("Religion", "Short essay"), ("Spanish", "Oral quiz")],
+            [(4, "Friday 11/31/2026"), (6, "Art -"), (7, "Bring a shoebox")],
+        ),
+        (
+            SUMMARY_OPENING_WITH_NO_SUCH_DAY,
+            [("Spanish", "Oral quiz")],
+            [(2, "Friday 11/31/2026"), (4, "Art -"), (5, "Bring a shoebox")],
+        ),
+    ],
+    ids=["under-a-card", "the-first-day-line"],
+)
+def test_an_impossible_day_outside_a_note_never_starts_the_page_shape(
+    text: str, cards: list[tuple[str, str]], for_review: list[tuple[int, str]]
+) -> None:
+    """Outside a note, a day line written the homework page's way whose digits name no date
+    puts no page rules in force. The next subject's heading stays a heading, so that
+    subject's words are kept for review and no card takes them."""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert [(item.pair, [seen.text for seen in item.instructions]) for item in read.items] == [
+        (pair, []) for pair in cards
+    ]
+    assert [(u.line, u.text) for u in read.unread] == for_review
+
+
+@pytest.mark.parametrize(
+    ("no_such_day", "instructions", "for_review"),
+    [
+        ("Friday 11/31/2026", ["Bring a ruler -"], [(4, "Friday 11/31/2026")]),
+        ("13/45/2026 - Monday", [], [(4, "13/45/2026 - Monday"), (6, "Bring a ruler -")]),
+    ],
+    ids=["the-pages-way-leaves-it", "the-summarys-way-ends-it"],
+)
+def test_an_impossible_day_outside_a_note_under_the_page_shape(
+    no_such_day: str, instructions: list[str], for_review: list[tuple[int, str]]
+) -> None:
+    """Under the homework page's day, a day line whose digits name no date, outside a note:
+    written the page's way it leaves the page's shape in force, and the hyphen-ended line
+    under the next card stays that card's instruction; written the summary's way it ends the
+    page's shape, and that line is a heading kept for review."""
+    text = f"""Homework for Wren
+Thursday 11/05/2026
+Math - Assigned: Sheet 3: (Due:11/10/2026)
+{no_such_day}
+Spanish - Assigned: Oral quiz: (Due:11/10/2026)
+Bring a ruler -
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert [(item.pair, [seen.text for seen in item.instructions]) for item in read.items] == [
+        (("Math", "Sheet 3"), []),
+        (("Spanish", "Oral quiz"), instructions),
+    ]
+    assert [(u.line, u.text) for u in read.unread] == for_review
+
+
+def test_a_page_day_that_names_no_date_leaves_its_cards_for_review_until_a_real_day() -> None:
+    """A homework page whose day line names no date, read where the page's shape is not in
+    force, is read under the summary's rules up to the page's next day that names a date: a
+    hyphen-ended line under a card is a heading, and it and the lines after it, the page's
+    own cards among them, are kept for review. Nothing is saved on another card and no line
+    is dropped. The page's next real day puts its shape in force."""
+    alone = """Friday 11/31/2026
+Spanish
+Assigned: Oral quiz: (Due:11/10/2026)
+Bring a ruler -
+Math
+Assigned: Sheet 3: (Due:11/12/2026)
+Use a pencil
+Monday 11/09/2026
+Art
+Assigned: Collage: (Due:11/13/2026)
+Bring glue -
+"""
+    after_a_summary = """Homework for Wren
+11/05/2026 - Thursday
+Religion - Due: Short essay:
+
+Friday 11/31/2026
+Spanish
+Assigned: Oral quiz: (Due:11/10/2026)
+Bring a ruler -
+Math
+Assigned: Sheet 3: (Due:11/12/2026)
+Use a pencil
+"""
+    first = read_text(alone, now=NOW, today=TODAY)
+    second = read_text(after_a_summary, now=NOW, today=TODAY)
+
+    assert [(item.pair, [seen.text for seen in item.instructions]) for item in first.items] == [
+        (("Spanish", "Oral quiz"), []),
+        (("Art", "Collage"), ["Bring glue -"]),
+    ]
+    assert [(u.line, u.text) for u in first.unread] == [
+        (1, "Friday 11/31/2026"),
+        (4, "Bring a ruler -"),
+        (5, "Math"),
+        (6, "Assigned: Sheet 3: (Due:11/12/2026)"),
+        (7, "Use a pencil"),
+    ]
+    assert [(item.pair, [seen.text for seen in item.instructions]) for item in second.items] == [
+        (("Religion", "Short essay"), []),
+        (("Spanish", "Oral quiz"), []),
+    ]
+    assert [(u.line, u.text) for u in second.unread] == [
+        (5, "Friday 11/31/2026"),
+        (8, "Bring a ruler -"),
+        (9, "Math"),
+        (10, "Assigned: Sheet 3: (Due:11/12/2026)"),
+        (11, "Use a pencil"),
+    ]
+
+
 def test_under_the_summarys_days_a_heading_shaped_line_is_not_read_as_plain_text() -> None:
     """Where no homework-page day is in force, a line in a subject heading's shape that begins
     with a mail word or the summary's heading words is a heading, unless it is also shaped as
