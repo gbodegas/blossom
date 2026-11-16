@@ -13,6 +13,7 @@ Every card and note here is made up, in the shapes the school's weekly summary
 writes them.
 """
 
+import datetime
 import hashlib
 import html
 import pathlib
@@ -67,17 +68,15 @@ ONE_UNCLEAR_NOTE = "Homework for Wren\n11/02/2026 - Monday\n08 Geometry -\nQuiz 
 
 MAY_BE = "Notes that may be homework"
 NONE_ASSIGNED = "Notes with no homework"
-NOT_SURE = "Blossom isn&#39;t sure these are homework, so none is selected. Tick one to save it."
-NONE_SAID = (
-    "The school&#39;s note says no homework is assigned. "
-    "Nothing from these is saved unless one is ticked."
-)
+NOT_SURE = "These start unselected. Select any that are homework."
+NONE_SAID = "The school&#39;s note says no homework is assigned. These start unselected."
 NOTHING_SELECTED = "No assignment is selected to save."
+SAVE_SELECTED = '<button type="submit" class="primary">Save selected assignments</button>'
 
-FIRST_VIEW = "8ad79b0580d5042339c3f292ad1185afad67e49c47c31fad6d60e62a54b4a61b"
-"""The no-note review page before any save, as a hash of its HTML with the form's signature
-and the moment of reading left out."""
-SAVED_VIEW = "da051b719cc0e3ad6257b79b676a2ffb0b79fd1035428a57dc932bd483f86b36"
+FIRST_VIEW = "6207794f6b697224d87ebab6b99a63c49c5df1de6193999344f5e6b9f38575d2"
+"""The no-note review page before any save, as a hash of its HTML with the form's signature,
+the moment of reading and the tag of the stylesheet and the script left out."""
+SAVED_VIEW = "c0e420da2293eeb951c4d45834dd3f79915e0e5cc749e2474542d1611add5d90"
 """The same text read again once it is saved, hashed the same way."""
 
 
@@ -113,11 +112,14 @@ def ticked_form(page: str) -> dict[str, str]:
 
 
 def hashed(page: str) -> str:
-    """A page's HTML as a hash, without the two values that differ between two readings of
-    the same text: the form's signature and the moment of reading."""
+    """A page's HTML as a hash, without the values that differ between two readings of the
+    same text or with the stylesheet's and the script's own bytes: the form's signature, the
+    moment of reading, and the tag the page names those two files with."""
     for name in ("made_with", "read_at"):
         page, found = re.subn(rf'name="{name}" value="[^"]*"', f'name="{name}"', page)
         assert found == 1, name
+    page, found = re.subn(r'("/static/blossom\.(?:css|js)\?v=)[^"]*"', r'\1"', page)
+    assert found == 2
     return hashlib.sha256(page.encode("utf-8")).hexdigest()
 
 
@@ -325,7 +327,7 @@ def test_a_note_not_selected_has_no_type_and_counts_in_no_total(tmp_path: pathli
     assert "4 assignments: 4 new, 0 updates, 0 already saved." in said
     assert "1 assignment: 1 new, 0 updates, 0 already saved." in said
     assert "0 assignments" not in said
-    assert ">Save 5 assignments</button>" in said
+    assert SAVE_SELECTED in said
     assert '<span class="pill">Not selected</span>' in unclear
     assert "Not selected. Nothing from this note is saved." in unclear
     assert "<select" not in unclear
@@ -555,7 +557,7 @@ def test_review_changes_writes_nothing_and_returns_the_ticks_as_sent(
     assert '<span class="pill">Not selected</span>' in card(again.text, "Reading log")
     assert '<p class="helper">If selected: New.</p>' in card(again.text, "Reading log")
     assert "If selected" not in card(again.text, "Quiz on unit two")
-    assert ">Save 5 assignments</button>" in again.text
+    assert SAVE_SELECTED in again.text
     assert kept.status_code == 303
     assert kept.headers["location"].endswith("added=5&updated=0&unchanged=0")
     assert "Quiz on unit two" in rows
@@ -575,7 +577,7 @@ def test_a_paste_with_nothing_selected_offers_review_changes(tmp_path: pathlib.P
     assert again.status_code == 200
     assert rows == []
     assert numbers(again.text, TICKED) == {0}
-    assert ">Save 1 assignment</button>" in again.text
+    assert SAVE_SELECTED in again.text
 
 
 def test_a_selection_that_changes_another_card_saves_nothing_and_says_why(
@@ -598,8 +600,12 @@ def test_a_selection_that_changes_another_card_saves_nothing_and_says_why(
     assert rows == []
     assert (
         '<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>'
-        f"{SELECTIONS_CHANGE}</p>"
+        f'{SELECTIONS_CHANGE} <a href="#card-1">Check this assignment</a></p>'
     ) in kept.text
+    linked = re.findall(r'<article class="assignment reading-[a-z_]+" id="(card-\d+)"', kept.text)
+    assert linked == ["card-1"]
+    assert kept.text.count('id="card-') == 1
+    assert 'id="card-' not in page
     assert numbers(kept.text, TICKED) == {1}
 
 
@@ -745,25 +751,199 @@ UNDATED_AGAIN = (
 )
 """A card on Monday, and on Tuesday a note that names it and settles no date."""
 
+OTHER_DATE = (
+    "Homework for Wren\n11/02/2026 - Monday\n"
+    "Spanish - Assigned: Oral quiz: (Due:11/10/2026)\n"
+    "11/03/2026 - Tuesday\nSpanish -\nOral quiz due Friday\n"
+)
+"""A card on Monday due the week after, and on Tuesday a note that names it and settles
+another date, that Friday."""
+
 
 def test_a_notes_question_offers_the_same_assignment_in_words_true_of_a_note(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A note's card that asks which it is offers the same assignment without saying a due
-    date changed: a note that settles a date says the date the assignment takes, and a note
-    that settles none says no more."""
+    """A note's card that asks which it is says what each choice does to the due date. A
+    note that settles no date, or the date beside it, offers the same assignment with that
+    date kept; a note that settles another date offers it kept and offers it changed, each
+    with the dates named. Nothing is chosen from the start, and the sentence above says no
+    date changed."""
     with client_in(tmp_path) as client:
-        dated = client.post("/parent/inbox/read", data={"text": TWICE_NOTED}).text
+        same = client.post("/parent/inbox/read", data={"text": TWICE_NOTED}).text
         undated = client.post("/parent/inbox/read", data={"text": UNDATED_AGAIN}).text
+        other = client.post("/parent/inbox/read", data={"text": OTHER_DATE}).text
+
+    radio = '<label><input type="radio" name="occurrence-1" value="{}"> {}</label>'
+    kept = "The same assignment; keep its due date of {}"
+    assert radio.format("keep", kept.format("Friday, November 6, 2026")) in same
+    assert radio.format("keep", kept.format("Tuesday, November 10, 2026")) in undated
+    assert radio.format("keep", kept.format("Tuesday, November 10, 2026")) in other
+    assert (
+        radio.format(
+            "update",
+            "The same assignment; change its due date from Tuesday, November 10, 2026 "
+            "to Friday, November 6, 2026",
+        )
+        in other
+    )
+    for page in (same, undated):
+        assert 'name="occurrence-1" value="update"' not in page
+    for page in (same, undated, other):
+        assert page.count('name="occurrence-1" value="keep"') == 1
+        assert radio.format("new", "New work under the same name") in page
+        assert "its due date changed" not in page
+        assert "Say whether this is the same assignment or new work under the same name." in page
+        assert not re.search(r'name="occurrence-1" value="[a-z]+" checked', page)
+
+
+def test_a_note_said_to_be_the_card_with_its_date_kept_is_saved_with_the_cards_date(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The choice to keep the due date travels with the page as its own answer through a
+    review handed back, and the save writes one row with the card's due date. The choice to
+    change it writes the note's date."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": OTHER_DATE}).text
+        form = ticked_form(page) | {"occurrence-1": "keep", "recheck": "1"}
+        again = client.post("/parent/inbox/find", data=form)
+        kept = client.post("/parent/inbox/keep", data=ticked_form(again.text))
+        rows = store_of(client).all_assignments()
+    with client_in(tmp_path / "changed") as client:
+        page = client.post("/parent/inbox/read", data={"text": OTHER_DATE}).text
+        changed = client.post(
+            "/parent/inbox/keep", data=ticked_form(page) | {"occurrence-1": "update"}
+        )
+        moved = store_of(client).all_assignments()
+
+    assert '<input type="hidden" name="occurrence-1" value="keep">' in again.text
+    assert '<input type="hidden" name="folded-1" value="0">' in again.text
+    assert kept.status_code == changed.status_code == 303
+    assert [(row.title, row.due_date) for row in rows] == [
+        ("Oral quiz", datetime.date(2026, 11, 10))
+    ]
+    assert [(row.title, row.due_date) for row in moved] == [
+        ("Oral quiz", datetime.date(2026, 11, 6))
+    ]
+
+
+def test_the_page_says_none_is_selected_only_when_none_is(tmp_path: pathlib.Path) -> None:
+    """The sentence that no assignment is selected is on the page when no reading is
+    selected and on no other page, whichever way the selection came about. The save on a
+    review with notes names no count and carries nothing for the page script to rewrite; a
+    review with no note keeps its counted save."""
+    with client_in(tmp_path) as client:
+        none = client.post("/parent/inbox/read", data={"text": ONE_UNCLEAR_NOTE}).text
+        one = client.post(
+            "/parent/inbox/find", data=ticked_form(none) | {"take-0": "1", "recheck": "1"}
+        ).text
+        both = client.post("/parent/inbox/read", data={"text": TWICE_NOTED}).text
+        form = ticked_form(both) | {"recheck": "1"}
+        del form["take-0"], form["take-1"]
+        neither = client.post("/parent/inbox/find", data=form).text
+        plain = client.post("/parent/inbox/read", data={"text": NO_NOTE}).text
+
+    for page in (none, neither):
+        assert page.count(f'<p class="empty">{NOTHING_SELECTED}</p>') == 1
+        assert 'class="primary"' not in page
+    for page in (one, both):
+        assert NOTHING_SELECTED not in page
+        assert page.count(SAVE_SELECTED) == 1
+        assert "data-changed-label" not in page
+        assert "data-unchanged-label" not in page
+    assert NOTHING_SELECTED not in plain
+    assert "Save selected assignments" not in plain
+    assert ">Save 3 assignments</button>" in plain
+
+
+OTHER_READING_LOG = "Homework for Wren\n11/02/2026 - Monday\nScience - Due: Reading log:\n"
+"""A card of the class and title one of the notes names, from another text."""
+
+NO_LONGER_MATCHES = (
+    "This review does not match what saving would do, so nothing was saved. "
+    "Check the review, then save."
+)
+COULD_NOT_BE_VERIFIED = (
+    "This review could not be verified, so nothing was saved. Check it again, then save."
+)
+SUMMARY = '<p class="problem" role="alert" id="problem-summary" tabindex="-1" autofocus>'
+
+
+@pytest.mark.parametrize(
+    ("sent", "ticked"),
+    [({}, {2, 3, 4}), ({"take-5": "1"}, {2, 3, 4, 5})],
+    ids=["record-only", "record-and-selection"],
+)
+def test_a_review_the_record_moved_under_is_refused_without_naming_the_selections(
+    tmp_path: pathlib.Path, sent: dict[str, str], ticked: set[int]
+) -> None:
+    """Another save between the view and the save puts a row where a note said it would
+    make one. Whether or not a tick changed as well, nothing of the review is saved, the
+    page says so without laying it to the selections, links to the one note it is about,
+    and keeps the ticks as sent."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        other = client.post("/parent/inbox/keep", data={"text": OTHER_READING_LOG})
+        answer = client.post("/parent/inbox/keep", data=ticked_form(page) | sent)
+        rows = [row.title for row in store_of(client).all_assignments()]
+
+    assert other.status_code == 303
+    assert answer.status_code == 409
+    assert rows == ["Reading log"]
+    assert (
+        f'{SUMMARY}{NO_LONGER_MATCHES} <a href="#card-4">Check this assignment</a></p>'
+    ) in answer.text
+    assert "Your selections" not in answer.text
+    assert "changed since this review" not in answer.text
+    assert answer.text.count('id="card-') == 1
+    assert numbers(answer.text, TICKED) == ticked
+
+
+def test_a_review_open_across_a_restart_is_checked_again_and_then_saves(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A review made by one run of the application and saved to the next cannot be verified:
+    nothing is saved, the page says so without saying any homework changed, and it comes
+    back with the ticks as sent and no link to a card. The page handed back saves in one
+    press."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+    form = ticked_form(page) | {"take-5": "1"}
+    del form["take-4"]
+    with client_in(tmp_path) as client:
+        refused = client.post("/parent/inbox/keep", data=form)
+        unwritten = store_of(client).all_assignments()
+        kept = client.post("/parent/inbox/keep", data=ticked_form(refused.text))
+        rows = {row.title for row in store_of(client).all_assignments()}
+
+    assert refused.status_code == 409
+    assert unwritten == []
+    assert f"{SUMMARY}{COULD_NOT_BE_VERIFIED}</p>" in refused.text
+    assert "changed since this review" not in refused.text
+    assert "Your selections" not in refused.text
+    assert 'id="card-' not in refused.text
+    assert numbers(refused.text, TICKED) == {2, 3, 5}
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=5&updated=0&unchanged=0")
+    assert "Quiz on unit two" in rows
+    assert "Reading log" not in rows
+
+
+NO_DATE_BESIDE = (
+    "Homework for Wren\n11/02/2026 - Monday\nArt -\nPoster Due.\n\n"
+    "11/04/2026 - Wednesday\nArt -\nPoster due Friday\n"
+)
+"""Two notes of one class on two days that name the same work: the first settles no date."""
+
+
+def test_a_notes_question_with_no_date_beside_it_names_no_date(tmp_path: pathlib.Path) -> None:
+    """When the first reading of the name has no due date there is none to keep or change:
+    the one choice for the same assignment names no date, and nothing is chosen."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NO_DATE_BESIDE}).text
 
     assert (
-        '<label><input type="radio" name="occurrence-1" value="update"> '
-        "The same assignment; its due date becomes Friday, November 6, 2026</label>"
-    ) in dated
-    assert (
         '<label><input type="radio" name="occurrence-1" value="update"> The same assignment</label>'
-    ) in undated
-    for page in (dated, undated):
-        assert page.count('value="update">') == 1
-        assert "its due date changed</label>" not in page
-        assert '<input type="radio" name="occurrence-1" value="new"> New work under' in page
+    ) in page
+    assert 'name="occurrence-1" value="keep"' not in page
+    assert "its due date" not in page
+    assert not re.search(r'name="occurrence-1" value="[a-z]+" checked', page)

@@ -21,7 +21,7 @@ import json
 import logging
 import secrets
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Annotated, Final
@@ -46,6 +46,7 @@ from blossom.intake import (
     CLAIMED,
     DIFFERENT,
     FOLDED,
+    KEEP_DATE,
     KNOWN,
     NEW,
     NEW_WORK,
@@ -71,6 +72,8 @@ from blossom.intake import (
     read_text,
     spoken_day,
     spoken_report,
+    task_said,
+    tasks_moved,
     with_notes,
     within_a_school_year,
 )
@@ -158,6 +161,14 @@ SELECTIONS_CHANGE: Final = (
     "Your selections change what saving would do for a card below, so nothing was saved. "
     "Check the review, then save."
 )
+REVIEW_NO_LONGER_MATCHES: Final = (
+    "This review does not match what saving would do, so nothing was saved. "
+    "Check the review, then save."
+)
+REVIEW_UNVERIFIED: Final = (
+    "This review could not be verified, so nothing was saved. Check it again, then save."
+)
+CHECK_THIS_ASSIGNMENT: Final = "Check this assignment"
 IDENTITY_FORM_UNREADABLE: Final = (
     "The answers about which homework a card is could not be read, so nothing was saved. "
     "Look at them again below."
@@ -363,8 +374,12 @@ class PageMade:
     """Homework chosen on each card that wasn't taken, with why, as the page said it, so later
     pages say it again until the card takes a choice or an answer."""
     tasks: dict[int, str] = field(default_factory=dict)
-    """For each reading made from a teacher's note, whether the page showed it ticked, the
-    state it has when selected, and the row it lands in then."""
+    """For each reading made from a teacher's note, whether the page showed it ticked, then
+    what it does when selected, as ``task_said`` puts it."""
+    verified: bool = field(default=True, compare=False)
+    """Whether the form carried this process's signature for its draft. A form without one,
+    such as a page made before the application started again, is read as a page that asked
+    and said nothing."""
 
 
 def made_with_field(
@@ -423,7 +438,7 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
     made, _, check = form.get(MADE_WITH, "").rpartition(".")
     expected = _made_with_check(key, draft, made)
     if not hmac.compare_digest(check.encode("utf-8"), expected.encode("utf-8")):
-        return PageMade()
+        return PageMade(verified=False)
     answers, _, rest = made.partition(";")
     occurrences: dict[int, str] = {}
     for part in filter(None, answers.split(",")):
@@ -656,7 +671,7 @@ def answers_from(
         head, _, number = name.rpartition("-")
         if not review_key(number):
             continue
-        if head == "occurrence" and value in (UPDATE, NEW_WORK):
+        if head == "occurrence" and value in (UPDATE, NEW_WORK, KEEP_DATE):
             occurrences[int(number)] = value
         elif head == "folded" and review_key(value):
             folded[int(number)] = int(value)
@@ -708,13 +723,10 @@ def unasked_for(state: ApplicationState, read: Read) -> dict[int, set[Assignment
 
 
 MAY_BE_HOMEWORK: Final = "Notes that may be homework"
-MAY_BE_HOMEWORK_HELPER: Final = (
-    "Blossom isn't sure these are homework, so none is selected. Tick one to save it."
-)
+MAY_BE_HOMEWORK_HELPER: Final = "These start unselected. Select any that are homework."
 NO_HOMEWORK: Final = "Notes with no homework"
 NO_HOMEWORK_HELPER: Final = (
-    "The school's note says no homework is assigned. "
-    "Nothing from these is saved unless one is ticked."
+    "The school's note says no homework is assigned. These start unselected."
 )
 
 
@@ -1226,6 +1238,7 @@ def preview_page(
     typed: Mapping[int, str] | None = None,
     focus: str | None = None,
     refused: str | None = None,
+    check: Collection[int] | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -1263,7 +1276,12 @@ def preview_page(
     made against a card or a homework that has changed since is said as not saved, with a
     way to choose it again where the card still offers it. The page signs each choice it
     says wasn't taken, and pages after it say it again until its card takes a choice or an
-    answer. ``focus`` names what takes the focus when no refusal is said first."""
+    answer. ``focus`` names what takes the focus when no refusal is said first.
+
+    ``check`` holds the cards a refusal is about when it is about what the page said of
+    the readings made from teachers' notes. The summary then links to no question; it
+    links to the card, with an id given to that card for it, only when there is exactly
+    one and the page shows it."""
     picks = picks or {}
     held = still_unsaved(made, picks, identities)
     if search is not None and search.attempted is not None:
@@ -1355,7 +1373,7 @@ def preview_page(
         )
     when_selected = {change.key: change for change in if_selected}
     tasks = {
-        change.key: f"{0 if change.left_out else 1}:{would.state}:{would.assignment_id}"
+        change.key: f"{0 if change.left_out else 1}:{task_said(would)}"
         for change in changes
         if change.reading.teacher_note is not None
         for would in [when_selected[change.key] if change.left_out else change]
@@ -1363,7 +1381,7 @@ def preview_page(
     said = unsaved_on(changes, unsaved or {}, carried)
     problem_target = None
     problem_link = None
-    if refused is not None:
+    if refused is not None and check is None:
         stale = [change.key for change in changes if change.instructions_stale]
         asked = [change.key for change in changes if change.instructions_question]
         unanswered = [change.key for change in changes if change.instructions_asked]
@@ -1418,6 +1436,10 @@ def preview_page(
     view = None
     choosable: dict[int, list[FoundRow]] = {}
     cards = {change.key: change for change in shown}
+    check_card = None
+    if check is not None and len(check) == 1 and next(iter(check)) in cards:
+        check_card = next(iter(check))
+        problem_link = (f"card-{check_card}", CHECK_THIS_ASSIGNMENT)
     if search is not None and search.key in cards and cards[search.key].offers:
         view = found_view(state, cards[search.key], search, parent=parent)
         choosable[search.key] = list(view.rows)
@@ -1453,7 +1475,9 @@ def preview_page(
     # A card the parent folded carries that answer on the page; a report shown on another
     # card carries nothing.
     folded = [
-        change for change in changes if change.state == FOLDED and change.occurrence == UPDATE
+        change
+        for change in changes
+        if change.state == FOLDED and change.occurrence in (UPDATE, KEEP_DATE)
     ]
     counts = {
         "new": sum(1 for change in shown if change.state == NEW),
@@ -1560,6 +1584,7 @@ def preview_page(
                 tasks,
             ),
             "note_tasks": bool(tasks),
+            "check_card": check_card,
             "if_selected": {
                 change.key: when_selected[change.key].label for change in shown if change.left_out
             },
@@ -1619,6 +1644,7 @@ def preview_or_recovery(
     typed: Mapping[int, str] | None = None,
     focus: str | None = None,
     refused: str | None = None,
+    check: Collection[int] | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -1644,6 +1670,7 @@ def preview_or_recovery(
             typed=typed,
             focus=focus,
             refused=refused,
+            check=check,
             notice=notice,
             status_code=status_code,
         )
@@ -2240,18 +2267,51 @@ async def keep_readings(request: Request, state: State) -> Response:
         )
     if isinstance(kept, ChangedSinceShown):
         instructions_moved = any(change.instructions_stale for change in kept.changes)
-        # A note that would do something its card did not say, on a form whose ticks differ
-        # from the ticks the page signed, is the family's own selection at work: the page
-        # says so. Any other change is one the record made.
-        reselected = (
-            bool(kept.moved)
-            and kept.moved <= page_made.tasks.keys()
-            and any(
-                (said.partition(":")[0] == "1") != (key not in read.left_out)
-                for key, said in page_made.tasks.items()
-            )
-        )
-        if reselected:
+        if kept.moved:
+            # A selected note would do something other than the page said for it. A form
+            # this process did not sign says nothing of that, so the review is checked
+            # again. Otherwise the selections are named only when they are established as
+            # the cause: with the ticks as the page signed them every note does what the
+            # page said. Any other mismatch is said without a cause.
+            answered = {*occurrences, *identities, *picks, *instruction_answers}
+
+            def by_the_selections() -> bool:
+                as_signed = frozenset(
+                    key for key, said in page_made.tasks.items() if not said.startswith("1:")
+                )
+                if as_signed == read.left_out:
+                    return False
+                try:
+                    before = changes_for(
+                        read.items,
+                        state.project_state,
+                        occurrences=occurrences,
+                        kinds=kinds,
+                        instruction_answers=instruction_answers,
+                        identities=identities,
+                        picks=picks,
+                        left_out=as_signed,
+                    )
+                except (
+                    UnreadableClaim,
+                    UnreadableDecision,
+                    UnreadableInstruction,
+                    UnreadableCapture,
+                    sqlite3.Error,
+                ):
+                    return False
+                return not tasks_moved(before, page_made.tasks, answered)
+
+            if not page_made.verified:
+                notice, code, about = REVIEW_UNVERIFIED, status.HTTP_409_CONFLICT, frozenset[int]()
+            elif await asyncio.to_thread(by_the_selections):
+                notice, code, about = SELECTIONS_CHANGE, status.HTTP_200_OK, kept.moved
+            else:
+                notice, code, about = (
+                    REVIEW_NO_LONGER_MATCHES,
+                    status.HTTP_409_CONFLICT,
+                    kept.moved,
+                )
             return await asyncio.to_thread(
                 preview_or_recovery,
                 request,
@@ -2270,7 +2330,9 @@ async def keep_readings(request: Request, state: State) -> Response:
                 search=search,
                 typed=typed,
                 refused="stale",
-                notice=SELECTIONS_CHANGE,
+                check=about,
+                notice=notice,
+                status_code=code,
             )
         return await asyncio.to_thread(
             preview_or_recovery,

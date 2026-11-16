@@ -1085,9 +1085,9 @@ def test_a_note_naming_a_card_of_another_day_asks_and_nothing_is_written(
     assert (asked.on_record, asked.beside) == (None, card_due)
     assert asked.effect_base.startswith("This text also has it due ")
     assert asked.effect_base.endswith(
-        "Say whether this is the same assignment with its due date changed, or new work "
-        "under the same name."
+        "Say whether this is the same assignment or new work under the same name."
     )
+    assert "due date changed" not in asked.effect_base
     assert [change.state for change in changes[:11]] == [NEW] * 11
     assert changes[:11] == without
     assert isinstance(held, list)
@@ -1542,3 +1542,180 @@ def test_what_a_page_said_of_a_typed_note_is_not_held_against_a_reading_left_out
 
     assert kept == Kept(added=10, updated=0, unchanged=0)
     assert len(saved) == 10
+
+
+def test_a_dated_note_said_to_be_the_card_with_its_date_kept_leaves_the_cards_date(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note that settles another date than the card of its name, answered as the same
+    assignment with its due date kept, is folded into the card: one row of the name with
+    the card's due date and where that date came from, and the note's date beside it as a
+    claim. Answered as the same assignment with its due date changed, the row takes the
+    note's date."""
+    items = named_again(AFTER_A_DUE_CARD)
+    card, note = by_pair(items)["08 Geometry", "Practice set 4"]
+    answers = {}
+    for answer in ("keep", UPDATE):
+        store = ProjectStateStore.open(tmp_path / f"{answer}.sqlite3", fixture_clock())
+        try:
+            changes = changes_for(items, store, occurrences={11: answer})
+            kept = keep(items, store, occurrences={11: answer}, now=NOW, today=TODAY)
+            rows_of_name = [row for row in store.all_assignments() if row.title == card.title]
+            claims = store.deadline_records(card.assignment_id)
+            again = keep(items, store, occurrences={11: answer}, now=NOW, today=TODAY)
+        finally:
+            store.close()
+        answers[answer] = (changes, kept, rows_of_name, claims, again)
+
+    assert (card.due_date, note.due_date) == (nov(3), nov(6))
+    for changes, kept, rows_of_name, claims, again in answers.values():
+        assert [change.state for change in changes] == [NEW] * 11 + [FOLDED]
+        assert kept == Kept(added=11, updated=0, unchanged=0)
+        assert [row.assignment_id for row in rows_of_name] == [card.assignment_id]
+        assert ("2026-11-06", TEACHER_NOTE) in {
+            (each.asserted_value, each.seen_in) for each in claims
+        }
+        assert again == Kept(added=0, updated=0, unchanged=11)
+    assert answers["keep"][0][11].occurrence == "keep"
+    assert answers["keep"][2][0].due_date == nov(3)
+    assert answers["keep"][2][0].origins["due_date"] == card.origin_of("due_date")
+    assert answers[UPDATE][2][0].due_date == nov(6)
+
+
+def test_a_card_answered_with_a_notes_choice_still_asks(tmp_path: pathlib.Path) -> None:
+    """The choice to keep the due date is offered on a reading made from a teacher's note
+    only: sent for a card, it is no answer, and the card's question stays open."""
+    items = read_text(TWO_WEEKS, now=NOW, today=TODAY).items
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        changes = changes_for(items, store, occurrences={1: "keep"})
+        held = keep(items, store, occurrences={1: "keep"}, now=NOW, today=TODAY)
+        saved = store.all_assignments()
+    finally:
+        store.close()
+
+    assert [change.state for change in changes] == [NEW, REVIEW]
+    assert changes[1].ambiguous
+    assert isinstance(held, list)
+    assert saved == []
+
+
+def test_a_dated_note_confirmed_as_a_row_the_family_dated_leaves_that_date_the_familys(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note that settles a date, confirmed as homework whose due date the family entered,
+    writes over nothing: the row keeps its due date and the family as where it came from,
+    the note's date is a claim beside it, and the note read again, landing by the answer
+    kept, changes nothing."""
+    reading = map_project()
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        name = parents_row(store, "Humanities", "Map project", nov(6), None)
+        before = store.one_assignment(name)
+        (asked,) = changes_for((reading,), store)
+        answer = IdentityAnswer(name, asked.identity_shown, asked.identity_basis)
+        kept = keep((reading,), store, identities={0: answer}, now=NOW, today=TODAY)
+        row = store.one_assignment(name)
+        (again,) = changes_for((reading,), store)
+        second = keep((reading,), store, now=NOW, today=TODAY)
+        after = store.one_assignment(name)
+        claims = store.deadline_records(name)
+    finally:
+        store.close()
+
+    assert before is not None
+    assert row is not None
+    assert after is not None
+    assert reading.due_date == nov(4)
+    assert before.origins["due_date"] == SourceChannel.PARENT_ENTRY
+    assert kept == Kept(added=0, updated=1, unchanged=0)
+    assert (again.state, again.identity_asked) == (KNOWN, False)
+    assert second == Kept(added=0, updated=0, unchanged=1)
+    for each in (row, after):
+        assert each.due_date == nov(6)
+        assert each.origins["due_date"] == SourceChannel.PARENT_ENTRY
+    assert [(each.channel, each.asserted_value, each.seen_in) for each in claims] == [
+        (SourceChannel.PARENT_ENTRY, "2026-11-06", None),
+        (SourceChannel.LMS, "2026-11-04", TEACHER_NOTE),
+    ]
+
+
+def test_a_dated_note_a_week_from_the_familys_date_keeps_or_changes_it_as_answered(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note that settles a date a week or more from the one row of its name asks whether
+    it is the same assignment. Answered with the due date kept, the row keeps the date the
+    family entered and the family as where it came from, with the note's date a claim
+    beside it; answered with the due date changed, the row takes the note's date."""
+    reading = map_project()
+    rows_after = {}
+    for answer in ("keep", UPDATE):
+        store = ProjectStateStore.open(tmp_path / f"{answer}.sqlite3", fixture_clock())
+        try:
+            name = parents_row(store, "Humanities", "Map project", nov(20), None)
+            (asked,) = changes_for((reading,), store)
+            kept = keep((reading,), store, occurrences={0: answer}, now=NOW, today=TODAY)
+            rows_after[answer] = (asked, kept, store.one_assignment(name))
+            claims = store.deadline_records(name)
+        finally:
+            store.close()
+        assert ("2026-11-04", TEACHER_NOTE) in {
+            (each.asserted_value, each.seen_in) for each in claims
+        }
+
+    for asked, kept, row in rows_after.values():
+        assert (asked.state, asked.ambiguous, asked.beside) == (REVIEW, True, nov(20))
+        assert kept == Kept(added=0, updated=1, unchanged=0)
+        assert row is not None
+    kept_row, changed_row = rows_after["keep"][2], rows_after[UPDATE][2]
+    assert kept_row is not None
+    assert changed_row is not None
+    assert kept_row.due_date == nov(20)
+    assert kept_row.origins["due_date"] == SourceChannel.PARENT_ENTRY
+    assert changed_row.due_date == nov(4)
+
+
+def test_a_later_listing_of_an_undated_note_asks_again_after_an_earlier_answer(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An undated note said to be a row on record is kept there under its words and school
+    day: the same answer sent again writes nothing, and the same text read again is known
+    with no question. The same words first listed a week later are another occurrence,
+    which the earlier answer does not place: the note asks which homework it is, and
+    nothing is written until that is answered. Its answer sent twice writes nothing more,
+    and the first listing read again is known as before."""
+    first = online_practice()
+    later = note_reading(one_task("Science", nov(17), "Online practice due Tuesday"), now=NOW)
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        name = parents_row(store, "Science", "Online practice", nov(12), None)
+        (asked,) = changes_for((first,), store)
+        answer = IdentityAnswer(name, asked.identity_shown, asked.identity_basis)
+        kept = keep((first,), store, identities={0: answer}, now=NOW, today=TODAY)
+        retried = keep((first,), store, identities={0: answer}, now=NOW, today=TODAY)
+        (again,) = changes_for((first,), store)
+        (next_week,) = changes_for((later,), store)
+        held = keep((later,), store, now=NOW, today=TODAY)
+        rows_held = store.all_assignments()
+        reply = IdentityAnswer(name, next_week.identity_shown, next_week.identity_basis)
+        answered = keep((later,), store, identities={0: reply}, now=NOW, today=TODAY)
+        twice = keep((later,), store, identities={0: reply}, now=NOW, today=TODAY)
+        (first_again,) = changes_for((first,), store)
+        row = store.one_assignment(name)
+    finally:
+        store.close()
+
+    assert (first.due_date, later.due_date) == (None, None)
+    assert kept == Kept(added=0, updated=1, unchanged=0)
+    assert retried == Kept(added=0, updated=0, unchanged=1)
+    assert (again.state, again.identity_asked, again.assignment_id) == (KNOWN, False, name)
+    assert (next_week.state, next_week.identity_asked) == (REVIEW, True)
+    assert next_week.identity_question == "which"
+    assert next_week.identity_shown == (name,)
+    assert isinstance(held, list)
+    assert [each.assignment_id for each in rows_held] == [name]
+    assert isinstance(answered, Kept)
+    assert twice == Kept(added=0, updated=0, unchanged=1)
+    assert (first_again.state, first_again.identity_asked) == (KNOWN, False)
+    assert row is not None
+    assert row.due_date == nov(12)

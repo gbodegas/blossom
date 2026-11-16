@@ -88,7 +88,7 @@
         another question still open loses nothing.
       #}
       {% for change in folded %}
-        <input type="hidden" name="occurrence-{{ change.key }}" value="update">
+        <input type="hidden" name="occurrence-{{ change.key }}" value="{{ change.occurrence }}">
         <input type="hidden" name="kind-{{ change.key }}" value="{{ change.kind.value }}">
         <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
         <input type="hidden" name="folded-{{ change.key }}" value="{{ change.folded_into }}">
@@ -113,7 +113,7 @@
           </p>
           {% for change in week.changes %}
             {% set reading = change.reading %}
-            <article class="assignment reading-{{ change.state }}">
+            <article class="assignment reading-{{ change.state }}"{% if check_card == change.key %} id="card-{{ change.key }}" tabindex="-1"{% endif %}>
               <p class="course-name">{{ reading.course }}</p>
               <h2>{{ reading.title }}</h2>
               <p class="status">
@@ -178,7 +178,8 @@
                 <input type="hidden" name="which-{{ change.key }}" value="1">
                 <fieldset class="choice" id="occurrence-question-{{ change.key }}" tabindex="-1"{% if problem_target == change.key %} aria-describedby="problem-summary"{% endif %}>
                   <legend>Which is it?</legend>
-                  <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> {% if reading.teacher_note %}The same assignment{% if reading.due_date %}; its due date becomes {{ spoken_day(reading.due_date) }}{% endif %}{% else %}The same assignment, its due date changed{% endif %}</label>
+                  {% if reading.teacher_note and change.beside %}{# A note's choices say what each does to the due date; the date is changed only by the choice that says so. #}<label><input type="radio" name="occurrence-{{ change.key }}" value="keep"> The same assignment; keep its due date of {{ spoken_day(change.beside) }}</label>{% if reading.due_date and reading.due_date != change.beside %}
+                  <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> The same assignment; change its due date from {{ spoken_day(change.beside) }} to {{ spoken_day(reading.due_date) }}</label>{% endif %}{% else %}<label><input type="radio" name="occurrence-{{ change.key }}" value="update"> {% if reading.teacher_note %}The same assignment{% else %}The same assignment, its due date changed{% endif %}</label>{% endif %}
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="new"> New work under the same name</label>
                 </fieldset>
               {% elif change.occurrence %}
@@ -372,9 +373,12 @@
           {% if total %}
             {# A typed note kept off her homework is still something to finish, so the family page can say so. #}
             {% set done = to_save == 0 and counts.review == 0 and not kept_note and not waiting %}
-            {% if done %}
+            {% if done and not note_tasks %}
               {# Every card's Type can still change, so the press is offered without scripts; the script shows it as done until a type changes. #}
               <button type="submit" class="primary" data-unchanged-label="Save 0 assignments" data-changed-label="Save changes">Save changes</button>
+            {% elif note_tasks %}
+              {# A tick can change how many assignments a save writes, so this save names no count and the page script has nothing of it to rewrite. #}
+              <button type="submit" class="primary">Save selected assignments</button>
             {% else %}
               <button type="submit" class="primary" data-changed-label="Save changes">{% if to_save == 0 and kept_note %}Keep her note{% elif to_save == 0 and waiting %}Save the ticked links{% else %}Save {{ to_save }} assignment{% if to_save != 1 %}s{% endif %}{% endif %}</button>
             {% endif %}

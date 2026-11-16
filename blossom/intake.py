@@ -138,6 +138,9 @@ ANOTHER_OCCURRENCE: Final = timedelta(days=7)
 """How far past the recorded due date a pasted one must be to ask whether it is new work."""
 UPDATE: Final = "update"
 NEW_WORK: Final = "new"
+KEEP_DATE: Final = "keep"
+"""The answer that a reading made from a teacher's note is the same assignment and that
+the assignment keeps its due date: the note's own date is kept as a claim beside it."""
 DIFFERENT: Final = "different"
 WOULD_BE_NEW: Final = "new"
 """How a card that would save a new assignment stands when it offers to find homework
@@ -1263,7 +1266,7 @@ class Change:
     ambiguous: bool
     """Whether the pasted work may be another round under a name, unanswered."""
     occurrence: str | None
-    """The parent's answer, ``update`` or ``new``, when one was given."""
+    """The parent's answer, ``update``, ``keep`` or ``new``, when one was given."""
     beside: date | None = None
     """The other date the question is about: the saved row's, or another card's in the
     same text."""
@@ -1607,6 +1610,12 @@ class Change:
                 else "This text also has it due"
             )
             when = "" if self.beside is None else f" {spoken_day(self.beside)}"
+            if self.reading.teacher_note is not None:
+                # The choices under a note's question say what each does to the due date.
+                return (
+                    f"{where}{when}. Say whether this is the same assignment or new work "
+                    "under the same name."
+                )
             return (
                 f"{where}{when}. Say whether this is the same assignment with its due date "
                 "changed, or new work under the same name."
@@ -1766,7 +1775,7 @@ def _where(
     if len(saved_before) == 1:
         return _Where(lands=saved_before[0])
     if reading.teacher_note is not None:
-        return _where_noted(reading, candidates, pool, decided, bool(open_hers), unchanged)
+        return _where_noted(reading, candidates, pool, decided, bool(open_hers))
     if elsewhere:
         if not candidates and len(elsewhere) == 1:
             return _Where(lands=elsewhere[0], today=True)
@@ -1841,7 +1850,6 @@ def _where_noted(
     pool: list[Assignment],
     decided: tuple[IntakeDecision, ...],
     hers_open: bool,
-    unchanged: Callable[[Assignment, Reading], bool],
 ) -> _Where:
     """Which homework a reading made from a teacher's note is about, when no row holds the
     note from a save before. Its class and title alone never put it on a row. ``pool`` is
@@ -1851,22 +1859,16 @@ def _where_noted(
     that answer showed every row of the name due that day; her homework asks; the one row
     of the name due that day; a row of the name with a due date a week or more away, when
     it is the only row, by today's rules, which ask whether it is the same assignment; any
-    other row or rows ask which homework it is. With no date: where the latest answer to
-    its own question put it, while that answer showed every row and the note would change
-    nothing there (``unchanged``); her homework asks; any other row or rows ask which.
-    With no row at all it follows today's rules for a reading that lands nowhere."""
+    other row or rows ask which homework it is. With no date: her homework asks; any other
+    row or rows ask which. An answer kept for the name places no undated note: the note
+    the answer was given for is held by its row under its words and first school day and
+    never comes here, and the same words first listed on another school day are another
+    occurrence, which is asked about. With no row at all it follows today's rules for a
+    reading that lands nowhere."""
     if not pool:
         return _Where(today=True)
     by_id = {item.assignment_id: item for item in pool}
     if reading.due_date is None:
-        latest = next((item for item in reversed(decided) if _answers(item, reading)), None)
-        if (
-            latest is not None
-            and latest.lands_on in by_id
-            and by_id.keys() <= {*latest.shown, latest.lands_on}
-            and unchanged(by_id[latest.lands_on], reading)
-        ):
-            return _Where(lands=by_id[latest.lands_on])
         return _Where(asks="hers" if hers_open else "which", candidates=tuple(pool))
     due_that_day = {item.assignment_id for item in candidates if item.due_date == reading.due_date}
     latest = next(
@@ -2458,11 +2460,14 @@ def changes_for(
             # about, however near its date or with none: the name alone never makes it the
             # same work.
             asked = True
-        if not asked:
+        if not asked or (answer == KEEP_DATE and reading.teacher_note is None):
+            # A card offers no choice to keep the due date, so that is no answer on one.
             answer = None
-        if twin is not None and asked and answer == UPDATE:
-            changes[twin] = _folded(changes[twin], key, reading, kinds, seen)
-            changes.append(_folded_marker(key, reading, changes[twin].key, kinds))
+        if twin is not None and asked and answer in (UPDATE, KEEP_DATE):
+            changes[twin] = _folded(
+                changes[twin], key, reading, kinds, seen, keep_date=answer == KEEP_DATE
+            )
+            changes.append(_folded_marker(key, reading, changes[twin].key, kinds, answer))
             continue
         if existing is None or answer == NEW_WORK:
             change = _new_change(key, reading, existing, answer, asked, kinds, seen, other)
@@ -2853,12 +2858,15 @@ def _folded(
     reading: Reading,
     kinds: Mapping[int, AssignmentKind],
     seen: _Seen,
+    keep_date: bool = False,
 ) -> Change:
     """The first reading of a name in this text with a later card folded in, as the parent
     said: the due date is the later card's, and its claims, note, and reports come along,
-    as does a type chosen on it. The card the parent sees for the assignment is the one
-    that decides its type: a choice made on it stands over any carried by a folded card,
-    and two folded cards choosing differently, with none on the card shown, is a conflict."""
+    as does a type chosen on it. With ``keep_date`` the first reading keeps its due date and
+    where that date came from, and the later card's date comes along as a claim only. The
+    card the parent sees for the assignment is the one that decides its type: a choice made
+    on it stands over any carried by a folded card, and two folded cards choosing
+    differently, with none on the card shown, is a conflict."""
     kind, chosen, _ = _kind_for(key, reading, None, kinds)
     if anchor.key in kinds:
         chosen = False
@@ -2872,8 +2880,9 @@ def _folded(
         if all(item.text != other.text for other in first.instructions)
     )
     origins = {**reading.field_origins, **first.field_origins}
-    # A teacher's note that settles no date leaves the first reading's due date as it is.
-    undated_note = reading.teacher_note is not None and reading.due_date is None
+    # A teacher's note that settles no date leaves the first reading's due date as it is,
+    # and so does the answer that the due date is kept.
+    undated_note = keep_date or (reading.teacher_note is not None and reading.due_date is None)
     if not undated_note:
         origins["due_date"] = reading.origin_of("due_date")
     if first.assigned_on is None and reading.assigned_on is not None:
@@ -2901,11 +2910,16 @@ def _folded(
 
 
 def _folded_marker(
-    key: int, reading: Reading, into: int, kinds: Mapping[int, AssignmentKind]
+    key: int,
+    reading: Reading,
+    into: int,
+    kinds: Mapping[int, AssignmentKind],
+    answer: str = UPDATE,
 ) -> Change:
     """The card that was folded, kept in the list so the page can carry its answers, the
-    parent's word that it is the same assignment and any type chosen on it, through a
-    page that comes back with another question still open."""
+    parent's word that it is the same assignment (``answer``, which also says whether the
+    due date is kept) and any type chosen on it, through a page that comes back with
+    another question still open."""
     kind, chosen, suggested = _kind_for(key, reading, None, kinds)
     return Change(
         key,
@@ -2920,7 +2934,7 @@ def _folded_marker(
         kind,
         chosen,
         False,
-        UPDATE,
+        answer,
         suggested_kind=suggested,
         folded_into=into,
     )
@@ -3001,25 +3015,73 @@ def _note_moved(change: Change, shown: str | None) -> bool:
     return (change.note_change == "kept") != (said == "kept")
 
 
+def task_said(change: Change) -> str:
+    """What a review page signs for a reading made from a teacher's note when it is
+    selected: its state, a mark of what the save does for it, and the row it lands in. The
+    mark covers whether the save makes the row, the due date it writes there, what it adds
+    apart from the type, the school's instructions among them, and which questions the card
+    asks: which homework it is, whether it is the same assignment, and which instructions
+    apply."""
+    writes_date = change.state == NEW or change.fills_due_date or change.moves_due_date
+    due = change.reading.due_date if writes_date else None
+    said = "|".join(
+        (
+            "makes" if change.state == NEW else "",
+            "" if due is None else due.isoformat(),
+            ",".join(part for part in change.additions if part != "the type"),
+            "".join(
+                "1" if flag else "0"
+                for flag in (
+                    change.identity_asked,
+                    change.ambiguous,
+                    change.instructions_asked,
+                    change.lands_nowhere,
+                )
+            ),
+        )
+    )
+    mark = hashlib.sha256(said.encode("utf-8")).hexdigest()[:12]
+    return f"{change.state}:{mark}:{change.assignment_id}"
+
+
 def _task_moved(change: Change, shown: str | None, answered: bool) -> bool:
     """Whether a selected reading made from a teacher's note would do something the review
     page didn't say for it. ``shown`` is what the page signed for it: whether it was shown
-    ticked, the state it has when selected, and the row it lands in. A note the page signed
+    ticked, then what ``task_said`` gives for it when selected. A note the page signed
     nothing for has moved. A card that asked a question has not moved while the question is
-    open or when the form answers it (``answered``). A note that lands in the row the page
-    named has not moved, whether that row is new, saved already or added to, so a retry
-    passes."""
+    open or when the form answers it (``answered``), since each answer is held to its own
+    check. A note of which nothing is written, in the row the page named, has not moved,
+    so a retry passes. Any other note has moved unless it lands in the row the page named
+    and the save does there what the page said: the same date written, the same things
+    added apart from the type, and the same questions asked."""
     if change.reading.teacher_note is None or change.left_out:
         return False
     if shown is None:
         return True
-    state, _, row = shown.partition(":")[2].partition(":")
+    _, state, mark, row = (*shown.split(":", 3), "", "", "")[:4]
     if state == REVIEW:
         return change.state != REVIEW and not answered
+    if change.state == KNOWN and state != FOLDED and row == change.assignment_id:
+        return False
+    stands, mark_as_it_stands, lands = task_said(change).split(":", 2)
     apart = (REVIEW, FOLDED)
-    return (state if state in apart else "", row) != (
-        change.state if change.state in apart else "",
-        change.assignment_id,
+    return (state if state in apart else "", mark, row) != (
+        stands if stands in apart else "",
+        mark_as_it_stands,
+        lands,
+    )
+
+
+def tasks_moved(
+    changes: Sequence[Change], shown: Mapping[int, str], answered: Collection[int]
+) -> frozenset[int]:
+    """The keys of the selected readings made from teachers' notes that would do something
+    other than a review page said for them (``shown``, as the page signed it); ``answered``
+    holds the cards the form answers a question on."""
+    return frozenset(
+        change.key
+        for change in changes
+        if _task_moved(change, shown.get(change.key), change.key in answered)
     )
 
 
@@ -3168,13 +3230,9 @@ def keep(
                 *picks,
                 *(instruction_answers or {}),
             }
-            tasks_moved = frozenset(
-                change.key
-                for change in changes
-                if _task_moved(change, shown_tasks.get(change.key), change.key in answered)
-            )
-            if tasks_moved:
-                return ChangedSinceShown(changes, tasks_moved)
+            not_as_said = tasks_moved(changes, shown_tasks, answered)
+            if not_as_said:
+                return ChangedSinceShown(changes, not_as_said)
         if any(change.state == REVIEW for change in changes) or conflicting_choices(changes):
             return changes
         # Each note ticked to link goes to the homework its card landed on when the page was
