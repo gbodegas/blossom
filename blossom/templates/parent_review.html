@@ -641,34 +641,34 @@ Cover both books with paper.</pre>
       <h2 class="entry-heading">Enter one assignment</h2>
       <p class="note">Course and title are required; the rest can wait. You will review it before saving.</p>
       <form method="post" action="/parent/inbox/enter" class="entry">
-        <label for="entry-course">Course</label>
         <div class="field">
+          <label for="entry-course">Course</label>
           <input id="entry-course" type="text" name="course" maxlength="60" placeholder="As the portal names it" value="{{ entry.course or '' }}"{% if problem_field == "course" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
         </div>
-        <label for="entry-title" class="span-all">Assignment title</label>
         <div class="field span-all">
+          <label for="entry-title">Assignment title</label>
           <input id="entry-title" type="text" name="title" maxlength="200" placeholder="As the teacher names it" value="{{ entry.title or '' }}"{% if problem_field == "title" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
         </div>
-        <label for="entry-assigned_on">Assigned date (optional)</label>
         <div class="field">
+          <label for="entry-assigned_on">Assigned date (optional)</label>
           <input id="entry-assigned_on" type="date" name="assigned_on" value="{{ entry.assigned_on or '' }}"{% if problem_field == "assigned_on" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
         </div>
-        <label for="entry-due_date">Due date (optional)</label>
         <div class="field">
-          <input id="entry-due_date" type="date" name="due_date" value="{{ entry.due_date or '' }}"{% if problem_field == "due_date" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
-          <p class="helper">A date more than a year from today is refused, since that is almost always a mistyped year.</p>
+          <label for="entry-due_date">Due date (optional)</label>
+          <input id="entry-due_date" type="date" name="due_date" value="{{ entry.due_date or '' }}"{% if problem_field == "due_date" %} aria-invalid="true" aria-describedby="problem entry-due_date-help" autofocus{% else %} aria-describedby="entry-due_date-help"{% endif %}>
+          <p class="helper" id="entry-due_date-help">A date more than a year from today is refused, since that is almost always a mistyped year.</p>
         </div>
-        <label for="entry-kind">Type (optional)</label>
         <div class="field">
-          <select id="entry-kind" name="kind"{% if problem_field == "kind" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>
+          <label for="entry-kind">Type (optional)</label>
+          <select id="entry-kind" name="kind"{% if problem_field == "kind" %} aria-invalid="true" aria-describedby="problem entry-kind-help" autofocus{% else %} aria-describedby="entry-kind-help"{% endif %}>
             <option value=""{% if not entry.kind %} selected{% endif %}>Leave as it is</option>
             <option value="HOMEWORK"{% if entry.kind == "HOMEWORK" %} selected{% endif %}>Homework</option>
             <option value="TASK"{% if entry.kind == "TASK" %} selected{% endif %}>Task</option>
           </select>
-          <p class="helper">Task: a form to sign, supplies to bring, or similar. Left as it is, a saved assignment keeps its type and a new one is suggested from the title.</p>
+          <p class="helper" id="entry-kind-help">Task: a form to sign, supplies to bring, or similar. Left as it is, a saved assignment keeps its type and a new one is suggested from the title.</p>
         </div>
-        <label for="entry-note" class="span-all">Note (optional)</label>
         <div class="field span-all">
+          <label for="entry-note">Note (optional)</label>
           <textarea id="entry-note" name="note" rows="3" maxlength="{{ entry_note_max_length }}" placeholder="Anything she should know about it"{% if problem_field == "note" %} aria-invalid="true" aria-describedby="problem" autofocus{% endif %}>{{ entry.note or '' }}</textarea>
         </div>
         <div class="actions span-all">

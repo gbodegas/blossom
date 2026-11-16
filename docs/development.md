@@ -1160,6 +1160,29 @@ than `uv run`, which would try the download that failed.
 A new source file in `blossom/` or `tests/` starts with the two-line SPDX
 license header the others carry, in its own comment syntax; a test checks it.
 
+## Checking the entry form in a browser
+
+One layout check needs a real browser, so `uv run pytest` skips it and it
+does not run in CI. It holds that the assigned date and the due date of Add
+assignments start level where they sit side by side, as the page arrives and
+after a refused due date. To run it, name a Chromium-based browser's
+executable in `BLOSSOM_BROWSER`. The browser runs headless, with a new
+profile, on a page the test writes to its own temporary folder beside copies
+of the stylesheet and fonts. Nothing is installed, and the page asks nothing
+of a network. A browser makes requests of its own when it starts with a new
+profile, so the check leaves every host name unresolved for it and gives it
+no proxy: a request it makes by name connects to nothing. The profile is
+removed afterward.
+
+macOS, with Microsoft Edge:
+
+```bash
+BLOSSOM_BROWSER="/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" uv run pytest tests/test_entry_form_in_a_browser.py
+```
+
+It has been run with Microsoft Edge on macOS. A case reported as skipped
+opened no browser.
+
 ## Troubleshooting
 
 **The app refuses to start and names `BLOSSOM_TIMEZONE`.** The household's
