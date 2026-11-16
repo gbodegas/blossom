@@ -523,9 +523,11 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     else, across blank lines, until a line that reads as a day, a Missing
     line, or a card with its course on its line, which is read as what it
     is, or until the line the text opened with as the summary's heading,
-    where a day line follows it. A line in a note that is itself a heading,
-    or only shaped like a day, a Missing line or a card, stays with the
-    note, and a day there whose digits name no date ends the day in force.
+    where a day whose digits name a date follows it. A line in a note that
+    is itself a heading, or only shaped like a day, a Missing line or a
+    card, stays with the note. A day there whose digits name no date ends
+    the day in force and, written the summary's way, the homework page's
+    shape; written the page's way it starts none.
     Outside a homework-page day, a line shaped as a heading is not read by
     the rules for plain text outside a card. Where a heading has been read,
     a card's line left for review for want of a course keeps the rest of its
@@ -568,9 +570,10 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             continue
         ends_note = False
         if in_note:
-            if line.casefold() == opening_heading and _is_a_day(following[index]):
+            if line == opening_heading and _names_a_day(following[index]):
                 # The summary's own heading over its next week, the very line this text
-                # opened with: it ends the note and is read as nothing.
+                # opened with, as read, before a day whose digits name a date: it ends
+                # the note and is read as nothing.
                 in_note = to_blank = False
                 continue
             heading = not page_day and _is_subject_heading(line)
@@ -578,10 +581,14 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 # In a note a line is the teacher's, whatever it looks like, unless it
                 # reads as a day, a Missing line or a card. A day that is no date still
                 # ends the day and the course in force, as it does outside a note, so no
-                # card after it takes an earlier one. A heading, which a line is only
-                # outside a homework-page day, makes the note a subject's.
+                # card after it takes an earlier one. Written the summary's way it ends
+                # the homework page's shape too; written the page's way it starts none,
+                # since here it is a teacher's line and under that shape no heading is
+                # read. A heading, which a line is only outside a homework-page day,
+                # makes the note a subject's.
                 if _is_a_day(line):
                     day = course = None
+                    page_day = page_day and bool(DAY_LINE.match(line))
                 if heading:
                     to_blank = False
                 unread.append(Unread(number, line))
@@ -600,7 +607,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             # The summary's heading, outside a card; under a card the same
             # words are a teacher's instruction and are kept as one.
             if index == opening:
-                opening_heading = line.casefold()
+                opening_heading = line
             continue
         if plain and last is None and (sent := mail_date(line)) is not None:
             # The email's date line, outside a card, dates the reports read
@@ -833,6 +840,16 @@ def _is_subject_heading(line: str) -> bool:
 def _is_a_day(line: str | None) -> bool:
     """Whether a line is written as a day, in either shape, whatever its digits."""
     return line is not None and bool(DAY_LINE.match(line) or SUMMARY_DAY_LINE.match(line))
+
+
+def _names_a_day(line: str | None) -> bool:
+    """Whether a line is written as a day, in either shape, and its digits name a date."""
+    if line is None:
+        return False
+    found = DAY_LINE.match(line) or SUMMARY_DAY_LINE.match(line)
+    if found is None:
+        return False
+    return a_date(found.group("year"), found.group("month"), found.group("day")) is not None
 
 
 def _ends_a_note(line: str, day: date | None) -> bool:
