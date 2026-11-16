@@ -2022,21 +2022,16 @@ def kept_readings(outcome: ReadOutcome | None) -> list[str]:
 
 def read_said(snapshot: DraftSnapshot, now: datetime) -> list[str]:
     """What a Read press says the review's screenshots read as: how many are read as homework
-    lists, the assignments they hold and the teacher's notes to check, and how many are read
-    as something else. A note read as homework counts as an assignment; a note read as unclear
-    or as no homework is a note to check."""
+    lists, the assignments found on their cards and the teacher's notes to check, and how many
+    are read as something else. Every note is a note to check, whether it reads as homework, as
+    unclear, or as no homework."""
     kinds = {reading.sha256: reading.kind for reading in snapshot.readings}
     read = [image for image in snapshot.images if image.read]
     lists = sum(1 for image in read if kinds.get(image.sha256) == "homework_list")
     out = []
     if lists:
         rows = homework_assembly(snapshot.readings, now=now).rows
-        notes = sum(
-            1
-            for row in rows
-            if row.reading.teacher_note is not None
-            and row.reading.teacher_note.standing != "homework"
-        )
+        notes = sum(1 for row in rows if row.reading.teacher_note is not None)
         out.append(read_said_line(lists, len(rows) - notes, notes))
     if len(read) > lists:
         out.append(not_a_list_line(len(read) - lists))

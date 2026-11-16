@@ -41240,6 +41240,25 @@ def test_the_read_press_counts_homework_rows_and_notes_to_check(
     assert imports.read_said_line(1, 2) == "1 screenshot read: 2 assignments found."
 
 
+def test_the_read_press_counts_every_note_as_a_note_to_check_apart_from_the_cards(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every teacher's note on a screenshot is a note to check, whether it reads as homework,
+    may be homework, or says none is assigned, counted apart from the assignments found on
+    the cards."""
+    answer = with_notes(
+        note_card("Math 8", "Study the vocabulary on page 12.", 450),
+        note_card("Science 8", "Practice set", 520),
+        note_card("Art 8", "No additional homework assigned.", 590),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, answer))
+
+    assert lines_in(TOLD.search(page)) == [
+        "1 screenshot read: 2 assignments found, 3 notes to check."
+    ]
+
+
 def test_notes_that_may_be_homework_or_say_none_start_unticked_under_their_own_headings(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -41278,7 +41297,7 @@ def test_a_note_read_as_homework_is_ticked_under_what_saving_adds(
     assert 'id="may-be-heading"' not in page
     assert 'id="no-homework-heading"' not in page
     assert "Study the vocabulary on page 12" in section_of(page, "saving-heading")
-    assert lines_in(TOLD.search(page)) == [imports.read_said_line(1, 3)]
+    assert lines_in(TOLD.search(page)) == [imports.read_said_line(1, 2, 1)]
 
 
 def test_a_note_with_no_day_heading_is_listed_under_words_true_for_a_note(

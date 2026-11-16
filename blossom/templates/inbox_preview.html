@@ -125,7 +125,7 @@
             {{ week.count("new") }} new, {{ week.count("claimed") }} update{% if week.count("claimed") != 1 %}s{% endif %}, {{ week.count("known") }} already saved{% if week.count("review") %}, {{ week.count("review") }} need{% if week.count("review") == 1 %}s{% endif %} your answer{% endif %}.{% endif %}
           </p>
           {% for change in week.changes %}
-            {% set reading = change.reading %}
+            {% set reading = change.reading %}{# A note not selected that asks once selected shows that question before it is selected. #}{% set asking = unselected_asks.get(change.key, change) %}{% set given = occurrence_given.get(change.key) %}
             <article class="assignment reading-{{ change.state }}"{% if check_card == change.key %} id="card-{{ change.key }}" tabindex="-1"{% endif %}>
               <p class="course-name">{{ reading.course }}</p>
               <h2>{{ reading.title }}</h2>
@@ -133,10 +133,10 @@
                 <span class="pill">{{ change.label }}</span>
                 {% if reading.reported_status %}<span class="pill">School reported: {{ reading.reported_status }}</span>{% endif %}
               </p>
-              {% if (change.dates_differ or change.state == "review") and change.beside and reading.due_date %}
+              {% if (change.dates_differ or asking.state == "review") and asking.beside and reading.due_date %}
                 <dl class="compare">
-                  <dt>{% if change.on_record %}Saved due date{% else %}Also due in this text{% endif %}</dt>
-                  <dd>{{ spoken_day(change.beside) }}</dd>
+                  <dt>{% if asking.on_record %}Saved due date{% else %}Also due in this text{% endif %}</dt>
+                  <dd>{{ spoken_day(asking.beside) }}</dd>
                   <dt>{% if reading.origin == "PARENT_ENTRY" %}Entered due date{% else %}Pasted due date{% endif %}</dt>
                   <dd>{{ spoken_day(reading.due_date) }}{% if reading.claims %} ({{ reading.claims[-1].spoken() }}){% endif %}</dd>
                 </dl>
@@ -194,14 +194,14 @@
                   <p class="note" id="kept-separate-{{ change.key }}">These assignments were kept separate earlier. Choosing one here adds this school update to it. Their existing records stay separate; combining them isn't available here.</p>
                 {% endif %}
                 <p class="helper">Blossom compares class and title only. If this is homework saved here under another name, find it below.</p>
-              {% elif change.ambiguous %}
+              {% elif asking.ambiguous %}{% if not change.left_out %}
                 {# The page notes the cards it asks which homework they are. #}
-                <input type="hidden" name="which-{{ change.key }}" value="1">
+                <input type="hidden" name="which-{{ change.key }}" value="1">{% endif %}
                 <fieldset class="choice" id="occurrence-question-{{ change.key }}" tabindex="-1"{% if problem_target == change.key %} aria-describedby="problem-summary"{% endif %}>
                   <legend>Which is it?</legend>
-                  {% if reading.teacher_note and change.beside %}{# A note's choices say what each does to the due date; the date is changed only by the choice that says so. #}<label><input type="radio" name="occurrence-{{ change.key }}" value="keep"> The same assignment; keep its due date of {{ spoken_day(change.beside) }}</label>{% if reading.due_date and reading.due_date != change.beside %}
-                  <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> The same assignment; change its due date from {{ spoken_day(change.beside) }} to {{ spoken_day(reading.due_date) }}</label>{% endif %}{% else %}<label><input type="radio" name="occurrence-{{ change.key }}" value="update"> {% if reading.teacher_note %}The same assignment{% else %}The same assignment, its due date changed{% endif %}</label>{% endif %}
-                  <label><input type="radio" name="occurrence-{{ change.key }}" value="new"> New work under the same name</label>
+                  {% if reading.teacher_note and asking.beside %}{# A note's choices say what each does to the due date; the date is changed only by the choice that says so. An answer given on a note not selected stays chosen. #}<label><input type="radio" name="occurrence-{{ change.key }}" value="keep"{% if given == "keep" %} checked{% endif %}> The same assignment; keep its due date of {{ spoken_day(asking.beside) }}</label>{% if reading.due_date and reading.due_date != asking.beside %}
+                  <label><input type="radio" name="occurrence-{{ change.key }}" value="update"{% if given == "update" %} checked{% endif %}> The same assignment; change its due date from {{ spoken_day(asking.beside) }} to {{ spoken_day(reading.due_date) }}</label>{% endif %}{% else %}<label><input type="radio" name="occurrence-{{ change.key }}" value="update"{% if given == "update" %} checked{% endif %}> {% if reading.teacher_note %}The same assignment{% else %}The same assignment, its due date changed{% endif %}</label>{% endif %}
+                  <label><input type="radio" name="occurrence-{{ change.key }}" value="new"{% if given == "new" %} checked{% endif %}> New work under the same name</label>
                 </fieldset>
               {% elif change.occurrence %}
                 {# An answer given already rides along, so a page returned for another question keeps it. #}

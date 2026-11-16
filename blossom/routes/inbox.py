@@ -1456,7 +1456,9 @@ def preview_page(
     A reading made from a teacher's note carries a tick, set unless ``read.left_out`` holds
     its key. The notes that may be homework and the notes that say none is assigned are
     shown after the weeks, each kind under its own heading, and every count is of the
-    selected readings only.
+    selected readings only. A note not selected that would ask, once selected, whether it is
+    the same assignment as a card of its name in the text asks it on its card, with both
+    dates, and an answer given there stays chosen.
 
     ``refused`` says the page comes back for an answer about the school's
     instructions that was not saved: ``contradict``, ``malformed``, ``stale``,
@@ -1505,12 +1507,18 @@ def preview_page(
         )
         # What each note not selected does once it is selected is read from a second
         # comparison with every note selected, so its card can say it and the page sign it.
+        # An answer given on a note not selected is left out of it, so the card that asks
+        # the question keeps asking it until the note is selected.
         if_selected = changes
         if read.left_out:
             if_selected = changes_for(
                 read.items,
                 state.project_state,
-                occurrences=occurrences,
+                occurrences={
+                    key: value
+                    for key, value in (occurrences or {}).items()
+                    if key not in read.left_out
+                },
                 kinds=kinds,
                 instruction_answers=instruction_answers,
                 identities=identities,
@@ -1580,6 +1588,22 @@ def preview_page(
             INSTRUCTION_UNREADABLE,
         )
     when_selected = {change.key: change for change in if_selected}
+    # A note not selected that, once selected, asks whether it is the same assignment as a
+    # card of its name in this text puts that question on its card before it is selected,
+    # with both dates.
+    cards_here = {
+        change.reading.pair
+        for change in changes
+        if change.reading.teacher_note is None and not change.left_out
+    }
+    unselected_asks = {
+        change.key: when_selected[change.key]
+        for change in changes
+        if change.left_out
+        and change.reading.pair in cards_here
+        and when_selected[change.key].ambiguous
+        and when_selected[change.key].on_record is None
+    }
     tasks = {
         change.key: f"{0 if change.left_out else 1}:{task_said(would)}"
         for change in changes
@@ -1809,6 +1833,10 @@ def preview_page(
             "check_card": check_card,
             "if_selected": {
                 change.key: when_selected[change.key].label for change in shown if change.left_out
+            },
+            "unselected_asks": unselected_asks,
+            "occurrence_given": {
+                key: value for key, value in (occurrences or {}).items() if key in unselected_asks
             },
             "creations": {card: question.creation for card, question in signed.items()},
             "answered": {
@@ -2227,7 +2255,8 @@ async def keep_readings(request: Request, state: State) -> Response:
     """Read the draft again, save what is new against the record as it is, and say what
     was added, updated, and unchanged; or show the review again if a question is open,
     saying whether the question is one the page put and the parent left, or one the record
-    raised since. Whatever was chosen on the cards comes back chosen.
+    raised since. A save with no reading selected writes nothing and shows the review again,
+    which says no assignment is selected. Whatever was chosen on the cards comes back chosen.
 
     The saving runs under the decision lock, as a signal does: a plan's
     approval checks the week the plan was made from against the week as it
@@ -2366,6 +2395,29 @@ async def keep_readings(request: Request, state: State) -> Response:
                 refused="malformed",
                 notice=PICK_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        if read.items and len(read.left_out) == len(read.items):
+            # Nothing is selected to save: nothing is written, and the review comes back
+            # saying no assignment is selected, with the ticks and the typing as sent, so it
+            # never reads as a reading that failed or found nothing.
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=read_answers.unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
             )
         # An answer where the page puts no such question is no form the page wrote. The
         # questions the page signed say where it asked, at which revision, and about which
