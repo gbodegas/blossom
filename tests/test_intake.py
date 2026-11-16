@@ -1392,6 +1392,73 @@ def test_after_a_note_a_card_line_with_no_course_keeps_its_paragraph_for_review(
     assert (report.reported_on, report.dated_by) == (TODAY, PASTE_DAY)
 
 
+def test_an_email_date_line_kept_in_a_note_ends_the_earlier_emails_date() -> None:
+    """Where a note keeps a later email's date line for review, the reports after it are dated
+    by the day of the paste and say so, as with no email before it, never by an earlier email's
+    date line."""
+    text = """Date: Tue, Sep 1, 2026
+Assignments:
+08/28 Math - A: Homework: Practice Grade: Missing
+
+Homework for Wren
+09/09/2026 - Wednesday
+Science -
+Lab notes
+
+Date: Thu, Sep 10, 2026
+Assignments:
+09/09 Art - A: Homework: Collage Grade: Missing
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+    items = by_pair(read.items)
+    first = items["Math", "Practice"].reports[0]
+    second = items["Art", "Collage"].reports[0]
+
+    assert (first.reported_on, first.dated_by) == (date(2026, 9, 1), EMAIL_DATE_LINE)
+    assert (second.reported_on, second.dated_by) == (TODAY, PASTE_DAY)
+    assert [(u.line, u.text) for u in read.unread] == [
+        (7, "Science -"),
+        (8, "Lab notes"),
+        (10, "Date: Thu, Sep 10, 2026"),
+        (11, "Assignments:"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("between", "kept"),
+    [
+        ("", 5),
+        ("Homework for Wren\n09/09/2026 - Wednesday\n", 7),
+    ],
+    ids=["right-after-the-first-email", "under-the-summarys-day"],
+)
+def test_an_email_date_line_shaped_as_a_heading_ends_the_earlier_emails_date(
+    between: str, kept: int
+) -> None:
+    """A later email's date line that ends in a hyphen set off by a space is read as a heading
+    and kept for review with its note. The reports after it are dated by the day of the paste
+    and say so, never by an earlier email's date line."""
+    text = f"""Date: Tue, Sep 1, 2026
+Assignments:
+08/28 Math - A: Homework: Practice Grade: Missing
+
+{between}Date: Thu, Sep 10, 2026 -
+Assignments:
+09/09 Art - A: Homework: Collage Grade: Missing
+"""
+    read = read_text(text, now=NOW, today=TODAY)
+    items = by_pair(read.items)
+    first = items["Math", "Practice"].reports[0]
+    second = items["Art", "Collage"].reports[0]
+
+    assert (first.reported_on, first.dated_by) == (date(2026, 9, 1), EMAIL_DATE_LINE)
+    assert (second.reported_on, second.dated_by) == (TODAY, PASTE_DAY)
+    assert [(u.line, u.text) for u in read.unread] == [
+        (kept, "Date: Thu, Sep 10, 2026 -"),
+        (kept + 1, "Assignments:"),
+    ]
+
+
 def test_a_text_with_no_subject_heading_is_read_by_the_other_rules_alone() -> None:
     """The same text with no subject heading in it is read by the other rules alone: the
     card's line with no course is kept for review, the mail header and the portal's own word

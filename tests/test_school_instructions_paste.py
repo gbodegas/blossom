@@ -23,6 +23,8 @@ from markupsafe import escape
 
 from blossom.app import NOTHING_SAVED, create_app
 from blossom.intake import (
+    EMAIL_DATE_LINE,
+    PASTE_DAY,
     Change,
     ChangedSinceShown,
     Kept,
@@ -2665,3 +2667,53 @@ def test_another_subjects_words_after_a_day_that_is_no_date_are_saved_on_no_card
         review = shown.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[0]
         for line in ("Due: Orphan:", "13/45/2026 - Monday", "Art -", "Bring paint"):
             assert line in html.unescape(review)
+
+
+TWO_EMAILS = """Date: Tue, Sep 1, 2026
+Assignments:
+08/28 Math - A: Homework: Practice Grade: Missing
+
+Homework for Wren
+09/09/2026 - Wednesday
+{between}Date: Thu, Sep 10, 2026{mark}
+Assignments:
+09/09 Art - A: Homework: Collage Grade: Missing
+"""
+"""Two emails' Missing reports with the weekly summary between them: the later email's date
+line kept for review, after a subject's note or as a heading of its own."""
+
+
+@pytest.mark.parametrize(
+    ("between", "mark"),
+    [("Science -\nLab notes\n\n", ""), ("", " -")],
+    ids=["after-a-note", "shaped-as-a-heading"],
+)
+def test_a_report_after_an_email_date_line_kept_for_review_is_dated_by_the_paste(
+    tmp_path: pathlib.Path, between: str, mark: str
+) -> None:
+    """Through the review, the save and the same text read again: a later email's date line
+    kept for review is shown as text that needs review, the report after it is saved dated by
+    the day of the paste with that said as its source, and the earlier email's report keeps the
+    date of its own date line."""
+    text = TWO_EMAILS.format(between=between, mark=mark)
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": text}).text
+        kept = client.post("/parent/inbox/keep", data=review_form(page))
+        store = store_of(client)
+        rows = {row.title: row for row in store.all_assignments()}
+        reports = {title: store.status_reports(row.assignment_id) for title, row in rows.items()}
+        again = client.post("/parent/inbox/read", data={"text": text}).text
+        after = {title: store.status_reports(row.assignment_id) for title, row in rows.items()}
+
+    assert kept.status_code == 303
+    assert set(rows) == {"Practice", "Collage"}
+    assert [(r.reported_on, r.dated_by) for r in reports["Practice"]] == [
+        (date(2026, 9, 1), EMAIL_DATE_LINE)
+    ]
+    assert [(r.reported_on, r.dated_by) for r in reports["Collage"]] == [
+        (date(2026, 9, 24), PASTE_DAY)
+    ]
+    assert after == reports
+    for shown in (page, again):
+        review = shown.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[0]
+        assert f"Date: Thu, Sep 10, 2026{mark}" in html.unescape(review)
