@@ -70,8 +70,9 @@ date other than the one the note settles is the family's entry, not the
 school's claim. A task saved before is found again by its class, its words
 and that first school day, whatever its title or due date, and its class and
 title alone never put it on a row. A note with no words under its heading,
-or with a line only shaped like a day, a Missing line or a card, is read as
-no task, and its lines are text that needs review.
+or with a line only shaped like a day, a Missing line, a card or a mail
+program's date line, is read as no task, and its lines are text that needs
+review.
 
 One item appears under an assigned day and under a due day, often in two
 weeks, and is one assignment matched by its course and title, exactly as the
@@ -631,8 +632,8 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     heading, or with no line kept after it, is no block, and neither is the
     paragraph kept under a card's line with no course, unless a subject
     heading is read in it. A block is marked suspect when a line of its note
-    is shaped as a day, a Missing line or a card. Every line of a block stays
-    listed for review.
+    is shaped as a day, a Missing line, a card or a mail program's date line.
+    Every line of a block stays listed for review.
     """
     lines = [_unbroken(line) for line in text.splitlines()]
     following = _next_lines(lines)
@@ -969,13 +970,18 @@ def _names_a_day(line: str | None) -> bool:
 
 
 def _is_shaped_as_structure(line: str) -> bool:
-    """Whether a line is written as a day in either shape, as a Missing line, or as a card,
-    with its course on its line or with none, whatever it reads as."""
-    return _is_a_day(line) or bool(
-        EMAIL_LINE.match(line)
-        or CARD_LINE.match(line)
-        or ASSIGNED_LINE.match(line)
-        or DUE_LINE.match(line)
+    """Whether a line is written as a day in either shape, as a Missing line, as a card, with
+    its course on its line or with none, or as a mail program's date line, whatever it reads
+    as."""
+    return (
+        _is_a_day(line)
+        or mail_date(line) is not None
+        or bool(
+            EMAIL_LINE.match(line)
+            or CARD_LINE.match(line)
+            or ASSIGNED_LINE.match(line)
+            or DUE_LINE.match(line)
+        )
     )
 
 
@@ -985,9 +991,9 @@ class _OpenNote:
     where its heading was read, the line numbers of the heading and of each line kept after
     it, and those lines, a paragraph for each run of them between blank lines.
 
-    The note is suspect when a line of it is shaped as a day, a Missing line or a card, and
-    so was kept only because it did not read as one. Its heading counts when it is shaped
-    that way too, which only a heading read inside a note can be.
+    The note is suspect when a line of it is shaped as a day, a Missing line, a card or a mail
+    program's date line, and so was kept only because it was not read as one. Its heading
+    counts when it is shaped that way too.
     """
 
     subject: str
