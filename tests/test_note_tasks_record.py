@@ -501,6 +501,96 @@ def test_a_note_joins_the_card_of_its_own_school_week_only() -> None:
     assert len(items) == 2
 
 
+MAP_PROJECT = """Homework for Wren
+11/02/2026 - Monday
+Humanities -
+Map project due on Wednesday.
+
+11/05/2026 - Thursday
+Humanities - Assigned: Map project: (Due:11/12/2026)
+Humanities -
+Map project due on Wednesday.
+"""
+"""A note listed on a Monday and again on the Thursday, beside the Thursday's card of its
+name, which is due a week later than the note's own deadline."""
+
+
+def test_a_note_dated_apart_from_a_card_of_another_listing_day_is_its_own_reading() -> None:
+    """The note's deadline, Wednesday, November 4, is not the card's due date, and the card
+    was read under the Thursday, not the note's first listing day: the note joins nothing.
+    The card stays as read, and the note is a reading of its own, due on its own deadline."""
+    read = read_text(MAP_PROJECT, now=NOW, today=nov(5))
+
+    items = with_note_readings(read, now=NOW)
+    card, noted = by_pair(items)["Humanities", "Map project"]
+
+    assert card == read.items[0]
+    assert card.joined_notes == ()
+    assert noted.teacher_note is not None
+    assert noted.teacher_note.seen_on == (nov(2), nov(5))
+    assert noted.due_date == nov(4)
+    assert said(noted) == [(SourceChannel.LMS, "2026-11-04", TEACHER_NOTE, PORTAL_CONFIDENCE)]
+    assert len(items) == 2
+
+
+def every_day_of(note: str, card: str, *, on: int) -> str:
+    """A school week, Monday to Friday, with the note under each day and the card under the
+    day ``on``, above that day's note."""
+    days = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+    out = ["Homework for Wren"]
+    for number, name in enumerate(days, start=2):
+        out.append(f"11/{number:02d}/2026 - {name}")
+        if number == on:
+            out.append(card)
+        out += ["Humanities -", note, ""]
+    return "\n".join(out)
+
+
+def test_a_note_listed_all_week_joins_the_card_of_its_due_date() -> None:
+    """A note listed Monday to Friday beside the Wednesday's card of its name, due on the
+    note's own deadline, joins that card: one reading, the card's."""
+    text = every_day_of(
+        "Map project due Friday.", "Humanities - Assigned: Map project: (Due:11/06/2026)", on=4
+    )
+    read = read_text(text, now=NOW, today=nov(6))
+
+    items = with_note_readings(read, now=NOW)
+    (card,) = by_pair(items)["Humanities", "Map project"]
+
+    assert card.teacher_note is None
+    assert card.due_date == nov(6)
+    assert [task.seen_on for task in card.joined_notes] == [
+        (nov(2), nov(3), nov(4), nov(5), nov(6))
+    ]
+    assert len(items) == 1
+
+
+def test_a_note_two_cards_could_join_joins_neither() -> None:
+    """An undated note listed on the Monday and the Wednesday, where a card of its name was
+    read under each day: two cards qualify, so the note joins neither and is a reading of its
+    own, never the first card's."""
+    text = (
+        "Homework for Wren\n11/02/2026 - Monday\n"
+        "Humanities - Assigned: Map project: (Due:11/06/2026)\n"
+        "Humanities -\nMap project Due.\n\n"
+        "11/04/2026 - Wednesday\n"
+        "Humanities - Assigned: Map project: (Due:11/20/2026)\n"
+        "Humanities -\nMap project Due.\n"
+    )
+    read = read_text(text, now=NOW, today=nov(4))
+
+    items = with_note_readings(read, now=NOW)
+    found = by_pair(items)["Humanities", "Map project"]
+
+    assert [item.due_date for item in read.items] == [nov(6), nov(20)]
+    assert [item.joined_notes for item in found[:2]] == [(), ()]
+    assert found[:2] == list(read.items)
+    assert len(found) == 3
+    assert found[2].teacher_note is not None
+    assert found[2].teacher_note.seen_on == (nov(2), nov(4))
+    assert found[2].due_date is None
+
+
 TWO_WEEKS = (
     "Homework for Wren\n"
     "- 11/02/2026 - Monday\nMath - Due: Weekly practice:\n"

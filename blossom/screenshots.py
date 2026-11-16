@@ -36,18 +36,20 @@ is read by the rules ``teacher_notes`` holds for a pasted note, with the note ca
 layer read together. A note's row takes its day from the heading above it in its own
 screenshot, as any card does, with one exception: the same words of the same class listed
 under several days, in this screenshot or another, are one task read from the earliest of
-those days, so another screenshot can change the day a note's weekday is read from. A task a
-note names as a card with a label, of the same class and read under one of the school days the
-task is listed under, in the same screenshots, is that card's row: the row takes the claim of a
-deadline the note settles and, when they say more than the name and the deadline statement,
-the task's words as an instruction, and keeps the key, cards and marks of its own cards.
+those days, so another screenshot can change the day a note's weekday is read from. A task
+that joins exactly one card with a label in the same screenshots, as a pasted note joins a
+card (``intake.joins``), is that card's row; a task two such cards could take joins neither.
+The row takes the claim of a deadline the note settles and, when they say more than the name
+and the deadline statement, the task's words as an instruction, and keeps the key, cards and
+marks of its own cards.
 """
 
 import dataclasses
+import functools
 import hashlib
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import UTC, date, datetime
 from typing import Annotated, Final, Literal, NamedTuple, Self
 
@@ -64,10 +66,11 @@ from blossom.intake import (
     a_date,
     claim,
     is_shaped_as_structure,
+    joins,
     note_reading,
-    pair,
     read_cards,
     says_more,
+    the_one,
 )
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionSeen, instruction_words
@@ -876,20 +879,23 @@ def _note_tasks(
 def _named_card(
     rows: Sequence[ScreenshotRow], read_under: dict[str, frozenset[date]], task: NoteTask
 ) -> int | None:
-    """Where the row of the card a note's task names is among ``rows``: the first row read from
-    cards with the task's class and title whose cards were read under one of the school days
-    the task is listed under. ``read_under`` holds those days by row key, for card rows alone.
-    ``None`` when no such row was read."""
-    name = pair(task.subject, task.name)
-    return next(
-        (
+    """Where the row of the card a note's task joins is among ``rows``: the one row read from
+    cards that the task ``joins``, as a pasted note joins a card. ``read_under`` holds the
+    school days each card row's cards were read under, by row key, for card rows alone.
+    ``None`` when no row qualifies, or when several do."""
+    return the_one(
+        [
             index
             for index, row in enumerate(rows)
-            if row.reading.pair == name
-            and not read_under.get(row.key, frozenset()).isdisjoint(task.seen_on)
-        ),
-        None,
+            if row.key in read_under
+            and joins(row.reading, task, functools.partial(_under_any, read_under[row.key]))
+        ]
     )
+
+
+def _under_any(read: frozenset[date], days: Collection[date]) -> bool:
+    """Whether one of the school days a card row's cards were read under is among ``days``."""
+    return not read.isdisjoint(days)
 
 
 def _with_note(reading: Reading, task: NoteTask, now: datetime) -> Reading:

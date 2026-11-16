@@ -1242,29 +1242,46 @@ def _joined(card: Reading, task: NoteTask, now: datetime) -> Reading:
     )
 
 
+def joins(card: Reading, task: NoteTask, read_under: Callable[[Collection[date]], bool]) -> bool:
+    """Whether a note's task may join a card: the same class and title, the card read under
+    one of the school days the task is listed under, and the task undated, due on the card's
+    due date, or listed first on a day the card was read under. ``read_under`` says whether
+    the card was read under one of the days it is given."""
+    return (
+        card.pair == pair(task.subject, task.name)
+        and read_under(task.seen_on)
+        and (
+            task.deadline is None or task.deadline == card.due_date or read_under((task.first_day,))
+        )
+    )
+
+
+def the_one(places: Sequence[int]) -> int | None:
+    """The one place given, or ``None`` for none or several: a task two cards could take
+    joins neither."""
+    return places[0] if len(places) == 1 else None
+
+
 def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
     """The readings of a paste with its teachers' notes read as tasks: the cards first, in
     their places, then one reading for each task that is no card's.
 
-    A task named as a card of the same class, where that card was read under one of the
-    school days the task is listed under, is that card's assignment: the card's reading
-    takes what the note adds and stays where it is. Every other task is a reading of its
-    own, after the cards, in the order the notes give the tasks. One whose class and title
-    a reading before it has carries its first school day and a mark of its words as its
-    occurrence, so its id is its own. A suspect note is read as no task: its lines are
-    text that needs review.
+    A task that ``joins`` exactly one card is that card's assignment: the card's reading
+    takes what the note adds and stays where it is. A task two cards could take joins
+    neither. Every other task is a reading of its own, after the cards, in the
+    order the notes give the tasks. One whose class and title a reading before it has
+    carries its first school day and a mark of its words as its occurrence, so its id is
+    its own. A suspect note is read as no task: its lines are text that needs review.
     """
     items = list(read.items)
     made: list[Reading] = []
     for task in read_notes([note.block for note in read.notes if not note.block.suspect]):
-        name = pair(task.subject, task.name)
-        place = next(
-            (
+        place = the_one(
+            [
                 index
                 for index, card in enumerate(read.items)
-                if card.pair == name and _read_under(card, task.seen_on)
-            ),
-            None,
+                if joins(card, task, functools.partial(_read_under, card))
+            ]
         )
         if place is not None:
             items[place] = _joined(items[place], task, now)

@@ -438,6 +438,103 @@ def test_a_note_in_another_class_with_the_card_s_title_stays_a_note_row() -> Non
     assert formal_row == essay_alone("other")
 
 
+MAP_DUE = "Map project due on Wednesday."
+
+
+def map_card(due: str, y_top: int = 200) -> dict[str, object]:
+    """Humanities 8's "Map project", assigned on the day it is listed under."""
+    return homework_card(
+        badge="ASSIGNED",
+        course="Humanities 8",
+        title="Map project",
+        instruction=None,
+        footer=f"Due ({due})",
+        y_top=y_top,
+        y_bottom=y_top + 80,
+    )
+
+
+def week_day(number: int) -> str:
+    """The heading of a school day of the week of Monday 11/16/2026."""
+    names = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+    return f"{names[number - 16]} 11/{number}/2026"
+
+
+def test_a_note_dated_apart_from_a_card_of_another_listing_day_is_a_note_row() -> None:
+    """The note's deadline, Wednesday 11/18, is not the Thursday card's due date, and the card
+    was not read under the note's first listing day: two rows, the card as read alone."""
+    found = assembled(
+        "map",
+        shot(note("Humanities 8", title=MAP_DUE)),
+        shot(
+            map_card("11/26/2026"), note("Humanities 8", title=MAP_DUE, y_top=300), day=week_day(19)
+        ),
+    )
+    alone = assembled("map", shot(map_card("11/26/2026"), day=week_day(19)))
+    [card_row] = [row for row in found.rows if row.reading.teacher_note is None]
+    [note_row] = [row for row in found.rows if row.reading.teacher_note is not None]
+
+    assert found.unread == ()
+    assert card_row.reading == only_row(alone).reading
+    assert note_row.reading.due_date == date(2026, 11, 18)
+    task = note_row.reading.teacher_note
+    assert task is not None
+    assert task.seen_on == (date(2026, 11, 16), date(2026, 11, 19))
+
+
+def test_a_note_listed_all_week_joins_the_card_of_its_due_date_on_a_screenshot() -> None:
+    """A note listed Monday to Friday beside the Wednesday card of its name, due on the note's
+    own deadline: one row, the card's."""
+    friday = "Map project due Friday."
+    shots = [
+        shot(
+            *([map_card("11/20/2026")] if number == 18 else []),
+            note("Humanities 8", title=friday, y_top=300),
+            day=week_day(number),
+        )
+        for number in range(16, 21)
+    ]
+
+    found = homework_assembly(stored("week", *shots), now=NOW)
+
+    assert found.unread == ()
+    [row] = found.rows
+    assert row.reading.teacher_note is None
+    assert row.reading.due_date == date(2026, 11, 20)
+
+
+def test_a_note_two_cards_could_join_is_a_note_row_of_its_own() -> None:
+    """An undated note listed on the Monday and the Wednesday, where a card of its name was
+    read under each day: it joins neither card, never the first."""
+    undated = "Map project Due."
+    found = assembled(
+        "two",
+        shot(map_card("11/20/2026"), note("Humanities 8", title=undated, y_top=300)),
+        shot(
+            map_card("11/27/2026"),
+            note("Humanities 8", title=undated, y_top=300),
+            day=week_day(18),
+        ),
+    )
+    cards_alone = assembled(
+        "two", shot(map_card("11/20/2026")), shot(map_card("11/27/2026"), day=week_day(18))
+    )
+    card_rows = [row for row in found.rows if row.reading.teacher_note is None]
+    note_rows = [row for row in found.rows if row.reading.teacher_note is not None]
+
+    assert found.unread == ()
+    assert sorted(row.reading.due_date for row in card_rows if row.reading.due_date) == [
+        date(2026, 11, 20),
+        date(2026, 11, 27),
+    ]
+    assert sorted(row.key for row in card_rows) == sorted(row.key for row in cards_alone.rows)
+    assert [row.reading for row in sorted(card_rows, key=lambda row: row.key)] == [
+        row.reading for row in sorted(cards_alone.rows, key=lambda row: row.key)
+    ]
+    assert len(note_rows) == 1
+    assert note_rows[0].reading.due_date is None
+
+
 def test_a_joined_card_keeps_its_literal_key_in_every_order_of_the_images() -> None:
     worksheet = shot(formal("Math 8", "Worksheet 3", 200))
     named = shot(note("Math 8", title="Worksheet 3 Due.", y_top=200))
