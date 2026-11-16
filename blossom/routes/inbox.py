@@ -22,7 +22,7 @@ import logging
 import secrets
 import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Annotated, Final
 
@@ -67,9 +67,11 @@ from blossom.intake import (
     changes_for,
     conflicting_choices,
     keep,
+    notes_apart,
     read_text,
     spoken_day,
     spoken_report,
+    with_notes,
     within_a_school_year,
 )
 from blossom.pairing import pair
@@ -687,19 +689,69 @@ def unasked_for(state: ApplicationState, read: Read) -> dict[int, set[Assignment
     page showed: what the page would show for it now, and what the reader suggests."""
     return {
         change.key: {change.kind, change.reading.kind}
-        for change in changes_for(read.items, state.project_state)
+        for change in changes_for(read.items, state.project_state, left_out=read.left_out)
     }
 
 
+MAY_BE_HOMEWORK: Final = "Notes that may be homework"
+MAY_BE_HOMEWORK_HELPER: Final = (
+    "Blossom isn't sure these are homework, so none is selected. Tick one to save it."
+)
+NO_HOMEWORK: Final = "Notes with no homework"
+NO_HOMEWORK_HELPER: Final = (
+    "The school's note says no homework is assigned. "
+    "Nothing from these is saved unless one is ticked."
+)
+
+
+@dataclass(frozen=True)
+class NoteSection:
+    """The cards of one kind of teacher's note that the review shows apart from the weeks:
+    its heading, the line that says why none is selected from the start, and its cards."""
+
+    label: str
+    helper: str
+    changes: list[Change]
+
+    def count(self, state: str) -> int:
+        """How many of the section's changes are in one state."""
+        return sum(1 for change in self.changes if change.state == state)
+
+
+def selected(form: Mapping[str, str], read: Read) -> Read:
+    """What was read with the ticks a form sends for the readings made from teachers' notes.
+
+    The page sends ``offered-<key>`` beside each tick it shows and ``take-<key>`` for a
+    ticked one. A note reading the form says was offered is left out of the save unless
+    its tick came with it; one the form does not name keeps its place from the start. A
+    key that is no note reading's is ignored.
+    """
+    left_out = set(read.left_out)
+    for name in form:
+        head, _, number = name.rpartition("-")
+        if head != "offered" or not review_key(number) or int(number) >= len(read.items):
+            continue
+        key = int(number)
+        if read.items[key].teacher_note is None:
+            continue
+        if form.get(f"take-{key}") == "1":
+            left_out.discard(key)
+        else:
+            left_out.add(key)
+    if left_out == read.left_out:
+        return read
+    return replace(read, left_out=frozenset(left_out))
+
+
 def read_draft(state: ApplicationState, draft: Mapping[str, str]) -> Read | Problem:
-    """Read what a draft holds: the pasted text, or the entry, the same way every time, as
-    of the moment it was first read."""
+    """Read what a draft holds: the pasted text, with its teachers' notes read as tasks, or
+    the entry, the same way every time, as of the moment it was first read."""
     now, today = moment_of(state, draft)
     text = draft.get("text", "")
     if text.strip():
         if len(text) > TEXT_MAX_LENGTH:
             return Problem("text", TOO_LONG)
-        return read_text(text, now=now, today=today)
+        return with_notes(read_text(text, now=now, today=today), now=now)
     return entry_from(draft, now=now, today=today)
 
 
@@ -1145,6 +1197,11 @@ def preview_page(
     and rides along to the save. A claim on record that cannot be read refuses the
     comparison, and the page that reads no store keeps the draft.
 
+    A reading made from a teacher's note carries a tick, set unless ``read.left_out`` holds
+    its key. The notes that may be homework and the notes that say none is assigned are
+    shown after the weeks, each kind under its own heading, and every count is of the
+    selected readings only.
+
     ``refused`` says the page comes back for an answer about the school's
     instructions that was not saved: ``contradict``, ``malformed``, ``stale``,
     ``unanswered``, a question left without an answer, or ``waiting``, a
@@ -1181,6 +1238,7 @@ def preview_page(
             instruction_answers=instruction_answers,
             identities=identities,
             picks=picks,
+            left_out=read.left_out,
         )
     except UnreadableClaim:
         return intake_unavailable(
@@ -1287,6 +1345,11 @@ def preview_page(
     if notice is None and conflicting_choices(changes):
         notice = CHOOSE_ONE_TYPE
     shown = [change for change in changes if change.state != FOLDED]
+    in_weeks, may_be, none_assigned = notes_apart(changes)
+    note_sections = (
+        NoteSection(MAY_BE_HOMEWORK, MAY_BE_HOMEWORK_HELPER, may_be),
+        NoteSection(NO_HOMEWORK, NO_HOMEWORK_HELPER, none_assigned),
+    )
     parent = parent_reads(request)
     view = None
     choosable: dict[int, list[FoundRow]] = {}
@@ -1368,7 +1431,11 @@ def preview_page(
         request,
         "inbox_preview.html",
         {
-            "weeks": by_week(changes),
+            "weeks": by_week([change for change in changes if not change.left_out]),
+            "sections": [
+                *by_week(in_weeks),
+                *(section for section in note_sections if section.changes),
+            ],
             "changes": shown,
             "folded": folded,
             "counts": counts,
@@ -1605,6 +1672,7 @@ async def search_review(request: Request, state: State) -> Response:
     if isinstance(read, Problem):
         answers = answers_sent(state, form, (await form_of(request)).multi_items(), draft)
         return await asyncio.to_thread(problem_page, request, state, draft, read, answers)
+    read = selected(form, read)
     fields = (await form_of(request)).multi_items()
     read_answers = paste_answers(fields)
     instruction_answers = read_answers.answers
@@ -1661,6 +1729,7 @@ async def search_review(request: Request, state: State) -> Response:
                 kinds=kinds,
                 identities=identities,
                 picks=page_made.picks,
+                left_out=read.left_out,
             ),
             instruction_answers,
             page_made.asked,
@@ -1814,6 +1883,7 @@ async def keep_readings(request: Request, state: State) -> Response:
     if isinstance(read, Problem):
         answers = answers_sent(state, form, (await form_of(request)).multi_items(), draft)
         return await asyncio.to_thread(problem_page, request, state, draft, read, answers)
+    read = selected(form, read)
     # Every answer about the school's instructions is read from the fields as sent, before
     # any is collapsed, and kept, contradictions included, in words a page that reads no
     # store can show: all of it before anything touches the store.
@@ -1948,6 +2018,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             kinds=kinds,
             identities=identities,
             picks=picks,
+            left_out=read.left_out,
         )
         never_put = answers_to_no_question(changes, instruction_answers, page_made.asked)
         unreadable = read_answers.malformed or bool(never_put)
@@ -1999,6 +2070,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 links=linked,
                 picks=picks,
                 offered=page_made.offers,
+                left_out=read.left_out,
                 imported_by="parent" if viewer_of(request) == "parent" else "household",
                 now=now,
                 today=today,

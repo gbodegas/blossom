@@ -287,6 +287,10 @@ class Reading:
     teacher_note: NoteTask | None = None
     """The task a reading made from a teacher's note was read as; ``None`` for a reading
     made from a card, the school's email, or a parent's entry."""
+    joined_notes: tuple[NoteTask, ...] = field(default=(), compare=False)
+    """The tasks of teachers' notes that are this card's assignment, each with its words,
+    so a note that says no more than the card's name and a deadline has its words with the
+    card. Two readings are compared without it."""
 
     @property
     def pair(self) -> tuple[str, str]:
@@ -364,12 +368,14 @@ class NoteRead:
 
 @dataclass(frozen=True)
 class Read:
-    """Everything one paste says: the readings, the lines that need review, and each
-    subject's note as a block, in the order the notes open."""
+    """Everything one paste says: the readings, the lines that need review, each subject's
+    note as a block, in the order the notes open, and the keys of the readings left out of
+    a save unless someone selects them."""
 
     items: tuple[Reading, ...]
     unread: tuple[Unread, ...]
     notes: tuple[NoteRead, ...] = ()
+    left_out: frozenset[int] = frozenset()
 
 
 def kind_of(title: str) -> AssignmentKind:
@@ -1117,7 +1123,8 @@ def _joined(card: Reading, task: NoteTask, now: datetime) -> Reading:
     """A card's reading with what a note about the same assignment adds: the claim of a
     deadline the note settles, seen in the teacher's note, and the task's words as one more
     instruction when they say more than the name and the deadline statement. A claim or an
-    instruction the card has is not added twice."""
+    instruction the card has is not added twice. The task itself is carried in
+    ``joined_notes``, whatever its words say."""
     claims, instructions = card.claims, card.instructions
     if task.deadline is not None:
         noted = claim(SourceChannel.LMS, task.deadline, TEACHER_NOTE, now, PORTAL_CONFIDENCE)
@@ -1125,7 +1132,9 @@ def _joined(card: Reading, task: NoteTask, now: datetime) -> Reading:
             claims += (noted,)
     if _says_more(task) and all(seen.text != task.words for seen in instructions):
         instructions += (InstructionSeen(task.words, SourceChannel.LMS, None, task.first_day),)
-    return dataclasses.replace(card, claims=claims, instructions=instructions)
+    return dataclasses.replace(
+        card, claims=claims, instructions=instructions, joined_notes=(*card.joined_notes, task)
+    )
 
 
 def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
@@ -1137,11 +1146,12 @@ def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
     takes what the note adds and stays where it is. Every other task is a reading of its
     own, after the cards, in the order the notes give the tasks. One whose class and title
     a reading before it has carries its first school day and a mark of its words as its
-    occurrence, so its id is its own.
+    occurrence, so its id is its own. A suspect note is read as no task: its lines are
+    text that needs review.
     """
     items = list(read.items)
     made: list[Reading] = []
-    for task in read_notes([note.block for note in read.notes]):
+    for task in read_notes([note.block for note in read.notes if not note.block.suspect]):
         name = pair(task.subject, task.name)
         place = next(
             (
@@ -1159,6 +1169,32 @@ def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
             reading = dataclasses.replace(reading, occurrence=_note_occurrence(task))
         made.append(reading)
     return (*items, *made)
+
+
+def with_notes(read: Read, *, now: datetime) -> Read:
+    """A paste with its teachers' notes read as tasks, for the review page.
+
+    A paste with no note is handed back as it is. Otherwise the readings are those of
+    ``with_note_readings``; the lines that need review are the paste's own without the
+    lines of each note that became tasks, which the readings carry as their words; and the
+    readings left out unless someone selects them are those ``left_out_by_default`` names.
+    A suspect note becomes no task, so its lines stay for review.
+    """
+    if not read.notes:
+        return read
+    items = with_note_readings(read, now=now)
+    taken = {
+        line
+        for note in read.notes
+        if not note.block.suspect and any(words.strip() for words in note.block.paragraphs)
+        for line in note.lines
+    }
+    return dataclasses.replace(
+        read,
+        items=items,
+        unread=tuple(line for line in read.unread if line.line not in taken),
+        left_out=left_out_by_default(items),
+    )
 
 
 def _note_occurrence(task: NoteTask) -> str:
@@ -3279,6 +3315,27 @@ def by_week(changes: list[Change]) -> list[WeekGroup]:
     if None in groups:
         ordered.append(WeekGroup(None, groups[None]))
     return ordered
+
+
+def notes_apart(
+    changes: Sequence[Change],
+) -> tuple[list[Change], list[Change], list[Change]]:
+    """The changes the review shows week by week, those of notes that may be homework, and
+    those of notes that say no homework is assigned, each in the order given.
+
+    A card is with the weeks, and so is a note read as homework, selected or not. A note
+    whose task is unclear, or is not an assignment, is set apart whether or not it is
+    selected. A folded change stays with the weeks, where no card is shown for it.
+    """
+    weeks: list[Change] = []
+    apart: dict[Standing, list[Change]] = {Standing.UNCLEAR: [], Standing.NOT_ASSIGNMENT: []}
+    for change in changes:
+        task = change.reading.teacher_note
+        if task is not None and task.standing in apart and change.state != FOLDED:
+            apart[task.standing].append(change)
+        else:
+            weeks.append(change)
+    return weeks, apart[Standing.UNCLEAR], apart[Standing.NOT_ASSIGNMENT]
 
 
 def _by_due(change: Change) -> tuple[date, str, str]:

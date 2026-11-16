@@ -41,6 +41,7 @@ from blossom.intake import (
     read_text,
     with_family_deadline,
     with_note_readings,
+    with_notes,
 )
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionSeen, SubmittedChoice
@@ -1343,3 +1344,158 @@ def test_a_note_said_to_be_new_work_has_an_id_from_its_first_day_and_its_words(
     assert noted.assignment_id != first.assignment_id
     assert dated.assignment_id == dataclasses.replace(plain, occurrence="2026-11-11").assignment_id
     assert dated.assignment_id != noted.assignment_id
+
+
+CARDS_ONLY = "Homework for Wren\n11/02/2026 - Monday\n08 Geometry - Due: Textbook page 12:\n"
+"""A day of the weekly summary with one card and no teacher's note."""
+
+
+def single(text: str) -> str:
+    """A text with every run of spaces and line breaks made one space."""
+    return " ".join(text.split())
+
+
+def test_a_paste_with_no_note_comes_back_as_the_same_read() -> None:
+    """A text with no teacher's note is handed back as the object it was read as, with
+    nothing left out."""
+    read = read_text(CARDS_ONLY, now=NOW, today=TODAY)
+
+    assert read.notes == ()
+    assert with_notes(read, now=NOW) is read
+    assert read.left_out == frozenset()
+
+
+def test_the_notes_read_as_tasks_take_their_lines_out_of_the_text_for_review() -> None:
+    """With its notes read as tasks a paste holds the cards and the note readings, leaves
+    out the readings that are not homework, and lists for review every line but the lines
+    of the notes: the lines for review lose exactly those."""
+    read = read_text(WEEK, now=NOW, today=TODAY)
+    in_notes = {line for note in read.notes for line in note.lines}
+
+    noted = with_notes(read, now=NOW)
+
+    assert noted.items == with_note_readings(read, now=NOW)
+    assert noted.left_out == left_out_by_default(noted.items) == frozenset({8})
+    assert noted.notes == read.notes
+    assert len(in_notes) == 14
+    assert in_notes <= {item.line for item in read.unread}
+    assert noted.unread == tuple(item for item in read.unread if item.line not in in_notes)
+
+
+def test_a_note_that_only_names_its_days_card_has_its_words_on_that_card() -> None:
+    """A task that joins a card is carried by the card's reading, so words that are no
+    instruction of the card are with it all the same; a card no note names carries none."""
+    read = read_text(week_with("Short essay Due."), now=NOW, today=TODAY)
+    (task,) = [
+        item for item in read_notes([n.block for n in read.notes]) if item.name == "Short essay"
+    ]
+
+    noted = with_notes(read, now=NOW)
+    (joined,) = by_pair(noted.items)["Religion", "Short essay"]
+
+    assert joined.joined_notes == (task,)
+    assert task.words == "Short essay Due."
+    assert joined.teacher_note is None
+    assert all(seen.text != task.words for seen in joined.instructions)
+    assert [item.joined_notes for item in noted.items if item is not joined] == [()] * 10
+
+
+ACCOUNTED = [
+    pytest.param(WEEK, id="week"),
+    pytest.param(week_with("Short essay Due."), id="a-note-that-only-names-a-card"),
+    pytest.param(week_with("Short essay due today. Write it in ink."), id="a-note-that-says-more"),
+]
+"""Texts whose every note is read as tasks."""
+
+
+@pytest.mark.parametrize("text", ACCOUNTED)
+def test_every_line_of_the_text_is_listed_for_review_or_is_in_the_words_of_a_task(
+    text: str,
+) -> None:
+    """No line goes unshown. Each line listed for review before the notes are read as tasks
+    is listed for review after, or is a line of a note that became tasks, never both. Each
+    such note's subject is the class of every reading made from it, and its kept lines,
+    single-spaced, are made up of the words of those readings and of the tasks its cards
+    carry, with nothing over."""
+    read = read_text(text, now=NOW, today=TODAY)
+    before = {item.line: item.text for item in read.unread}
+
+    noted = with_notes(read, now=NOW)
+    after = {item.line for item in noted.unread}
+    became = [note for note in read.notes if not after & set(note.lines)]
+    taken = {line for note in became for line in note.lines}
+    carried = [
+        (item, task)
+        for item in noted.items
+        for task in ((item.teacher_note,) if item.teacher_note else item.joined_notes)
+    ]
+
+    assert became == [note for note in read.notes if not note.block.suspect]
+    assert after | taken == set(before)
+    assert not after & taken
+    assert len(became) == len(read.notes) > 0
+    for note in became:
+        block = note.block
+        mine = [
+            (item, task)
+            for item, task in carried
+            if task.subject == block.subject and block.day in task.seen_on
+        ]
+        rest = single(" ".join(before[line] for line in note.lines if line != block.line))
+        assert mine
+        for item, task in mine:
+            assert single(item.course) == single(block.subject)
+            assert single(task.words) in rest
+            rest = rest.replace(single(task.words), " ", 1)
+        assert rest.strip() == ""
+
+
+HEAD = "Homework for Wren\n11/02/2026 - Monday\nScience -\nLab notes\n"
+"""The summary's opening, a day, and a subject's note of one line."""
+
+STAYS = [
+    pytest.param("Homework for Wren\nArt -\nPaint words\n", ["Art -", "Paint words"], id="no-day"),
+    pytest.param(
+        HEAD + "Art -\nMusic -\n\n11/03/2026 - Tuesday\nSpanish -\n",
+        ["Art -", "Music -", "Spanish -"],
+        id="nothing-kept-under-a-heading",
+    ),
+    pytest.param(
+        HEAD + "Math - Assigned: Sheet 3: (Due:11/06/2026)\nDue: Orphan:\nClasses\n",
+        ["Due: Orphan:", "Classes"],
+        id="a-short-paragraph-under-a-card",
+    ),
+    pytest.param(
+        "Homework for Wren\n11/02/2026 - Monday\nArt -\nPaint words\n13/45/2026 - Monday\nMore\n",
+        ["Art -", "Paint words", "13/45/2026 - Monday", "More"],
+        id="a-suspect-note",
+    ),
+]
+"""A text, and the lines of it that stay listed for review when its notes are read as tasks."""
+
+
+@pytest.mark.parametrize(("text", "lines"), STAYS)
+def test_a_line_that_is_no_task_stays_listed_for_review(text: str, lines: list[str]) -> None:
+    """A heading with no day in force and its lines, a heading with nothing kept under it,
+    a card's short paragraph, and a suspect note stay listed for review, and no reading is
+    made from their words."""
+    read = read_text(text, now=NOW, today=TODAY)
+
+    noted = with_notes(read, now=NOW)
+    listed = [item.text for item in noted.unread]
+    words = [item.teacher_note.words for item in noted.items if item.teacher_note is not None]
+
+    assert [line for line in lines if line not in listed] == []
+    assert [line for line in lines if any(line in said for said in words)] == []
+    assert [item.text for item in read.unread if item.text in lines] == lines
+    assert noted.left_out == left_out_by_default(noted.items)
+
+
+def test_a_homework_page_day_has_no_note_so_its_read_comes_back_as_it_is() -> None:
+    """Under a day written as the homework page writes it no note is read, so the text is
+    handed back as the object it was read as, every line where the reader put it."""
+    page = "Tuesday 11/3/2026\nArt -\nPaint words\nDue: Orphan:\nMusic -\nSing words\n"
+    read = read_text(page, now=NOW, today=TODAY)
+
+    assert read.notes == ()
+    assert with_notes(read, now=NOW) is read
