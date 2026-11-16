@@ -2618,3 +2618,50 @@ def test_a_note_under_another_subject_is_never_saved_as_a_cards_instruction(
     assert "3 assignments across 2 weeks: 0 new, 0 updates, 3 already saved." in " ".join(
         again.split()
     )
+
+
+A_DAY_THAT_IS_NO_DATE_IN_A_SHORT_PARAGRAPH = """Homework for Wren
+11/05/2026 - Thursday
+Science -
+Bring goggles
+Tuesday 9/1/2026
+Due: Orphan:
+13/45/2026 - Monday
+
+Math - Assigned: Sheet: (Due:11/20/2026)
+Art -
+Bring paint
+"""
+"""A text of both shapes: under the homework page's day a card's line with no course keeps
+its short paragraph for review, and in it stands a day, written the summary's way, whose
+digits name no date. After the blank come a card and another subject's heading and words."""
+
+
+def test_another_subjects_words_after_a_day_that_is_no_date_are_saved_on_no_card(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Through the review, the save and the same text read again: a day line that names no
+    date, kept in a card's short review paragraph, still says the summary's shape is in force,
+    so the next subject's heading and words are shown as text that needs review and saved on
+    no assignment."""
+    text = A_DAY_THAT_IS_NO_DATE_IN_A_SHORT_PARAGRAPH
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": text}).text
+        kept = client.post("/parent/inbox/keep", data=review_form(page))
+        store = store_of(client)
+        rows = {row.title: row for row in store.all_assignments()}
+        said = store.school_instruction_readings(
+            [row.assignment_id for row in rows.values()]
+        ).readable
+        again = client.post("/parent/inbox/read", data={"text": text}).text
+        rows_written = tables(client)["school_instructions"]
+
+    assert kept.status_code == 303
+    assert set(rows) == {"Sheet"}
+    taught = [said[row.assignment_id].texts for row in rows.values() if row.assignment_id in said]
+    assert taught == []
+    assert len(rows_written) == 0
+    for shown in (page, again):
+        review = shown.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[0]
+        for line in ("Due: Orphan:", "13/45/2026 - Monday", "Art -", "Bring paint"):
+            assert line in html.unescape(review)
