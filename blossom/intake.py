@@ -36,11 +36,12 @@ The shapes, as the portal writes them:
   as a card with its course on its line, which is read as what it is, or,
   where the text opened with the summary's heading, until that same line
   over its next week. A line only shaped like a day or a card stays with
-  the note. The heading is the summary's
-  shape: under a day written as the homework page writes it, a line that
-  ends in a hyphen is read as any other line. A short line of a card's own
-  instruction that ends in such a hyphen reads as a heading too, and goes
-  to review with what follows it.
+  the note. The heading is the summary's shape: where the homework page's
+  shape is in force, which only a day written as the page writes it with
+  digits that name a date puts in force, a line that ends in a hyphen is
+  read as any other line. A short line of a card's own instruction that
+  ends in such a hyphen reads as a heading too, and goes to review with
+  what follows it.
 - The email: ``MM/DD <Course> - <Section>: <Category>: <Title> Grade:
   Missing``, one line per assignment, under ``Assignments:``. Each such line
   is the school reporting the assignment missing, kept as a report with the
@@ -517,24 +518,27 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     homework page; the summary names the course on the card's own line.
     Plain lines just after a card are the teacher's instruction, until the
     next card, day, course line, or subject heading, or a blank; the same
-    instruction under both of an item's days is kept once. A subject heading
-    opens a note, unless the day in force is written as the homework page
-    writes it: each line after it is text that needs review, read as nothing
-    else, across blank lines, until a line that reads as a day, a Missing
+    instruction under both of an item's days is kept once. Only a day
+    written as the homework page writes it, with digits that name a date,
+    puts the page's shape in force. A subject heading opens a note unless
+    that shape is in force: each line after the heading is text that needs
+    review, read as nothing else, across blank lines, until a line that
+    reads as a day, a Missing
     line, or a card with its course on its line, which is read as what it
     is, or until the line the text opened with as the summary's heading,
     where a day whose digits name a date follows it. A line in a note that
     is itself a heading, or only shaped like a day, a Missing line or a
-    card, stays with the note. A day there whose digits name no date ends
-    the day in force and, written the summary's way, the homework page's
-    shape; written the page's way it starts none.
-    Outside a homework-page day, a line shaped as a heading is not read by
+    card, stays with the note. A day whose digits name no date, there or
+    outside a note, ends the day in force and, written the summary's way,
+    the homework page's shape; written the page's way it leaves that shape
+    as it was and starts none.
+    Outside the homework page's shape, a line shaped as a heading is not read by
     the rules for plain text outside a card. Where a heading has been read,
     a card's line left for review for want of a course keeps the rest of its
     paragraph for review with it, but for a line there that reads as a day,
     a Missing line or a card with its course on its line, which is read as
-    what it is. A text with no heading-shaped line outside a homework-page
-    day is read by the other rules alone. A line shaped like a day or a card
+    what it is. A text with no heading-shaped line outside the homework
+    page's shape is read by the other rules alone. A line shaped like a day or a card
     that does not read as one is text that needs review, and it ends the
     card before it, so nothing after it is taken for that card's words. A
     mail program's date line outside a card dates the school's reports read
@@ -584,8 +588,8 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 # card after it takes an earlier one. Written the summary's way it ends
                 # the homework page's shape too; written the page's way it starts none,
                 # since here it is a teacher's line and under that shape no heading is
-                # read. A heading, which a line is only outside a homework-page day,
-                # makes the note a subject's.
+                # read. A heading, which a line is only outside the homework page's
+                # shape, makes the note a subject's.
                 if _is_a_day(line):
                     day = course = None
                     page_day = page_day and bool(DAY_LINE.match(line))
@@ -618,7 +622,12 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             continue
         if day_match := DAY_LINE.match(line) or SUMMARY_DAY_LINE.match(line):
             day = a_date(day_match.group("year"), day_match.group("month"), day_match.group("day"))
-            page_day = bool(DAY_LINE.match(line))
+            # The homework page's shape is put in force only by a day written the page's way
+            # whose digits name a date. A day that names no date may be a teacher's line
+            # under a card, and under the page's shape no subject heading is read: written
+            # the summary's way it ends that shape, written the page's way it leaves the
+            # shape as it was, as in a note.
+            page_day = bool(DAY_LINE.match(line)) and (day is not None or page_day)
             course = None
             last = None
             if day is None:
