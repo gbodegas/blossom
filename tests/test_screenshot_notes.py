@@ -10,6 +10,8 @@ note is not known. Every card here is made up, as a fake reader would return it.
 import itertools
 from datetime import UTC, date, datetime
 
+import pytest
+
 from blossom import screenshot_page
 from blossom import screenshot_review as review
 from blossom.intake import TEACHER_NOTE, Reading
@@ -187,6 +189,35 @@ def test_note_shaped_cards_that_cannot_be_read_as_notes_stay_items() -> None:
     }
 
 
+SHAPED = [
+    pytest.param(None, f"{STUDY}\n11/18/2026 - Wednesday", id="a-day"),
+    pytest.param(None, f"{STUDY}\n11/12 Math 8: Homework: Sheet Grade: Missing", id="a-missing"),
+    pytest.param(f"{STUDY}\nMath 8 - Due: Worksheet 3:", None, id="a-card-in-the-title"),
+    pytest.param(
+        None, f"{STUDY}\nOn Tue, Nov 17, 2026 at 9:14 AM The School wrote:", id="a-mail-date"
+    ),
+]
+"""A note card's title and instruction, a line of one shaped as a day, a Missing line, a card
+or a mail program's date line."""
+
+
+@pytest.mark.parametrize(("title", "instruction"), SHAPED)
+def test_a_note_card_with_a_line_shaped_as_structure_is_a_card_that_could_not_be_read(
+    title: str | None, instruction: str | None
+) -> None:
+    found = assembled("shaped", shot(note("Spanish 8", title=title, instruction=instruction)))
+
+    assert found.rows == ()
+    assert [item.reason for item in found.unread] == ["card_unreadable"]
+
+
+def test_the_same_words_on_one_line_are_a_note() -> None:
+    words = f"{STUDY} 11/18/2026 - Wednesday"
+    row = only_row(assembled("one-line", shot(note("Spanish 8", instruction=words))))
+
+    assert row.reading.teacher_note is not None
+
+
 # ------------------------------------------------------------------ days and copies
 
 
@@ -204,6 +235,25 @@ def test_a_weekday_is_read_from_the_earliest_school_day_the_note_is_listed_under
     task = row.reading.teacher_note
     assert task is not None
     assert task.seen_on == (date(2026, 11, 16), date(2026, 11, 17))
+
+
+def test_the_same_note_in_the_next_school_week_is_a_row_of_its_own() -> None:
+    found = assembled(
+        "weeks",
+        shot(note("Humanities 8", title=PROJECT), day=TUESDAY),
+        shot(note("Humanities 8", title=PROJECT), day="Monday 11/23/2026"),
+    )
+    tasks = sorted(
+        (row.reading.teacher_note for row in found.rows if row.reading.teacher_note is not None),
+        key=lambda task: task.first_day,
+    )
+
+    assert found.unread == ()
+    assert len(found.rows) == 2
+    assert [(task.seen_on, task.deadline) for task in tasks] == [
+        ((date(2026, 11, 17),), date(2026, 11, 17)),
+        ((date(2026, 11, 23),), date(2026, 11, 23)),
+    ]
 
 
 def test_on_its_own_a_weekday_equal_to_the_school_day_offers_both_weeks() -> None:

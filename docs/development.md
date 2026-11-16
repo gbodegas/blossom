@@ -870,8 +870,9 @@ are not kept. A saved task keeps the note's words as one of the school's
 instructions under the school day it was first listed under, and the next
 paste of the same text finds it by its class, those words, and that day,
 whatever its title or due date, and says it is saved already. A note with a
-line only shaped like a day, a Missing line, or a card is read as no task and
-stays whole under text that needs review. Homework screenshots read a card
+line only shaped like a day, a Missing line, a card, or a mail program's date
+line is read as no task and stays whole under text that needs review.
+Homework screenshots read a card
 with a class and words, no label and no due line, under a day heading, as a
 teacher's note by the same rules, with that review's own ticks, title and
 date corrections, and recognition by words and school day; its words are

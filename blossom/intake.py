@@ -985,6 +985,10 @@ def _is_shaped_as_structure(line: str) -> bool:
     )
 
 
+is_shaped_as_structure = _is_shaped_as_structure
+"""``_is_shaped_as_structure`` by the name the screenshot path's note cards use."""
+
+
 @dataclass
 class _OpenNote:
     """A subject's note while ``read_text`` is inside it: its subject, the day in force

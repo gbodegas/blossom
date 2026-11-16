@@ -11,7 +11,8 @@ a deadline.
 The rules are closed lists, not a reading of language. A deadline statement is
 "due" or "by" followed by one of a fixed set of date expressions, or "due" with
 no word after it. Homework without a deadline statement is told by a fixed set
-of opening words. Anything these lists do not settle is kept whole and marked
+of opening words, each counted only when a fixed set of words after it does not
+show it names a thing. Anything these lists do not settle is kept whole and marked
 unclear: no split and no date is made up, and the school day a note is listed
 under is never taken for a deadline.
 
@@ -30,10 +31,15 @@ from typing import Final
 NAME_LIMIT: Final = 200
 """The most characters a task's name holds."""
 
-SEEN_AGAIN: Final = timedelta(days=7)
-"""The same words listed again sooner than this after the first day are the same task."""
-
 _WEEK: Final = timedelta(days=7)
+
+
+def _school_week(day: date) -> date:
+    """The Monday that starts the school week a day is in. The same words listed again on a
+    day of the first listing's school week are the same task; in a later week they are a
+    task of their own, however few days apart."""
+    return day - timedelta(days=day.weekday())
+
 
 _WEEKDAYS: Final = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 _ENGLISH_MONTHS: Final = (
@@ -134,9 +140,12 @@ _WORD: Final = re.compile(r"\w")
 _WORD_START: Final = re.compile(r"(?<![\w/])\w")
 _END: Final = re.compile(r"(?P<run>[.!?]+)[\"')\]]*(?P<gap>\s+)(?=\S)")
 _LAST_WORD: Final = re.compile(r"[A-Za-z]+$")
-_OPENING: Final = re.compile(
-    r"\W*(?:please\s+bring|go\s+to|study|use|check|bring|review)\b(?![-'])", re.IGNORECASE
-)
+_OPENING_WORDS: Final = r"(?:please\s+bring|go\s+to|study|use|check|bring|review)\b(?![-'])"
+_OPENING: Final = re.compile(rf"\W*{_OPENING_WORDS}", re.IGNORECASE)
+_OPENING_INSIDE: Final = re.compile(rf"(?<![\w'-]){_OPENING_WORDS}", re.IGNORECASE)
+_NEXT_WORD: Final = re.compile(r"[\w']+")
+_LINKING: Final = frozenset({"is", "are", "was", "were", "has", "have", "had", "went", "will"})
+"""Words that, among the three after an opening word, show it names a thing, not a task."""
 _NO_HOMEWORK: Final = re.compile(r"\bno\b(?:\s+[\w']+){0,3}\s+homework\b", re.IGNORECASE)
 _IS_ARE: Final = re.compile(r"(?:^|\s+)(?:is|are)$", re.IGNORECASE)
 _TRAILING: Final = " ,;:-"
@@ -426,6 +435,25 @@ def _headline(text: str) -> str:
     return _cut(_single(line).rstrip(".!?")) or _cut(_single(text))
 
 
+def _asks(words: str, found: re.Match[str]) -> bool:
+    """Whether an opening word found in the words asks for a task: the word after it is not
+    "of", and none of the next three words is "is", "are", "was", "were", "has", "have",
+    "had", "went" or "will"."""
+    after = [word.lower() for word in _NEXT_WORD.findall(words, found.end())[:3]]
+    return after[:1] != ["of"] and _LINKING.isdisjoint(after)
+
+
+def _opens(words: str) -> bool:
+    """Whether the words open with an opening word that asks for a task."""
+    found = _OPENING.match(words)
+    return found is not None and _asks(words, found)
+
+
+def _sets_work(words: str) -> bool:
+    """Whether an opening word that asks for a task starts any word of the words."""
+    return any(_asks(words, found) for found in _OPENING_INSIDE.finditer(words))
+
+
 def _unit(paragraph: int, text: str, start: int, end: int, day: date) -> _Unit:
     """One piece of a paragraph with its deadline statements and the dates it names."""
     piece = text[start:end]
@@ -461,22 +489,28 @@ def _words(units: Sequence[_Unit], paragraphs: Sequence[str]) -> str:
 
 
 def _reading(units: Sequence[_Unit], paragraphs: Sequence[str]) -> _Reading:
-    """One task from the pieces that make it up."""
+    """One task from the pieces that make it up.
+
+    Words that say no homework is assigned are not an assignment unless they also set work:
+    an opening word that asks for a task anywhere in them, or a deadline statement after
+    more words than the ones that say no homework. Words that set work as well are unclear.
+    """
     first = units[0]
     words = _words(units, paragraphs)
     statements = [statement for unit in units for statement in unit.statements]
     before = _name_before(first.before) if first.statements else ""
     name = before or _headline(first.text)
     says_none = bool(_NO_HOMEWORK.search(name if first.statements else words))
-    opens = bool(_OPENING.match(words))
+    opens = _opens(words)
     unsure = any(unit.unsure for unit in units)
     if not statements:
         if says_none:
-            standing = Standing.UNCLEAR if opens else Standing.NOT_ASSIGNMENT
+            standing = Standing.UNCLEAR if _sets_work(words) else Standing.NOT_ASSIGNMENT
         else:
             standing = Standing.HOMEWORK if opens else Standing.UNCLEAR
     elif says_none:
-        standing = Standing.NOT_ASSIGNMENT
+        alone = _NO_HOMEWORK.fullmatch(name) is not None
+        standing = Standing.NOT_ASSIGNMENT if alone and not _sets_work(words) else Standing.UNCLEAR
     elif len(statements) > 1 or unsure or (first.statements and not before):
         standing = Standing.UNCLEAR
     else:
@@ -521,10 +555,11 @@ def read_notes(blocks: Sequence[NoteBlock]) -> tuple[NoteTask, ...]:
     """The tasks of a whole paste, in order of first appearance.
 
     The same subject and the same task words, compared single-spaced, listed
-    again less than a week after the first school day are one task: the day is
-    added to ``seen_on`` and nothing else about the task changes, so its
-    deadline stays as read from the first day. Anything else is a task of its
-    own, whatever its name.
+    again on a day of the school week, Monday to Sunday, of the task's first
+    school day are one task: the day is added to ``seen_on`` and nothing else
+    about the task changes, so its deadline stays as read from the first day.
+    The same words listed in a later school week are a task of its own,
+    however few days apart, and so is anything else, whatever its name.
     """
     latest: dict[tuple[str, str, bool], _Seen] = {}
     found: list[_Seen] = []
@@ -533,7 +568,7 @@ def read_notes(blocks: Sequence[NoteBlock]) -> tuple[NoteTask, ...]:
         for place, reading in enumerate(_read_block(block)):
             key = (_single(block.subject), _single(reading.words), block.suspect)
             seen = latest.get(key)
-            if seen is not None and block.day - seen.block.day < SEEN_AGAIN:
+            if seen is not None and _school_week(block.day) == _school_week(seen.block.day):
                 seen.days.add(block.day)
                 seen.where = min(seen.where, (position, place))
                 continue

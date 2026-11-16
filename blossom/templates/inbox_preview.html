@@ -341,7 +341,8 @@
               {% endif %}{% if reading.teacher_note and not reading.instructions %}
               {# A note saved before brings no instruction to decide again; its words are shown all the same, so no line of the text goes unshown. #}
               <p class="from-teacher">From the school: <q class="authored-text">{{ reading.teacher_note.words }}</q> <span class="source">Read in the school's note for {{ reading.teacher_note.first_day.strftime("%B") }} {{ reading.teacher_note.first_day.day }}.</span></p>{% endif %}{% for task in reading.joined_notes %}{% if task.words not in (reading.instructions|map(attribute="text")|list) %}
-              <p class="source">The teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} also says: <q class="authored-text">{{ task.words }}</q></p>{% endif %}{% endfor %}
+              <p class="source">The teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} also says: <q class="authored-text">{{ task.words }}</q></p>{% endif %}{% endfor %}{% if reading.teacher_note %}{% for day in reading.teacher_note.listed_after %}
+              <p class="source">Still listed on {{ spoken_day(day) }}, after that date.</p>{% endfor %}{% endif %}
               {% if change.note_change == "kept" and change.standing and change.standing.note %}
                 <p class="from-teacher">Her note: <q class="authored-text">{{ change.standing.note }}</q></p>
               {% endif %}

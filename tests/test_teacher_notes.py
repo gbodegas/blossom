@@ -367,6 +367,36 @@ ROWS = [
     ),
     pytest.param(
         (
+            note("Spanish", nov(3), "Spelling packet due Friday."),
+            note("Spanish", nov(9), "Spelling packet due Friday."),
+        ),
+        (
+            want("Spelling packet", HOMEWORK, deadline=nov(6), seen_on=(nov(3),)),
+            want("Spelling packet", HOMEWORK, deadline=nov(13), seen_on=(nov(9),)),
+        ),
+        id="the-same-words-in-the-next-school-week-six-days-later",
+    ),
+    pytest.param(
+        (
+            note("Science", nov(6), "Lab notebook due on Wednesday"),
+            note("Science", nov(9), "Lab notebook due on Wednesday"),
+        ),
+        (
+            want("Lab notebook", HOMEWORK, deadline=nov(11), seen_on=(nov(6),)),
+            want("Lab notebook", HOMEWORK, deadline=nov(11), seen_on=(nov(9),)),
+        ),
+        id="a-friday-listing-then-the-next-monday",
+    ),
+    pytest.param(
+        (
+            note("Science", nov(2), "Lab notebook due on Friday"),
+            note("Science", nov(6), "Lab notebook due on Friday"),
+        ),
+        (want("Lab notebook", HOMEWORK, deadline=nov(6), seen_on=(nov(2), nov(6))),),
+        id="the-same-words-monday-to-friday-of-one-school-week",
+    ),
+    pytest.param(
+        (
             note(
                 "Science",
                 nov(3),
@@ -811,6 +841,58 @@ ROWS = [
         (note("Science", nov(2), PRACTICE), note("Science", nov(2), PRACTICE)),
         (want("Online practice", HOMEWORK, deadline=nov(3), seen_on=(nov(2),)),),
         id="the-same-words-twice-under-one-day",
+    ),
+    pytest.param(
+        (note("Science", nov(2), "Study hall is moved to room 12 on Friday."),),
+        (want("Study hall is moved to room 12 on Friday", UNCLEAR, deadline=None),),
+        id="an-opening-word-as-a-noun-before-is",
+    ),
+    pytest.param(
+        (note("Science", nov(2), "Use of phones is not allowed during the quiz."),),
+        (want("Use of phones is not allowed during the quiz", UNCLEAR, deadline=None),),
+        id="an-opening-word-before-of",
+    ),
+    pytest.param(
+        (note("Science", nov(2), "Review of unit 2 went well today."),),
+        (want("Review of unit 2 went well today", UNCLEAR, deadline=None),),
+        id="an-opening-word-before-of-and-went",
+    ),
+    pytest.param(
+        (note("Science", nov(2), "Study for the quiz on Friday."),),
+        (want("Study for the quiz on Friday", HOMEWORK, deadline=None),),
+        id="an-opening-word-as-an-instruction-to-study",
+    ),
+    pytest.param(
+        (note("Science", nov(2), "Use the study guide to review unit 2."),),
+        (want("Use the study guide to review unit 2", HOMEWORK, deadline=None),),
+        id="an-opening-word-as-an-instruction-to-use",
+    ),
+    pytest.param(
+        (note("Science", nov(2), "Review chapter 3 and bring the worksheet."),),
+        (want("Review chapter 3 and bring the worksheet", HOMEWORK, deadline=None),),
+        id="an-opening-word-as-an-instruction-to-review",
+    ),
+    pytest.param(
+        (note("Math", nov(2), "No homework tonight, but study for the quiz due Friday."),),
+        (
+            want(
+                "No homework tonight, but study for the quiz",
+                UNCLEAR,
+                deadline=nov(6),
+                deadline_words="due Friday",
+            ),
+        ),
+        id="no-homework-beside-a-deadline-of-other-words",
+    ),
+    pytest.param(
+        (note("Math", nov(2), "No homework tonight, but study for the quiz."),),
+        (want("No homework tonight, but study for the quiz", UNCLEAR, deadline=None),),
+        id="no-homework-beside-an-opening-word-after-it",
+    ),
+    pytest.param(
+        (note("Math", nov(2), "No additional homework assigned."),),
+        (want("No additional homework assigned", NOT_ASSIGNMENT, deadline=None),),
+        id="no-homework-alone",
     ),
     pytest.param((), (), id="edge-no-notes-no-tasks"),
 ]

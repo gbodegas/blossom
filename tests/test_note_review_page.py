@@ -82,10 +82,10 @@ SAVED_VIEW = "c0e420da2293eeb951c4d45834dd3f79915e0e5cc749e2474542d1611add5d90"
 """The same text read again once it is saved, hashed the same way."""
 
 
-def client_in(tmp_path: pathlib.Path) -> TestClient:
+def client_in(tmp_path: pathlib.Path, today: str = "2026-11-03") -> TestClient:
     """The application on a store of its own, as its pages reach it."""
     settings = fixture_settings(
-        BLOSSOM_TODAY="2026-11-03",
+        BLOSSOM_TODAY=today,
         BLOSSOM_FIXTURE_PATH="",
         BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
         BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
@@ -320,6 +320,118 @@ def test_a_note_that_only_names_a_card_is_a_line_on_that_card(tmp_path: pathlib.
     assert "school's note" not in shown
     assert page.count("also says") == 1
     assert len(re.findall(r"<h2>Short essay</h2>", page)) == 1
+
+
+TWO_SCHOOL_WEEKS = """Homework for Wren
+11/03/2026 - Tuesday
+Spanish -
+Spelling packet due Friday.
+
+11/09/2026 - Monday
+Spanish -
+Spelling packet due Friday.
+"""
+"""The same note on a Tuesday and on the next Monday, six days later."""
+
+
+def test_the_same_note_in_the_next_school_week_is_a_card_of_its_own(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Each listing is a card of its own with the school day of its note and its own
+    deadline; the later card asks whether it is the same assignment or new work, so an
+    untouched Save writes nothing, and no line of either note is listed for review."""
+    with client_in(tmp_path, today="2026-11-09") as client:
+        page = client.post("/parent/inbox/read", data={"text": TWO_SCHOOL_WEEKS}).text
+        kept = client.post("/parent/inbox/keep", data=ticked_form(page))
+        rows = store_of(client).all_assignments()
+
+    review = page.partition('id="needs-review"')[2].split(">Edit the text</button>", 1)[0]
+    cards = re.findall(r"<article [^>]*>.*?</article>", page, re.S)
+    packets = [shown for shown in cards if "<h2>Spelling packet</h2>" in shown]
+
+    assert len(packets) == 2
+    assert "Read in the school's note for November 3." in packets[0]
+    assert "Due Friday, November 6, 2026" in " ".join(packets[0].split())
+    assert 'name="occurrence-' not in packets[0]
+    assert "Read in the school's note for November 9." in packets[1]
+    assert "Friday, November 13, 2026, as the note says" in " ".join(packets[1].split())
+    assert 'name="occurrence-' in packets[1]
+    assert "Spelling packet" not in review
+    assert kept.status_code == 200
+    assert rows == []
+
+
+def test_a_notice_that_opens_with_a_listed_word_as_a_noun_starts_unselected(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A notice whose first word is one of the words that open homework, used as a noun, is
+    a note that may be homework: it starts unselected."""
+    notice = (
+        "Homework for Wren\n11/02/2026 - Monday\nScience -\n"
+        "Study hall is moved to room 12 on Friday.\n"
+    )
+    with client_in(tmp_path, today="2026-11-02") as client:
+        page = client.post("/parent/inbox/read", data={"text": notice}).text
+
+    shown = sections(page)
+
+    assert titles(shown[MAY_BE]) == ["Study hall is moved to room 12 on Friday"]
+    assert numbers(page, r'<input type="checkbox" name="take-(\d+)" value="1"') == {0}
+    assert numbers(page, TICKED) == set()
+
+
+def test_a_no_homework_note_that_also_sets_work_may_be_homework(tmp_path: pathlib.Path) -> None:
+    """A note that says no homework and also sets work with a deadline is under the notes
+    that may be homework, unselected, never under the notes with no homework."""
+    text = (
+        "Homework for Wren\n11/02/2026 - Monday\nMath -\n"
+        "No homework tonight, but study for the quiz due Friday.\n"
+    )
+    with client_in(tmp_path, today="2026-11-02") as client:
+        page = client.post("/parent/inbox/read", data={"text": text}).text
+
+    shown = sections(page)
+
+    assert titles(shown[MAY_BE]) == ["No homework tonight, but study for the quiz"]
+    assert NONE_ASSIGNED not in shown
+    assert numbers(page, TICKED) == set()
+
+
+LISTED_AFTER = """Homework for Wren
+11/02/2026 - Monday
+Humanities -
+Map project due on Wednesday
+
+11/05/2026 - Thursday
+Humanities -
+Map project due on Wednesday
+
+11/06/2026 - Friday
+Humanities -
+Map project due on Wednesday
+"""
+"""One note of the week listed on its Monday and again on two days after its deadline."""
+
+
+def test_a_note_listed_again_after_its_deadline_says_so_once_for_each_day(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note listed again after the deadline it settles is one card, which says on a line
+    of its own each later day it is listed under; a note listed before its deadline says
+    nothing of the kind."""
+    with client_in(tmp_path, today="2026-11-06") as client:
+        page = client.post("/parent/inbox/read", data={"text": LISTED_AFTER}).text
+        plain = client.post("/parent/inbox/read", data={"text": NOTED}).text
+
+    shown = " ".join(card(page, "Map project").split())
+
+    assert "Due Wednesday, November 4, 2026" in shown
+    assert (
+        '<p class="source">Still listed on Thursday, November 5, 2026, after that date.</p> '
+        '<p class="source">Still listed on Friday, November 6, 2026, after that date.</p>'
+    ) in shown
+    assert page.count("Still listed on") == 2
+    assert "Still listed on" not in plain
 
 
 def test_a_note_not_selected_has_no_type_and_counts_in_no_total(tmp_path: pathlib.Path) -> None:

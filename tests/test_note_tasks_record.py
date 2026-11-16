@@ -427,6 +427,80 @@ def test_a_note_naming_a_card_of_another_day_is_a_reading_of_its_own() -> None:
     assert noted.assignment_id != card.assignment_id
 
 
+NEXT_MONDAY = datetime(2026, 11, 9, 20, 0, tzinfo=UTC)
+"""The moment a text of two school weeks is read: the Monday of its second week."""
+
+TWO_LISTINGS = """Homework for Wren
+11/03/2026 - Tuesday
+Spanish -
+Spelling packet due Friday.
+
+11/09/2026 - Monday
+Spanish -
+Spelling packet due Friday.
+"""
+"""The same note listed on a Tuesday and again on the next Monday, six days later."""
+
+WITH_THE_CARD = TWO_LISTINGS.replace(
+    "11/09/2026 - Monday\n",
+    "11/09/2026 - Monday\nSpanish - Assigned: Spelling packet: (Due:11/13/2026)\n",
+)
+"""The same two listings with the Monday's formal card of the name above its note."""
+
+
+def test_the_same_note_in_the_next_school_week_is_a_task_of_its_own_and_asks(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note listed again in a later school week, six days after the first listing, is a
+    reading of its own with its own deadline, and no line of either note is left for
+    review. The later reading asks whether it is the same assignment or new work, and
+    nothing is written until that is answered."""
+    read = read_text(TWO_LISTINGS, now=NEXT_MONDAY, today=nov(9))
+    noted = with_notes(read, now=NEXT_MONDAY)
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        changes = changes_for(noted.items, store)
+        held = keep(noted.items, store, now=NEXT_MONDAY, today=nov(9))
+        saved = store.all_assignments()
+    finally:
+        store.close()
+    first, later = noted.items
+
+    assert [item.pair for item in noted.items] == [("Spanish", "Spelling packet")] * 2
+    assert [item.due_date for item in noted.items] == [nov(6), nov(13)]
+    assert first.teacher_note is not None
+    assert later.teacher_note is not None
+    assert (first.teacher_note.seen_on, later.teacher_note.seen_on) == ((nov(3),), (nov(9),))
+    assert first.assignment_id != later.assignment_id
+    assert [item.text for item in noted.unread if "Spanish" in item.text] == []
+    assert [item.text for item in noted.unread if "Spelling" in item.text] == []
+    assert changes[0].state == NEW
+    assert (changes[1].state, changes[1].ambiguous) == (REVIEW, True)
+    assert isinstance(held, list)
+    assert saved == []
+
+
+def test_a_note_joins_the_card_of_its_own_school_week_only() -> None:
+    """The Monday's note joins the Monday's card of its name, which takes only the deadline
+    that note settles. The same words listed the week before are a reading of their own, with
+    their own deadline, and give the card no claim."""
+    read = read_text(WITH_THE_CARD, now=NEXT_MONDAY, today=nov(9))
+
+    items = with_note_readings(read, now=NEXT_MONDAY)
+    card, noted = by_pair(items)["Spanish", "Spelling packet"]
+
+    assert card.teacher_note is None
+    assert [task.first_day for task in card.joined_notes] == [nov(9)]
+    assert [task.seen_on for task in card.joined_notes] == [(nov(9),)]
+    assert card.due_date == nov(13)
+    assert {each.asserted_value for each in card.claims} == {"2026-11-13"}
+    assert noted.teacher_note is not None
+    assert noted.teacher_note.seen_on == (nov(3),)
+    assert noted.due_date == nov(6)
+    assert said(noted) == [(SourceChannel.LMS, "2026-11-06", TEACHER_NOTE, PORTAL_CONFIDENCE)]
+    assert len(items) == 2
+
+
 TWO_WEEKS = (
     "Homework for Wren\n"
     "- 11/02/2026 - Monday\nMath - Due: Weekly practice:\n"

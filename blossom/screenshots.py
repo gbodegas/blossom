@@ -63,6 +63,7 @@ from blossom.intake import (
     Reading,
     a_date,
     claim,
+    is_shaped_as_structure,
     note_reading,
     pair,
     read_cards,
@@ -390,7 +391,9 @@ ItemReason = Literal[
     "reading_unreadable", "card_unreadable", "incomplete", "clipped", "no_day", "repeated"
 ]
 """Why an item couldn't be read as a row. The first three say text couldn't be read: a whole
-reading, a card, or a card's label, course or title. ``clipped`` is a card partly cut off,
+reading, a card, or a card's label, course or title. A teacher's note card with a line shaped
+as a day, a Missing line, a card or a mail program's date line is ``card_unreadable`` too.
+``clipped`` is a card partly cut off,
 whether or not a whole copy is read elsewhere. ``no_day`` is a card read whole whose date
 can't be told: no due line of its own and no day heading above it in its screenshot, or a
 teacher's note card with no readable day heading above it.
@@ -475,7 +478,10 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     layer, and its occurrence follows a paste's rounds over the name's rows, met in the order
     of each row's first card's walk, then layer. A row keeps every date its assigned cards were
     read under, with their places; when the dates disagree it settles on none, keeps its
-    instructions once for each day, and its key holds the dates. A teacher's note card under a
+    instructions once for each day, and its key holds the dates. A teacher's note card with a
+    line of its title or instruction shaped as a day, a Missing line, a card or a mail
+    program's date line is read as no task and is a card that couldn't be read. Any other
+    teacher's note card under a
     readable day heading is read with the other note cards of its layer, its layer being how
     many note cards above it in its screenshot have its class, words and day; each task they
     read as is a row whose key holds its standing, unless a row read from cards has its class
@@ -505,10 +511,20 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
         day = None if item.heading is None else item.heading.day
         if card is not None and day is not None and _is_note(card):
             words = _note_words(card) or ""
+            block = NoteBlock(
+                subject=card.course or "",
+                day=day,
+                paragraphs=(words,),
+                line=0,
+                suspect=_has_structure(card),
+            )
+            if block.suspect:
+                found = _unread(item, "card_unreadable")
+                unread[found.key] = found
+                continue
             same_note = (item.sha256, _fold(card.course), words, day)
             note_layer = matching_notes.get(same_note, 0)
             matching_notes[same_note] = note_layer + 1
-            block = NoteBlock(subject=card.course or "", day=day, paragraphs=(words,), line=0)
             noted.setdefault(note_layer, []).append(
                 _NoteSeen(block, _marks(card, item.heading), CardPlace(item.sha256, item.place))
             )
@@ -798,6 +814,18 @@ def _note_words(card: Card) -> str | None:
     elif len(parts) == 2 and parts[0].startswith(parts[1]):
         parts = [parts[0]]
     return " ".join(parts) or None
+
+
+def _has_structure(card: Card) -> bool:
+    """Whether a line of a note card's title or instruction, as read, before its words are
+    single-spaced, is shaped as a day, a Missing line, a card or a mail program's date line,
+    as a line of a pasted note that makes it suspect is."""
+    return any(
+        is_shaped_as_structure(line.strip())
+        for text in (card.title, card.instruction)
+        if text is not None
+        for line in text.splitlines()
+    )
 
 
 def _is_note(card: Card) -> bool:
