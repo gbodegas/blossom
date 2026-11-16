@@ -2019,7 +2019,7 @@ def test_every_note_starts_unselected_whatever_its_standing(tmp_path: pathlib.Pa
     assert numbers(page, r'<input type="checkbox" name="take-(\d+)" value="1"') == {2, 3, 4, 5, 6}
     assert numbers(page, TICKED) == set()
     assert page.count("If selected: ") == 5
-    assert found_line(page) == "Found 5 items in the teacher's notes; none is selected yet."
+    assert found_line(page) == "Found 6 items in the teacher's notes; none is selected yet."
     assert "2 assignments across 1 week: 2 new, 0 updates, 0 already saved." in " ".join(
         page.split()
     )
@@ -2041,7 +2041,7 @@ def test_a_saved_note_read_again_shows_saved_and_selected(tmp_path: pathlib.Path
     assert kept.headers["location"].endswith("added=3&updated=0&unchanged=0")
     assert '<span class="pill">Already saved</span>' in card(again, "Reading log")
     assert numbers(again, TICKED) == {4}
-    assert found_line(again) == "Found 5 items in the teacher's notes; 1 is selected."
+    assert found_line(again) == "Found 6 items in the teacher's notes; 1 is selected."
 
 
 def test_save_with_nothing_selected_writes_nothing(tmp_path: pathlib.Path) -> None:

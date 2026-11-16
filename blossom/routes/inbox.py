@@ -1893,11 +1893,17 @@ def preview_page(
             "note_tasks": bool(tasks),
             # The notes read, told apart from the ones selected to save.
             "notes_found": (
-                len(tasks),
+                len(tasks) + sum(len(change.reading.joined_notes) for change in changes),
                 sum(
                     1
                     for change in changes
                     if change.reading.teacher_note is not None and not change.left_out
+                )
+                + sum(
+                    1
+                    for change in changes
+                    for place in range(len(change.reading.joined_notes))
+                    if (change.key, place) in read.joined
                 ),
             ),
             "note_fields": note_fields(changes, read),

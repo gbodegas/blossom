@@ -47,8 +47,8 @@
       {{ counts.new }} new, {{ counts.updated }} update{% if counts.updated != 1 %}s{% endif %}, {{ counts.unchanged }} already saved{% if counts.review %}, {{ counts.review }} need{% if counts.review == 1 %}s{% endif %} your answer{% endif %}.
       Nothing is saved until Save is pressed.
     </p>
-  {% endif %}{% if note_tasks %}
-  {# The notes read, told apart from the ones selected, so a review with none selected is not taken for a failed reading. #}
+  {% endif %}{% if notes_found and notes_found[0] %}
+  {# The items read from the notes, each note's own or joined to a card, told apart from the ones selected, so a review with none selected is not taken for a failed reading. #}
   {% set found, chosen_notes = notes_found %}
   <p class="note" id="notes-found">Found {{ found }} item{% if found != 1 %}s{% endif %} in the teacher's notes; {% if chosen_notes == 0 %}none is selected yet{% elif chosen_notes == 1 %}1 is selected{% else %}{{ chosen_notes }} are selected{% endif %}.</p>{% endif %}
 

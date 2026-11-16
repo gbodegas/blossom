@@ -18,8 +18,9 @@ under is never taken for a deadline.
 
 Nothing here reads a clock or a store. "Today", "tomorrow" and a weekday are
 worked out from the first school day a task is listed under, and a month and
-day are read in that day's year unless a year is written with them, except
-that January named under a school day in December is read in the next year.
+day are read in that day's year unless a year within one year of it is written
+with them, except that January named under a school day in December is read in
+the next year.
 """
 
 import enum
@@ -276,8 +277,10 @@ def _single(text: str) -> str:
 
 def _explicit_at(text: str, at: int, day: date) -> tuple[int, date] | None:
     """The month and day written at a place and where it ends, in the year written with it
-    or, with none, in the school day's year, except a January date read under a school day in
-    December, which is in the following year."""
+    when that year is within one year of the school day's, or else in the school day's year,
+    except a January date read under a school day in December, which is in the following year.
+    A number written where a year goes that is further off ("January 8, 1500 words") is no
+    year."""
     found = _EXPLICIT.match(text, at)
     if found is None:
         return None
@@ -288,7 +291,7 @@ def _explicit_at(text: str, at: int, day: date) -> tuple[int, date] | None:
     else:
         month, number = int(found["numeric_month"]), found["numeric_day"]
     written = found["english_year"] or found["numeric_year"] or found["spanish_year"]
-    if written:
+    if written and abs(int(written) - day.year) <= 1:
         year = int(written)
     else:
         year = day.year + 1 if (day.month, month) == (12, 1) else day.year
