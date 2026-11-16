@@ -16,6 +16,7 @@ writes them.
 import datetime
 import hashlib
 import html
+import json
 import pathlib
 import re
 
@@ -23,6 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from blossom.app import create_app
+from blossom.reconciliation import SourceChannel
 from tests.support import SAME_ORIGIN, fixture_settings, store_of
 
 NOTED = """Homework for Wren
@@ -94,7 +96,8 @@ def client_in(tmp_path: pathlib.Path) -> TestClient:
 
 def ticked_form(page: str) -> dict[str, str]:
     """The review form as a browser sends it back untouched: the hidden fields, each
-    select's chosen option, each ticked box of a note, and the text."""
+    select's chosen option, each ticked box of a note, each note's title box, chosen due
+    date and date box, and the text."""
     fields = {
         name: html.unescape(value)
         for name, value in re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', page)
@@ -105,6 +108,14 @@ def ticked_form(page: str) -> dict[str, str]:
         fields[name] = chosen.group(1)
     for name in re.findall(r'<input type="checkbox" name="(take-\d+)" value="1" checked>', page):
         fields[name] = "1"
+    for name, value in re.findall(
+        r'<input type="(?:text|date)" name="((?:title|when_other)-\d+)" value="([^"]*)"', page
+    ):
+        fields[name] = html.unescape(value)
+    for name, value in re.findall(
+        r'<input type="radio" name="(when-\d+)" value="([^"]+)" checked>', page
+    ):
+        fields[name] = value
     text = re.search(r'<textarea name="text" hidden>(.*?)</textarea>', page, re.S)
     assert text is not None
     fields["text"] = html.unescape(text.group(1))
@@ -947,3 +958,229 @@ def test_a_notes_question_with_no_date_beside_it_names_no_date(tmp_path: pathlib
     assert 'name="occurrence-1" value="keep"' not in page
     assert "its due date" not in page
     assert not re.search(r'name="occurrence-1" value="[a-z]+" checked', page)
+
+
+FIELDS = """Homework for Wren
+11/02/2026 - Monday
+Humanities -
+Study for the vocabulary quiz on Thursday. Map project due on Wednesday.
+
+08 Geometry -
+Quiz on unit two
+
+11/03/2026 - Tuesday
+Science -
+Online practice due Tuesday
+"""
+"""A dated note, a note that names a date, a note that may be homework, and a note due on a
+weekday it was first listed on, so either Tuesday may be meant."""
+
+EDITS_IN_REVIEW = (
+    "Your changes to a title or due date are in this review. Nothing was saved yet. "
+    "Check it, then save."
+)
+
+
+def key_of(page: str, title: str) -> int:
+    """The key of the note card with this title, as its title box names it."""
+    found = re.search(r'name="title-(\d+)"', card(page, title))
+    assert found is not None, title
+    return int(found.group(1))
+
+
+def when_options(body: str, key: int) -> list[tuple[str, bool]]:
+    """Each due-date choice of a card, in order, with whether it is chosen."""
+    return [
+        (value, bool(checked))
+        for value, checked in re.findall(
+            rf'<input type="radio" name="when-{key}" value="([^"]+)"( checked)?>', body
+        )
+    ]
+
+
+def signed_edits(page: str) -> dict[int, list[str]]:
+    """The title and due date the page signed for each note card."""
+    found = re.search(r'name="made_with" value="([^"]*)"', page)
+    assert found is not None
+    made = html.unescape(found.group(1)).rpartition(".")[0]
+    context = json.loads(made.partition(";")[2])
+    return {int(entry[0]): [str(entry[1]), str(entry[2])] for entry in context["edits"]}
+
+
+DUE_CHOICES = {
+    "Map project": [("2026-11-04", True), ("none", False), ("other", False)],
+    "Study for the vocabulary quiz on Thursday": [
+        ("2026-11-05", False),
+        ("none", True),
+        ("other", False),
+    ],
+    "Quiz on unit two": [("none", True), ("other", False)],
+    "Online practice": [
+        ("2026-11-03", False),
+        ("2026-11-10", False),
+        ("none", True),
+        ("other", False),
+    ],
+}
+"""The due-date choices of each note card on the first view: the date as read, chosen; each
+date a weekday may mean; each date the note names; no due date, chosen when none was read;
+and another date."""
+
+
+def test_each_note_card_has_a_title_box_and_one_due_date_choice(tmp_path: pathlib.Path) -> None:
+    """Each note card has a box with its whole title and one group of due-date choices, with
+    the date as read chosen, or no due date when none was read; each control names its card
+    in words a screen reader says. A card read from no note has neither."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        noted = client.post("/parent/inbox/read", data={"text": NOTED}).text
+
+    for title, choices in DUE_CHOICES.items():
+        body = card(page, title)
+        key = key_of(page, title)
+        assert f'<label>Title<span class="visually-hidden"> for {title}, ' in body
+        assert f'<input type="text" name="title-{key}" value="{title}"' in body
+        assert when_options(body, key) == choices
+        assert f'<legend>Due date<span class="visually-hidden"> for {title}, ' in body
+        assert f'<input type="date" name="when_other-{key}" value=""' in body
+        assert f'<span class="visually-hidden"> Another date for {title}, ' in body
+    assert "Wednesday, November 4, 2026, as the note says" in card(page, "Map project")
+    assert "Thursday, November 5, 2026, named in the note" in card(
+        page, "Study for the vocabulary quiz on Thursday"
+    )
+    assert ">Tuesday, November 10, 2026<" in card(page, "Online practice")
+    for title in ("Textbook page 12", "Short essay"):
+        assert 'name="title-' not in card(noted, title)
+        assert 'name="when-' not in card(noted, title)
+
+
+def test_the_page_signs_the_title_and_due_date_each_note_card_shows(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The form's signature carries, for each note card, the title and due date it shows."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+
+    assert signed_edits(page) == {
+        key_of(page, "Study for the vocabulary quiz on Thursday"): [
+            "Study for the vocabulary quiz on Thursday",
+            "",
+        ],
+        key_of(page, "Map project"): ["Map project", "2026-11-04"],
+        key_of(page, "Quiz on unit two"): ["Quiz on unit two", ""],
+        key_of(page, "Online practice"): ["Online practice", ""],
+    }
+
+
+def test_an_edit_pressed_with_save_writes_nothing_and_comes_back_as_typed(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A title changed and Save pressed: nothing is written, the review comes back with the
+    title applied and the ticks, titles and dates as sent, and the summary, which takes the
+    focus, says so and links to the one card changed. Two cards changed: no link."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        mapped, quiz = key_of(page, "Map project"), key_of(page, "Quiz on unit two")
+        practice = key_of(page, "Online practice")
+        form = ticked_form(page) | {f"title-{mapped}": "Map of the river", f"take-{quiz}": "1"}
+        one = client.post("/parent/inbox/keep", data=form)
+        two = client.post("/parent/inbox/keep", data=form | {f"when-{practice}": "2026-11-10"})
+        rows = store_of(client).all_assignments()
+
+    assert (one.status_code, two.status_code) == (200, 200)
+    assert rows == []
+    assert (
+        f'{SUMMARY}{EDITS_IN_REVIEW} <a href="#card-{mapped}">Check this assignment</a></p>'
+    ) in one.text
+    body = card(one.text, "Map of the river")
+    assert f'id="card-{mapped}" tabindex="-1"' in body
+    assert f'<input type="text" name="title-{mapped}" value="Map of the river"' in body
+    assert when_options(body, mapped) == DUE_CHOICES["Map project"]
+    assert quiz in numbers(one.text, TICKED)
+    assert f"{SUMMARY}{EDITS_IN_REVIEW}</p>" in two.text
+    assert 'id="card-' not in two.text
+    assert ("2026-11-10", True) in when_options(card(two.text, "Online practice"), practice)
+
+
+def test_review_changes_then_save_writes_the_corrected_title_and_the_familys_date(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Review changes shows the edits applied and writes nothing; Save on that page writes
+    the corrected title, with the school's date kept, and the chosen Tuesday as the family's
+    entry. The same text read again shows both notes already saved, under their saved
+    titles and dates, and asks nothing."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        mapped, practice = key_of(page, "Map project"), key_of(page, "Online practice")
+        form = ticked_form(page) | {
+            f"title-{mapped}": "  Map of the   river ",
+            f"when-{practice}": "2026-11-10",
+            "recheck": "1",
+        }
+        reviewed = client.post("/parent/inbox/find", data=form)
+        unwritten = store_of(client).all_assignments()
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        rows = {row.title: row for row in store_of(client).all_assignments()}
+        again = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+
+    assert (reviewed.status_code, unwritten) == (200, [])
+    assert signed_edits(reviewed.text)[mapped] == ["Map of the river", "2026-11-04"]
+    assert signed_edits(reviewed.text)[practice] == ["Online practice", "2026-11-10"]
+    assert "Due Tuesday, November 10, 2026" in card(reviewed.text, "Online practice")
+    assert kept.status_code == 303
+    assert "Map project" not in rows
+    river, online = rows["Map of the river"], rows["Online practice"]
+    assert (river.due_date, river.origins["due_date"]) == (
+        datetime.date(2026, 11, 4),
+        SourceChannel.LMS,
+    )
+    assert (online.due_date, online.origins["due_date"]) == (
+        datetime.date(2026, 11, 10),
+        SourceChannel.PARENT_ENTRY,
+    )
+    for title in ("Map project", "Online practice"):
+        assert '<span class="pill">Already saved</span>' in card(again, title)
+    assert (
+        'It\'s saved here as <span class="authored-text">Map of the river</span>, Humanities, '
+        "due Wednesday, November 4, 2026."
+    ) in card(again, "Map project")
+    assert "Due Tuesday, November 10, 2026" in card(again, "Online practice")
+    for asked in ("identity-question-", "occurrence-question-", "instructions-question-"):
+        assert asked not in again
+
+
+def test_a_cleared_date_saves_no_due_date_and_no_school_claim(tmp_path: pathlib.Path) -> None:
+    """No due date chosen for a dated note, reviewed and saved: the row has no due date, no
+    origin for one, and no claim of the note's date."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        mapped = key_of(page, "Map project")
+        form = ticked_form(page) | {f"when-{mapped}": "none", "recheck": "1"}
+        reviewed = client.post("/parent/inbox/find", data=form)
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        store = store_of(client)
+        row = next(row for row in store.all_assignments() if row.title == "Map project")
+        claims = store.claim_history(row.assignment_id)
+
+    assert ("none", True) in when_options(card(reviewed.text, "Map project"), mapped)
+    assert kept.status_code == 303
+    assert row.due_date is None
+    assert "due_date" not in row.origins
+    assert claims == []
+
+
+def test_an_untouched_review_with_note_fields_saves_in_one_press(tmp_path: pathlib.Path) -> None:
+    """The form sent back as shown, title boxes and chosen dates with it, saves in one press,
+    each note with its title and date as read."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        form = ticked_form(page)
+        kept = client.post("/parent/inbox/keep", data=form)
+        rows = {row.title: row for row in store_of(client).all_assignments()}
+
+    assert any(name.startswith("title-") for name in form)
+    assert any(name.startswith("when-") for name in form)
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=3&updated=0&unchanged=0")
+    assert rows["Map project"].due_date == datetime.date(2026, 11, 4)
+    assert rows["Online practice"].due_date is None

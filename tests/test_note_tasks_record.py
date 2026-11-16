@@ -31,7 +31,9 @@ from blossom.intake import (
     IdentityAnswer,
     Kept,
     NotAsked,
+    Read,
     Reading,
+    TaskAnswer,
     by_hand,
     changes_for,
     conflicting_choices,
@@ -39,6 +41,7 @@ from blossom.intake import (
     left_out_by_default,
     note_reading,
     read_text,
+    with_answers,
     with_family_deadline,
     with_note_readings,
     with_notes,
@@ -1719,3 +1722,118 @@ def test_a_later_listing_of_an_undated_note_asks_again_after_an_earlier_answer(
     assert (first_again.state, first_again.identity_asked) == (KNOWN, False)
     assert row is not None
     assert row.due_date == nov(12)
+
+
+def answered(*answers: TaskAnswer) -> Read:
+    """A paste of three readings, a dated note, an undated note due on a weekday either
+    Tuesday may mean, and a card, with the answers sent for them applied."""
+    read = Read(items=(map_project(), online_practice(), cards()[0]), unread=())
+    return with_answers(read, answers, now=NOW, today=TODAY)
+
+
+DATE_ANSWERS = [
+    pytest.param(TaskAnswer(1, when="2026-11-17"), 1, nov(17), id="set"),
+    pytest.param(TaskAnswer(0, when="other", other="2026-11-06"), 0, nov(6), id="correct"),
+    pytest.param(TaskAnswer(1, when="2026-11-10"), 1, nov(10), id="choose-a-tuesday"),
+]
+"""Answers that give a note reading a date of the family's: set on an undated note, typed
+beside another date for a dated one, and one of the two dates a weekday may mean."""
+
+
+@pytest.mark.parametrize(("answer", "key", "day"), DATE_ANSWERS)
+def test_a_date_the_family_answers_is_the_familys_entry(
+    answer: TaskAnswer, key: int, day: date
+) -> None:
+    """The reading takes the date, claimed by the parent's entry, with the due date's origin
+    the parent's entry, and nothing else of the paste changes."""
+    read = answered(answer)
+    reading = read.items[key]
+
+    assert reading.due_date == day
+    assert said(reading) == [(SourceChannel.PARENT_ENTRY, day.isoformat(), None, FAMILY_CONFIDENCE)]
+    assert reading.origin_of("due_date") is SourceChannel.PARENT_ENTRY
+    assert reading.title == answered().items[key].title
+    assert [item for place, item in enumerate(read.items) if place != key] == [
+        item for place, item in enumerate(answered().items) if place != key
+    ]
+    assert read.dates_unread == frozenset()
+
+
+def test_a_named_date_chosen_is_the_familys_entry() -> None:
+    """A date the note names outside a deadline statement, chosen, is the family's entry."""
+    task = one_task("Humanities", nov(2), "Study for the vocabulary quiz on Thursday.")
+    read = with_answers(
+        Read(items=(note_reading(task, now=NOW),), unread=()),
+        (TaskAnswer(0, when="2026-11-05"),),
+        now=NOW,
+        today=TODAY,
+    )
+
+    assert task.named == (nov(5),)
+    assert read.items[0].due_date == nov(5)
+    assert read.items[0].origin_of("due_date") is SourceChannel.PARENT_ENTRY
+
+
+def test_no_due_date_chosen_clears_the_notes_date_and_its_claim() -> None:
+    """No due date for a dated note: no due date, no claim, and no origin for a due date."""
+    reading = answered(TaskAnswer(0, when="none")).items[0]
+
+    assert (reading.due_date, reading.claims) == (None, ())
+    assert "due_date" not in reading.field_origins
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        TaskAnswer(0, when="2026-11-04"),
+        TaskAnswer(0, when="other", other="2026-11-04"),
+        TaskAnswer(1, when="none"),
+        TaskAnswer(0),
+        TaskAnswer(0, title="   "),
+        TaskAnswer(0, title=" Map   project "),
+    ],
+    ids=["as-read", "as-read-typed", "none-where-none", "nothing", "blank-title", "same-title"],
+)
+def test_an_answer_that_changes_nothing_leaves_the_reading_the_schools(answer: TaskAnswer) -> None:
+    """The date as read, chosen or typed, no date where none was read, nothing chosen, a blank
+    title and the title as read are no correction: the reading stays as read."""
+    read = answered(answer)
+
+    assert read.items == answered().items
+    assert said(read.items[0]) == [
+        (SourceChannel.LMS, "2026-11-04", TEACHER_NOTE, PORTAL_CONFIDENCE)
+    ]
+    assert read.dates_unread == frozenset()
+
+
+def test_a_corrected_title_is_the_readings_title_and_suggests_its_kind() -> None:
+    """A title typed is the reading's title, single-spaced, with the kind it suggests; the
+    date and its claim stay the school's."""
+    reading = answered(TaskAnswer(0, title=" Bring the   binder ")).items[0]
+
+    assert reading.title == "Bring the binder"
+    assert reading.kind is AssignmentKind.TASK
+    assert reading.course == "Humanities"
+    assert said(reading) == [(SourceChannel.LMS, "2026-11-04", TEACHER_NOTE, PORTAL_CONFIDENCE)]
+    assert reading.assignment().title == "Bring the binder"
+
+
+@pytest.mark.parametrize("other", ["", "11/06/2026", "someday", "2030-01-01"])
+def test_another_date_that_reads_as_no_date_is_not_applied(other: str) -> None:
+    """Another date left empty, not a date, or more than a year away is not applied, and the
+    paste says which reading's answer it was."""
+    read = answered(TaskAnswer(0, when="other", other=other), TaskAnswer(1, when="2026-11-10"))
+
+    assert read.items[0] == answered().items[0]
+    assert read.items[1].due_date == nov(10)
+    assert read.dates_unread == frozenset({0})
+
+
+def test_answers_for_a_card_or_no_reading_are_ignored_and_the_rest_kept() -> None:
+    """An answer for a reading made from no note, or for a key with no reading, changes
+    nothing; the answers for note readings are kept with the paste as sent."""
+    kept = TaskAnswer(0, title="Map of the river", when="other", other="2026-11-06")
+    read = answered(TaskAnswer(2, title="Other"), TaskAnswer(7, when="none"), kept)
+
+    assert read.items[2] == answered().items[2]
+    assert read.answers == (kept,)

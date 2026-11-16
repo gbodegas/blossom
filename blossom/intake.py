@@ -369,16 +369,38 @@ class NoteRead:
     lines: tuple[int, ...]
 
 
+NO_DUE_DATE: Final = "none"
+"""The due-date answer for a reading made from a teacher's note that gives it no due date."""
+ANOTHER_DATE: Final = "other"
+"""The due-date answer that takes the date typed beside it."""
+
+
+@dataclass(frozen=True)
+class TaskAnswer:
+    """What a review page sends for one reading made from a teacher's note, by its key, as
+    typed: the title in its box, the due-date choice (a date, ``NO_DUE_DATE``,
+    ``ANOTHER_DATE``, or empty for none chosen), and the date typed beside another date."""
+
+    key: int
+    title: str = ""
+    when: str = ""
+    other: str = ""
+
+
 @dataclass(frozen=True)
 class Read:
     """Everything one paste says: the readings, the lines that need review, each subject's
-    note as a block, in the order the notes open, and the keys of the readings left out of
-    a save unless someone selects them."""
+    note as a block, in the order the notes open, the keys of the readings left out of a
+    save unless someone selects them, the title and due-date answers sent for the readings
+    made from teachers' notes, as typed, and the keys whose due-date answer names no date
+    a paste can mean."""
 
     items: tuple[Reading, ...]
     unread: tuple[Unread, ...]
     notes: tuple[NoteRead, ...] = ()
     left_out: frozenset[int] = frozenset()
+    answers: tuple[TaskAnswer, ...] = ()
+    dates_unread: frozenset[int] = frozenset()
 
 
 def kind_of(title: str) -> AssignmentKind:
@@ -1091,6 +1113,55 @@ def with_family_deadline(reading: Reading, day: date | None, *, now: datetime) -
         claims += (claim(SourceChannel.PARENT_ENTRY, day, None, now, FAMILY_CONFIDENCE),)
         origins["due_date"] = SourceChannel.PARENT_ENTRY
     return dataclasses.replace(reading, due_date=day, claims=claims, field_origins=origins)
+
+
+def _day_answered(answer: TaskAnswer, today: date) -> tuple[bool, date | None]:
+    """Whether a due-date answer names a date a paste can mean, and that date: ``None`` for
+    no due date. A date chosen, or typed beside another date, reads only as year, month and
+    day within a school year of ``today``."""
+    if answer.when == NO_DUE_DATE:
+        return True, None
+    given = answer.other if answer.when == ANOTHER_DATE else answer.when
+    try:
+        day = date.fromisoformat(given.strip())
+    except ValueError:
+        return False, None
+    return within_a_school_year(day, today), day
+
+
+def with_answers(read: Read, answers: Sequence[TaskAnswer], *, now: datetime, today: date) -> Read:
+    """A paste with the title and due-date answers sent for its readings made from teachers'
+    notes applied, and kept with it as sent; an answer for any other key is ignored.
+
+    A title typed, single-spaced, that is neither blank nor the title as read is the
+    reading's title, with the kind it suggests. A due date chosen or typed, or no due date,
+    goes through ``with_family_deadline``, so the date the note settles, or none where it
+    settles none, leaves the reading the school's. No choice leaves the date as read. A date
+    that reads as none a paste can mean is not applied, and its key is in ``dates_unread``.
+    Nothing is changed in place."""
+    items = list(read.items)
+    kept: list[TaskAnswer] = []
+    unread: set[int] = set()
+    for answer in answers:
+        if not 0 <= answer.key < len(items) or items[answer.key].teacher_note is None:
+            continue
+        kept.append(answer)
+        reading = items[answer.key]
+        title = " ".join(answer.title.split())
+        if title and title != reading.title:
+            reading = dataclasses.replace(reading, title=title, kind=kind_of(title))
+        if answer.when:
+            readable, day = _day_answered(answer, today)
+            if readable:
+                reading = with_family_deadline(reading, day, now=now)
+            else:
+                unread.add(answer.key)
+        items[answer.key] = reading
+    if not kept:
+        return read
+    return dataclasses.replace(
+        read, items=tuple(items), answers=tuple(kept), dates_unread=frozenset(unread)
+    )
 
 
 STATEMENT_END: Final = " .!?,;:-"

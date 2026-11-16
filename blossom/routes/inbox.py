@@ -43,6 +43,7 @@ from blossom.homework_search import (
     terms_of,
 )
 from blossom.intake import (
+    ANOTHER_DATE,
     CLAIMED,
     DIFFERENT,
     FOLDED,
@@ -50,6 +51,7 @@ from blossom.intake import (
     KNOWN,
     NEW,
     NEW_WORK,
+    NO_DUE_DATE,
     NOTE_MAX_LENGTH,
     REVIEW,
     TEXT_MAX_LENGTH,
@@ -62,6 +64,7 @@ from blossom.intake import (
     NotOffered,
     Pick,
     Read,
+    TaskAnswer,
     answers_to_no_question,
     by_hand,
     by_week,
@@ -74,6 +77,7 @@ from blossom.intake import (
     spoken_report,
     task_said,
     tasks_moved,
+    with_answers,
     with_notes,
     within_a_school_year,
 )
@@ -169,6 +173,10 @@ REVIEW_UNVERIFIED: Final = (
     "This review could not be verified, so nothing was saved. Check it again, then save."
 )
 CHECK_THIS_ASSIGNMENT: Final = "Check this assignment"
+EDITS_IN_REVIEW: Final = (
+    "Your changes to a title or due date are in this review. Nothing was saved yet. "
+    "Check it, then save."
+)
 IDENTITY_FORM_UNREADABLE: Final = (
     "The answers about which homework a card is could not be read, so nothing was saved. "
     "Look at them again below."
@@ -376,6 +384,9 @@ class PageMade:
     tasks: dict[int, str] = field(default_factory=dict)
     """For each reading made from a teacher's note, whether the page showed it ticked, then
     what it does when selected, as ``task_said`` puts it."""
+    edits: dict[int, tuple[str, str]] = field(default_factory=dict)
+    """For each reading made from a teacher's note, the title and due date the page showed
+    for it, as ``edits_of`` puts them."""
     verified: bool = field(default=True, compare=False)
     """Whether the form carried this process's signature for its draft. A form without one,
     such as a page made before the application started again, is read as a page that asked
@@ -397,10 +408,12 @@ def made_with_field(
     picks: Mapping[int, Pick] | None = None,
     unsaved_picks: Mapping[int, tuple[str, str]] | None = None,
     tasks: Mapping[int, str] | None = None,
+    edits: Mapping[int, tuple[str, str]] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
     ties it to the page's draft. What the page said of the readings made from teachers'
-    notes (``tasks``) is written only when there are such readings."""
+    notes (``tasks``), and the title and due date it showed for each (``edits``), are
+    written only when there are such readings."""
     answers = ",".join(f"{card}:{value}" for card, value in sorted((occurrences or {}).items()))
     context = {
         "asked": sorted([card, *question] for card, question in (asked or {}).items()),
@@ -427,6 +440,7 @@ def made_with_field(
     }
     if tasks:
         context["tasks"] = sorted([card, said] for card, said in tasks.items())
+        context["edits"] = sorted([card, *shown] for card, shown in (edits or {}).items())
     made = f"{answers};{json.dumps(context, separators=(',', ':'))}"
     return f"{made}.{_made_with_check(key, draft, made)}"
 
@@ -485,6 +499,7 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         int(card): (str(target), str(why)) for card, target, why in context.get("unsaved_picks", [])
     }
     tasks = {int(card): str(said) for card, said in context.get("tasks", [])}
+    edits = {int(card): (str(title), str(due)) for card, title, due in context.get("edits", [])}
     return PageMade(
         occurrences,
         asked,
@@ -498,6 +513,7 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         picks,
         unsaved_picks,
         tasks,
+        edits,
     )
 
 
@@ -776,6 +792,114 @@ def ticks_of(read: Read) -> dict[int, bool]:
         for key, item in enumerate(read.items)
         if item.teacher_note is not None
     }
+
+
+def with_edits(form: Mapping[str, str], read: Read, *, now: datetime, today: date) -> Read:
+    """What was read with the title and due-date answers a form sends for the readings made
+    from teachers' notes applied, as ``with_answers`` applies them: ``title-<key>``,
+    ``when-<key>`` and ``when_other-<key>``. A note reading the form sends none of them for
+    stays as read; a key that is no note reading's is ignored."""
+    answers = [
+        TaskAnswer(
+            key,
+            form.get(f"title-{key}", ""),
+            form.get(f"when-{key}", ""),
+            form.get(f"when_other-{key}", ""),
+        )
+        for key, item in enumerate(read.items)
+        if item.teacher_note is not None
+        and any(f"{head}-{key}" in form for head in ("title", "when", "when_other"))
+    ]
+    return with_answers(read, answers, now=now, today=today)
+
+
+def edits_of(read: Read) -> dict[int, tuple[str, str]]:
+    """For each reading made from a teacher's note, by its key, the title and due date it
+    has, as a page shows and signs them: the date in year, month and day, or empty."""
+    return {
+        key: (item.title, "" if item.due_date is None else item.due_date.isoformat())
+        for key, item in enumerate(read.items)
+        if item.teacher_note is not None
+    }
+
+
+def edited(read: Read, page: PageMade) -> frozenset[int]:
+    """The keys of the readings made from teachers' notes whose title or due date, with the
+    form's answers applied, differs from what a signed page showed for them, or whose
+    due-date answer names no date a paste can mean. A form this process did not sign is
+    checked elsewhere, and gives none here."""
+    if not page.verified:
+        return frozenset()
+    return frozenset(
+        key
+        for key, shown in edits_of(read).items()
+        if key in read.dates_unread or page.edits.get(key) != shown
+    )
+
+
+@dataclass(frozen=True)
+class NoteFields:
+    """The title box and the due-date choices of one card read from a teacher's note: the
+    title the box holds, each choice as a value, its words and whether it is chosen,
+    whether another date is chosen, and the date typed beside it."""
+
+    title: str
+    choices: list[tuple[str, str, bool]]
+    other_chosen: bool
+    other: str
+
+    @property
+    def chosen(self) -> str:
+        """The value of the due-date choice made, or empty for none."""
+        if self.other_chosen:
+            return ANOTHER_DATE
+        return next((value for value, _, on in self.choices if on), "")
+
+
+def note_fields(changes: Sequence[Change], read: Read) -> dict[int, NoteFields]:
+    """The fields of each card read from a teacher's note, by its key. The choices are the
+    date as read, each date the note leaves open, each date it names, and no due date, each
+    date once. A card whose answers were sent shows them as typed. Otherwise the date as
+    read is chosen, or no due date where none was read; on a card that lands on a row whose
+    saved due date is none, or another than the one read, nothing is chosen."""
+    sent = {answer.key: answer for answer in read.answers}
+    fields: dict[int, NoteFields] = {}
+    for change in changes:
+        task = change.reading.teacher_note
+        if task is None:
+            continue
+        dates: dict[date, str] = {}
+        if task.deadline is not None:
+            dates[task.deadline] = f"{spoken_day(task.deadline)}, as the note says"
+        for day in task.choices:
+            dates.setdefault(day, spoken_day(day))
+        for day in task.named:
+            dates.setdefault(day, f"{spoken_day(day)}, named in the note")
+        answer = sent.get(change.key)
+        if answer is not None:
+            title, when, other = answer.title, answer.when, answer.other
+        else:
+            title, other = read.items[change.key].title, ""
+            when = NO_DUE_DATE if task.deadline is None else task.deadline.isoformat()
+            row = change.on_record
+            if row is not None and (row.due_date is None or row.due_date != task.deadline):
+                when = ""
+        values = [day.isoformat() for day in dates]
+        if when and when not in (*values, NO_DUE_DATE, ANOTHER_DATE):
+            when, other = ANOTHER_DATE, when
+        fields[change.key] = NoteFields(
+            title,
+            [
+                *(
+                    (day.isoformat(), words, day.isoformat() == when)
+                    for day, words in dates.items()
+                ),
+                (NO_DUE_DATE, "No due date yet", when == NO_DUE_DATE),
+            ],
+            when == ANOTHER_DATE,
+            other,
+        )
+    return fields
 
 
 def read_draft(state: ApplicationState, draft: Mapping[str, str]) -> Read | Problem:
@@ -1582,8 +1706,11 @@ def preview_page(
                 picked,
                 wanted,
                 tasks,
+                edits_of(read),
             ),
             "note_tasks": bool(tasks),
+            "note_fields": note_fields(changes, read),
+            "title_max_length": TITLE_MAX_LENGTH,
             "check_card": check_card,
             "if_selected": {
                 change.key: when_selected[change.key].label for change in shown if change.left_out
@@ -1770,7 +1897,8 @@ async def search_review(request: Request, state: State) -> Response:
     if isinstance(read, Problem):
         answers = answers_sent(state, form, (await form_of(request)).multi_items(), draft)
         return await asyncio.to_thread(problem_page, request, state, draft, read, answers)
-    read = selected(form, read)
+    now, today = moment_of(state, draft)
+    read = with_edits(form, selected(form, read), now=now, today=today)
     fields = (await form_of(request)).multi_items()
     read_answers = paste_answers(fields)
     instruction_answers = read_answers.answers
@@ -1989,7 +2117,8 @@ async def keep_readings(request: Request, state: State) -> Response:
     if isinstance(read, Problem):
         answers = answers_sent(state, form, (await form_of(request)).multi_items(), draft)
         return await asyncio.to_thread(problem_page, request, state, draft, read, answers)
-    read = selected(form, read)
+    now, today = moment_of(state, draft)
+    read = with_edits(form, selected(form, read), now=now, today=today)
     # Every answer about the school's instructions is read from the fields as sent, before
     # any is collapsed, and kept, contradictions included, in words a page that reads no
     # store can show: all of it before anything touches the store.
@@ -2160,7 +2289,31 @@ async def keep_readings(request: Request, state: State) -> Response:
                 notice=INSTRUCTION_FORM_UNREADABLE if unreadable else INSTRUCTIONS_CONTRADICT,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
-        now, today = moment_of(state, draft)
+        changed = edited(read, page_made)
+        if changed:
+            # A title or due date other than the page showed: nothing is written, and the
+            # review comes back with the edits applied, signed, for a Save that writes them.
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="edited",
+                check=changed,
+                notice=EDITS_IN_REVIEW,
+            )
 
         def saved() -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
             return keep(

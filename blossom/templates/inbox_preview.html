@@ -95,7 +95,11 @@
         {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}{% if change.reading.teacher_note %}
         {# A folded note is selected, and its tick travels with its answer. #}
         <input type="hidden" name="offered-{{ change.key }}" value="1">
-        <input type="hidden" name="take-{{ change.key }}" value="1">{% endif %}
+        <input type="hidden" name="take-{{ change.key }}" value="1">
+        {# So do its title and due date, as typed. #}{% set fields = note_fields[change.key] %}
+        <input type="hidden" name="title-{{ change.key }}" value="{{ fields.title }}">{% if fields.chosen %}
+        <input type="hidden" name="when-{{ change.key }}" value="{{ fields.chosen }}">{% endif %}
+        <input type="hidden" name="when_other-{{ change.key }}" value="{{ fields.other }}">{% endif %}
       {% endfor %}
       {% if folded %}
         <p class="note">{{ folded|length }} card{% if folded|length != 1 %}s{% endif %} folded into the card for the same assignment, as you said.</p>
@@ -145,7 +149,15 @@
                 <label><input type="checkbox" name="take-{{ change.key }}" value="1"{% if not change.left_out %} checked{% endif %}> <span>Save this as homework<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
               </div>{% if change.left_out %}
               {# What the note does once it is selected, which the page signs, so a tick set here saves in one press. #}
-              <p class="helper">If selected: {{ if_selected[change.key] }}.</p>{% endif %}{% endif %}
+              <p class="helper">If selected: {{ if_selected[change.key] }}.</p>{% endif %}
+              {# The title and due date a parent may correct; the page signs what they show, so a save writes no other. #}{% set fields = note_fields[change.key] %}
+              <label>Title<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span> <input type="text" name="title-{{ change.key }}" value="{{ fields.title }}" maxlength="{{ title_max_length }}" autocomplete="off"></label>
+              <fieldset class="choice" id="when-{{ change.key }}">
+                <legend>Due date<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></legend>
+                {% for value, words, chosen in fields.choices %}<label><input type="radio" name="when-{{ change.key }}" value="{{ value }}"{% if chosen %} checked{% endif %}> <span>{{ words }}</span></label>
+                {% endfor %}<label><input type="radio" name="when-{{ change.key }}" value="other"{% if fields.other_chosen %} checked{% endif %}> <span>Another date</span></label>
+                <label><span class="visually-hidden"> Another date for {{ reading.title }}, {{ reading.course }}</span> <input type="date" name="when_other-{{ change.key }}" value="{{ fields.other }}"></label>
+              </fieldset>{% endif %}
               {% if change.state == "review" %}
                 <input type="hidden" name="asked-{{ change.key }}" value="1">
               {% endif %}
