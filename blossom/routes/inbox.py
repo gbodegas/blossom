@@ -73,6 +73,7 @@ from blossom.intake import (
     keep,
     notes_apart,
     read_text,
+    saved_joined_notes,
     spoken_day,
     spoken_report,
     task_said,
@@ -1469,18 +1470,21 @@ def first_review(
 def saved_selected(state: ApplicationState, read: Read) -> Read:
     """What was read, with each reading made from a teacher's note that is left out from the
     start but saved already selected: a paste read again shows a note the family selected
-    and saved as saved, and leaves out only the notes not saved. A record that cannot be
-    read leaves the paste as it is, for the review to answer."""
-    if not read.left_out:
+    and saved as saved, and leaves out only the notes not saved. So does each note joined
+    to a card that the record shows saved where the card lands (``saved_joined_notes``),
+    which selecting adds nothing to. A record that cannot be read leaves the paste as it
+    is, for the review to answer."""
+    if not read.left_out and not any(item.joined_notes for item in read.items):
         return read
     try:
         changes = changes_for(read.items, state.project_state, left_out=frozenset())
+        joined = saved_joined_notes(read.items, changes, state.project_state)
     except (UnreadableClaim, UnreadableDecision, UnreadableInstruction):
         return read
     saved = {change.key for change in changes if change.state == KNOWN} & read.left_out
-    if not saved:
+    if not saved and joined <= read.joined:
         return read
-    return replace(read, left_out=read.left_out - saved)
+    return replace(read, left_out=read.left_out - saved, joined=read.joined | joined)
 
 
 def preview_page(

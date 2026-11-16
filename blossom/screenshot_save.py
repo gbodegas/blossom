@@ -55,6 +55,7 @@ from blossom.screenshot_review import (
     SavedRow,
     Validation,
     answer_names,
+    assignment_of,
     date_target,
     dates_key,
     defaults,
@@ -64,8 +65,10 @@ from blossom.screenshot_review import (
     instruction_field,
     instruction_index,
     joined_of,
+    joined_subject,
     pieces_from,
     preview,
+    saved_notes,
     slot_id,
     slot_occurrence,
     subject_for,
@@ -283,10 +286,14 @@ def chosen_answers(
     }
 
 
-def saved_rows(record: ProjectStateStore) -> dict[str, SavedRow]:
-    """Every saved assignment as the review compares pieces with it."""
+def saved_rows(record: ProjectStateStore, *, claims: bool = False) -> dict[str, SavedRow]:
+    """Every saved assignment as the review compares pieces with it; with ``claims``, the
+    due-date claims the record keeps under it as well, read only for a review with a joined
+    note to compare."""
     everything = record.all_assignments()
-    readable = record.school_instruction_readings([a.assignment_id for a in everything]).readable
+    names = [a.assignment_id for a in everything]
+    readable = record.school_instruction_readings(names).readable
+    claimed = record.deadline_records_by_assignment(names) if claims else {}
     out = {}
     for item in everything:
         standing = readable.get(item.assignment_id)
@@ -304,6 +311,10 @@ def saved_rows(record: ProjectStateStore) -> dict[str, SavedRow]:
             max(0, len(current) - 1),
             str(item.kind.value),
             frozenset((" ".join(i.text.split()), i.card_day) for i in kept),
+            frozenset(
+                (said.channel, said.asserted_value, said.seen_in)
+                for said in claimed.get(item.assignment_id, [])
+            ),
         )
     return out
 
@@ -643,6 +654,10 @@ class ReviewState:
     every_row: tuple[ScreenshotRow, ...] = dataclasses.field(default=(), compare=False)
     """Every row of the review, those set aside included, read only to name what a press typed and
     to compare a box it sent with the row's text as read."""
+    proven: frozenset[tuple[str, str]] = frozenset()
+    """Each joined note, by piece name and note tag, that the record shows saved on the row its
+    piece lands on (``saved_notes``): it starts ticked with no answer kept, and a press that
+    leaves it unticked keeps that as an answer."""
 
     @property
     def by_name(self) -> dict[str, Piece]:
@@ -687,8 +702,43 @@ def review_state(
     """The review's pieces, destinations, checks and preview from its tables and the record.
     A default the press posted, and its answers kept, still counts as the default it was. A
     piece a change of screenshots marked, or whose answer depended on a correction that wasn't
-    kept, is given no default: it waits for an answer."""
+    kept, is given no default: it waits for an answer. A joined note with no answer kept that
+    the record shows saved where its piece lands (``ReviewState.proven``) starts ticked, as
+    selecting it adds nothing; where ticking it would move its piece elsewhere, it starts
+    unticked."""
+    first = _review_state(
+        record, tables, now=now, corrections=corrections, defaults_posted=defaults_posted
+    )
+    unanswered = frozenset(
+        found for found in first.proven if ("joined", joined_subject(*found)) not in first.values
+    )
+    if not unanswered:
+        return first
+    again = _review_state(
+        record,
+        tables,
+        now=now,
+        corrections=corrections,
+        defaults_posted=defaults_posted,
+        ticked=unanswered,
+    )
+    return again if unanswered <= again.proven else first
+
+
+def _review_state(
+    record: ProjectStateStore,
+    tables: DraftForSave,
+    *,
+    now: datetime,
+    corrections: Corrections,
+    defaults_posted: Mapping[str, str] | None = None,
+    ticked: frozenset[tuple[str, str]] = frozenset(),
+) -> ReviewState:
+    """``review_state`` with each joined note in ``ticked``, by piece name and note tag, ticked
+    where no answer is kept for it."""
     values = answer_values(tables.answers)
+    for name, tag in ticked:
+        values.setdefault(("joined", joined_subject(name, tag)), JOINED)
     split = {
         subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
     }
@@ -703,7 +753,9 @@ def review_state(
     )
     by_name = {p.name: p for p in pieces}
     saved = {name: target for name, target in tables.saved.items() if name in by_name}
-    rows = saved_rows(record)
+    rows = saved_rows(
+        record, claims=any(p.reading is not None and p.reading.joined_notes for p in pieces)
+    )
     picks = earlier_picks(record, pieces)
     stored: dict[str, Destination] = {}
     lost: set[str] = set()
@@ -794,6 +846,15 @@ def review_state(
         kept = {n for n in defaulted if n in other and other[n] == mapping.get(n)}
         return work(other, kept, {})
 
+    proven = frozenset(
+        (piece.name, tag)
+        for piece in pieces
+        if piece.reading is not None
+        and piece.reading.joined_notes
+        and piece.name in mapping
+        and (row := rows.get(assignment_of(mapping[piece.name]) or "")) is not None
+        for tag in saved_notes(piece.reading.joined_notes, row)
+    )
     return ReviewState(
         tuple(pieces),
         tuple(asking),
@@ -814,6 +875,7 @@ def review_state(
         {key: value for key, (value, _) in tables.answers.items()},
         rework,
         tuple(every_row),
+        proven,
     )
 
 

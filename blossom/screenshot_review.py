@@ -37,9 +37,11 @@ from blossom.screenshots import (
     ScreenshotRow,
     cards_placed,
     homework_assembly,
+    note_tag,
     with_joined,
 )
 from blossom.stores.import_drafts import Carry, StoredReading
+from blossom.teacher_notes import NoteTask
 
 WINDOW_DAYS: Final = 7
 """A saved assignment is listed for a piece when due within this many days of it, either side."""
@@ -73,6 +75,9 @@ class SavedRow:
     noted: frozenset[tuple[str, date | None]] = frozenset()
     """Every school instruction kept under it, by its words, single-spaced, and the school
     day it was first read under, as the record recognizes a teacher's note."""
+    claims: frozenset[tuple[SourceChannel, str, str | None]] = frozenset()
+    """Every due-date claim the record keeps under it, by its channel, the date it asserts and
+    where it was seen."""
 
     @property
     def pair(self) -> tuple[str, str]:
@@ -1608,6 +1613,28 @@ def answer_names(kind: str, subject: str) -> list[str]:
 
 JOINED: Final = "1"
 """The value of a ticked joined note: the one option of its question."""
+UNJOINED: Final = "0"
+"""The value kept for a joined note the family left unticked where it starts ticked as saved
+(``saved_notes``), so it stays unticked; it adds nothing and removes nothing."""
+
+
+def saved_notes(tasks: Iterable[NoteTask], row: SavedRow) -> frozenset[str]:
+    """The ``note_tag`` of each joined note that ``row`` shows saved, so selecting it adds
+    nothing there: the row keeps the note's words, single-spaced, as a school instruction under
+    the note's first school day and, where the note settles a date, a claim of that date seen in
+    a teacher's note. Changed words, another school day's occurrence, a date the family changed
+    or cleared when the note was saved, and a note whose words were never kept as an
+    instruction, such as one that added only a date claim, are not shown saved. A tag is shown
+    saved only when every note of it is."""
+    shown: set[str] = set()
+    unproven: set[str] = set()
+    for task in tasks:
+        held = (" ".join(task.words.split()), task.first_day) in row.noted and (
+            task.deadline is None
+            or (SourceChannel.LMS, task.deadline.isoformat(), intake.TEACHER_NOTE) in row.claims
+        )
+        (shown if held else unproven).add(note_tag(task))
+    return frozenset(shown - unproven)
 
 
 def joined_subject(name: str, tag: str) -> str:

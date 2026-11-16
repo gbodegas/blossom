@@ -1251,6 +1251,43 @@ def _joined(card: Reading, task: NoteTask, now: datetime) -> Reading:
     return dataclasses.replace(card, claims=claims, instructions=instructions)
 
 
+def saved_joined_notes(
+    items: Sequence[Reading], changes: Sequence["Change"], store: ProjectStateStore
+) -> frozenset[tuple[int, int]]:
+    """Each note joined to a card, by the card's key and the note's place among its
+    ``joined_notes``, that the record shows saved where the card lands, so selecting it adds
+    nothing: the card lands on one row, and that row keeps the note's words, single-spaced,
+    as a school instruction under the note's first school day and, where the note settles a
+    date, a claim of that date seen in a teacher's note. Changed words, another school day's
+    occurrence, and a note whose words were never kept as an instruction, such as one that
+    added only a date claim, which carries no school day, are not shown saved."""
+    landed = {
+        change.key: change.on_record
+        for change in changes
+        if change.on_record is not None
+        and not change.identity_asked
+        and change.folded_into is None
+        and 0 <= change.key < len(items)
+        and items[change.key].joined_notes
+    }
+    if not landed:
+        return frozenset()
+    saved = _OnRecord(store, list(landed.values()), {})
+    shown: set[tuple[int, int]] = set()
+    for key, row in landed.items():
+        name = row.assignment_id
+        claimed = {(said.channel, said.asserted_value, said.seen_in) for said in saved.claims(name)}
+        for place, task in enumerate(items[key].joined_notes):
+            if (" ".join(task.words.split()), task.first_day) not in saved.noted(name):
+                continue
+            if task.deadline is not None and (
+                (SourceChannel.LMS, task.deadline.isoformat(), TEACHER_NOTE) not in claimed
+            ):
+                continue
+            shown.add((key, place))
+    return frozenset(shown)
+
+
 def joins(card: Reading, task: NoteTask, read_under: Callable[[Collection[date]], bool]) -> bool:
     """Whether a note's task may join a card: the same class and title, the card read under
     one of the school days the task is listed under, and the task undated, due on the card's
@@ -1283,12 +1320,12 @@ def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
     it has carries its first school day and a mark of its words as its occurrence, so its
     id is its own. A suspect note is read as no task: its lines are text that needs review.
     A deadline outside a school year of the task's first school day is named, not kept
-    (``_deadline_in_reach``).
+    (``deadline_in_reach``).
     """
     items = list(read.items)
     made: list[Reading] = []
     blocks = [note.block for note in read.notes if not note.block.suspect]
-    for task in map(_deadline_in_reach, read_notes(blocks)):
+    for task in map(deadline_in_reach, read_notes(blocks)):
         place = the_one(
             [
                 index
@@ -1308,12 +1345,13 @@ def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
     return (*items, *made)
 
 
-def _deadline_in_reach(task: NoteTask) -> NoteTask:
+def deadline_in_reach(task: NoteTask) -> NoteTask:
     """A task with a deadline a due date can have: one within a school year of the task's
     first school day, as ``within_a_school_year`` takes a due date chosen or typed on the
     review. A deadline outside it, read with the year written with it, is no deadline: the
     task keeps no deadline and that date, as written, is named for the family to choose. No
-    other year is put in its place."""
+    other year is put in its place. A pasted note and a note on a screenshot are read through
+    it alike."""
     if task.deadline is None or within_a_school_year(task.deadline, task.first_day):
         return task
     named = task.named if task.deadline in task.named else (*task.named, task.deadline)

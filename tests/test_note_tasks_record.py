@@ -41,6 +41,7 @@ from blossom.intake import (
     left_out_by_default,
     note_reading,
     read_text,
+    saved_joined_notes,
     with_answers,
     with_family_deadline,
     with_note_readings,
@@ -535,6 +536,139 @@ def test_a_note_naming_a_card_of_another_day_is_a_reading_of_its_own() -> None:
     assert noted.due_date == nov(6)
     assert noted.occurrence == f"2026-11-04/{mark}"
     assert noted.assignment_id != card.assignment_id
+
+
+INK = "Short essay due Friday. Write it in ink."
+"""A joined note that settles a date and says more than its name."""
+
+
+def joined_read(words: str) -> Read:
+    """The Tuesday's card with a note of the words above it, read as the review reads it."""
+    return with_notes(read_text(JOINED_NOTE.format(words), now=NOW, today=TODAY), now=NOW)
+
+
+def save_selected(store: ProjectStateStore, words: str) -> Kept:
+    """The Tuesday's card saved with its joined note of the words selected."""
+    read = joined_read(words)
+    chosen = with_answers(
+        dataclasses.replace(read, joined=frozenset({(0, 0)})), [], now=NOW, today=TODAY
+    )
+    (change,) = changes_for(chosen.items, store)
+    identities = (
+        {0: IdentityAnswer(change.identity_shown[0], change.identity_shown, change.identity_basis)}
+        if change.identity_asked
+        else {}
+    )
+    kept = keep(chosen.items, store, identities=identities, now=NOW, today=TODAY)
+    assert isinstance(kept, Kept)
+    return kept
+
+
+def proven(store: ProjectStateStore, items: tuple[Reading, ...]) -> frozenset[tuple[int, int]]:
+    """The joined notes the record shows saved where their cards land."""
+    return saved_joined_notes(items, changes_for(items, store, left_out=frozenset()), store)
+
+
+def test_an_exact_repeat_of_a_saved_joined_note_is_shown_saved_and_saving_it_adds_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A joined note saved selected, read again with its card: the card lands on the row it
+    was saved to, which keeps the note's words under its first school day and the claim of
+    its date seen in the teacher's note, so the note is shown saved, and saving it selected
+    again writes nothing."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        assert save_selected(store, INK) == Kept(added=1, updated=0, unchanged=0)
+        (row,) = store.all_assignments()
+        claims = len(store.deadline_records(row.assignment_id))
+        again = joined_read(INK)
+        shown = proven(store, again.items)
+        chosen = with_answers(dataclasses.replace(again, joined=shown), [], now=NOW, today=TODAY)
+        kept = keep(chosen.items, store, now=NOW, today=TODAY)
+        readable = store.school_instruction_readings([row.assignment_id]).readable
+        after = len(store.deadline_records(row.assignment_id))
+        rows = len(store.all_assignments())
+    finally:
+        store.close()
+
+    assert shown == frozenset({(0, 0)})
+    assert kept == Kept(added=0, updated=0, unchanged=1)
+    assert (after, rows) == (claims, 1)
+    assert [each.text for each in readable[row.assignment_id].kept] == [INK]
+
+
+@pytest.mark.parametrize(
+    ("saved", "again", "later"),
+    [
+        (INK, "Short essay due Friday. Write it in pen.", False),
+        (INK, INK, True),
+        ("Short essay due Friday.", "Short essay due Friday.", False),
+    ],
+    ids=["changed-words", "later-week", "date-only"],
+)
+def test_a_joined_note_the_record_cannot_show_saved_starts_unselected(
+    tmp_path: pathlib.Path, saved: str, again: str, later: bool
+) -> None:
+    """A joined note is not shown saved when its words changed, when it is another week's
+    occurrence of the same words (listed first on another school day), or when it added
+    only a date claim: a claim carries no school day and the note's words were never kept
+    as an instruction, so the record cannot prove that occurrence was saved. Saving with it
+    left unselected removes nothing."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        save_selected(store, saved)
+        (row,) = store.all_assignments()
+        before = (
+            len(store.deadline_records(row.assignment_id)),
+            store.school_instruction_readings([row.assignment_id]).readable,
+        )
+        read = joined_read(again)
+        items = read.items
+        if later:
+            (task,) = items[0].joined_notes
+            moved = dataclasses.replace(task, first_day=nov(10), seen_on=(nov(10),))
+            items = (dataclasses.replace(items[0], joined_notes=(moved,)),)
+        shown = proven(store, items)
+        keep(items, store, now=NOW, today=TODAY)
+        after = (
+            len(store.deadline_records(row.assignment_id)),
+            store.school_instruction_readings([row.assignment_id]).readable,
+        )
+    finally:
+        store.close()
+
+    assert shown == frozenset()
+    assert after == before
+
+
+def test_a_saved_joined_note_on_a_row_the_family_dated_keeps_that_date_and_adds_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A row the family dated Wednesday, saved with the Tuesday card's joined note that says
+    Friday, read again: the note is shown saved, saving it again writes no second claim or
+    instruction, and the family's due date stays, from the family."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        name = parents_row(store, "Religion", "Short essay", nov(4), None)
+        save_selected(store, INK)
+        claims = len(store.deadline_records(name))
+        texts = store.school_instruction_readings([name]).readable[name].kept
+        again = joined_read(INK)
+        shown = proven(store, again.items)
+        chosen = with_answers(dataclasses.replace(again, joined=shown), [], now=NOW, today=TODAY)
+        kept = keep(chosen.items, store, now=NOW, today=TODAY)
+        row = store.one_assignment(name)
+        after = len(store.deadline_records(name))
+        texts_after = store.school_instruction_readings([name]).readable[name].kept
+    finally:
+        store.close()
+
+    assert shown == frozenset({(0, 0)})
+    assert kept == Kept(added=0, updated=0, unchanged=1)
+    assert row is not None
+    assert (row.due_date, row.origins["due_date"]) == (nov(4), SourceChannel.PARENT_ENTRY)
+    assert after == claims
+    assert texts_after == texts
 
 
 DECEMBER_NOTE = "Homework for Wren\n12/15/2026 - Tuesday\nReligion -\n{}\n"

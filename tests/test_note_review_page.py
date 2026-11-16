@@ -764,6 +764,51 @@ def test_a_joined_note_saves_its_date_only_once_selected_and_saved_again(
     assert left["Short essay"] == []
 
 
+INKED = NOTED.replace("Short essay Due.", "Short essay due Friday. Write it in ink.")
+"""The two days, with the note above the Tuesday's card naming Friday and saying more."""
+
+
+def record_counts(client: TestClient) -> tuple[int, int, int]:
+    """How many rows, claims and school instructions the record keeps."""
+    store = store_of(client)
+    names = [row.assignment_id for row in store.all_assignments()]
+    readable = store.school_instruction_readings(names).readable
+    return (
+        len(names),
+        sum(len(store.deadline_records(name)) for name in names),
+        sum(len(standing.kept) for standing in readable.values()),
+    )
+
+
+@pytest.mark.parametrize("untick", [False, True], ids=["kept", "unticked"])
+def test_a_saved_joined_note_read_again_shows_selected_and_saving_writes_nothing_new(
+    tmp_path: pathlib.Path, untick: bool
+) -> None:
+    """A joined note saved selected, its text pasted again: the note shows selected, signed
+    so, and Save writes nothing new, ticked or with the tick taken off, which removes
+    nothing."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": INKED}).text
+        form = ticked_form(page) | {"join-1-0": "1"}
+        reviewed = client.post("/parent/inbox/find", data=form | {"recheck": "1"}).text
+        both = ticked_form(reviewed) | {"apply-1-0": "1", "apply-1-1": "1"}
+        assert client.post("/parent/inbox/keep", data=both).status_code == 303
+        before = record_counts(client)
+        claimed = teacher_note_claims(client)
+        again = client.post("/parent/inbox/read", data={"text": INKED}).text
+        sent = ticked_form(again)
+        if untick:
+            sent.pop("join-1-0")
+        saved = client.post("/parent/inbox/keep", data=sent)
+        after = record_counts(client)
+
+    assert claimed["Short essay"] == ["2026-11-06"]
+    assert joined_ticks(card(again, "Short essay")) == {"join-1-0": True}
+    assert signed_joins(again) == [[1, 0, 1]]
+    assert saved.status_code == (200 if untick else 303)
+    assert after == before
+
+
 def test_the_page_that_reads_no_store_lists_a_joined_notes_tick(tmp_path: pathlib.Path) -> None:
     """With a claim on record that cannot be read, the page that reads no store says which
     joined note was selected to add to its card, for a save and for a press, and says

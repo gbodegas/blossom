@@ -41689,6 +41689,174 @@ def test_a_familys_due_date_stays_when_a_selected_joined_note_is_saved(
     assert ("2026-10-07", intake.TEACHER_NOTE) in claims
 
 
+def essay_counts(browser: TestClient) -> tuple[int, int, int]:
+    """How many Religion 8 rows, due-date claims and school instructions the record keeps."""
+    record = state_of(browser).project_state
+    names = [a.assignment_id for a in record.all_assignments() if a.course == "Religion 8"]
+    readable = record.school_instruction_readings(names).readable
+    return (
+        len(names),
+        sum(len(record.deadline_records(name)) for name in names),
+        sum(len(standing.kept) for standing in readable.values()),
+    )
+
+
+def saved_with_its_note(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, answer: dict[str, object]
+) -> None:
+    """The essay read from ``answer`` and saved with its joined note selected."""
+    draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+    page = answered(browser, draft_id, page)
+    choose = {joined_field(page): "1"}
+    page = followed(browser, send(browser, draft_id, page_post(page, "keep", choose=choose)))
+    saved = followed(browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page))))
+    assert says(saved, imports.counted(1, 0, 0, 0)), saved
+
+
+def test_a_saved_joined_note_read_again_starts_selected_and_its_save_writes_nothing_new(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The essay saved with its joined note selected, read again from the same screenshot: the
+    card lands on its row, which keeps the note's words under October 5 and the note's date
+    seen in the teacher's note, so the note starts selected and the save writes nothing new."""
+    with here(open_settings(tmp_path)) as browser:
+        saved_with_its_note(browser, monkeypatch, essay_answer())
+        before = essay_counts(browser)
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        )
+        after = essay_counts(browser)
+
+    assert JOINED_TICK.findall(review_form(page)) == [" checked"]
+    assert says(saved, imports.counted(0, 0, 1, 0))
+    assert before[0] == 1
+    assert after == before
+
+
+def test_a_joined_note_with_changed_words_read_again_starts_unselected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The essay saved with its joined note selected, read again with the note's words changed:
+    the row does not keep those words, so the note starts unselected, and the save with it
+    unselected removes nothing."""
+    changed = ESSAY_NOTE.replace("250", "300")
+    card = homework_card(
+        course="Religion 8",
+        title="Short essay",
+        instruction=None,
+        footer="Due (10/9/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        saved_with_its_note(browser, monkeypatch, essay_answer())
+        before = essay_counts(browser)
+        again = homework_answer(cards=[card, note_card("Religion 8", changed, 300)])
+        draft_id, page = read_review(browser, monkeypatch, (RED, again))
+        page = answered(browser, draft_id, page)
+        send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = essay_counts(browser)
+
+    assert JOINED_TICK.findall(review_form(page)) == [""]
+    assert after == before
+
+
+def test_an_untick_of_a_saved_joined_note_is_kept_and_removes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A joined note shown selected because its row proves it saved, unticked: Keep these
+    answers keeps it unticked, Save review for later keeps it on reopening, a refused Save
+    gives it back unticked, and saving it unticked removes nothing from the row."""
+    with here(open_settings(tmp_path)) as browser:
+        saved_with_its_note(browser, monkeypatch, essay_answer())
+        before = essay_counts(browser)
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        field = joined_field(page)
+        unticked = [(n, v) for n, v in page_post(page, "keep") if n != field]
+        kept = followed(browser, send(browser, draft_id, unticked))
+        held = stored_answers(browser, draft_id)
+        reopened = kept_for_later(browser, draft_id, kept, {})
+        title = f"correct:{box_subject(reopened, 'title')}"
+        too_long = {title: "x" * (TITLE_MOST + 1)}
+        refused = send(
+            browser,
+            draft_id,
+            page_post(reopened, "save", typed=too_long, tick=units_on(reopened)),
+        )
+        saved = followed(
+            browser, send(browser, draft_id, page_post(reopened, "save", tick=units_on(reopened)))
+        )
+        after = essay_counts(browser)
+
+    assert JOINED_TICK.findall(review_form(page)) == [" checked"]
+    assert JOINED_TICK.findall(review_form(kept)) == [""]
+    assert [value for (kind, _), value in held.items() if kind == "joined"] == ["0"]
+    assert JOINED_TICK.findall(review_form(reopened)) == [""]
+    assert refused.status_code == 422
+    assert JOINED_TICK.findall(review_form(refused.text)) == [""]
+    assert says(saved, imports.counted(0, 0, 1, 0))
+    assert after == before
+
+
+def test_a_saved_joined_note_on_the_familys_dated_row_starts_selected_and_adds_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The family's essay due Thursday 10/8, saved with the card's joined note selected, read
+    again: the card waits for where it goes, with the note unselected; sent to the family's
+    row with the family's date kept, the note shows selected, and the save keeps the family's
+    date and writes no claim or instruction twice."""
+    from blossom.reconciliation import SourceChannel
+
+    typed_at = datetime(2026, 10, 5, 18, 0, tzinfo=UTC)
+    with here(open_settings(tmp_path)) as browser:
+        record = state_of(browser).project_state
+        hers = intake.by_hand(
+            "Religion 8", "Short essay", date(2026, 10, 8), None, None, now=typed_at
+        )
+        intake.keep((hers,), record, now=typed_at, today=date(2026, 10, 5))
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        existing = json.dumps({"existing": hers.assignment_id}, separators=(",", ":"))
+        choose = {joined_field(page): "1", f"answer:destination:{piece}": existing}
+        page = followed(browser, send(browser, draft_id, page_post(page, "keep", choose=choose)))
+        [due] = [f"answer:due:{s}" for s in fields_named(review_form(page), "answer:due:")]
+        [as_saved] = [value for value, _ in options_of(page, due) if "2026-10-08" in value]
+        page = followed(
+            browser, send(browser, draft_id, page_post(page, "keep", choose={due: as_saved}))
+        )
+        first = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        )
+        before = essay_counts(browser)
+        second_id, asked = read_review(browser, monkeypatch, (RED, essay_answer()))
+        asked = answered(browser, second_id, asked)
+        [second] = fields_named(review_form(asked), "answer:destination:")
+        mine = {f"answer:destination:{second}": existing}
+        again = followed(browser, send(browser, second_id, page_post(asked, "keep", choose=mine)))
+        [due] = [f"answer:due:{s}" for s in fields_named(review_form(again), "answer:due:")]
+        [as_saved] = [value for value, _ in options_of(again, due) if "2026-10-08" in value]
+        again = followed(
+            browser, send(browser, second_id, page_post(again, "keep", choose={due: as_saved}))
+        )
+        resaved = followed(
+            browser, send(browser, second_id, page_post(again, "save", tick=units_on(again)))
+        )
+        after = essay_counts(browser)
+        row, _, _ = essay_row(browser)
+
+    assert says(first, imports.counted(0, 1, 0, 0))
+    assert JOINED_TICK.findall(review_form(asked)) == [""]
+    assert JOINED_TICK.findall(review_form(again)) == [" checked"]
+    assert says(resaved, imports.counted(0, 0, 1, 0))
+    assert after == before
+    assert row.due_date == date(2026, 10, 8)
+    assert row.origins["due_date"] is SourceChannel.PARENT_ENTRY
+
+
 MAP_NOTE: Final = "Map project due on Wednesday."
 """Humanities 8's note under Monday 10/5/2026 and Thursday 10/8: due Wednesday 10/7."""
 

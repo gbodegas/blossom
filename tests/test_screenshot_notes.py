@@ -19,9 +19,15 @@ from blossom.reconciliation import SourceChannel
 from blossom.routes import inbox
 from blossom.school_instructions import InstructionSeen
 from blossom.screenshot_review import Piece, SavedRow
-from blossom.screenshots import Assembly, ScreenshotRow, homework_assembly, homework_rows
+from blossom.screenshots import (
+    Assembly,
+    ScreenshotRow,
+    homework_assembly,
+    homework_rows,
+    note_tag,
+)
 from blossom.stores.import_drafts import StoredReading
-from blossom.teacher_notes import Standing
+from blossom.teacher_notes import NoteTask, Standing
 from tests.support import homework_answer, homework_card, stored_homework
 
 NOW = datetime(2026, 11, 16, 18, 0, tzinfo=UTC)
@@ -660,3 +666,127 @@ def test_a_formal_piece_never_lists_a_row_by_its_noted_words() -> None:
     )
 
     assert review.listed(piece, [saved]) == []
+
+
+# ------------------------------------------------------------------ a joined note shown saved
+
+ESSAY_WORDS = "Short essay due Wednesday. Write 250 words on your question."
+"""A joined note that settles a date and says more than its name."""
+
+
+def essay_task(words: str = ESSAY_WORDS, deadline: date | None = date(2026, 10, 7)) -> NoteTask:
+    """The note under Monday 10/5/2026 joined to its "Short essay" card."""
+    return NoteTask(
+        "Religion 8",
+        "Short essay",
+        words,
+        Standing.HOMEWORK,
+        date(2026, 10, 5),
+        (date(2026, 10, 5),),
+        deadline,
+        None if deadline is None else "due Wednesday",
+        (),
+        (),
+        (),
+        1,
+    )
+
+
+def essay_row(
+    noted: frozenset[tuple[str, date | None]],
+    claims: frozenset[tuple[SourceChannel, str, str | None]],
+) -> SavedRow:
+    """The saved essay with these instructions by words and school day, and these claims."""
+    return SavedRow(
+        "assignment-short-essay",
+        "Religion 8",
+        "Short essay",
+        date(2026, 10, 9),
+        date(2026, 10, 5),
+        frozenset(words for words, _ in noted),
+        noted=noted,
+        claims=claims,
+    )
+
+
+NOTED_ESSAY = frozenset({(ESSAY_WORDS, date(2026, 10, 5))})
+NOTE_CLAIM = (SourceChannel.LMS, "2026-10-07", TEACHER_NOTE)
+
+
+@pytest.mark.parametrize(
+    ("task", "noted", "claims", "shown"),
+    [
+        (essay_task(), NOTED_ESSAY, frozenset({NOTE_CLAIM}), True),
+        (essay_task(deadline=None), NOTED_ESSAY, frozenset(), True),
+        (
+            essay_task(),
+            frozenset({(ESSAY_WORDS.replace("250", "300"), date(2026, 10, 5))}),
+            frozenset({NOTE_CLAIM}),
+            False,
+        ),
+        (
+            essay_task(),
+            frozenset({(ESSAY_WORDS, date(2026, 9, 28))}),
+            frozenset({NOTE_CLAIM}),
+            False,
+        ),
+        (
+            essay_task(),
+            NOTED_ESSAY,
+            frozenset({(SourceChannel.PARENT_ENTRY, "2026-10-08", None)}),
+            False,
+        ),
+        (essay_task(), NOTED_ESSAY, frozenset(), False),
+        (essay_task(), frozenset(), frozenset({NOTE_CLAIM}), False),
+    ],
+    ids=[
+        "exact-repeat",
+        "undated-repeat",
+        "changed-words",
+        "another-week",
+        "family-changed-date",
+        "cleared-date",
+        "date-claim-only",
+    ],
+)
+def test_a_joined_note_is_shown_saved_only_where_its_row_proves_that_occurrence(
+    task: NoteTask,
+    noted: frozenset[tuple[str, date | None]],
+    claims: frozenset[tuple[SourceChannel, str, str | None]],
+    shown: bool,
+) -> None:
+    """A joined note is shown saved on the row its card lands on only when that row keeps the
+    note's words under its first school day and, where the note settles a date, the claim of
+    that date seen in a teacher's note. Changed words, another week's occurrence, a date the
+    family changed or cleared when the note was first saved, and a row holding only the date
+    claim do not prove it."""
+    found = review.saved_notes([task], essay_row(noted, claims))
+
+    assert found == (frozenset({note_tag(task)}) if shown else frozenset())
+
+
+# ------------------------------------------------------------------ a written year far away
+
+
+@pytest.mark.parametrize(
+    ("words", "deadline", "named"),
+    [
+        ("Essay due January 8, 2028.", None, (date(2028, 1, 8),)),
+        ("Essay due January 8, 2027.", date(2027, 1, 8), ()),
+        ("Essay due January 8.", date(2027, 1, 8), ()),
+    ],
+    ids=["far-written-year", "near-written-year", "yearless-rollover"],
+)
+def test_a_note_deadline_more_than_a_school_year_from_its_day_is_kept_for_review(
+    words: str, deadline: date | None, named: tuple[date, ...]
+) -> None:
+    """A note on a December 15 screenshot is read as a pasted note is: a deadline written with
+    a year more than a school year from the note's first day is no deadline, the date is named
+    and the words are kept; a near written year and a yearless January date in the following
+    year keep their deadlines."""
+    row = only_row(assembled("far", shot(note("English 8", title=words), day="Tuesday 12/15/2026")))
+    task = row.reading.teacher_note
+
+    assert task is not None
+    assert (task.deadline, task.named, task.words) == (deadline, named, words)
+    assert row.reading.due_date == deadline

@@ -66,6 +66,7 @@ from blossom.intake import (
     Reading,
     a_date,
     claim,
+    deadline_in_reach,
     is_shaped_as_structure,
     joins,
     note_reading,
@@ -851,7 +852,9 @@ def _note_tasks(
 ) -> list[tuple[NoteTask, frozenset[str], tuple[CardPlace, ...]]]:
     """The tasks one layer's note cards read as, in one reading of all of them, so a task is
     read from the earliest school day it is listed under; each with the marks and places of
-    the cards it was read from. The cards are given in an order fixed by their content."""
+    the cards it was read from. The cards are given in an order fixed by their content. A
+    deadline outside a school year of the task's first school day is named, not kept, as on a
+    pasted note (``deadline_in_reach``)."""
     ordered = sorted(
         sightings,
         key=lambda seen: (
@@ -865,7 +868,7 @@ def _note_tasks(
     )
     own = [{folded(task.words) for task in read_notes([seen.block])} for seen in ordered]
     out: list[tuple[NoteTask, frozenset[str], tuple[CardPlace, ...]]] = []
-    for task in read_notes([seen.block for seen in ordered]):
+    for task in map(deadline_in_reach, read_notes([seen.block for seen in ordered])):
         sources = [
             seen
             for seen, words in zip(ordered, own, strict=True)

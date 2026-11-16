@@ -30,6 +30,7 @@ from blossom.screenshot_review import (
     OLD_DATES,
     PIECE_DATES,
     ROW_FIELDS,
+    UNJOINED,
     Corrections,
     Piece,
     answer_names,
@@ -38,6 +39,7 @@ from blossom.screenshot_review import (
     dest_kind,
     field_most,
     instruction_index,
+    joined_of,
     typed_day,
     usable_correction,
     value_json,
@@ -415,9 +417,17 @@ def read_review(
         else:
             value = values[0]
         answers.append(_answer(state, kind, subject, value, corrections))
+    blank = [
+        _field(name) for name in offered if name not in chosen and name.startswith(WITHDRAWABLE)
+    ]
+    for kind, subject in blank:
+        if kind == "joined" and joined_of(subject) in state.proven:
+            answers.append(_answer(state, kind, subject, UNJOINED, corrections))
     withdrawn = tuple(
         sorted(
-            _field(name) for name in offered if name not in chosen and name.startswith(WITHDRAWABLE)
+            (kind, subject)
+            for kind, subject in blank
+            if not (kind == "joined" and joined_of(subject) in state.proven)
         )
     )
     return ReviewPost(
