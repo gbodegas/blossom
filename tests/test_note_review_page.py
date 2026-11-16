@@ -690,7 +690,6 @@ def test_a_joined_note_has_a_tick_of_its_own_with_its_words_and_both_dates(
         ({"link-0-0": "1"}, "keep", 422),
         ({"find": "99"}, "find", 422),
         ({"recheck": "1", "made_with": "0.0"}, "find", 200),
-        ({}, "keep", 200),
         ({"made_with": "0.0"}, "keep", 409),
     ],
     ids=[
@@ -698,16 +697,15 @@ def test_a_joined_note_has_a_tick_of_its_own_with_its_words_and_both_dates(
         "refused-save",
         "refused-press",
         "restart",
-        "changed-tick-saved",
         "restart-saved",
     ],
 )
 def test_a_joined_notes_tick_comes_back_as_sent(
     tmp_path: pathlib.Path, sent: dict[str, str], path: str, status: int
 ) -> None:
-    """A joined note's tick sent with Review changes, a refused save or press, a Save the
-    page did not sign that tick for, or a page made before the application started again,
-    writes nothing and comes back ticked, signed as the returned page shows it."""
+    """A joined note's tick sent with Review changes, a refused save or press, or a page
+    made before the application started again, writes nothing and comes back ticked,
+    signed as the returned page shows it."""
     with client_in(tmp_path) as client:
         page = client.post("/parent/inbox/read", data={"text": DATED_APART}).text
         form = ticked_form(page) | {"join-1-0": "1"} | sent
@@ -733,35 +731,148 @@ def teacher_note_claims(client: TestClient) -> dict[str, list[str]]:
     }
 
 
-def test_a_joined_note_saves_its_date_only_once_selected_and_saved_again(
+def test_a_joined_note_saves_its_date_in_one_press_once_selected(
     tmp_path: pathlib.Path,
 ) -> None:
     """An untouched Save writes the card with nothing of its joined note. Ticked and pressed
-    with Save, the tick is no selection the page signed: nothing is written, the page says
-    the selections change what saving does, and the tick comes back. That page saved again
-    writes the note's date as a claim beside the card's own due date, which stays."""
+    with Save, the tick does what the page said it does if selected: the one press writes
+    the note's date as a claim beside the card's own due date, which stays, and the same
+    press sent again writes nothing more."""
     with client_in(tmp_path) as client:
         page = client.post("/parent/inbox/read", data={"text": DATED_APART}).text
-        changed = client.post("/parent/inbox/keep", data=ticked_form(page) | {"join-1-0": "1"})
-        written_before = store_of(client).all_assignments()
-        retried = client.post("/parent/inbox/keep", data=ticked_form(changed.text))
+        form = ticked_form(page) | {"join-1-0": "1"}
+        changed = client.post("/parent/inbox/keep", data=form)
         due = {row.title: row.due_date for row in store_of(client).all_assignments()}
         claimed = teacher_note_claims(client)
+        again = client.post("/parent/inbox/keep", data=form)
+        claimed_again = teacher_note_claims(client)
     (tmp_path / "untouched").mkdir()
     with client_in(tmp_path / "untouched") as client:
         page = client.post("/parent/inbox/read", data={"text": DATED_APART}).text
         untouched = client.post("/parent/inbox/keep", data=ticked_form(page))
         left = teacher_note_claims(client)
 
-    assert changed.status_code == 200
-    assert SELECTIONS_CHANGE in changed.text
-    assert written_before == []
-    assert joined_ticks(card(changed.text, "Short essay")) == {"join-1-0": True}
-    assert retried.status_code == 303
+    assert "If selected: New." in card(page, "Short essay")
+    assert changed.status_code == 303
     assert claimed["Short essay"] == ["2026-11-06"]
     assert due["Short essay"] == datetime.date(2026, 11, 3)
+    assert again.status_code == 303
+    assert claimed_again == claimed
     assert untouched.status_code == 303
     assert left["Short essay"] == []
+
+
+ALONE = NOTED.replace("Short essay Due.", "Short essay due Friday. Write it in ink.").replace(
+    "Write 250 words on your question.\n", ""
+)
+"""The two days, with the note above the Tuesday's card naming Friday and saying more, and
+the card giving no instruction of its own."""
+
+
+def instruction_texts(client: TestClient) -> dict[str, list[str]]:
+    """The school's instructions kept, by the title of their homework."""
+    store = store_of(client)
+    rows = {row.assignment_id: row.title for row in store.all_assignments()}
+    readable = store.school_instruction_readings(list(rows)).readable
+    return {
+        rows[name]: [item.text for item in standing.kept] for name, standing in readable.items()
+    }
+
+
+def test_a_joined_notes_tick_saves_its_claim_and_words_in_one_press(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A joined note that says more, ticked and pressed with Save on the page that showed it
+    unselected, writes in that one press its date as a claim and its words as the school's
+    instruction; nothing comes back to be saved again."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": ALONE}).text
+        saved = client.post("/parent/inbox/keep", data=ticked_form(page) | {"join-1-0": "1"})
+        claimed = teacher_note_claims(client)
+        kept = instruction_texts(client)
+
+    assert joined_ticks(card(page, "Short essay")) == {"join-1-0": False}
+    assert "If selected: " in card(page, "Short essay")
+    assert saved.status_code == 303
+    assert claimed["Short essay"] == ["2026-11-06"]
+    assert kept["Short essay"] == ["Short essay due Friday. Write it in ink."]
+
+
+def test_an_untick_of_a_selected_joined_note_saves_in_one_press_without_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A joined note shown selected, unticked and pressed with Save, saves the card in that
+    one press as the page said it would be if not selected: nothing of the note is written."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": DATED_APART}).text
+        form = ticked_form(page) | {"join-1-0": "1", "recheck": "1"}
+        reviewed = client.post("/parent/inbox/find", data=form).text
+        sent = ticked_form(reviewed)
+        sent.pop("join-1-0")
+        saved = client.post("/parent/inbox/keep", data=sent)
+        rows = store_of(client).all_assignments()
+        claimed = teacher_note_claims(client)
+
+    assert joined_ticks(card(reviewed, "Short essay")) == {"join-1-0": True}
+    assert "If not selected: New." in card(reviewed, "Short essay")
+    assert saved.status_code == 303
+    assert [row.title for row in rows if row.title == "Short essay"] == ["Short essay"]
+    assert claimed["Short essay"] == []
+
+
+REVIEW_NO_LONGER_MATCHES = (
+    "This review does not match what saving would do, so nothing was saved. "
+    "Check the review, then save."
+)
+
+
+def test_a_joined_tick_saved_against_a_record_moved_under_the_page_writes_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The card saved from another tab after the page was shown: a joined note ticked on
+    the page and pressed with Save would add to a saved row, not make the new one the page
+    said, so nothing is written and the review comes back saying it does not match what
+    saving would do, without naming the selection as the cause, with the tick as sent."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": DATED_APART}).text
+        assert client.post("/parent/inbox/keep", data=ticked_form(page)).status_code == 303
+        before = record_counts(client)
+        moved = client.post("/parent/inbox/keep", data=ticked_form(page) | {"join-1-0": "1"})
+        after = record_counts(client)
+        claimed = teacher_note_claims(client)
+
+    assert moved.status_code == 409
+    assert REVIEW_NO_LONGER_MATCHES in moved.text
+    assert SELECTIONS_CHANGE not in moved.text
+    assert after == before
+    assert claimed["Short essay"] == []
+    assert joined_ticks(card(moved.text, "Short essay")) == {"join-1-0": True}
+
+
+CHOOSE_INSTRUCTIONS = "Choose which school instructions apply. Nothing was saved."
+
+
+def test_a_joined_tick_whose_effect_asks_a_question_comes_back_asking_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A joined note whose words, once selected, make its card ask which instructions apply:
+    the page says so before the tick, a tick pressed with Save comes back with that question
+    and says to choose, writing nothing, and the answer saves."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": INKED}).text
+        asked = client.post("/parent/inbox/keep", data=ticked_form(page) | {"join-1-0": "1"})
+        rows = store_of(client).all_assignments()
+        both = ticked_form(asked.text) | {"apply-1-0": "1", "apply-1-1": "1"}
+        saved = client.post("/parent/inbox/keep", data=both)
+        claimed = teacher_note_claims(client)
+
+    assert "If selected: Needs your answer." in card(page, "Short essay")
+    assert asked.status_code == 200
+    assert CHOOSE_INSTRUCTIONS in asked.text
+    assert SELECTIONS_CHANGE not in asked.text
+    assert rows == []
+    assert saved.status_code == 303
+    assert claimed["Short essay"] == ["2026-11-06"]
 
 
 INKED = NOTED.replace("Short essay Due.", "Short essay due Friday. Write it in ink.")
@@ -805,7 +916,8 @@ def test_a_saved_joined_note_read_again_shows_selected_and_saving_writes_nothing
     assert claimed["Short essay"] == ["2026-11-06"]
     assert joined_ticks(card(again, "Short essay")) == {"join-1-0": True}
     assert signed_joins(again) == [[1, 0, 1]]
-    assert saved.status_code == (200 if untick else 303)
+    assert "If not selected: " in card(again, "Short essay")
+    assert saved.status_code == 303
     assert after == before
 
 
@@ -868,7 +980,8 @@ def test_a_note_ticked_by_the_family_saves_in_one_press(tmp_path: pathlib.Path) 
         rows = {row.title for row in store_of(client).all_assignments()}
 
     assert '<p class="helper">If selected: New.</p>' in card(page, "Quiz on unit two")
-    assert page.count("If selected: ") == 2
+    assert page.count("If selected: ") == 3
+    assert card(page, "Short essay").count("If selected: ") == 1
     assert "If selected" not in card(page, "Reading log")
     assert kept.status_code == 303
     assert kept.headers["location"].endswith("added=6&updated=0&unchanged=0")
@@ -2063,7 +2176,8 @@ def test_every_note_starts_unselected_whatever_its_standing(tmp_path: pathlib.Pa
 
     assert numbers(page, r'<input type="checkbox" name="take-(\d+)" value="1"') == {2, 3, 4, 5, 6}
     assert numbers(page, TICKED) == set()
-    assert page.count("If selected: ") == 5
+    assert page.count("If selected: ") == 6
+    assert card(page, "Short essay").count("If selected: ") == 1
     assert found_line(page) == "Found 6 items in the teacher's notes; none is selected yet."
     assert "2 assignments across 1 week: 2 new, 0 updates, 0 already saved." in " ".join(
         page.split()

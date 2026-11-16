@@ -37,6 +37,8 @@ from blossom.intake import (
     by_hand,
     changes_for,
     conflicting_choices,
+    join_effects,
+    joins_moved_from,
     keep,
     left_out_by_default,
     note_reading,
@@ -44,6 +46,7 @@ from blossom.intake import (
     saved_joined_notes,
     with_answers,
     with_family_deadline,
+    with_joined,
     with_note_readings,
     with_notes,
 )
@@ -562,6 +565,49 @@ def save_selected(store: ProjectStateStore, words: str) -> Kept:
     kept = keep(chosen.items, store, identities=identities, now=NOW, today=TODAY)
     assert isinstance(kept, Kept)
     return kept
+
+
+def test_a_joined_notes_tick_either_way_builds_the_card_from_the_card_as_read() -> None:
+    """``with_joined`` gives the card with exactly what its ticked notes add: ticked, as
+    ``with_answers`` applies it; ticked then unticked, the card as read; a place that names no
+    joined note is ignored."""
+    read = joined_read(INK)
+    ticked = with_joined(read, {(0, 0)}, now=NOW)
+    chosen = with_answers(
+        dataclasses.replace(read, joined=frozenset({(0, 0)})), [], now=NOW, today=TODAY
+    )
+
+    assert ticked.items == chosen.items
+    assert ticked.joined == frozenset({(0, 0)})
+    assert with_joined(ticked, (), now=NOW).items == read.items
+    assert with_joined(read, {(0, 1), (5, 0)}, now=NOW).joined == frozenset()
+
+
+def test_a_card_whose_joined_tick_the_page_said_nothing_for_has_moved(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A card whose save does what the page said for its joined tick as sent has not moved;
+    one the page said nothing for, such as two ticks changed on it, has; and one saved since,
+    of which nothing would be written, has not moved on a retry and has without one."""
+    store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
+    try:
+        read = joined_read(INK)
+        unticked = changes_for(read.items, store)
+        ticked = changes_for(with_joined(read, {(0, 0)}, now=NOW).items, store)
+        _, as_sent = join_effects(unticked, ticked, 0)
+        before = joins_moved_from(ticked, {0: as_sent})
+        unsigned = joins_moved_from(ticked, {0: ""})
+        assert save_selected(store, INK) == Kept(added=1, updated=0, unchanged=0)
+        saved = changes_for(with_joined(read, {(0, 0)}, now=NOW).items, store)
+        retried = joins_moved_from(saved, {0: as_sent})
+        strict = joins_moved_from(saved, {0: as_sent}, retry=False)
+    finally:
+        store.close()
+
+    assert before == frozenset()
+    assert unsigned == frozenset({0})
+    assert retried == frozenset()
+    assert strict == frozenset({0})
 
 
 def proven(store: ProjectStateStore, items: tuple[Reading, ...]) -> frozenset[tuple[int, int]]:

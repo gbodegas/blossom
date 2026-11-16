@@ -352,7 +352,9 @@
               {# A joined note adds nothing to the card until it is selected; the page signs its tick as shown. #}
               <div class="choice">
                 <label><input type="checkbox" name="join-{{ change.key }}-{{ place }}" value="1"{% if (change.key, place) in joined_ticked %} checked{% endif %}> <span>Add this note to the assignment<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
-              </div>{% endfor %}{% if reading.teacher_note and reading.due_date and reading.due_date == reading.teacher_note.deadline %}{# Said only while the due date is the note's own, so it never outlives a date the family changed or cleared. #}{% for day in reading.teacher_note.listed_after %}
+              </div>{% if join_labels.get((change.key, place)) %}
+              {# What saving does with the tick the other way, which the page signs, so a tick changed here saves in one press. #}
+              <p class="helper">{% if (change.key, place) in joined_ticked %}If not selected{% else %}If selected{% endif %}: {{ join_labels[(change.key, place)] }}.</p>{% endif %}{% endfor %}{% if reading.teacher_note and reading.due_date and reading.due_date == reading.teacher_note.deadline %}{# Said only while the due date is the note's own, so it never outlives a date the family changed or cleared. #}{% for day in reading.teacher_note.listed_after %}
               <p class="source">Still listed on {{ spoken_day(day) }}, after its due date of {{ spoken_day(reading.teacher_note.deadline) }}.</p>{% endfor %}{% endif %}
               {% if change.note_change == "kept" and change.standing and change.standing.note %}
                 <p class="from-teacher">Her note: <q class="authored-text">{{ change.standing.note }}</q></p>

@@ -41801,6 +41801,95 @@ def test_an_untick_of_a_saved_joined_note_is_kept_and_removes_nothing(
     assert after == before
 
 
+def test_a_joined_notes_tick_pressed_with_save_writes_its_claim_and_words_in_one_press(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A joined note whose words say more, ticked on the review that showed it unticked and
+    pressed with Save: the group's signed check covers the note either way, so that one press
+    writes the card with the note's date as a claim and its words as an instruction."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        choose = {joined_field(page): "1"}
+        saved = followed(
+            browser,
+            send(browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page))),
+        )
+        row, claims, words = essay_row(browser)
+
+    assert JOINED_TICK.findall(review_form(page)) == [""]
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert row.due_date == date(2026, 10, 9)
+    assert ("2026-10-07", intake.TEACHER_NOTE) in claims
+    assert words == [ESSAY_NOTE]
+
+
+def test_an_untick_pressed_with_save_writes_in_one_press_and_removes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A joined note shown selected, unticked and pressed with Save with no Keep first: on a
+    review that kept it ticked, the one press saves the card without it; on a review where the
+    record proves it saved, the one press saves and removes nothing."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        field = joined_field(page)
+        page = followed(
+            browser, send(browser, draft_id, page_post(page, "keep", choose={field: "1"}))
+        )
+        unticked = [(n, v) for n, v in page_post(page, "save", tick=units_on(page)) if n != field]
+        fresh = followed(browser, send(browser, draft_id, unticked))
+        row, claims, words = essay_row(browser)
+        before = essay_counts(browser)
+        again_id, again = read_review(browser, monkeypatch, (RED, essay_answer()))
+        again = answered(browser, again_id, again)
+        again_field = joined_field(again)
+        sent = [
+            (n, v) for n, v in page_post(again, "save", tick=units_on(again)) if n != again_field
+        ]
+        resaved = followed(browser, send(browser, again_id, sent))
+        after = essay_counts(browser)
+
+    assert JOINED_TICK.findall(review_form(page)) == [" checked"]
+    assert says(fresh, imports.counted(1, 0, 0, 0))
+    assert ("2026-10-07", intake.TEACHER_NOTE) not in claims
+    assert words == []
+    assert JOINED_TICK.findall(review_form(again)) == [""]
+    assert says(resaved, imports.counted(0, 0, 1, 0))
+    assert after == before
+
+
+def test_a_joined_tick_pressed_with_save_against_a_moved_record_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The essay saved from another review after this one was shown: its joined note ticked
+    and pressed with Save would land where the page did not show, so nothing is written and
+    the review says what saving would do now."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        other_id, other = read_review(browser, monkeypatch, (RED, essay_answer()))
+        other = answered(browser, other_id, other)
+        first = followed(
+            browser, send(browser, other_id, page_post(other, "save", tick=units_on(other)))
+        )
+        before = essay_counts(browser)
+        choose = {joined_field(page): "1"}
+        moved = followed(
+            browser,
+            send(browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page))),
+        )
+        after = essay_counts(browser)
+        _, claims, words = essay_row(browser)
+
+    assert says(first, imports.counted(1, 0, 0, 0))
+    assert not says(moved, imports.counted(0, 1, 0, 0))
+    assert says(moved, imports.PRESS_SAID["changed_beside_answers"])
+    assert after == before
+    assert ("2026-10-07", intake.TEACHER_NOTE) not in claims
+    assert words == []
+
+
 def test_a_saved_joined_note_on_the_familys_dated_row_starts_selected_and_adds_nothing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

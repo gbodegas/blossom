@@ -70,6 +70,8 @@ from blossom.intake import (
     by_week,
     changes_for,
     conflicting_choices,
+    join_effects,
+    joins_moved_from,
     keep,
     notes_apart,
     read_text,
@@ -79,6 +81,7 @@ from blossom.intake import (
     task_said,
     tasks_moved,
     with_answers,
+    with_joined,
     with_notes,
     within_a_school_year,
 )
@@ -391,6 +394,9 @@ class PageMade:
     joined: dict[tuple[int, int], bool] = field(default_factory=dict)
     """For each note joined to a card, by the card's key and the note's place, whether the
     page showed its tick ticked."""
+    join_effects: dict[tuple[int, int], tuple[str, str]] = field(default_factory=dict)
+    """For each note joined to a card, what the page said saving does with its tick as
+    shown, then with it the other way, as ``join_effects`` puts them."""
     verified: bool = field(default=True, compare=False)
     """Whether the form carried this process's signature for its draft. A form without one,
     such as a page made before the application started again, is read as a page that asked
@@ -414,12 +420,14 @@ def made_with_field(
     tasks: Mapping[int, str] | None = None,
     edits: Mapping[int, tuple[str, str]] | None = None,
     joined: Mapping[tuple[int, int], bool] | None = None,
+    join_effects: Mapping[tuple[int, int], tuple[str, str]] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
     ties it to the page's draft. What the page said of the readings made from teachers'
     notes (``tasks``), and the title and due date it showed for each (``edits``), are
     written only when there are such readings; whether each note joined to a card was shown
-    ticked (``joined``), only when there are such notes."""
+    ticked (``joined``), and what saving does with its tick either way (``join_effects``),
+    only when there are such notes."""
     answers = ",".join(f"{card}:{value}" for card, value in sorted((occurrences or {}).items()))
     context = {
         "asked": sorted([card, *question] for card, question in (asked or {}).items()),
@@ -450,6 +458,9 @@ def made_with_field(
     if joined:
         context["joined"] = sorted(
             [card, place, int(ticked)] for (card, place), ticked in joined.items()
+        )
+        context["join_effects"] = sorted(
+            [card, place, *effects] for (card, place), effects in (join_effects or {}).items()
         )
     made = f"{answers};{json.dumps(context, separators=(',', ':'))}"
     return f"{made}.{_made_with_check(key, draft, made)}"
@@ -513,6 +524,10 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
     joined = {
         (int(card), int(place)): bool(ticked) for card, place, ticked in context.get("joined", [])
     }
+    join_effects = {
+        (int(card), int(place)): (str(shown), str(other))
+        for card, place, shown, other in context.get("join_effects", [])
+    }
     return PageMade(
         occurrences,
         asked,
@@ -528,6 +543,7 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         tasks,
         edits,
         joined,
+        join_effects,
     )
 
 
@@ -824,6 +840,21 @@ def joins_moved(read: Read, page: PageMade) -> frozenset[int]:
     where the page showed it ticked. A form this process did not sign showed none ticked."""
     signed = {join for join, ticked in page.joined.items() if ticked and page.verified}
     return frozenset(card for card, _ in read.joined.symmetric_difference(signed))
+
+
+def joins_shown(read: Read, page: PageMade) -> dict[int, tuple[str, str]]:
+    """For each card whose joined notes' ticks, as sent, differ from what a signed page
+    showed, what the page said saving does with the ticks as it showed them, then as sent:
+    the ``join_effects`` it signed for the one tick changed on that card. Where more than one
+    changed on one card the page said nothing of them together, and the second is empty."""
+    signed = {join for join, ticked in page.joined.items() if ticked}
+    changed = read.joined.symmetric_difference(signed)
+    shown: dict[int, tuple[str, str]] = {}
+    for card in sorted({card for card, _ in changed}):
+        here = sorted(join for join in changed if join[0] == card)
+        as_shown, as_sent = page.join_effects.get(here[0], ("", ""))
+        shown[card] = (as_shown, as_sent if len(here) == 1 else "")
+    return shown
 
 
 def joined_of(read: Read) -> dict[int, tuple[int, ...]]:
@@ -1561,6 +1592,17 @@ def preview_page(
     if search is not None and search.attempted is not None:
         held[search.key] = (search.attempted, "changed")
     not_taken = {key: target for key, (target, _) in held.items()}
+    joined_here = [
+        (key, place)
+        for key, item in enumerate(read.items)
+        for place in range(len(item.joined_notes))
+    ]
+    now = moment_of(state, draft)[0]
+    if joined_here:
+        # Each card carries exactly what its selected joined notes add, as the save applies it.
+        read = with_joined(read, read.joined, now=now)
+    join_said: dict[tuple[int, int], tuple[str, str]] = {}
+    join_labels: dict[tuple[int, int], str] = {}
     try:
         changes = changes_for(
             read.items,
@@ -1591,6 +1633,24 @@ def preview_page(
                 identities=identities,
                 picks=picks,
                 left_out=frozenset(),
+            )
+        # What saving does with each joined note's tick the other way is read from one more
+        # comparison for each, so its card can say it and the page sign it beside the tick as
+        # shown: a tick changed and pressed with Save then saves in one press.
+        for join in joined_here:
+            other = changes_for(
+                with_joined(read, read.joined ^ {join}, now=now).items,
+                state.project_state,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                identities=identities,
+                picks=picks,
+                left_out=read.left_out,
+            )
+            join_said[join] = join_effects(changes, other, join[0])
+            join_labels[join] = next(
+                (change.label for change in other if change.key == join[0]), ""
             )
     except UnreadableClaim:
         return intake_unavailable(
@@ -1892,8 +1952,10 @@ def preview_page(
                     for change in changes
                     for place in range(len(change.reading.joined_notes))
                 },
+                join_said,
             ),
             "joined_ticked": read.joined,
+            "join_labels": join_labels,
             "note_tasks": bool(tasks),
             # The notes read, told apart from the ones selected to save.
             "notes_found": (
@@ -2401,6 +2463,7 @@ async def keep_readings(request: Request, state: State) -> Response:
     # answer reads no store and keeps the draft and the answers given on the cards, which
     # homework each was said to be and the notes ticked among them; so does a write the
     # file refuses, which is never tried again.
+    joins: dict[int, tuple[str, str]] = {}
     try:
         occurrences, kinds = answers_from(form, await asyncio.to_thread(unasked_for, state, read))
         if identity_unreadable:
@@ -2600,11 +2663,12 @@ async def keep_readings(request: Request, state: State) -> Response:
                 notice=EDITS_IN_REVIEW,
             )
         joins_changed = joins_moved(read, page_made)
-        if joins_changed:
-            # A joined note ticked or unticked other than the page signed: the page said
-            # nothing of what that tick does, so nothing is written, and the review comes
-            # back with the ticks as sent, signed, for a Save that writes them.
-            verified = page_made.verified
+        # A joined note ticked or unticked other than the page showed saves in this press
+        # when it does what the page said it does that way; the save checks it as it writes.
+        joins = joins_shown(read, page_made) if page_made.verified else {}
+        if joins_changed and not page_made.verified:
+            # A page this process did not sign said nothing of what a tick does, so nothing
+            # is written, and the review comes back with the ticks as sent, signed.
             return await asyncio.to_thread(
                 preview_or_recovery,
                 request,
@@ -2623,9 +2687,9 @@ async def keep_readings(request: Request, state: State) -> Response:
                 search=search,
                 typed=typed,
                 refused="stale",
-                check=joins_changed if verified else frozenset(),
-                notice=SELECTIONS_CHANGE if verified else REVIEW_UNVERIFIED,
-                status_code=status.HTTP_200_OK if verified else status.HTTP_409_CONFLICT,
+                check=frozenset(),
+                notice=REVIEW_UNVERIFIED,
+                status_code=status.HTTP_409_CONFLICT,
             )
 
         def saved() -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
@@ -2645,6 +2709,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 offered=page_made.offers,
                 left_out=read.left_out,
                 shown_tasks=page_made.tasks,
+                shown_joins={card: as_sent for card, (_, as_sent) in joins.items()},
                 imported_by="parent" if viewer_of(request) == "parent" else "household",
                 now=now,
                 today=today,
@@ -2756,11 +2821,16 @@ async def keep_readings(request: Request, state: State) -> Response:
                 as_signed = frozenset(
                     key for key, said in page_made.tasks.items() if not said.startswith("1:")
                 )
-                if as_signed == read.left_out:
+                # The joined notes as the page showed them ticked; each card whose joined
+                # tick was changed must then do exactly what the page said, with no retry.
+                joined_signed = frozenset(
+                    join for join, ticked in page_made.joined.items() if ticked
+                )
+                if as_signed == read.left_out and joined_signed == read.joined:
                     return False
                 try:
                     before = changes_for(
-                        as_shown.items,
+                        with_joined(as_shown, joined_signed, now=now).items,
                         state.project_state,
                         occurrences=occurrences,
                         kinds=kinds,
@@ -2777,7 +2847,13 @@ async def keep_readings(request: Request, state: State) -> Response:
                     sqlite3.Error,
                 ):
                     return False
-                return not tasks_moved(before, page_made.tasks, answered)
+                return not tasks_moved(before, page_made.tasks, answered) and not (
+                    joins_moved_from(
+                        before,
+                        {card: as_shown for card, (as_shown, _) in joins.items()},
+                        retry=False,
+                    )
+                )
 
             if not page_made.verified:
                 notice, code, about = REVIEW_UNVERIFIED, status.HTTP_409_CONFLICT, frozenset[int]()
@@ -2848,7 +2924,9 @@ async def keep_readings(request: Request, state: State) -> Response:
             notice = CHOOSE_ONE_TYPE
         elif held_back and not unanswered:
             notice = IDENTIFY_FIRST
-        elif open_questions <= asked_on(form):
+        elif open_questions <= asked_on(form) | set(joins):
+            # A question on a card whose joined tick changed is one the page said that tick
+            # asks, which the save checked, so it is put as the page's own.
             notice = CHOOSE_INSTRUCTIONS if unanswered else NEEDS_ANSWER
         else:
             notice = LOOK_AGAIN

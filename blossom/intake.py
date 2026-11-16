@@ -1251,6 +1251,33 @@ def _joined(card: Reading, task: NoteTask, now: datetime) -> Reading:
     return dataclasses.replace(card, claims=claims, instructions=instructions)
 
 
+def with_joined(read: Read, joined: Collection[tuple[int, int]], *, now: datetime) -> Read:
+    """A paste with exactly the joined notes in ``joined`` selected, by card and place, as
+    ``with_answers`` applies them: each card with a joined note is built again from the card
+    as read, with what each selected note adds (``_joined``). A card as read carries no claim
+    seen in a teacher's note and no instruction read outside a card; only a joined note adds
+    those. A place that names no joined note is ignored. Nothing is changed in place."""
+    chosen = frozenset(
+        (card, place)
+        for card, place in joined
+        if 0 <= card < len(read.items) and 0 <= place < len(read.items[card].joined_notes)
+    )
+    items = list(read.items)
+    for key, card in enumerate(read.items):
+        if not card.joined_notes:
+            continue
+        reading = dataclasses.replace(
+            card,
+            claims=tuple(said for said in card.claims if said.seen_in != TEACHER_NOTE),
+            instructions=tuple(seen for seen in card.instructions if seen.card is not None),
+        )
+        for place, task in enumerate(card.joined_notes):
+            if (key, place) in chosen:
+                reading = _joined(reading, task, now)
+        items[key] = reading
+    return dataclasses.replace(read, items=tuple(items), joined=chosen)
+
+
 def saved_joined_notes(
     items: Sequence[Reading], changes: Sequence["Change"], store: ProjectStateStore
 ) -> frozenset[tuple[int, int]]:
@@ -3267,6 +3294,60 @@ def tasks_moved(
     )
 
 
+def join_effects(shown: Sequence[Change], other: Sequence[Change], card: int) -> tuple[str, str]:
+    """What a review page signs for one note joined to a card: what saving does with the
+    note's tick as shown, then with it the other way, each as the card's ``task_said`` and
+    that of every other card the tick changes, such as one whose question it changes.
+    ``shown`` and ``other`` are the comparisons with the tick as shown and the other way."""
+    as_shown = {change.key: task_said(change) for change in shown if not change.left_out}
+    flipped = {change.key: task_said(change) for change in other if not change.left_out}
+    keys = sorted(
+        key
+        for key in as_shown.keys() | flipped.keys()
+        if key == card or as_shown.get(key) != flipped.get(key)
+    )
+
+    def said(marks: Mapping[int, str]) -> str:
+        return ";".join(f"{key}={marks.get(key, '')}" for key in keys)
+
+    return said(as_shown), said(flipped)
+
+
+def joins_moved_from(
+    changes: Sequence[Change], shown: Mapping[int, str], *, retry: bool = True
+) -> frozenset[int]:
+    """The keys of the cards with a joined note's tick changed whose save would do other
+    than the review page said for that tick (``shown``: for each such card, what
+    ``join_effects`` gave for the tick as sent, or nothing where the page said nothing for
+    it, such as two ticks changed on one card). Each card the page named must do exactly what
+    it said; with ``retry``, one of which nothing is written, in the row the page named, has
+    not moved, so a retry passes."""
+    by_key = {change.key: change for change in changes}
+    moved: set[int] = set()
+    for card, said in shown.items():
+        if not said:
+            moved.add(card)
+            continue
+        for part in said.split(";"):
+            key, _, expected = part.partition("=")
+            change = by_key.get(int(key))
+            now = "" if change is None or change.left_out else task_said(change)
+            if now == expected:
+                continue
+            state, _, rest = expected.partition(":")
+            row = rest.partition(":")[2]
+            if (
+                retry
+                and change is not None
+                and change.state == KNOWN
+                and state != FOLDED
+                and row == change.assignment_id
+            ):
+                continue
+            moved.add(card)
+    return frozenset(moved)
+
+
 @dataclass(frozen=True)
 class Kept:
     """What one saving did, counted in assignments: rows added, rows already saved that
@@ -3301,6 +3382,7 @@ def keep(
     dates: Mapping[int, tuple[date | None, date | None]] | None = None,
     left_out: Collection[int] | None = None,
     shown_tasks: Mapping[int, str] | None = None,
+    shown_joins: Mapping[int, str] | None = None,
 ) -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
     """Compare and write as one: save what the record lacks, and say what changed.
 
@@ -3355,6 +3437,11 @@ def keep(
     does when it is selected. When it's given, a selected note that would do something else,
     or one the page signed nothing for, leaves the whole text unsaved with what changed
     handed back and those readings named.
+
+    ``shown_joins`` holds, for each card whose joined note's tick differs from what a signed
+    page showed, what the page said saving does with that tick as sent (``join_effects``).
+    A card that would do something else (``joins_moved_from``) leaves the whole text unsaved
+    with what changed handed back and those cards named.
     """
     picks = picks or {}
     crossed = picks.keys() & (identities or {}).keys()
@@ -3415,6 +3502,10 @@ def keep(
             not_as_said = tasks_moved(changes, shown_tasks, answered)
             if not_as_said:
                 return ChangedSinceShown(changes, not_as_said)
+        if shown_joins:
+            not_as_shown = joins_moved_from(changes, shown_joins)
+            if not_as_shown:
+                return ChangedSinceShown(changes, not_as_shown)
         if any(change.state == REVIEW for change in changes) or conflicting_choices(changes):
             return changes
         # Each note ticked to link goes to the homework its card landed on when the page was

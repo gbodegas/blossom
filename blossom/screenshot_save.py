@@ -90,6 +90,7 @@ from blossom.screenshots import (
     ScreenshotRow,
     cards_placed,
     homework_rows,
+    note_tag,
 )
 from blossom.stores.failures import busy_file, failure_named
 from blossom.stores.gradebook import (
@@ -658,6 +659,10 @@ class ReviewState:
     """Each joined note, by piece name and note tag, that the record shows saved on the row its
     piece lands on (``saved_notes``): it starts ticked with no answer kept, and a press that
     leaves it unticked keeps that as an answer."""
+    joined_previews: tuple[tuple[PreviewEntry, ...], ...] = ()
+    """Where a piece has a joined note, the preview with every joined note unticked and with
+    every one ticked, at the same destinations and answers, so the group's check covers each
+    joined note's selected and unselected effects alike (``unit_digests``)."""
 
     @property
     def by_name(self) -> dict[str, Piece]:
@@ -799,6 +804,7 @@ def _review_state(
         chosen: Mapping[str, Destination],
         chosen_defaulted: Iterable[str],
         asked: dict[tuple[str, ...], Change | None],
+        pieces: Sequence[Piece] = pieces,
     ) -> tuple[Validation, tuple[PreviewEntry, ...]]:
         def instruction_ready(dest: tuple[str, ...], members: Sequence[Piece]) -> bool:
             change = instruction_question(record, dest, members)
@@ -841,6 +847,26 @@ def _review_state(
 
     asked: dict[tuple[str, ...], Change | None] = {}
     validation, shown = work(mapping, defaulted, asked)
+    every_note = frozenset(
+        (piece.name, note_tag(task))
+        for piece in pieces
+        if piece.reading is not None
+        for task in piece.reading.joined_notes
+    )
+
+    def previewed(ticks: frozenset[tuple[str, str]]) -> tuple[PreviewEntry, ...]:
+        """The preview at the same destinations and answers with exactly the joined notes in
+        ``ticks`` ticked."""
+        these, _, _ = pieces_from(
+            tables.readings, split, tables.discards, now, corrections, due_read, ticks
+        )
+        return work(mapping, defaulted, {}, these)[1]
+
+    # A joined note's tick changed and pressed with Save keeps the check the page signed when
+    # saving does what the page showed either way: the check covers both.
+    joined_previews = tuple(
+        previewed(ticks) for ticks in ((frozenset(), every_note) if every_note else ())
+    )
 
     def rework(other: Mapping[str, Destination]) -> tuple[Validation, tuple[PreviewEntry, ...]]:
         kept = {n for n in defaulted if n in other and other[n] == mapping.get(n)}
@@ -876,15 +902,24 @@ def _review_state(
         rework,
         tuple(every_row),
         proven,
+        joined_previews,
     )
 
 
 def unit_digests(state: ReviewState) -> dict[str, tuple[str, ...]]:
-    """Each unit's preview digests, as a page signs them and a save compares them."""
+    """Each unit's preview digests, as a page signs them and a save compares them. Where a
+    piece has a joined note, a unit's digests also hold those of its preview with every joined
+    note unticked and with every one ticked, each once, so one joined note's tick changed
+    leaves them as they were while saving does what the page showed either way."""
     out: dict[str, list[str]] = {}
     for entry in state.preview:
         out.setdefault(unit_name(entry.unit), []).append(entry.digest)
-    return {name: tuple(sorted(found)) for name, found in out.items()}
+    if not state.joined_previews:
+        return {name: tuple(sorted(found)) for name, found in out.items()}
+    for entry in (each for other in state.joined_previews for each in other):
+        if unit_name(entry.unit) in out:
+            out[unit_name(entry.unit)].append(entry.digest)
+    return {name: tuple(sorted(set(found))) for name, found in out.items()}
 
 
 # ------------------------------------------------------------------ the save
