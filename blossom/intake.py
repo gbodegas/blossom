@@ -119,6 +119,7 @@ from blossom.stores.project_state import (
     StatusReport,
 )
 from blossom.stores.school_instructions import InstructionReadings, UnreadableInstruction
+from blossom.teacher_notes import NoteBlock
 
 PORTAL_CONFIDENCE: Final = 0.9
 """The portal's own page, pasted whole: the school's word, as it wrote it."""
@@ -346,11 +347,25 @@ class Unread:
 
 
 @dataclass(frozen=True)
+class NoteRead:
+    """One subject's note as the reader collected it, with where it was in the paste.
+
+    ``lines`` holds the line number of the note's heading and of every line kept in the
+    note, ascending. Each of them is listed in ``Read.unread`` as well.
+    """
+
+    block: NoteBlock
+    lines: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class Read:
-    """Everything one paste says: the readings, and the lines that need review."""
+    """Everything one paste says: the readings, the lines that need review, and each
+    subject's note as a block, in the order the notes open."""
 
     items: tuple[Reading, ...]
     unread: tuple[Unread, ...]
+    notes: tuple[NoteRead, ...] = ()
 
 
 def kind_of(title: str) -> AssignmentKind:
@@ -556,6 +571,16 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     another round of the same name and is read apart, so the parent can say
     what it is; a card repeated within a week is the same assignment, and a
     card repeated word for word is read once.
+
+    Each subject's note is handed out as a block as well, in the order the
+    notes open: the subject from its heading, the day in force where the
+    heading is read, and the lines kept after the heading, a paragraph for
+    each run of them between blank lines. A note with no day in force at its
+    heading, or with no line kept after it, is no block, and neither is the
+    paragraph kept under a card's line with no course, unless a subject
+    heading is read in it. A block is marked suspect when a line of its note
+    is shaped as a day, a Missing line or a card. Every line of a block stays
+    listed for review.
     """
     lines = [_unbroken(line) for line in text.splitlines()]
     following = _next_lines(lines)
@@ -571,12 +596,16 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     page_day = False
     opening_heading: str | None = None
     opening = next((index for index, line in enumerate(lines) if line), None)
+    notes: list[NoteRead] = []
+    note: _OpenNote | None = None
     for index, line in enumerate(lines):
         number = index + 1
         if not line:
             last = None
             if to_blank:
                 in_note = to_blank = False
+            if note is not None:
+                note.after_blank = True
             continue
         ends_note = False
         if in_note:
@@ -585,6 +614,8 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 # opened with, as read, before a day whose digits name a date: it ends
                 # the note and is read as nothing.
                 in_note = to_blank = False
+                _close(note, notes)
+                note = None
                 continue
             heading = not page_day and _is_subject_heading(line)
             if heading or not _ends_a_note(line, day):
@@ -601,6 +632,10 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                     page_day = page_day and bool(DAY_LINE.match(line))
                 if heading:
                     to_blank = False
+                    _close(note, notes)
+                    note = _OpenNote.under(line, day, number)
+                elif note is not None:
+                    note.keep(number, line)
                 if mail_date(line) is not None:
                     # A mail date line kept here may head another email, so an earlier
                     # email's date is not taken for the reports after it: they are dated
@@ -611,6 +646,8 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             # What ends a note is read below as what it is, past the rules for plain
             # text outside a card.
             in_note = to_blank = False
+            _close(note, notes)
+            note = None
             ends_note = True
         # The four rules below read plain text outside a card as nothing or as the
         # email's date. They pass over a line that ended a note and over a subject heading.
@@ -727,6 +764,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 # as one kept in a note is, so the reports after it are dated by the day
                 # of the paste, and say so.
                 reported_on, dated_by = today, PASTE_DAY
+            note = _OpenNote.under(line, day, number)
             course = None
             last = None
             in_note = True
@@ -744,7 +782,8 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     items = tuple(
         reading for rounds in drafts.values() for draft in rounds for reading in draft.readings()
     )
-    return Read(items=items, unread=tuple(unread))
+    _close(note, notes)
+    return Read(items=items, unread=tuple(unread), notes=tuple(notes))
 
 
 class PortalCard(NamedTuple):
@@ -875,6 +914,66 @@ def _names_a_day(line: str | None) -> bool:
     if found is None:
         return False
     return a_date(found.group("year"), found.group("month"), found.group("day")) is not None
+
+
+def _is_shaped_as_structure(line: str) -> bool:
+    """Whether a line is written as a day in either shape, as a Missing line, or as a card,
+    with its course on its line or with none, whatever it reads as."""
+    return _is_a_day(line) or bool(
+        EMAIL_LINE.match(line)
+        or CARD_LINE.match(line)
+        or ASSIGNED_LINE.match(line)
+        or DUE_LINE.match(line)
+    )
+
+
+@dataclass
+class _OpenNote:
+    """A subject's note while ``read_text`` is inside it: its subject, the day in force
+    where its heading was read, the line numbers of the heading and of each line kept after
+    it, and those lines, a paragraph for each run of them between blank lines.
+
+    The note is suspect when a line of it is shaped as a day, a Missing line or a card, and
+    so was kept only because it did not read as one. Its heading counts when it is shaped
+    that way too, which only a heading read inside a note can be.
+    """
+
+    subject: str
+    day: date | None
+    numbers: list[int]
+    suspect: bool
+    paragraphs: list[list[str]] = field(default_factory=list)
+    after_blank: bool = False
+
+    @classmethod
+    def under(cls, heading: str, day: date | None, number: int) -> "_OpenNote":
+        """The note a subject heading opens: the subject is the heading without its closing
+        hyphen, trimmed."""
+        return cls(heading[:-1].strip(), day, [number], _is_shaped_as_structure(heading))
+
+    def keep(self, number: int, line: str) -> None:
+        """Add a line kept in the note to its paragraph, or to a new one after a blank line."""
+        if self.after_blank or not self.paragraphs:
+            self.paragraphs.append([])
+        self.after_blank = False
+        self.paragraphs[-1].append(line)
+        self.numbers.append(number)
+        self.suspect = self.suspect or _is_shaped_as_structure(line)
+
+
+def _close(note: _OpenNote | None, notes: list[NoteRead]) -> None:
+    """Hand out a subject's note where the reader ends it: its block joins ``notes`` when a
+    day was in force at its heading and a line was kept after the heading."""
+    if note is None or note.day is None or not note.paragraphs:
+        return
+    block = NoteBlock(
+        subject=note.subject,
+        day=note.day,
+        paragraphs=tuple("\n".join(paragraph) for paragraph in note.paragraphs),
+        line=note.numbers[0],
+        suspect=note.suspect,
+    )
+    notes.append(NoteRead(block=block, lines=tuple(note.numbers)))
 
 
 def _ends_a_note(line: str, day: date | None) -> bool:
