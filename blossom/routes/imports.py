@@ -2022,23 +2022,34 @@ def kept_readings(outcome: ReadOutcome | None) -> list[str]:
 
 def read_said(snapshot: DraftSnapshot, now: datetime) -> list[str]:
     """What a Read press says the review's screenshots read as: how many are read as homework
-    lists and the assignments they hold, and how many are read as something else."""
+    lists, the assignments they hold and the teacher's notes to check, and how many are read
+    as something else. A note read as homework counts as an assignment; a note read as unclear
+    or as no homework is a note to check."""
     kinds = {reading.sha256: reading.kind for reading in snapshot.readings}
     read = [image for image in snapshot.images if image.read]
     lists = sum(1 for image in read if kinds.get(image.sha256) == "homework_list")
     out = []
     if lists:
-        out.append(read_said_line(lists, len(homework_assembly(snapshot.readings, now=now).rows)))
+        rows = homework_assembly(snapshot.readings, now=now).rows
+        notes = sum(
+            1
+            for row in rows
+            if row.reading.teacher_note is not None
+            and row.reading.teacher_note.standing != "homework"
+        )
+        out.append(read_said_line(lists, len(rows) - notes, notes))
     if len(read) > lists:
         out.append(not_a_list_line(len(read) - lists))
     return out
 
 
-def read_said_line(lists: int, found: int) -> str:
-    """ "1 screenshot read: 3 assignments found."."""
+def read_said_line(lists: int, found: int, notes: int = 0) -> str:
+    """ "1 screenshot read: 3 assignments found.", or with notes to check, "1 screenshot read:
+    2 assignments found, 1 note to check."."""
+    checks = f", {notes} note{'' if notes == 1 else 's'} to check" if notes else ""
     return (
         f"{lists} screenshot{'' if lists == 1 else 's'} read: "
-        f"{found} assignment{'' if found == 1 else 's'} found."
+        f"{found} assignment{'' if found == 1 else 's'} found{checks}."
     )
 
 

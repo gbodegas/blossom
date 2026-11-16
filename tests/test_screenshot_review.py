@@ -750,6 +750,7 @@ def test_the_draft_store_gets_each_rows_piece_names() -> None:
 class FakeReading:
     title: str
     occurrence: str | None = None
+    teacher_note: None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -811,6 +812,68 @@ def test_a_rows_set_aside_cards_carry_to_the_row_they_make() -> None:
     result = review.cleared(as_rows(old), as_rows(new), {}, frozenset({"k1"}))
     assert result.aside_insert == {"k1b"}
     assert result.notes == (("k1b", "aside_carried"),)
+
+
+def two_task_note() -> list[ScreenshotRow]:
+    """The two rows one teacher's note card reads as: Map project due Wednesday 11/18 and
+    Timeline poster due Thursday 11/19, from one card under Monday 11/16/2026."""
+    words = "Map project due Wednesday. Timeline poster due Thursday."
+    card = homework_card(
+        badge=None, course="Social Studies 8", title=None, instruction=words, footer=None
+    )
+    reading = shot("two-tasks", "Monday 11/16/2026", card)
+    rows = sorted(homework_assembly([reading], now=OBSERVED_AT).rows, key=lambda r: r.reading.title)
+    assert [r.reading.title for r in rows] == ["Map project", "Timeline poster"]
+    return rows
+
+
+def test_a_set_aside_note_row_carries_to_its_own_task_read_with_a_new_key() -> None:
+    map_project, timeline = two_task_note()
+    result = review.cleared(
+        [map_project, timeline],
+        [map_project._replace(key="map-again"), timeline],
+        {},
+        frozenset({map_project.key}),
+    )
+    assert result.aside_insert == {"map-again"}
+    assert result.notes == (("map-again", "aside_carried"),)
+
+
+def test_a_set_aside_note_row_never_carries_to_a_sibling_task_from_the_same_card() -> None:
+    map_project, timeline = two_task_note()
+    result = review.cleared(
+        [map_project, timeline],
+        [map_project, timeline._replace(key="timeline-again")],
+        {},
+        frozenset({map_project.key}),
+    )
+    assert result.aside_insert == frozenset()
+    assert result.notes == (("timeline-again", "asks_again"),)
+
+
+def test_an_undated_note_is_never_preselected_already_saved_by_its_name_and_words() -> None:
+    """An undated note's words with its class and title don't tell one week's note from the
+    next, so a saved row of that name holding those words is offered, never preselected."""
+    note = homework_card(
+        badge=None, course="Math 8", title="Practice set", instruction=None, footer=None
+    )
+    reading = shot("practice", "Monday 11/16/2026", note)
+    [p], _, _ = review.pieces_from([reading], {}, frozenset(), OBSERVED_AT)
+    assert p.reading is not None
+    assert p.reading.teacher_note is not None
+    assert p.due is None
+    saved = SavedRow("assignment-practice-set", p.course, p.title, None, None, p.words)
+
+    assert review.listed(p, [saved]) == [saved]
+    assert review.defaults([p], groups_of(p), rows_of(saved), [], {}, nothing_writes) == {}
+
+
+def test_a_formal_undated_piece_is_preselected_already_saved() -> None:
+    p = piece("p", None, [W1])
+    rows = rows_of(row("r1", None, [W1]))
+    assert review.defaults([p], groups_of(p), rows, [], {}, nothing_writes) == {
+        "p": {"existing": "r1"}
+    }
 
 
 def test_a_destinations_kind_answer_clears_with_its_piece_and_a_rows_own_stays() -> None:

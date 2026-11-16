@@ -452,11 +452,13 @@ def defaults(
 ) -> dict[str, dict[str, Any]]:
     """The two preselections for pieces with no stored destination: "Already saved" for one exact
     match landing on which writes nothing, and a lone piece with nothing listed or linked on new
-    slot 1. Two pieces never start on one assignment."""
+    slot 1. Two pieces never start on one assignment. A piece read from a teacher's note with
+    no due date is never preselected "Already saved": its class, title and words don't tell one
+    week's note from another's."""
     picks = list(picks)
     candidates: dict[str, str] = {}
     for piece in pieces:
-        if piece.name in stored:
+        if piece.name in stored or _undated_note(piece):
             continue
         options = listed(piece, rows.values()) + linked(piece, picks, rows)
         exact = sorted(
@@ -489,6 +491,13 @@ def defaults(
         if not listed(piece, rows.values()) and not linked(piece, picks, rows):
             out[piece.name] = {"new": 1}
     return out
+
+
+def _undated_note(piece: Piece) -> bool:
+    """Whether a piece was read from a teacher's note and has no due date."""
+    return (
+        piece.due is None and piece.reading is not None and piece.reading.teacher_note is not None
+    )
 
 
 # ------------------------------------------------------------------ units
@@ -1611,11 +1620,15 @@ def cleared(
     carried: set[str] = set()
     asked: set[str] = set()
     aside_cards = {c for r in old_rows if r.key in aside for c in r.sources}
+    aside_notes = {_task_of(r) for r in old_rows if r.key in aside and _task_of(r) is not None}
     for row in new_rows:
         if row.key in old_keys and row.key not in touched:
             continue
         cards = set(row.sources)
-        if cards and cards <= aside_cards:
+        # One note card can read as several tasks: a set-aside task carries only to a row of
+        # the same task, never to another task of its card.
+        sibling = _task_of(row) is not None and _task_of(row) not in aside_notes
+        if cards and cards <= aside_cards and not sibling:
             if row.key not in aside:
                 carried.add(row.key)
             notes.append((row.key, "aside_carried"))
@@ -1632,6 +1645,13 @@ def cleared(
         frozenset(named),
         ("name", "missing") in delete,
     )
+
+
+def _task_of(row: ScreenshotRow) -> tuple[str, str] | None:
+    """The class and words, single-spaced, of the teacher's note task a row was read from, or
+    ``None`` for a row read from cards."""
+    task = row.reading.teacher_note
+    return None if task is None else (folded(task.subject), folded(task.words))
 
 
 def carry(

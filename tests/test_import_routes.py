@@ -41181,3 +41181,90 @@ def test_a_save_that_closed_the_review_itself_keeps_its_other_lines_in_their_ord
         changed,
         imports.SAID["closed"],
     ]
+
+
+# ------------------------------------------------------------------ notes on a screenshot
+
+UNIT_TICK: Final = re.compile(r'<input type="checkbox" name="unit" value="[^"]*"( checked)?>')
+
+
+def with_notes(*notes: dict[str, object]) -> dict[str, object]:
+    """The default made-up homework list, its two cards under Monday 10/5/2026, with teacher's
+    note cards under them: cards with a course and words and no label or due line."""
+    answer = homework_answer()
+    return {**answer, "cards": [*answer["cards"], *notes]}
+
+
+def note_card(course: str, words: str, y_top: int) -> dict[str, object]:
+    return homework_card(
+        badge=None,
+        course=course,
+        title=words,
+        instruction=None,
+        footer=None,
+        y_top=y_top,
+        y_bottom=y_top + 60,
+    )
+
+
+def section_of(page: str, heading_id: str) -> str:
+    """The review's section under the heading with this id, up to the next section."""
+    return page.split(f'<h2 id="{heading_id}">', 1)[1].split("</section>", 1)[0]
+
+
+def test_the_read_press_counts_homework_rows_and_notes_to_check(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = with_notes(note_card("Math 8", "Practice set", 450))
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, answer))
+
+    assert lines_in(TOLD.search(page)) == [imports.read_said_line(1, 2, 1)]
+    assert imports.read_said_line(1, 2, 1) == (
+        "1 screenshot read: 2 assignments found, 1 note to check."
+    )
+    assert imports.read_said_line(2, 1, 2) == (
+        "2 screenshots read: 1 assignment found, 2 notes to check."
+    )
+    assert imports.read_said_line(1, 2) == "1 screenshot read: 2 assignments found."
+
+
+def test_notes_that_may_be_homework_or_say_none_start_unticked_under_their_own_headings(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = with_notes(
+        note_card("Math 8", "Practice set", 450),
+        note_card("Science 8", "No additional homework assigned.", 520),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, read)
+
+    saving = section_of(page, "saving-heading")
+    may_be = section_of(page, "may-be-heading")
+    none_assigned = section_of(page, "no-homework-heading")
+    assert "Practice set" in may_be
+    assert "Practice set" not in saving
+    assert "No additional homework assigned" in none_assigned
+    assert may_be.startswith("Notes that may be homework</h2>")
+    assert says(may_be, "These start unselected. Select any that are homework.")
+    assert none_assigned.startswith("Notes with no homework</h2>")
+    assert says(
+        none_assigned, "The school's note says no homework is assigned. These start unselected."
+    )
+    assert UNIT_TICK.findall(saving) == [" checked", " checked"]
+    assert UNIT_TICK.findall(may_be) == [""]
+    assert UNIT_TICK.findall(none_assigned) == [""]
+
+
+def test_a_note_read_as_homework_is_ticked_under_what_saving_adds(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = with_notes(note_card("Math 8", "Study the vocabulary on page 12.", 450))
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, answer))
+
+    assert 'id="may-be-heading"' not in page
+    assert 'id="no-homework-heading"' not in page
+    assert "Study the vocabulary on page 12" in section_of(page, "saving-heading")
+    assert lines_in(TOLD.search(page)) == [imports.read_said_line(1, 3)]

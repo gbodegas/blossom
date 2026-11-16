@@ -134,8 +134,13 @@ SAID: Final = {
     "typing_lost": "Typed corrections aren't kept by this button; use Save review for later first.",
     "tick_one": "Save this assignment",
     "tick_many": "Save these assignments",
+    "may_be_homework": "Notes that may be homework",
+    "may_be_homework_helper": "These start unselected. Select any that are homework.",
+    "no_homework": "Notes with no homework",
+    "no_homework_helper": "The school's note says no homework is assigned. These start unselected.",
 }
-"""The fixed sentences and labels of the review's rows."""
+"""The fixed sentences and labels of the review's rows. The headings and helpers of the notes
+that may be homework and the notes with no homework are the School text review's words."""
 
 NEEDED: Final = {
     "course": "A class is needed.",
@@ -830,8 +835,8 @@ class UnitShown:
     tick: bool
     ticked: bool
     """Ticked on the page, for display only: with saved progress, when its selection names every
-    row of the group and the group is still open and can be ticked; with none, every group that
-    can be ticked."""
+    row of the group and the group is open and can be ticked; with none, every group that can be
+    ticked and holds no teacher's note read as unclear or as no homework."""
     waits: tuple[str, ...]
     refusals: tuple[str, ...]
     offers: tuple[OfferShown, ...]
@@ -841,6 +846,9 @@ class UnitShown:
     about: str = ""
     """The unit's cards by title and place, which its repeated controls' names end with."""
     tick_label: str = ""
+    note: str = ""
+    """``unclear`` or ``not_assignment`` for a group holding a teacher's note read as unclear
+    or as no homework, which the page shows under its own heading; empty otherwise."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1658,6 +1666,7 @@ def rows_shown(
         tickable = unit.ready and not still_any and unit_name(unit.unit) in digests
         held = sorted((state.by_name[n] for n in unit.unit), key=first_card)
         chosen_blocks = sum(1 for _, block in blocks if block.chosen)
+        note = _note_standing(held)
         shown_units.append(
             UnitShown(
                 unit_name(unit.unit),
@@ -1665,7 +1674,9 @@ def rows_shown(
                 tickable,
                 tickable
                 and (
-                    selected is None or {state.by_name[name].key for name in unit.unit} <= selected
+                    not note
+                    if selected is None
+                    else {state.by_name[name].key for name in unit.unit} <= selected
                 ),
                 _waits(unit),
                 refusals,
@@ -1674,6 +1685,7 @@ def rows_shown(
                 f"saving-{number}",
                 "; ".join(piece_text(places, m) for m in held),
                 SAID["tick_one"] if chosen_blocks <= 1 else SAID["tick_many"],
+                note,
             )
         )
     shown_units = _placed(names, splits, shown_units)
@@ -2152,6 +2164,16 @@ def _still_open(
     if any(c.sha256 in waiting for m in members for c in m.cards):
         still.append("name")
     return still
+
+
+def _note_standing(pieces: Iterable[Piece]) -> str:
+    """The standing of the first teacher's note among a group's pieces that is not read as
+    homework, ``unclear`` or ``not_assignment``; empty when there is none."""
+    for piece in pieces:
+        task = None if piece.reading is None else piece.reading.teacher_note
+        if task is not None and task.standing != "homework":
+            return str(task.standing)
+    return ""
 
 
 def _waits(unit: UnitCheck) -> tuple[str, ...]:

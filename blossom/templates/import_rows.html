@@ -117,10 +117,23 @@
       {% endfor %}
     </section>
   {% endif %}
-  {% if rows.units %}
-    <section class="panel" aria-labelledby="saving-heading">
-      <h2 id="saving-heading">What saving adds</h2>
-      {% for unit in rows.units %}
+  {#
+    The groups of cards and of notes read as homework first, under "What saving adds"; then
+    the groups of notes that may be homework and of notes that say none is assigned, each kind
+    under its own heading with the School text review's words.
+  #}
+  {% set saving = rows.units|selectattr("note", "equalto", "")|list %}
+  {% set may_be = rows.units|selectattr("note", "equalto", "unclear")|list %}
+  {% set none_assigned = rows.units|selectattr("note", "equalto", "not_assignment")|list %}
+  {% for units, heading, helper, id in (
+    (saving, "What saving adds", "", "saving-heading"),
+    (may_be, words.may_be_homework, words.may_be_homework_helper, "may-be-heading"),
+    (none_assigned, words.no_homework, words.no_homework_helper, "no-homework-heading")
+  ) %}{% if units %}
+    <section class="panel" aria-labelledby="{{ id }}">
+      <h2 id="{{ id }}">{{ heading }}</h2>
+      {% if helper %}<p class="helper">{{ helper }}</p>{% endif %}
+      {% for unit in units %}
         <article class="assignment" id="{{ unit.anchor }}" tabindex="-1">
           {% for block in unit.blocks %}
             {{ head_of(block.head) }}
@@ -145,7 +158,7 @@
         </article>
       {% endfor %}
     </section>
-  {% endif %}
+  {% endif %}{% endfor %}
   {% if rows.saved %}
     <section class="panel" aria-labelledby="saved-heading">
       <h2 id="saved-heading">Saved</h2>
