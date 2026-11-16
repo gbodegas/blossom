@@ -119,7 +119,7 @@ from blossom.stores.project_state import (
     StatusReport,
 )
 from blossom.stores.school_instructions import InstructionReadings, UnreadableInstruction
-from blossom.teacher_notes import NoteBlock
+from blossom.teacher_notes import NoteBlock, NoteTask, Standing, read_notes
 
 PORTAL_CONFIDENCE: Final = 0.9
 """The portal's own page, pasted whole: the school's word, as it wrote it."""
@@ -128,6 +128,7 @@ FAMILY_CONFIDENCE: Final = 0.8
 
 OWN_LINE: Final = "the assignment's own line"
 DAY_HEADER: Final = "the day's header"
+TEACHER_NOTE: Final = "the teacher's note"
 EMAIL_DATE_LINE: Final = "the email's date line"
 PASTE_DAY: Final = "the day it was pasted"
 
@@ -283,6 +284,9 @@ class Reading:
     """Where each field came from when that is not the reading's own channel: a text that
     holds the school's email and the portal's page names the assignment from the email and
     dates it from the page, and each fact keeps the channel that gave it."""
+    teacher_note: NoteTask | None = None
+    """The task a reading made from a teacher's note was read as; ``None`` for a reading
+    made from a card, the school's email, or a parent's entry."""
 
     @property
     def pair(self) -> tuple[str, str]:
@@ -1026,6 +1030,151 @@ def by_hand(
     )
 
 
+def note_reading(task: NoteTask, *, now: datetime) -> Reading:
+    """One task read from a teacher's note as a reading: the school's, from the portal.
+
+    Its class and title are the note's subject and the task's name. It is due on the
+    task's deadline when the note settles one, which is then the school's claim, seen in
+    the teacher's note; with no settled deadline it has no due date and makes no claim. It
+    is never dated by the school day it is listed under, and it has no assigned date. The
+    task's words are its instruction, read under no card, on the first school day the task
+    is listed under.
+    """
+    course, title = pair(task.subject, task.name)
+    claims = (
+        ()
+        if task.deadline is None
+        else (claim(SourceChannel.LMS, task.deadline, TEACHER_NOTE, now, PORTAL_CONFIDENCE),)
+    )
+    return Reading(
+        course=course,
+        title=title,
+        due_date=task.deadline,
+        assigned_on=None,
+        kind=kind_of(title),
+        claims=claims,
+        origin=SourceChannel.LMS,
+        instructions=(InstructionSeen(task.words, SourceChannel.LMS, None, task.first_day),),
+        at_line=task.line or None,
+        teacher_note=task,
+    )
+
+
+def with_family_deadline(reading: Reading, day: date | None, *, now: datetime) -> Reading:
+    """A reading made from a teacher's note, with the deadline the family gives it.
+
+    A date other than the one the note settles is the family's entry: it becomes the due
+    date, the claim seen in the teacher's note gives way to the parent's claim of that
+    date, made as a typed entry makes it, and the due date's origin is the parent's entry.
+    ``None`` where the note settles a date leaves no due date, no claim seen in the note,
+    and no origin for a due date. The date the note itself settles, or ``None`` where it
+    settles none, hands the reading back as it is, and so does a reading made from no
+    note. Nothing is changed in place.
+    """
+    task = reading.teacher_note
+    if task is None or day == task.deadline:
+        return reading
+    claims = tuple(said for said in reading.claims if said.seen_in != TEACHER_NOTE)
+    origins = {
+        name: channel for name, channel in reading.field_origins.items() if name != "due_date"
+    }
+    if day is not None:
+        claims += (claim(SourceChannel.PARENT_ENTRY, day, None, now, FAMILY_CONFIDENCE),)
+        origins["due_date"] = SourceChannel.PARENT_ENTRY
+    return dataclasses.replace(reading, due_date=day, claims=claims, field_origins=origins)
+
+
+STATEMENT_END: Final = " .!?,;:-"
+"""What may trail a task's words once its deadline statement is taken out of them."""
+IS_OR_ARE: Final = re.compile(r"(?:^|\s+)(?:is|are)$", re.IGNORECASE)
+"""The "is" or "are" that links a name to its deadline statement, at the end of the words."""
+
+
+def _says_more(task: NoteTask) -> bool:
+    """Whether a task's words say more than its name and its deadline statement: the words
+    without that statement, single-spaced, without end punctuation and a trailing "is" or
+    "are", are not the name."""
+    words = task.words
+    if task.deadline_words:
+        words = words.replace(task.deadline_words, "", 1)
+    rest = " ".join(words.split()).rstrip(STATEMENT_END)
+    return IS_OR_ARE.sub("", rest).rstrip(STATEMENT_END) != task.name
+
+
+def _read_under(card: Reading, days: Collection[date]) -> bool:
+    """Whether a card's reading was read under one of the school days: assigned on it, or
+    due on it by the day's header."""
+    written = {day.isoformat() for day in days}
+    return card.assigned_on in days or any(
+        said.channel is SourceChannel.LMS
+        and said.seen_in == DAY_HEADER
+        and said.asserted_value in written
+        for said in card.claims
+    )
+
+
+def _joined(card: Reading, task: NoteTask, now: datetime) -> Reading:
+    """A card's reading with what a note about the same assignment adds: the claim of a
+    deadline the note settles, seen in the teacher's note, and the task's words as one more
+    instruction when they say more than the name and the deadline statement. A claim or an
+    instruction the card has is not added twice."""
+    claims, instructions = card.claims, card.instructions
+    if task.deadline is not None:
+        noted = claim(SourceChannel.LMS, task.deadline, TEACHER_NOTE, now, PORTAL_CONFIDENCE)
+        if noted not in claims:
+            claims += (noted,)
+    if _says_more(task) and all(seen.text != task.words for seen in instructions):
+        instructions += (InstructionSeen(task.words, SourceChannel.LMS, None, task.first_day),)
+    return dataclasses.replace(card, claims=claims, instructions=instructions)
+
+
+def with_note_readings(read: Read, *, now: datetime) -> tuple[Reading, ...]:
+    """The readings of a paste with its teachers' notes read as tasks: the cards first, in
+    their places, then one reading for each task that is no card's.
+
+    A task named as a card of the same class, where that card was read under one of the
+    school days the task is listed under, is that card's assignment: the card's reading
+    takes what the note adds and stays where it is. Every other task is a reading of its
+    own, after the cards, in the order the notes give the tasks. One whose class and title
+    a reading before it has carries its first school day and a mark of its words as its
+    occurrence, so its id is its own.
+    """
+    items = list(read.items)
+    made: list[Reading] = []
+    for task in read_notes([note.block for note in read.notes]):
+        name = pair(task.subject, task.name)
+        place = next(
+            (
+                index
+                for index, card in enumerate(read.items)
+                if card.pair == name and _read_under(card, task.seen_on)
+            ),
+            None,
+        )
+        if place is not None:
+            items[place] = _joined(items[place], task, now)
+            continue
+        reading = note_reading(task, now=now)
+        if any(other.pair == reading.pair for other in (*items, *made)):
+            words = " ".join(task.words.split()).encode("utf-8")
+            mark = hashlib.sha256(words).hexdigest()[:8]
+            reading = dataclasses.replace(
+                reading, occurrence=f"{task.first_day.isoformat()}/{mark}"
+            )
+        made.append(reading)
+    return (*items, *made)
+
+
+def left_out_by_default(items: Sequence[Reading]) -> frozenset[int]:
+    """The keys of the readings left out of a save unless someone selects them: those made
+    from a teacher's note whose task is unclear or not an assignment."""
+    return frozenset(
+        key
+        for key, item in enumerate(items)
+        if item.teacher_note is not None and item.teacher_note.standing is not Standing.HOMEWORK
+    )
+
+
 def a_year_from(today: date, years: int) -> date:
     """The same day of the month ``years`` away; a leap day lands on the last of February."""
     try:
@@ -1044,6 +1193,7 @@ KNOWN: Final = "known"
 CLAIMED: Final = "claimed"
 REVIEW: Final = "review"
 FOLDED: Final = "folded"
+LEFT_OUT: Final = "left_out"
 
 
 @dataclass(frozen=True)
@@ -1148,6 +1298,9 @@ class Change:
     homework, changed since it was chosen, or the card doesn't offer the choice now."""
     kept_separate: bool = False
     """Whether a recorded answer kept apart two of the homework the question lists."""
+    left_out: bool = False
+    """Whether the reading is left out of the save: nothing of it is compared with the
+    record or written, and no other card of the text is measured against it."""
 
     @property
     def saved_as(self) -> Assignment | None:
@@ -1300,8 +1453,11 @@ class Change:
 
     @property
     def state(self) -> str:
-        """``review`` for a question the parent must answer, ``folded`` for a card folded
-        into another, else ``new``, ``claimed``, or ``known``."""
+        """``left_out`` for a reading left out of the save, ``review`` for a question the
+        parent must answer, ``folded`` for a card folded into another, else ``new``,
+        ``claimed``, or ``known``."""
+        if self.left_out:
+            return LEFT_OUT
         if self.folded_into is not None:
             return FOLDED
         if self.lands_nowhere or self.instructions_asked or self.instructions_stale:
@@ -1315,6 +1471,8 @@ class Change:
     @property
     def label(self) -> str:
         """The state as the review page says it."""
+        if self.state == LEFT_OUT:
+            return "Not selected"
         if self.state == REVIEW:
             return "Needs your answer"
         if self.state == FOLDED:
@@ -1365,6 +1523,8 @@ class Change:
     @property
     def effect_base(self) -> str:
         """What saving does apart from the type, which the page rewrites as the select changes."""
+        if self.state == LEFT_OUT:
+            return "Not selected. Nothing from this note is saved."
         if self.identity_asked:
             if self.identity_question == "report":
                 return (
@@ -1869,6 +2029,7 @@ def changes_for(
     instruction_answers: Mapping[int, InstructionChoice | SubmittedChoice] | None = None,
     identities: Mapping[int, IdentityAnswer] | None = None,
     picks: Mapping[int, Pick] | None = None,
+    left_out: Collection[int] | None = None,
 ) -> list[Change]:
     """Compare each reading with the record: what is new, what is known, what a paste adds.
 
@@ -1912,6 +2073,13 @@ def changes_for(
     about one saved row compose: each is measured against the row as the
     cards before it leave it, so a date one moves, a note another adds, and
     an assigned date a third fills all arrive together.
+
+    ``left_out`` holds the keys of the readings left out of the save. Each
+    stays in the list, in its place, as a change that lands on no row and
+    brings nothing: it asks nothing, it is the first card of no name, so a
+    later card of its name is measured as if the text did not have it, and
+    no instruction of the school and no note of hers is decided or offered
+    on it. ``None`` leaves nothing out.
     """
     occurrences = occurrences or {}
     kinds = kinds or {}
@@ -1984,6 +2152,9 @@ def changes_for(
     extras: dict[int, dict[str, object]] = {}
     changes: list[Change] = []
     for key, reading in enumerate(items):
+        if left_out is not None and key in left_out:
+            changes.append(_left_out(key, reading, kinds))
+            continue
         answer = occurrences.get(key)
         known = decided.get(reading.pair, ())
         kind = kinds.get(key, reading.kind if reading.kind_chosen else None)
@@ -2191,6 +2362,8 @@ def _with_waiting_notes(changes: list[Change], store: ProjectStateStore) -> list
         if note.course is not None and note.title is not None:
             waiting.setdefault(pair(note.course, note.title), []).append(note)
     for index, change in enumerate(changes):
+        if change.left_out:
+            continue
         notes = waiting.get(change.reading.pair)
         if notes:
             changes[index] = dataclasses.replace(change, waiting=tuple(notes))
@@ -2244,7 +2417,11 @@ def answers_to_no_question(
     carriers = {change.assignment_id: change for change in decided.values()}
     cards = {change.key: change for change in changes}
     asked = asked or {}
-    unlanded = {change.key for change in changes if change.lands_nowhere or change.identity_stale}
+    unlanded = {
+        change.key
+        for change in changes
+        if change.lands_nowhere or change.identity_stale or change.left_out
+    }
     never: set[int] = set()
     for key, answer in answers.items():
         if key in unlanded:
@@ -2314,6 +2491,8 @@ def _with_instructions(
     landed: dict[str, list[int]] = {}
     folded: dict[int, list[int]] = {}
     for index, change in enumerate(changes):
+        if change.left_out:
+            continue
         if change.folded_into is not None:
             folded.setdefault(change.folded_into, []).append(change.key)
         elif change.lands_nowhere:
@@ -2568,6 +2747,29 @@ def _folded_marker(
     )
 
 
+def _left_out(key: int, reading: Reading, kinds: Mapping[int, AssignmentKind]) -> Change:
+    """The card of a reading left out of the save, kept in the list in its place: it lands
+    on no row, brings no claim and no report, and is the first card of no name."""
+    kind, chosen, suggested = _kind_for(key, reading, None, kinds)
+    return Change(
+        key,
+        reading,
+        None,
+        (),
+        (),
+        False,
+        False,
+        False,
+        None,
+        kind,
+        chosen,
+        False,
+        None,
+        suggested_kind=suggested,
+        left_out=True,
+    )
+
+
 def conflicting_choices(changes: list[Change]) -> list[str]:
     """The assignments whose cards choose different types, named as the page names them.
 
@@ -2577,7 +2779,7 @@ def conflicting_choices(changes: list[Change]) -> list[str]:
     chosen: dict[str, set[AssignmentKind]] = {}
     names: dict[str, str] = {}
     for change in changes:
-        if change.state == FOLDED:
+        if change.state in (FOLDED, LEFT_OUT):
             continue
         if change.choices_conflict:
             chosen.setdefault(change.assignment_id, set()).update(AssignmentKind)
@@ -2642,6 +2844,7 @@ def keep(
     now: datetime | None = None,
     today: date | None = None,
     dates: Mapping[int, tuple[date | None, date | None]] | None = None,
+    left_out: Collection[int] | None = None,
 ) -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
     """Compare and write as one: save what the record lacks, and say what changed.
 
@@ -2687,6 +2890,10 @@ def keep(
     ``dates`` holds a due date and an assigned date a parent chose for a card's row, each
     ``None`` to leave it: they are written with the row in the same transaction, whatever the
     distance from the saved date. A paste passes none, and nothing changes for it.
+
+    ``left_out`` holds the keys of the readings left out of the save, read as ``changes_for``
+    reads it in every comparison made here: nothing is written for one, it is in none of the
+    counts, and a date chosen for it in ``dates`` is not written. ``None`` leaves nothing out.
     """
     picks = picks or {}
     crossed = picks.keys() & (identities or {}).keys()
@@ -2705,6 +2912,7 @@ def keep(
                     kinds=kinds,
                     identities=identities,
                     picks=picks,
+                    left_out=left_out,
                 ),
                 submitted_answers(instruction_answers or {}),
                 asked,
@@ -2719,6 +2927,7 @@ def keep(
             instruction_answers=instruction_answers,
             identities=identities,
             picks=picks,
+            left_out=left_out,
         )
         refused = frozenset(change.key for change in changes if change.pick_refused is not None)
         # A choice made against instructions that have changed is refused before any other
@@ -2759,7 +2968,7 @@ def keep(
         updated: set[str] = set()
         unchanged: set[str] = set()
         for change in changes:
-            if change.state == FOLDED:
+            if change.state in (FOLDED, LEFT_OUT):
                 continue
             if change.state == KNOWN:
                 unchanged.add(change.assignment_id)
@@ -2779,7 +2988,9 @@ def keep(
             claims.setdefault(change.assignment_id, []).extend(change.new_claims)
             reports.setdefault(change.assignment_id, []).extend(change.new_reports)
         for key, (due, assigned) in sorted((dates or {}).items()):
-            dated = next((c for c in changes if c.key == key and c.state != FOLDED), None)
+            dated = next(
+                (c for c in changes if c.key == key and c.state not in (FOLDED, LEFT_OUT)), None
+            )
             if dated is None:
                 continue
             target = dated.assignment_id
