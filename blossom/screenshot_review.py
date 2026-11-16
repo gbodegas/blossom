@@ -69,6 +69,9 @@ class SavedRow:
     first_words: str | None = None
     more_words: int = 0
     kind: str | None = None
+    noted: frozenset[tuple[str, date | None]] = frozenset()
+    """Every school instruction kept under it, by its words, single-spaced, and the school
+    day it was first read under, as the record recognizes a teacher's note."""
 
     @property
     def pair(self) -> tuple[str, str]:
@@ -285,9 +288,29 @@ class ListEntry:
     slot: int | None = None
 
 
+def note_of(piece: Piece) -> tuple[str, date | None] | None:
+    """The words, single-spaced, and the first school day of the teacher's note task a piece
+    was read from, as the record recognizes it; ``None`` for a piece read from cards."""
+    task = None if piece.reading is None else piece.reading.teacher_note
+    return None if task is None else (" ".join(task.words.split()), task.first_day)
+
+
+def holds_note(piece: Piece, row: SavedRow) -> bool:
+    """Whether a saved assignment of the piece's class holds the words of the teacher's note
+    task it was read from, kept under the school day the task was first listed under,
+    whatever the assignment's title or due date."""
+    noted = note_of(piece)
+    return noted is not None and row.pair[0] == piece.pair[0] and noted in row.noted
+
+
 def listed(piece: Piece, rows: Iterable[SavedRow]) -> list[SavedRow]:
-    """The saved assignments of the piece's class and title in its window, in a fixed order."""
-    found = [r for r in rows if r.pair == piece.pair and in_window(piece.due, r.due)]
+    """The saved assignments of the piece's class and title in its window, and for a piece
+    read from a teacher's note those holding its words and school day, in a fixed order."""
+    found = [
+        r
+        for r in rows
+        if (r.pair == piece.pair and in_window(piece.due, r.due)) or holds_note(piece, r)
+    ]
     return sorted(
         found,
         key=lambda r: (
@@ -381,7 +404,7 @@ def offerable(
         return False
     if kind == "existing":
         row = rows[target]
-        return row.pair == piece.pair and in_window(piece.due, row.due)
+        return (row.pair == piece.pair and in_window(piece.due, row.due)) or holds_note(piece, row)
     if kind == "linked":
         return any(r.assignment_id == target for r in linked(piece, picks, rows))
     return True
@@ -452,13 +475,21 @@ def defaults(
 ) -> dict[str, dict[str, Any]]:
     """The two preselections for pieces with no stored destination: "Already saved" for one exact
     match landing on which writes nothing, and a lone piece with nothing listed or linked on new
-    slot 1. Two pieces never start on one assignment. A piece read from a teacher's note with
-    no due date is never preselected "Already saved": its class, title and words don't tell one
-    week's note from another's."""
+    slot 1. Two pieces never start on one assignment. A piece read from a teacher's note is
+    preselected "Already saved" on the one assignment holding its words and school day; with
+    none and no due date it is never preselected "Already saved": its class, title and words
+    don't tell one week's note from another's."""
     picks = list(picks)
     candidates: dict[str, str] = {}
     for piece in pieces:
-        if piece.name in stored or _undated_note(piece):
+        if piece.name in stored:
+            continue
+        noted = sorted(r.assignment_id for r in rows.values() if holds_note(piece, r))
+        if noted:
+            if len(noted) == 1 and writes_nothing(piece, noted[0]):
+                candidates[piece.name] = noted[0]
+            continue
+        if _undated_note(piece):
             continue
         options = listed(piece, rows.values()) + linked(piece, picks, rows)
         exact = sorted(
@@ -481,7 +512,8 @@ def defaults(
         if len(names) == 1 and target not in taken:
             [name] = names
             piece = next(p for p in pieces if p.name == name)
-            out[name] = {("existing" if rows[target].pair == piece.pair else "linked"): target}
+            same = rows[target].pair == piece.pair or holds_note(piece, rows[target])
+            out[name] = {("existing" if same else "linked"): target}
     for group in groups.values():
         if len(group) != 1:
             continue
@@ -580,11 +612,15 @@ def date_questions(
     dest: tuple[str, ...], members: Sequence[Piece], row: SavedRow | None
 ) -> list[DateQuestion]:
     """The due date asked where the pieces differ or differ from the saved one, and the assigned
-    date asked where a saved one differs from a piece's or the pieces differ."""
+    date asked where a saved one differs from a piece's or the pieces differ. A piece read from
+    a teacher's note the saved one holds by its words and school day asks no due date: the
+    saved one's stands."""
     out: list[DateQuestion] = []
     names = tuple(sorted(p.name for p in members))
     subject = subject_for(dest, names)
-    dues = sorted({p.due for p in members if p.due is not None})
+    dues = sorted(
+        {p.due for p in members if p.due is not None and (row is None or not holds_note(p, row))}
+    )
     if row is not None and row.due is not None and dues and (len(dues) > 1 or dues[0] != row.due):
         due_options = (("as_saved", row.due), *(("piece_date", d) for d in dues if d != row.due))
         out.append(DateQuestion("due", subject, due_options, names))
@@ -1269,6 +1305,8 @@ def corrected(
     dates: Mapping[str, str | None] | None = None,
     texts: Sequence[str] = (),
     wordless: Sequence[CardPlace] = (),
+    *,
+    now: datetime,
 ) -> Reading:
     """The reading with the parent's corrections: its row's class and title, the kind its
     corrected title suggests, each instruction text replaced or removed by its index among
@@ -1276,7 +1314,10 @@ def corrected(
     each text once, and its own due and assigned dates, the assigned date set to none where she
     said none was given. In saved progress of shape 3, an instruction correction replaces
     every text, or is added where none was read, and the due line and day heading set the
-    dates ``date_target`` names. A correction Blossom can't use is passed over."""
+    dates ``date_target`` names. A correction Blossom can't use is passed over. On a reading
+    made from a teacher's note, a due date other than the one read, or none where its own
+    date is given as none, is the family's entry (``intake.with_family_deadline``, made at
+    ``now``); a due date given as none on any other reading is passed over."""
     fields, dates = fields or {}, dates or {}
     if not fields and not dates:
         return reading
@@ -1339,7 +1380,14 @@ def corrected(
             change["assigned_on"] = None
         elif usable_correction("assigned", own_assigned):
             change["assigned_on"] = typed_day(own_assigned)
-    if due is not None and due != reading.due_date:
+    if reading.teacher_note is not None:
+        cleared = "due" in dates and dates["due"] is None
+        if cleared or (due is not None and due != reading.due_date):
+            given = intake.with_family_deadline(reading, None if cleared else due, now=now)
+            change["due_date"] = given.due_date
+            change["claims"] = given.claims
+            change["field_origins"] = given.field_origins
+    elif due is not None and due != reading.due_date:
         before = None if reading.due_date is None else reading.due_date.isoformat()
         change["due_date"] = due
         change["claims"] = tuple(
@@ -1409,7 +1457,12 @@ def pieces_from(
         carried = tuple(c for c in bare if usable_correction(f := wordless_field(c), fields.get(f)))
         mine = [card for card in (*wordless, *carried) if card in cards]
         fixed = corrected(
-            reading, corrections.get(row.key), corrections.get(dates_key(name)), texts, mine
+            reading,
+            corrections.get(row.key),
+            corrections.get(dates_key(name)),
+            texts,
+            mine,
+            now=now,
         )
         read = AsRead(
             row.reading.course,

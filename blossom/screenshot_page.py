@@ -496,7 +496,7 @@ def _date_box(
     value = "" if shown is None else shown.isoformat()
     if given and typed is not None:
         day = typed_day(typed) if typed else None
-        if typed == "" and field in NEEDED:
+        if typed == "" and field in NEEDED and not _from_a_note(piece):
             refused = NEEDED[field]
         elif len(typed) > field_most(field):
             refused = SAID["too_long"].format(named=BOX_NAMED[field], most=field_most(field))
@@ -543,7 +543,9 @@ def fold_boxes(
     value: the row's class, title, one box per instruction text and one empty box per open card
     read with no words the reader wasn't sure of (``wordless``, by field and label, the label
     naming its screenshot and card) when ``row_boxes`` (on the row's first open card), then
-    the piece's due and assigned dates."""
+    the piece's due and assigned dates. A piece read from a teacher's note has no Instructions
+    box: its words are the school's wording, shown as read, which a later reading of the same
+    note is recognized by."""
     read = piece.as_read
     if read is None:
         return ()
@@ -567,6 +569,8 @@ def fold_boxes(
             (f"instruction:{i}", BOX_LABELS["instruction"], t) for i, t in enumerate(read.texts)
         ]
         boxes += [(field, label, "") for field, label in wordless]
+        if _from_a_note(piece):
+            boxes = []
         for field, label, text in boxes:
             typed = (row[field] or "") if field in row else None
             out.append(
@@ -2164,6 +2168,11 @@ def _still_open(
     if any(c.sha256 in waiting for m in members for c in m.cards):
         still.append("name")
     return still
+
+
+def _from_a_note(piece: Piece) -> bool:
+    """Whether a piece was read from a teacher's note."""
+    return piece.reading is not None and piece.reading.teacher_note is not None
 
 
 def _note_standing(pieces: Iterable[Piece]) -> str:

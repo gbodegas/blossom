@@ -506,7 +506,8 @@ def box_corrections(
     """Each box kept as a correction exactly where it differs from its value with no
     correction, both stripped with line endings made line feeds and dates read as dates; the
     length check runs on corrections only. A cleared class, title or settled due date is
-    refused; a cleared instruction text is its removal (``None``); a cleared assigned date is
+    refused, except a due date cleared on a piece read from a teacher's note, which is none
+    (``None``); a cleared instruction text is its removal (``None``); a cleared assigned date is
     the date as read. "No assigned date was given" is none (``None``) where one was read, its
     box left empty or holding the date as read; beside any other date typed in the box it is
     refused. Ticked either way, text Blossom couldn't read carried beside that box is dropped, so
@@ -542,7 +543,9 @@ def box_corrections(
             typed = value.strip() or carried.get((key, field), "").strip()
             day = typed_day(typed) if typed else None
             if not typed:
-                if field == "due" and read is not None:
+                if field == "due" and read is not None and _of_a_note(state, key):
+                    keep(key, field, None)
+                elif field == "due" and read is not None:
                     needed.add((key, field))
                     keep(key, field, "")
             elif len(typed) > field_most(field):
@@ -578,6 +581,13 @@ def box_corrections(
         if text
     )
     return Folded(out, tuple(sorted(too_long)), tuple(sorted(needed)), tuple(sorted(both)), dropped)
+
+
+def _of_a_note(state: ReviewState, key: str) -> bool:
+    """Whether a piece's dates key names a piece read from a teacher's note."""
+    piece = state.by_name.get(key.removeprefix("date:"))
+    reading = None if piece is None else piece.reading
+    return reading is not None and reading.teacher_note is not None
 
 
 def none_confirms(state: ReviewState, none_given: Iterable[str]) -> list[str]:
@@ -816,7 +826,8 @@ def _kept(shape: int, key: str, field: str, value: object) -> bool:
     """Whether one entry of saved progress is one its shape holds: text within its field's
     limit that isn't blank; in the new shape, under a piece's dates key its due or assigned
     date, under a row key its class, title, an instruction text or the words of a card read
-    with none, a removal (null) only for an instruction text or an assigned date."""
+    with none, a removal (null) only for an instruction text or a piece's due or assigned date
+    (a due date given as none is taken only on a piece read from a teacher's note)."""
     if shape == OLD_SHAPE:
         if field not in OLD_FIELDS:
             return False
@@ -830,7 +841,7 @@ def _kept(shape: int, key: str, field: str, value: object) -> bool:
     ):
         return False
     if value is None:
-        return shape != OLD_SHAPE and (field == "assigned" or instruction_index(field) is not None)
+        return shape != OLD_SHAPE and (field in PIECE_DATES or instruction_index(field) is not None)
     return isinstance(value, str) and bool(value.strip()) and len(value) <= field_most(field)
 
 

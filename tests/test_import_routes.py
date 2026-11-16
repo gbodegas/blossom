@@ -39,6 +39,7 @@ from markupsafe import escape
 from PIL import Image
 
 from blossom import (
+    intake,
     screenshot_page,
     screenshot_posts,
     screenshot_reading,
@@ -2743,7 +2744,6 @@ def test_saved_progress_is_kept_in_its_one_shape_and_any_other_reads_as_none(
             {"v": 4, "corrected": {key: {**title, "footer": "2026-10-09"}}, "selected": []},
             {"v": 4, "corrected": {key: {**title, "instruction": "x"}}, "selected": []},
             {"v": 4, "corrected": {key: {**title, "course": None}}, "selected": []},
-            {"v": 4, "corrected": {key: title, dates: {"due": None}}, "selected": []},
             {"v": 4, "corrected": {key: title, dates: {"course": "x"}}, "selected": []},
             {"v": 4, "corrected": {key: {**title, "due": "2026-10-09"}}, "selected": []},
             {"v": 4, "corrected": {key: {**title, "instruction:01": "x"}}, "selected": []},
@@ -2758,6 +2758,14 @@ def test_saved_progress_is_kept_in_its_one_shape_and_any_other_reads_as_none(
                 progress=json.dumps(other),
             )
             shown.append(browser.get(f"/parent/imports/{draft_id}").text)
+        # A due date given as none is kept under a piece's dates key, where a teacher's note
+        # takes it; on a card's piece it is passed over and the rest of the progress reads.
+        nulled = {"v": 4, "corrected": {key: title, dates: {"due": None}}, "selected": []}
+        snapshot = drafts.snapshot(student, draft_id)
+        drafts.save_progress(
+            student, draft_id, revision=snapshot.progress_revision, progress=json.dumps(nulled)
+        )
+        with_null = browser.get(f"/parent/imports/{draft_id}").text
 
     assert json.loads(str(written)) == {
         "v": 4,
@@ -2767,6 +2775,9 @@ def test_saved_progress_is_kept_in_its_one_shape_and_any_other_reads_as_none(
     for one in shown:
         assert 'value="Sentence Combining"' not in one
         assert "A new Sentence Composing (1)" in one
+    due = f"correct:{box_subject(page, 'due')}"
+    assert 'value="Sentence Combining"' in with_null
+    assert box_of(review_form(with_null), due)[1] == box_of(review_form(page), due)[1]  # type: ignore[index]
 
 
 SCREENSHOT_LIST_RULE = ".screenshot-list {\n  list-style: none;\n  margin: 0;\n  padding: 0;\n}\n"
@@ -41268,3 +41279,131 @@ def test_a_note_read_as_homework_is_ticked_under_what_saving_adds(
     assert 'id="no-homework-heading"' not in page
     assert "Study the vocabulary on page 12" in section_of(page, "saving-heading")
     assert lines_in(TOLD.search(page)) == [imports.read_said_line(1, 3)]
+
+
+# ------------------------------------------------------------------ corrections to a note
+
+PROJECT_NOTE: Final = "The class project is due today."
+"""A Humanities 8 teacher's note, which reads as due on the school day it is listed under."""
+
+
+def project_answer(where: str) -> dict[str, object]:
+    """The note alone under Monday 10/5/2026, its words in the card's title, its instruction
+    or both."""
+    card = homework_card(
+        badge=None,
+        course="Humanities 8",
+        title=PROJECT_NOTE if where in ("title", "both") else None,
+        instruction=PROJECT_NOTE if where in ("instruction", "both") else None,
+        footer=None,
+        y_top=200,
+        y_bottom=280,
+    )
+    return homework_answer(cards=[card])
+
+
+def kept_for_later(browser: TestClient, draft_id: str, page: str, typed: Mapping[str, str]) -> str:
+    """Save review for later with its groups ticked as shown and this typing, and the review
+    opened again."""
+    sent = send(browser, draft_id, page_post(page, "later", typed=typed, tick=ticked_on(page)))
+    assert sent.status_code in (200, 303), sent.text
+    return loaded(browser, draft_id)
+
+
+def humanities(browser: TestClient) -> list[tuple[str, date | None]]:
+    record = state_of(browser).project_state
+    return [(a.title, a.due_date) for a in record.all_assignments() if a.course == "Humanities 8"]
+
+
+def test_an_undated_note_read_as_homework_saves_in_one_press_with_no_due_date(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study = note_card("Spanish 8", "Study the vocabulary on page 12.", 200)
+    answer = homework_answer(cards=[study])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, page)
+        ticked = ticked_on(page)
+        saved = send(browser, draft_id, page_post(page, "save", tick=ticked))
+        after = followed(browser, saved)
+        record = state_of(browser).project_state
+        rows = [(a.title, a.due_date) for a in record.all_assignments() if a.course == "Spanish 8"]
+
+    assert UNIT_TICK.findall(review_form(page)) == [" checked"]
+    assert len(ticked) == 1
+    assert "A due date is needed." not in page
+    assert "A due date is needed." not in after
+    assert says(after, imports.counted(1, 0, 0, 0))
+    assert rows == [("Study the vocabulary on page 12", None)]
+
+
+def test_a_note_s_words_are_its_source_wording_with_no_instructions_box(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, project_answer("title")))
+        page = her_name_answered(browser, draft_id, page)
+
+    form = review_form(page)
+    fields = [json.loads(subject)[1] for subject in fields_named(form, "correct:")]
+    assert "title" in fields
+    assert "due" in fields
+    assert not [field for field in fields if field.startswith("instruction")]
+    assert f'From the school: <q class="authored-text">{PROJECT_NOTE}</q>' in form
+
+
+def test_a_cleared_due_date_on_a_note_is_kept_as_none_and_saves_no_due_date(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, project_answer("title")))
+        page = her_name_answered(browser, draft_id, page)
+        due = f"correct:{box_subject(page, 'due')}"
+        reopened = kept_for_later(browser, draft_id, page, {due: ""})
+        held = progress_after(browser, draft_id)
+        ticked = ticked_on(reopened)
+        after = followed(browser, send(browser, draft_id, page_post(reopened, "save", tick=ticked)))
+        rows = humanities(browser)
+
+    assert list(held.values()) == [{"due": None}]
+    assert screenshot_posts.PROGRESS_SHAPE == 4
+    assert "A due date is needed." not in reopened
+    assert box_of(review_form(reopened), due)[1] == ""  # type: ignore[index]
+    assert UNIT_TICK.findall(review_form(reopened)) == [" checked"]
+    assert says(after, imports.counted(1, 0, 0, 0))
+    assert rows == [("The class project", None)]
+
+
+@pytest.mark.parametrize("where", ["title", "instruction", "both"])
+def test_a_corrected_note_kept_for_later_saves_and_reads_again_as_already_saved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    answer = project_answer(where)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, page)
+        title = f"correct:{box_subject(page, 'title')}"
+        due = f"correct:{box_subject(page, 'due')}"
+        typed = {title: "Class project poster", due: "2026-10-07"}
+        reopened = kept_for_later(browser, draft_id, page, typed)
+        ticked = ticked_on(reopened)
+        saved = followed(browser, send(browser, draft_id, page_post(reopened, "save", tick=ticked)))
+        first = humanities(browser)
+        second_id, again = read_review(browser, monkeypatch, (RED, answer))
+        if fields_named(review_form(again), "answer:name:"):
+            again = her_name_answered(browser, second_id, again)
+        ticked = ticked_on(again)
+        resaved = followed(browser, send(browser, second_id, page_post(again, "save", tick=ticked)))
+        record = state_of(browser).project_state
+        decided = record.intake_decisions([intake.pair("Humanities 8", "The class project")])
+        last = humanities(browser)
+
+    assert box_of(review_form(reopened), title)[1] == "Class project poster"  # type: ignore[index]
+    assert box_of(review_form(reopened), due)[1] == "2026-10-07"  # type: ignore[index]
+    assert UNIT_TICK.findall(review_form(reopened)) == [" checked"]
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert first == [("Class project poster", date(2026, 10, 7))]
+    assert screenshot_page.SAID["already"] in html.unescape(review_form(again))
+    assert says(resaved, imports.counted(0, 0, 1, 0))
+    assert [d for found in decided.values() for d in found if d.kind == "renamed"] == []
+    assert last == first

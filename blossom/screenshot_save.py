@@ -59,6 +59,7 @@ from blossom.screenshot_review import (
     defaults,
     destination_kind,
     entries,
+    holds_note,
     instruction_field,
     instruction_index,
     pieces_from,
@@ -287,7 +288,8 @@ def saved_rows(record: ProjectStateStore) -> dict[str, SavedRow]:
     out = {}
     for item in everything:
         standing = readable.get(item.assignment_id)
-        words = frozenset() if standing is None else frozenset(i.text for i in standing.kept)
+        kept = () if standing is None else standing.kept
+        words = frozenset(i.text for i in kept)
         current = () if standing is None else standing.texts
         out[item.assignment_id] = SavedRow(
             item.assignment_id,
@@ -299,6 +301,7 @@ def saved_rows(record: ProjectStateStore) -> dict[str, SavedRow]:
             current[0] if current else None,
             max(0, len(current) - 1),
             str(item.kind.value),
+            frozenset((" ".join(i.text.split()), i.card_day) for i in kept),
         )
     return out
 
@@ -1380,7 +1383,8 @@ def _write(
     """One destination's homework, through ``keep``: a new slot's row made under its id, or the
     existing row updated, with the chosen dates, kind and instructions; then, for each class
     and title of its cards that isn't the row's, the earlier-pick decision, unless one for that
-    name already lands there."""
+    name already lands there or the row holds the words and school day of the teacher's note
+    it was read from."""
     by_name = state.by_name
     members = sorted((by_name[n] for n in names), key=lambda p: p.name)
     row = state.rows.get(dest[1]) if dest[0] != "new" else None
@@ -1426,7 +1430,7 @@ def _write(
     hooks.after_keep(target)
     named = {p.pair: p for p in members if p.reading is not None}
     for pair, piece in sorted(named.items()):
-        if row is None or pair == row.pair:
+        if row is None or pair == row.pair or holds_note(piece, row):
             continue
         if any(
             p.pair == pair and p.assignment_id == target for p in earlier_picks(record, [piece])

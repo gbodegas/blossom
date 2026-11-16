@@ -10,9 +10,13 @@ note is not known. Every card here is made up, as a fake reader would return it.
 import itertools
 from datetime import UTC, date, datetime
 
-from blossom.intake import TEACHER_NOTE
+from blossom import screenshot_page
+from blossom import screenshot_review as review
+from blossom.intake import TEACHER_NOTE, Reading
 from blossom.reconciliation import SourceChannel
+from blossom.routes import inbox
 from blossom.school_instructions import InstructionSeen
+from blossom.screenshot_review import Piece, SavedRow
 from blossom.screenshots import Assembly, ScreenshotRow, homework_assembly, homework_rows
 from blossom.stores.import_drafts import StoredReading
 from blossom.teacher_notes import Standing
@@ -282,3 +286,118 @@ def test_three_formal_keys_are_the_literal_keys_pinned_here() -> None:
 
     assert {row.key for row in homework_rows(stored("default", homework_answer()))} == FORMAL_KEYS
     assert [row.key for row in homework_rows(stored("worksheet", worksheet))] == [WORKSHEET_KEY]
+
+
+# ------------------------------------------------------------------ the text path's words
+
+
+def test_the_note_headings_and_helpers_are_the_text_path_s_words() -> None:
+    said = screenshot_page.SAID
+    assert (said["may_be_homework"], said["may_be_homework_helper"]) == (
+        inbox.MAY_BE_HOMEWORK,
+        inbox.MAY_BE_HOMEWORK_HELPER,
+    )
+    assert (said["no_homework"], said["no_homework_helper"]) == (
+        inbox.NO_HOMEWORK,
+        inbox.NO_HOMEWORK_HELPER,
+    )
+
+
+# ------------------------------------------------------------------ corrections
+
+
+def project_reading() -> Reading:
+    """Humanities 8's note "The class project is due today." under Monday 11/16/2026."""
+    return only_row(assembled("title", shot(note("Humanities 8", title=PROJECT)))).reading
+
+
+def test_a_typed_date_on_a_note_is_the_family_s_entry() -> None:
+    fixed = review.corrected(project_reading(), None, {"due": "2026-11-18"}, now=NOW)
+
+    assert fixed.due_date == date(2026, 11, 18)
+    assert [(c.channel, c.asserted_value, c.seen_in) for c in fixed.claims] == [
+        (SourceChannel.PARENT_ENTRY, "2026-11-18", None)
+    ]
+    assert fixed.field_origins["due_date"] is SourceChannel.PARENT_ENTRY
+
+
+def test_the_date_as_read_typed_on_a_note_leaves_the_school_s_claim() -> None:
+    read = project_reading()
+
+    assert review.corrected(read, None, {"due": "2026-11-16"}, now=NOW) == read
+    assert [c.seen_in for c in read.claims] == [TEACHER_NOTE]
+
+
+def test_a_cleared_date_on_a_note_leaves_no_due_date_and_no_claim() -> None:
+    fixed = review.corrected(project_reading(), None, {"due": None}, now=NOW)
+
+    assert fixed.due_date is None
+    assert fixed.claims == ()
+    assert "due_date" not in fixed.field_origins
+
+
+def test_a_cleared_date_on_a_formal_reading_is_passed_over() -> None:
+    row = only_row(assembled("worksheet", shot(formal("Math 8", "Worksheet 3", 200))))
+
+    assert review.corrected(row.reading, None, {"due": None}, now=NOW) == row.reading
+
+
+# ------------------------------------------------------------------ recognized by words and day
+
+
+def note_piece(label: str, answer: dict[str, object]) -> Piece:
+    [piece], _, _ = review.pieces_from(stored(label, answer), {}, frozenset(), NOW)
+    return piece
+
+
+def poster(piece: Piece, day: date) -> SavedRow:
+    """The Humanities note saved as "Class project poster" due 11/18, its words kept under
+    ``day``."""
+    return SavedRow(
+        "assignment-class-project-poster",
+        "Humanities 8",
+        "Class project poster",
+        date(2026, 11, 18),
+        None,
+        piece.words,
+        noted=frozenset({(PROJECT, day)}),
+    )
+
+
+def test_a_note_lists_offers_and_preselects_the_row_holding_its_words_and_school_day() -> None:
+    piece = note_piece("again", shot(note("Humanities 8", title=PROJECT)))
+    saved = poster(piece, date(2026, 11, 16))
+    rows = {saved.assignment_id: saved}
+
+    assert review.listed(piece, [saved]) == [saved]
+    assert review.offerable(piece, {"existing": saved.assignment_id}, rows, [])
+    assert review.defaults([piece], {piece.pair: [piece]}, rows, [], {}, lambda p, a: True) == {
+        piece.name: {"existing": saved.assignment_id}
+    }
+
+
+def test_next_week_s_identical_note_is_not_that_row() -> None:
+    piece = note_piece("next", shot(note("Humanities 8", title=PROJECT), day="Monday 11/23/2026"))
+    saved = poster(piece, date(2026, 11, 16))
+    rows = {saved.assignment_id: saved}
+
+    assert review.listed(piece, [saved]) == []
+    assert not review.offerable(piece, {"existing": saved.assignment_id}, rows, [])
+    assert review.defaults([piece], {piece.pair: [piece]}, rows, [], {}, lambda p, a: True) == {
+        piece.name: {"new": 1}
+    }
+
+
+def test_a_formal_piece_never_lists_a_row_by_its_noted_words() -> None:
+    piece = note_piece("worksheet", shot(formal("Math 8", "Worksheet 3", 200)))
+    saved = SavedRow(
+        "assignment-other",
+        "Math 8",
+        "Other",
+        piece.due,
+        None,
+        frozenset(),
+        noted=frozenset({("Worksheet 3", date(2026, 11, 16))}),
+    )
+
+    assert review.listed(piece, [saved]) == []
