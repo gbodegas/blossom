@@ -44,14 +44,15 @@ never a teacher's words. What a teacher writes for a subject apart from its
 cards is a note, read as tasks by `blossom/teacher_notes.py`, closed lists of
 deadline statements and opening words with no store and no clock: each task
 has its words, a standing (homework, not an assignment, or unclear), and a
-due date only where its words settle one. A task with the class and title of
-a card read under a school day the task is listed under adds to that card the
-deadline it settles, and its words where they say more than its name and
-deadline; every other task is a reading of its own, its words kept as one of
-the school's instructions under the first school day it is listed under, with
-no card. The review offers each such reading with a tick, homework selected
-from the start and the rest not unless saved already, and a title and due
-date to correct before saving; a date the family gives is a parent's entry,
+due date only where its words settle one. A task joins the one card of its
+class and title read under a day of its school week when it settles no date,
+settles the card's due date, or was first listed on the card's day, and adds
+the deadline it settles and its words where they say more only when the
+family selects the joined note; every other task is a reading of its own,
+its words kept as one of the school's instructions under the first school
+day it is listed under, with no card. The review offers each such reading
+with a tick, none selected from the start unless saved already, and a title
+and due date to correct before saving; a date the family gives is a parent's entry,
 not the school's claim. A saved task is found again by its class, its words,
 and that school day, never by its title alone, so a corrected title or date
 stands at the next paste. A homework screenshot's card with a class and words

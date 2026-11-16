@@ -851,14 +851,21 @@ and a hyphen, is the teacher's note, and each note is read as tasks: the
 words of each task, whether it is homework, may be homework, or is not an
 assignment, and a due date only where a "due" or "by" statement in its words
 settles one; the school day the note is listed under is never taken for a
-due date. A task with the class and title of a card read under a school day
-the task is listed under is that card's assignment, and adds to it the date
-it settles and, where they say more than its name and deadline, its words.
-Every other task is a card of its own, with the note's words beside it and a
-tick: homework starts selected, and the others sit under their own headings,
-"Notes that may be homework" and "Notes with no homework", and start
-unselected unless saved already. A note's card left unselected saves
-nothing, and is not remembered: the next paste shows it as it first was.
+due date, and a January date with no year in a note listed in December is
+read in the following year. A task joins the one card of its class and
+title read under a school day of the task's week when the task settles no
+date, settles the card's due date, or was first listed on the card's day;
+the card then shows the note with its words, both dates where they differ,
+and a tick of its own, and adds the note's date and words only when that
+tick is selected. Every other task is a card of its own, with the note's
+words beside it and a tick; where a card of its name is in the same text,
+it asks whether it is the same assignment or new work, with both dates.
+Every note starts unselected, homework or not, unless it is saved already;
+the review says how many notes it read apart from how many are selected.
+Notes that are not read as homework sit under their own headings, "Notes
+that may be homework" and "Notes with no homework". A note's card left
+unselected saves nothing, and is not remembered: the next paste shows it as
+it first was.
 Each has a title to correct and one due date choice: the date as the note
 says, each date the note leaves open or names, "No due date yet", or another
 date. A date the family gives is saved as the family's entry, not the
