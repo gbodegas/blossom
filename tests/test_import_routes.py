@@ -42093,6 +42093,77 @@ def test_a_cards_due_date_typed_by_the_family_is_the_familys_beside_the_schools_
         assert claims == {("2026-11-18", intake.OWN_LINE), ("2026-11-20", None)}
 
 
+@pytest.mark.parametrize(
+    ("typed", "again", "chosen", "said"),
+    [
+        (
+            "2026-11-20",
+            "Due (11/18/2026)",
+            "2026-11-18",
+            "Due Wed 11/18, as you chose. The family's Fri 11/20 is kept beside it, and her page "
+            "will say the sources disagree.",
+        ),
+        (
+            None,
+            "Due (11/20/2026)",
+            "2026-11-20",
+            "Due Fri 11/20, as you chose. The school's Wed 11/18 is kept beside it, and her page "
+            "will say the sources disagree.",
+        ),
+    ],
+    ids=["familys-entry", "schools-card"],
+)
+def test_a_due_date_chosen_on_a_card_read_again_names_where_the_saved_date_came_from(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    typed: str | None,
+    again: str,
+    chosen: str,
+    said: str,
+) -> None:
+    """The essay card due Wednesday 11/18 under Monday 11/16, saved with its due date typed as
+    Friday 11/20 (the family's entry) or left as read (the school's card), then read again
+    from another screenshot with its saved assignment as where it goes and the other date
+    chosen: the line names the saved date by where the record says it came from."""
+    from blossom.reconciliation import SourceChannel
+
+    def essay(footer: str) -> dict[str, Any]:
+        card = homework_card(
+            course="Religion 8",
+            title="Short essay",
+            instruction=None,
+            footer=footer,
+            y_top=200,
+            y_bottom=280,
+        )
+        heading = {"text": "Monday 11/16/2026", "y": 150, "uncertain": None}
+        return homework_answer(headings=[heading], cards=[card])
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay("Due (11/18/2026)")))
+        page = answered(browser, draft_id, page)
+        due = f"correct:{box_subject(page, 'due')}"
+        reopened = kept_for_later(browser, draft_id, page, {} if typed is None else {due: typed})
+        sent = page_post(reopened, "save", tick=ticked_on(reopened))
+        saved = followed(browser, send(browser, draft_id, sent))
+        row, _, _ = essay_row(browser)
+        read_id, read = read_review(browser, monkeypatch, (BLUE, essay(again)))
+        read = answered(browser, read_id, read)
+        [piece] = fields_named(review_form(read), "answer:destination:")
+        where = json.dumps({"existing": row.assignment_id}, separators=(",", ":"))
+        keep(browser, read_id, ("destination", piece, where))
+        asked = browser.get(f"/parent/imports/{read_id}").text
+        [subject] = fields_named(review_form(asked), "answer:due:")
+        keep(browser, read_id, ("due", subject, chosen))
+        shown = browser.get(f"/parent/imports/{read_id}").text
+
+    assert says(saved, imports.counted(1, 0, 0, 0)), saved
+    assert row.origins["due_date"] is (
+        SourceChannel.LMS if typed is None else SourceChannel.PARENT_ENTRY
+    )
+    assert said in html.unescape(shown)
+
+
 @pytest.mark.parametrize("chosen", ["2026-10-05", "2026-10-08"], ids=["heading", "due-line"])
 def test_the_familys_choice_between_a_due_line_and_a_day_heading_saves_as_the_familys(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, chosen: str

@@ -83,6 +83,7 @@ from blossom.intake import (
     task_said,
     tasks_moved,
     with_answers,
+    with_family_deadline,
     with_joined,
     with_notes,
     within_a_school_year,
@@ -1051,8 +1052,8 @@ def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int,
     date once. Any of these dates that the due-date check refuses, as of ``today``, is no
     choice: the card says it, with its year and why it can't be the due date. A card whose
     answers were sent shows them as typed. Otherwise the date as read is chosen, or no due
-    date where none was read; on a card that lands on a row whose saved due date is none, or
-    another than the one read, or whose date as read is refused, nothing is chosen."""
+    date where none was read or the date as read is refused; on a card that lands on a row
+    whose saved due date is none, or another than the one chosen so, nothing is chosen."""
     sent = {answer.key: answer for answer in read.answers}
     fields: dict[int, NoteFields] = {}
     for change in changes:
@@ -1073,11 +1074,10 @@ def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int,
             title, when, other = answer.title, answer.when, answer.other
         else:
             title, other = read.items[change.key].title, ""
-            when = NO_DUE_DATE if task.deadline is None else task.deadline.isoformat()
+            as_read = None if task.deadline in too_far else task.deadline
+            when = NO_DUE_DATE if as_read is None else as_read.isoformat()
             row = change.on_record
-            if task.deadline in too_far or (
-                row is not None and (row.due_date is None or row.due_date != task.deadline)
-            ):
+            if row is not None and (row.due_date is None or row.due_date != as_read):
                 when = ""
         values = [day.isoformat() for day in dates]
         if when and when not in (*values, NO_DUE_DATE, ANOTHER_DATE):
@@ -1104,14 +1104,34 @@ def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int,
 
 def read_draft(state: ApplicationState, draft: Mapping[str, str]) -> Read | Problem:
     """Read what a draft holds: the pasted text, with its teachers' notes read as tasks, or
-    the entry, the same way every time, as of the moment it was first read."""
+    the entry, the same way every time, as of the moment it was first read. A deadline read
+    from a teacher's note that the due-date check refuses as of that moment leaves its
+    reading no due date (``far_deadlines_left``)."""
     now, today = moment_of(state, draft)
     text = draft.get("text", "")
     if text.strip():
         if len(text) > TEXT_MAX_LENGTH:
             return Problem("text", TOO_LONG)
-        return with_notes(read_text(text, now=now, today=today), now=now)
+        read = with_notes(read_text(text, now=now, today=today), now=now)
+        return far_deadlines_left(read, now=now, today=today)
     return entry_from(draft, now=now, today=today)
+
+
+def far_deadlines_left(read: Read, *, now: datetime, today: date) -> Read:
+    """``read`` with each reading made from a teacher's note whose deadline as read the
+    due-date check refuses as of ``today`` given no due date, no claim seen in the note and
+    no origin for one, as ``with_family_deadline`` leaves a note's reading with none. The note
+    keeps its deadline, so its card says that date as the note's, with why it can't be the
+    due date, as it says a date the note names that can't be. Nothing is changed in place."""
+    items = tuple(
+        with_family_deadline(item, None, now=now)
+        if item.teacher_note is not None
+        and item.teacher_note.deadline is not None
+        and not within_a_school_year(item.teacher_note.deadline, today)
+        else item
+        for item in read.items
+    )
+    return read if items == read.items else replace(read, items=items)
 
 
 def problem_page(

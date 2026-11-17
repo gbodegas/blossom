@@ -23,6 +23,7 @@ from typing import Final
 
 from blossom.grades.draft import folded
 from blossom.intake import spoken_day
+from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import to_wire
 from blossom.screenshot_review import (
     JOINED,
@@ -1285,6 +1286,30 @@ def _assigned_line(entry: PreviewEntry, row: SavedRow | None, members: Sequence[
     return f"Assigned {long_day(entry.assigned)}."
 
 
+SAVED_DUE_FROM: Final = {
+    SourceChannel.PARENT_ENTRY: "The family's",
+    SourceChannel.STUDENT_REPORT: "Her report's",
+}
+"""Whose a saved due date is, by the channel the record keeps for it; any other channel, or
+none, is the school's."""
+
+
+def _whose_due(
+    state: ReviewState, row: SavedRow | None, members: Sequence[Piece], tag: str, day: date
+) -> str:
+    """Where a date the due question offered came from, as the line beside the chosen date
+    names it: the saved assignment's by the channel the record keeps for its due date; a
+    card's as the school's, or as the teacher's note's where only a piece read from a note
+    gives it."""
+    if tag == "as_saved" and row is not None:
+        channel = state.due_origins.get(row.assignment_id)
+        return "The school's" if channel is None else SAVED_DUE_FROM.get(channel, "The school's")
+    giving = [m for m in members if m.due == day]
+    if giving and all(_from_a_note(m) for m in giving):
+        return "The teacher's note's"
+    return "The school's"
+
+
 def _effect_lines(
     state: ReviewState,
     entry: PreviewEntry,
@@ -1303,10 +1328,11 @@ def _effect_lines(
         if q.subject == subject_for(entry.dest, entry.pieces)
     }
     if "due" in asked and entry.due is not None and "due" not in entry.open_questions:
-        others = [d for _, d in asked["due"].options if d != entry.due]
-        for other in others:
+        others = [(tag, d) for tag, d in asked["due"].options if d != entry.due]
+        for tag, other in others:
             lines.append(
-                f"Due {day_text(entry.due)}, as you chose. The school's {day_text(other)} is "
+                f"Due {day_text(entry.due)}, as you chose. "
+                f"{_whose_due(state, row, members, tag, other)} {day_text(other)} is "
                 "kept beside it, and her page will say the sources disagree."
             )
     if "assigned" in asked and entry.assigned and "assigned" not in entry.open_questions:

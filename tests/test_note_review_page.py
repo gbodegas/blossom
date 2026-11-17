@@ -3045,13 +3045,114 @@ def test_a_date_the_due_date_check_refuses_at_the_pages_today_is_no_choice(
     assert card(shown.text, "Online practice").count(far_tuesday) == 1
     map_card = card(map_open.text, "Map project")
     assert map_card.count(far_map) == 1
-    assert when_options(map_card, mapped) == [("none", False), ("other", False)]
+    assert when_options(map_card, mapped) == [("none", True), ("other", False)]
     practice_card = card(practice_open.text, "Online practice")
     assert practice_card.count(far_tuesday) == 1
     assert when_options(practice_card, practice) == [
         ("2026-11-10", False),
         ("none", True),
         ("other", False),
+    ]
+
+
+FAR_MAP = (
+    '<p class="source">The note names Wednesday, November 4, 2026. It can&#39;t be saved '
+    "as the due date because it&#39;s more than a year ago.</p>"
+)
+"""The Map project card's line when FIELDS, read on 2026-11-03, is read again on 2027-11-10."""
+
+
+def test_a_deadline_as_read_the_check_refuses_at_the_pages_today_is_no_due_date_yet(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A draft read again more than a year after the deadline it read: the save-ready card
+    says "No due date yet" with the deadline as read shown as the note's, with why it can't
+    be the due date; Map project ticked and saved, it is written with no due date, no claim
+    and no origin for one."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+    with client_in(tmp_path, today="2027-11-10") as client:
+        mapped = key_of(page, "Map project")
+        shown = client.post("/parent/inbox/find", data=ticked_form(page) | {"recheck": "1"})
+        kept = client.post(
+            "/parent/inbox/keep", data=ticked_form(shown.text) | {f"take-{mapped}": "1"}
+        )
+        rows = store_of(client).all_assignments()
+        claims = [store_of(client).deadline_records(row.assignment_id) for row in rows]
+
+    map_card = card(shown.text, "Map project")
+    assert map_card.count(reviewed_line("Map project", "No due date yet")) == 1
+    assert map_card.count(FAR_MAP) == 1
+    assert kept.status_code == 303
+    assert [(row.title, row.due_date, row.origins.get("due_date")) for row in rows] == [
+        ("Map project", None, None)
+    ]
+    assert claims == [[]]
+
+
+def test_a_refused_deadline_as_read_leaves_the_family_a_valid_date_to_enter(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The same draft read again: Map project ticked with another date within a year typed,
+    reviewed and saved, is written with that date as the family's entry."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+    with client_in(tmp_path, today="2027-11-10") as client:
+        mapped = key_of(page, "Map project")
+        form = ticked_form(page) | {
+            f"take-{mapped}": "1",
+            f"when-{mapped}": "other",
+            f"when_other-{mapped}": "2027-11-20",
+            "recheck": "1",
+        }
+        reviewed = client.post("/parent/inbox/find", data=form)
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        rows = store_of(client).all_assignments()
+
+    assert reviewed.status_code == 200
+    assert card(reviewed.text, "Map project").count(FAR_MAP) == 1
+    assert kept.status_code == 303
+    assert [(row.title, row.due_date, row.origins["due_date"]) for row in rows] == [
+        ("Map project", datetime.date(2027, 11, 20), SourceChannel.PARENT_ENTRY)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("typed", "due", "origin"),
+    [
+        (None, datetime.date(2026, 11, 4), SourceChannel.LMS),
+        ("2026-11-20", datetime.date(2026, 11, 20), SourceChannel.PARENT_ENTRY),
+    ],
+    ids=["schools", "familys"],
+)
+def test_a_refused_deadline_as_read_never_clears_or_replaces_a_saved_due_date(
+    tmp_path: pathlib.Path,
+    typed: str | None,
+    due: datetime.date,
+    origin: SourceChannel,
+) -> None:
+    """Map project saved with the deadline as read or with the family's date, then the same
+    draft read again more than a year later and saved with Map project ticked: the saved
+    due date and its origin stay as they were."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        mapped = key_of(page, "Map project")
+        first = ticked_form(page) | {f"take-{mapped}": "1"}
+        if typed is not None:
+            first |= {f"when-{mapped}": "other", f"when_other-{mapped}": typed, "recheck": "1"}
+            first = ticked_form(client.post("/parent/inbox/find", data=first).text)
+        saved = client.post("/parent/inbox/keep", data=first)
+    with client_in(tmp_path, today="2027-11-10") as client:
+        shown = client.post("/parent/inbox/find", data=ticked_form(page) | {"recheck": "1"})
+        kept = client.post(
+            "/parent/inbox/keep", data=ticked_form(shown.text) | {f"take-{mapped}": "1"}
+        )
+        rows = store_of(client).all_assignments()
+
+    assert saved.status_code == 303
+    assert kept.status_code == 303
+    assert [(row.title, row.due_date, row.origins.get("due_date")) for row in rows] == [
+        ("Map project", due, origin)
     ]
 
 

@@ -291,7 +291,20 @@ def saved_rows(record: ProjectStateStore, *, claims: bool = False) -> dict[str, 
     """Every saved assignment as the review compares pieces with it; with ``claims``, the
     due-date claims the record keeps under it as well, read only for a review with a joined
     note to compare."""
+    return rows_and_due_origins(record, claims=claims)[0]
+
+
+def rows_and_due_origins(
+    record: ProjectStateStore, *, claims: bool = False
+) -> tuple[dict[str, SavedRow], dict[str, SourceChannel]]:
+    """The saved rows ``saved_rows`` gives and, from the same read of the record, the channel
+    each one's due date came from, where the record keeps one."""
     everything = record.all_assignments()
+    origins = {
+        item.assignment_id: channel
+        for item in everything
+        if (channel := item.origins.get("due_date")) is not None
+    }
     names = [a.assignment_id for a in everything]
     readable = record.school_instruction_readings(names).readable
     claimed = record.deadline_records_by_assignment(names) if claims else {}
@@ -317,7 +330,7 @@ def saved_rows(record: ProjectStateStore, *, claims: bool = False) -> dict[str, 
                 for said in claimed.get(item.assignment_id, [])
             ),
         )
-    return out
+    return out, origins
 
 
 def earlier_picks(record: ProjectStateStore, pieces: Sequence[Piece]) -> list[EarlierPick]:
@@ -664,6 +677,9 @@ class ReviewState:
     one ticked, and with each one ticked alone and unticked alone, at the same destinations and
     answers, so the group's check covers each joined note's selected and unselected effects
     alike, alone or beside the others (``unit_digests``)."""
+    due_origins: Mapping[str, SourceChannel] = dataclasses.field(default_factory=dict)
+    """The channel each saved row's due date came from, by row, where the record keeps one,
+    read with ``rows``: the page names a saved date by it."""
 
     @property
     def by_name(self) -> dict[str, Piece]:
@@ -759,7 +775,7 @@ def _review_state(
     )
     by_name = {p.name: p for p in pieces}
     saved = {name: target for name, target in tables.saved.items() if name in by_name}
-    rows = saved_rows(
+    rows, due_origins = rows_and_due_origins(
         record, claims=any(p.reading is not None and p.reading.joined_notes for p in pieces)
     )
     picks = earlier_picks(record, pieces)
@@ -908,6 +924,7 @@ def _review_state(
         tuple(every_row),
         proven,
         joined_previews,
+        due_origins,
     )
 
 
