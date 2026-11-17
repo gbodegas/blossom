@@ -61,7 +61,9 @@
       {% endif %}
     {% endfor %}
     {# The answers to which homework each card is that this page was made with, signed, so a save knows which questions it asked. #}
-    <input type="hidden" name="made_with" value="{{ made_with }}">
+    <input type="hidden" name="made_with" value="{{ made_with }}">{% if note_tasks %}
+    {# The form's first submit button, so Enter in a title or date box shows the review again with what was typed: Review changes' request, out of the tab order and hidden from assistive technology, which reach the visible one. #}
+    <button type="submit" class="visually-hidden" formaction="/parent/inbox/find" formnovalidate name="recheck" value="1" tabindex="-1" aria-hidden="true">Review changes</button>{% endif %}
 
     <div class="review-main">
       {% if unread %}
@@ -163,7 +165,8 @@
               <p class="helper">If selected: {{ if_selected[change.key] }}.</p>{% endif %}
               {# The title and due date a parent may correct; the page signs what they show, so a save writes no other. #}{% set fields = note_fields[change.key] %}
               <label>Title<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span> <input type="text" name="title-{{ change.key }}" value="{{ fields.title }}" maxlength="{{ title_max_length }}" autocomplete="off" id="title-{{ change.key }}"{% if problem_link and problem_link[0] == "title-" ~ change.key %} aria-describedby="problem-summary"{% endif %}></label>
-              <fieldset class="choice" id="when-{{ change.key }}" tabindex="-1"{% if problem_link and problem_link[0] == "when-" ~ change.key %} aria-describedby="problem-summary"{% endif %}>
+              {% for said in fields.named_too_far %}<p class="source">{{ said }}</p>
+              {% endfor %}<fieldset class="choice" id="when-{{ change.key }}" tabindex="-1"{% if problem_link and problem_link[0] == "when-" ~ change.key %} aria-describedby="problem-summary"{% endif %}>
                 <legend>Due date<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></legend>
                 {% for value, words, chosen in fields.choices %}<label><input type="radio" name="when-{{ change.key }}" value="{{ value }}"{% if chosen %} checked{% endif %}> <span>{{ words }}</span></label>
                 {% endfor %}<label><input type="radio" name="when-{{ change.key }}" value="other"{% if fields.other_chosen %} checked{% endif %}> <span>Another date</span></label>
@@ -402,8 +405,8 @@
         {% endif %}{% if note_tasks %}
         <p class="helper">Review changes shows this review again with your selections. Nothing is saved until you save.</p>{% endif %}
         <div class="actions review-actions">
-          {% if total %}
-            {# A typed note kept off her homework is still something to finish, so the family page can say so. #}
+          {% if total or note_tasks %}
+            {# A typed note kept off her homework is still something to finish, so the family page can say so. A review of notes offers Save with none selected, so a tick whose effect the card shows saves in one press. #}
             {% set done = to_save == 0 and counts.review == 0 and not kept_note and not waiting %}
             {% if done and not note_tasks %}
               {# Every card's Type can still change, so the press is offered without scripts; the script shows it as done until a type changes. #}

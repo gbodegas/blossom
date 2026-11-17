@@ -587,7 +587,7 @@ def test_a_card_whose_joined_tick_the_page_said_nothing_for_has_moved(
     tmp_path: pathlib.Path,
 ) -> None:
     """A card whose save does what the page said for its joined tick as sent has not moved;
-    one the page said nothing for, such as two ticks changed on it, has; and one saved since,
+    one the page said nothing for has; and one saved since,
     of which nothing would be written, has not moved on a retry and has without one."""
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
     try:
@@ -731,8 +731,18 @@ DECEMBER_NOW = datetime(2026, 12, 15, 20, 0, tzinfo=UTC)
         ("Essay due 8 de enero de 2028.", date(2028, 1, 8)),
         ("Essay due January 8, 2028 at noon.", date(2028, 1, 8)),
         ("Essay due January 8, 1500 at noon.", date(1500, 1, 8)),
+        ("Essay due January 8,2028.", date(2028, 1, 8)),
+        ("Essay due Jan. 8,2028", date(2028, 1, 8)),
     ],
-    ids=["english", "numeric", "spanish", "english-then-prose", "no-count-no-school-year"],
+    ids=[
+        "english",
+        "numeric",
+        "spanish",
+        "english-then-prose",
+        "no-count-no-school-year",
+        "english-comma-no-space",
+        "english-short-comma-no-space",
+    ],
 )
 def test_a_written_year_no_school_year_holds_leaves_the_note_undated_with_that_date_named(
     words: str, written: date
@@ -768,8 +778,9 @@ def test_a_written_year_no_school_year_holds_leaves_the_note_undated_with_that_d
         ("Essay due 8 de enero del 2026.", date(2026, 1, 8)),
         ("Essay due January 8.", date(2027, 1, 8)),
         ("Essay due January 8, 1500 words.", date(2027, 1, 8)),
+        ("Essay due January 8,1500 words.", date(2027, 1, 8)),
     ],
-    ids=["english-near", "spanish-near", "yearless-rollover", "count"],
+    ids=["english-near", "spanish-near", "yearless-rollover", "count", "count-comma-no-space"],
 )
 def test_a_deadline_within_a_school_year_of_the_note_is_kept(words: str, deadline: date) -> None:
     """A written year near the note's school day, a January date read under a December

@@ -998,6 +998,18 @@ DECEMBER_TO_JANUARY = [
     pytest.param(
         DECEMBER_15, "Essay due January 8, 2028.", date(2028, 1, 8), id="english-far-year-written"
     ),
+    pytest.param(
+        DECEMBER_15, "Essay due January 8,2028.", date(2028, 1, 8), id="english-comma-no-space-year"
+    ),
+    pytest.param(
+        DECEMBER_15, "Essay due Jan. 8,2028", date(2028, 1, 8), id="english-short-comma-no-space"
+    ),
+    pytest.param(
+        DECEMBER_15,
+        "Essay due January 8,1500 words.",
+        date(2027, 1, 8),
+        id="english-comma-no-space-count",
+    ),
     pytest.param(DECEMBER_15, "Essay due 1/8/2028.", date(2028, 1, 8), id="numeric-far-year"),
     pytest.param(DECEMBER_15, "Essay due 1/8/1500.", date(1500, 1, 8), id="numeric-always-a-year"),
     pytest.param(

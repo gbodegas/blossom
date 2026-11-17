@@ -151,7 +151,7 @@ the digits are a year and not a count ("January 8, 1500 words")."""
 _EXPLICIT: Final = re.compile(
     rf"(?<![A-Za-z])(?P<english>{_months(_ENGLISH_MONTHS, tuple(_ENGLISH_SHORT))})"
     r"\s+(?P<english_day>\d{1,2})(?:st|nd|rd|th)?\b"
-    rf"(?:,?\s+(?P<english_year>\d{{4}})\b{_COUNTED})?"
+    rf"(?:(?:,\s*|\s+)(?P<english_year>\d{{4}})\b{_COUNTED})?"
     r"|(?<![\d/])(?P<numeric_month>\d{1,2})/(?P<numeric_day>\d{1,2})"
     r"(?:/(?P<numeric_year>\d{4}))?(?![\d/])"
     rf"|(?<!\d)(?P<spanish_day>\d{{1,2}})\s+de\s+"

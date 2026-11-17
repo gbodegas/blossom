@@ -64,6 +64,7 @@ from blossom.intake import (
     NotOffered,
     Pick,
     Read,
+    Reading,
     TaskAnswer,
     answers_to_no_question,
     by_hand,
@@ -147,6 +148,10 @@ NOT_A_DUE_DATE: Final = "Check the due date. Enter it as year, month, and day."
 NOT_AN_ASSIGNED_DATE: Final = "Check the assigned date. Enter it as year, month, and day."
 FAR_DUE_DATE: Final = "Check the due-date year. Enter a date within one year of today."
 FAR_ASSIGNED_DATE: Final = "Check the assigned-date year. Enter a date within one year of today."
+NAMED_TOO_FAR: Final = (
+    "The note names {day}. It can't be saved as the due date because it's more than a year {way}."
+)
+"""What a note card says of a date the note names that the due-date check refuses."""
 NOT_A_KIND: Final = "Choose Homework or Task."
 LOOK_AGAIN: Final = (
     "The saved assignments changed since this preview, and one of these needs your answer "
@@ -842,19 +847,35 @@ def joins_moved(read: Read, page: PageMade) -> frozenset[int]:
     return frozenset(card for card, _ in read.joined.symmetric_difference(signed))
 
 
-def joins_shown(read: Read, page: PageMade) -> dict[int, tuple[str, str]]:
+def joins_shown(read: Read, page: PageMade) -> dict[int, tuple[str, dict[tuple[int, int], str]]]:
     """For each card whose joined notes' ticks, as sent, differ from what a signed page
-    showed, what the page said saving does with the ticks as it showed them, then as sent:
-    the ``join_effects`` it signed for the one tick changed on that card. Where more than one
-    changed on one card the page said nothing of them together, and the second is empty."""
+    showed, what the page said saving does with the ticks as it showed them, then, for each
+    note of that card whose tick changed, what it said saving does with that one tick the
+    other way: the ``join_effects`` it signed for that note."""
     signed = {join for join, ticked in page.joined.items() if ticked}
     changed = read.joined.symmetric_difference(signed)
-    shown: dict[int, tuple[str, str]] = {}
+    shown: dict[int, tuple[str, dict[tuple[int, int], str]]] = {}
     for card in sorted({card for card, _ in changed}):
         here = sorted(join for join in changed if join[0] == card)
-        as_shown, as_sent = page.join_effects.get(here[0], ("", ""))
-        shown[card] = (as_shown, as_sent if len(here) == 1 else "")
+        as_shown = page.join_effects.get(here[0], ("", ""))[0]
+        shown[card] = (as_shown, {join: page.join_effects.get(join, ("", ""))[1] for join in here})
     return shown
+
+
+def joins_alone(
+    read: Read, joins: Mapping[int, tuple[str, Mapping[tuple[int, int], str]]], *, now: datetime
+) -> dict[int, list[tuple[tuple[Reading, ...], str]]]:
+    """For each card with more than one joined note's tick changed, each of those notes with
+    the readings as the save makes them with that one tick changed and the card's other
+    notes as the page showed them, and what the page said saving does with that tick."""
+    return {
+        card: [
+            (with_joined(read, read.joined ^ set(each) ^ {join}, now=now).items, said)
+            for join, said in each.items()
+        ]
+        for card, (_, each) in joins.items()
+        if len(each) > 1
+    }
 
 
 def joined_of(read: Read) -> dict[int, tuple[int, ...]]:
@@ -943,12 +964,14 @@ def typing_refused(read: Read) -> tuple[int, Problem] | None:
 class NoteFields:
     """The title box and the due-date choices of one card read from a teacher's note: the
     title the box holds, each choice as a value, its words and whether it is chosen,
-    whether another date is chosen, and the date typed beside it."""
+    whether another date is chosen, the date typed beside it, and what the card says of each
+    date the note names that can't be the due date."""
 
     title: str
     choices: list[tuple[str, str, bool]]
     other_chosen: bool
     other: str
+    named_too_far: tuple[str, ...] = ()
 
     @property
     def chosen(self) -> str:
@@ -958,12 +981,14 @@ class NoteFields:
         return next((value for value, _, on in self.choices if on), "")
 
 
-def note_fields(changes: Sequence[Change], read: Read) -> dict[int, NoteFields]:
+def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int, NoteFields]:
     """The fields of each card read from a teacher's note, by its key. The choices are the
     date as read, each date the note leaves open, each date it names, and no due date, each
-    date once. A card whose answers were sent shows them as typed. Otherwise the date as
-    read is chosen, or no due date where none was read; on a card that lands on a row whose
-    saved due date is none, or another than the one read, nothing is chosen."""
+    date once. A date the note names that the due-date check refuses, as of ``today``, is no
+    choice: the card says it, with its year and why it can't be the due date. A card whose
+    answers were sent shows them as typed. Otherwise the date as read is chosen, or no due
+    date where none was read; on a card that lands on a row whose saved due date is none, or
+    another than the one read, nothing is chosen."""
     sent = {answer.key: answer for answer in read.answers}
     fields: dict[int, NoteFields] = {}
     for change in changes:
@@ -975,8 +1000,12 @@ def note_fields(changes: Sequence[Change], read: Read) -> dict[int, NoteFields]:
             dates[task.deadline] = f"{spoken_day(task.deadline)}, as the note says"
         for day in task.choices:
             dates.setdefault(day, spoken_day(day))
+        too_far = tuple(
+            day for day in task.named if day not in dates and not within_a_school_year(day, today)
+        )
         for day in task.named:
-            dates.setdefault(day, f"{spoken_day(day)}, named in the note")
+            if day not in too_far:
+                dates.setdefault(day, f"{spoken_day(day)}, named in the note")
         answer = sent.get(change.key)
         if answer is not None:
             title, when, other = answer.title, answer.when, answer.other
@@ -1000,6 +1029,10 @@ def note_fields(changes: Sequence[Change], read: Read) -> dict[int, NoteFields]:
             ],
             when == ANOTHER_DATE,
             other,
+            tuple(
+                NAMED_TOO_FAR.format(day=spoken_day(day), way="away" if day > today else "ago")
+                for day in too_far
+            ),
         )
     return fields
 
@@ -1972,7 +2005,7 @@ def preview_page(
                     if (change.key, place) in read.joined
                 ),
             ),
-            "note_fields": note_fields(changes, read),
+            "note_fields": note_fields(changes, read, moment_of(state, draft)[1]),
             "title_max_length": TITLE_MAX_LENGTH,
             "check_card": check_card,
             "if_selected": {
@@ -2463,7 +2496,7 @@ async def keep_readings(request: Request, state: State) -> Response:
     # answer reads no store and keeps the draft and the answers given on the cards, which
     # homework each was said to be and the notes ticked among them; so does a write the
     # file refuses, which is never tried again.
-    joins: dict[int, tuple[str, str]] = {}
+    joins: dict[int, tuple[str, dict[tuple[int, int], str]]] = {}
     try:
         occurrences, kinds = answers_from(form, await asyncio.to_thread(unasked_for, state, read))
         if identity_unreadable:
@@ -2709,7 +2742,12 @@ async def keep_readings(request: Request, state: State) -> Response:
                 offered=page_made.offers,
                 left_out=read.left_out,
                 shown_tasks=page_made.tasks,
-                shown_joins={card: as_sent for card, (_, as_sent) in joins.items()},
+                shown_joins={
+                    card: next(iter(each.values()))
+                    for card, (_, each) in joins.items()
+                    if len(each) == 1
+                },
+                joins_each=joins_alone(read, joins, now=now),
                 imported_by="parent" if viewer_of(request) == "parent" else "household",
                 now=now,
                 today=today,

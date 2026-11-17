@@ -3319,7 +3319,7 @@ def joins_moved_from(
     """The keys of the cards with a joined note's tick changed whose save would do other
     than the review page said for that tick (``shown``: for each such card, what
     ``join_effects`` gave for the tick as sent, or nothing where the page said nothing for
-    it, such as two ticks changed on one card). Each card the page named must do exactly what
+    it). Each card the page named must do exactly what
     it said; with ``retry``, one of which nothing is written, in the row the page named, has
     not moved, so a retry passes."""
     by_key = {change.key: change for change in changes}
@@ -3383,6 +3383,7 @@ def keep(
     left_out: Collection[int] | None = None,
     shown_tasks: Mapping[int, str] | None = None,
     shown_joins: Mapping[int, str] | None = None,
+    joins_each: Mapping[int, Sequence[tuple[tuple[Reading, ...], str]]] | None = None,
 ) -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
     """Compare and write as one: save what the record lacks, and say what changed.
 
@@ -3441,7 +3442,10 @@ def keep(
     ``shown_joins`` holds, for each card whose joined note's tick differs from what a signed
     page showed, what the page said saving does with that tick as sent (``join_effects``).
     A card that would do something else (``joins_moved_from``) leaves the whole text unsaved
-    with what changed handed back and those cards named.
+    with what changed handed back and those cards named. ``joins_each`` holds, for each card
+    with more than one joined note's tick changed, each of those notes as the readings with
+    that one tick changed and what the page said saving does with it; the card is checked
+    once for each, compared as the save compares, in the same hold on the store.
     """
     picks = picks or {}
     crossed = picks.keys() & (identities or {}).keys()
@@ -3506,6 +3510,26 @@ def keep(
             not_as_shown = joins_moved_from(changes, shown_joins)
             if not_as_shown:
                 return ChangedSinceShown(changes, not_as_shown)
+        not_each = frozenset(
+            card
+            for card, notes in (joins_each or {}).items()
+            for alone, said in notes
+            if joins_moved_from(
+                changes_for(
+                    alone,
+                    store,
+                    occurrences=occurrences,
+                    kinds=kinds,
+                    instruction_answers=instruction_answers,
+                    identities=identities,
+                    picks=picks,
+                    left_out=left_out,
+                ),
+                {card: said},
+            )
+        )
+        if not_each:
+            return ChangedSinceShown(changes, not_each)
         if any(change.state == REVIEW for change in changes) or conflicting_choices(changes):
             return changes
         # Each note ticked to link goes to the homework its card landed on when the page was
