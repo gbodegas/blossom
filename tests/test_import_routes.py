@@ -86,7 +86,7 @@ from blossom.stores.import_drafts import (
 )
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from blossom.uploads import as_new_image, prepare_image
-from tests.import_review_cases import every_row, written_as_the_older_form
+from tests.import_review_cases import every_row, saved_with_corrections, written_as_the_older_form
 from tests.support import (
     ARRIVAL_CUE,
     HERS,
@@ -2540,7 +2540,9 @@ def test_a_save_that_saves_nothing_answers_with_the_typing_in_the_form(
         field = box_subject(page, "title")
         typed = {f"correct:{field}": "Sentence Combining"}
         units = digests_on(page)
-        refused = send(browser, draft_id, page_post(page, "save", tick=units, typed=typed))
+        refused = saved_with_corrections(
+            browser, draft_id, page_post(page, "save", tick=units, typed=typed)
+        )
 
     assert refused.status_code == 409
     assert says_each(refused.text, CHANGED_BESIDE_ANSWERS)
@@ -2594,7 +2596,7 @@ def test_a_save_that_fails_inside_sqlite_says_busy_only_for_a_busy_file_and_keep
         posted = page_post(kept.text, "save", tick=units_on(kept.text)[:1])
         monkeypatch.setattr(screenshot_save.NO_HOOKS, "before_acceptance", failing)
         with caplog.at_level(logging.DEBUG):
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
         accepted = acceptances_of(browser, draft_id)
 
     said = [line.getMessage() for line in caplog.records if line.name == "blossom.screenshot_save"]
@@ -2671,7 +2673,7 @@ def test_a_save_whose_write_of_her_name_fails_is_told_by_the_error_behind_it(
                 refused_in_the_grade_write(record, failure, ends_the_transaction=ends),
             )
             with caplog.at_level(logging.DEBUG):
-                answer = send(browser, draft_id, posted)
+                answer = saved_with_corrections(browser, draft_id, posted)
         accepted = acceptances_of(browser, draft_id)
 
     said = [line.getMessage() for line in caplog.records if line.name == "blossom.screenshot_save"]
@@ -3231,9 +3233,9 @@ def test_a_partial_save_returns_the_rows_left_open_with_their_typing_marked_unsa
             choose={f"answer:confirm:{first_confirm}": "as_read"},
             typed={f"correct:{second_confirm}": "Chains Reading Guide Six"},
         )
-        saved = send(browser, draft_id, fields)
+        saved = saved_with_corrections(browser, draft_id, fields)
         held = what_a_save_stores(monkeypatch)
-        again = send(browser, draft_id, fields)
+        again = saved_with_corrections(browser, draft_id, fields)
         student = state_of(browser).project_state.student_id()
         progress = state_of(browser).import_drafts.snapshot(student, draft_id).progress
 
@@ -4448,7 +4450,7 @@ def test_a_due_date_typed_in_the_box_settles_the_question_and_is_the_one_saved(
         )
         piece = json.loads(subject)[0]
         first = next(u for u in units_on(kept.text) if piece in u)
-        send(
+        saved_with_corrections(
             browser,
             draft_id,
             page_post(kept.text, "save", tick=[first]),
@@ -5524,7 +5526,10 @@ def test_an_assigned_date_correction_leaves_the_due_date_question_and_its_choice
         [unit] = digests_on(kept)
         before = assignment_count(browser)
         followed(
-            browser, send(browser, draft_id, page_post(kept, "save", tick=[unit], typed=typed))
+            browser,
+            saved_with_corrections(
+                browser, draft_id, page_post(kept, "save", tick=[unit], typed=typed)
+            ),
         )
         after = assignment_count(browser)
         dates = written(browser) if after > before else None
@@ -6345,7 +6350,10 @@ def test_a_long_title_and_instruction_are_corrected_and_kept_whole_through_every
         progress = progress_on(browser, draft_id)
         reloaded = browser.get(f"/parent/imports/{draft_id}").text
         saved = followed(
-            browser, send(browser, draft_id, page_post(reloaded, "save", tick=units_on(reloaded)))
+            browser,
+            saved_with_corrections(
+                browser, draft_id, page_post(reloaded, "save", tick=units_on(reloaded))
+            ),
         )
         record = state_of(browser).project_state
         rows = [a for a in record.all_assignments() if a.title == LONG_TITLE]
@@ -6412,7 +6420,10 @@ def test_a_multiline_instruction_correction_keeps_its_line_breaks_through_a_brow
         progress = progress_on(browser, draft_id)
         reloaded = browser.get(f"/parent/imports/{draft_id}").text
         followed(
-            browser, send(browser, draft_id, page_post(reloaded, "save", tick=units_on(reloaded)))
+            browser,
+            saved_with_corrections(
+                browser, draft_id, page_post(reloaded, "save", tick=units_on(reloaded))
+            ),
         )
         record = state_of(browser).project_state
         [row] = [a for a in record.all_assignments() if a.title == "Sentence Composing"]
@@ -6765,12 +6776,12 @@ def test_a_correction_past_its_field_s_limit_is_refused_whole_and_returned_as_ty
         held = stored_answers(browser, draft_id)
         before = assignment_count(browser)
         posted = page_post(page, press, typed={boxes[field]: words}, tick=units_on(page))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         assert answer.status_code == 422
         progress = progress_on(browser, draft_id)
         after = assignment_count(browser)
         answers = stored_answers(browser, draft_id)
-        again = send(browser, draft_id, page_post(answer.text, press))
+        again = saved_with_corrections(browser, draft_id, page_post(answer.text, press))
         still = progress_on(browser, draft_id)
 
     named = FIELD_SAID[field]
@@ -7026,7 +7037,7 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
 
             monkeypatch.setattr(state.import_drafts, method, committed_then_expired)
         stored = what_a_save_stores(monkeypatch)
-        answer = followed(browser, send(browser, draft_id, posted))
+        answer = followed(browser, saved_with_corrections(browser, draft_id, posted))
         after = assignment_count(browser)
         expires_after, progress = stored_row(browser, draft_id)
 
@@ -7182,7 +7193,10 @@ def test_an_untouched_earlier_correction_survives_later_and_save(
         second = later(browser, draft_id, first)
         again = progress_after(browser, draft_id)
         saved = followed(
-            browser, send(browser, draft_id, page_post(second, "save", tick=units_on(second)))
+            browser,
+            saved_with_corrections(
+                browser, draft_id, page_post(second, "save", tick=units_on(second))
+            ),
         )
         [row] = [
             a
@@ -7302,7 +7316,7 @@ def test_a_cleared_class_title_or_due_date_refuses_the_press_with_its_typing(
         other = f"correct:{box_subject(page, 'title' if field != 'title' else 'course')}"
         held = stored_answers(browser, draft_id)
         before = assignment_count(browser)
-        refused = send(
+        refused = saved_with_corrections(
             browser,
             draft_id,
             page_post(page, "save", typed={box: "", other: "Kept typing"}, tick=units_on(page)),
@@ -7338,7 +7352,8 @@ def test_a_cleared_instruction_removes_its_text_and_reads_back(
         held = progress_after(browser, draft_id)
         page = her_name_answered(browser, draft_id, reopened)
         saved = followed(
-            browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+            browser,
+            saved_with_corrections(browser, draft_id, page_post(page, "save", tick=units_on(page))),
         )
         record = state_of(browser).project_state
         [row] = [a for a in record.all_assignments() if a.title == "Sentence Composing"]
@@ -7497,7 +7512,8 @@ def test_unsure_instructions_read_as_none_offer_one_empty_box_whose_words_save_o
         typed = {box: MISSING_WORDS}
         kept = followed(browser, send(browser, draft_id, page_post(page, "keep", typed=typed)))
         saved = followed(
-            browser, send(browser, draft_id, page_post(kept, "save", tick=units_on(kept)))
+            browser,
+            saved_with_corrections(browser, draft_id, page_post(kept, "save", tick=units_on(kept))),
         )
         texts = saved_texts(browser)
 
@@ -7605,7 +7621,7 @@ def test_words_typed_for_missing_instructions_survive_later_reopening_and_a_refu
         held = progress_after(browser, draft_id)
         reopened = browser.get(f"/parent/imports/{draft_id}").text
         cleared = {title: ""}
-        refused = send(
+        refused = saved_with_corrections(
             browser,
             draft_id,
             page_post(reopened, "save", tick=units_on(reopened), typed=cleared),
@@ -7615,7 +7631,8 @@ def test_words_typed_for_missing_instructions_survive_later_reopening_and_a_refu
             browser, send(browser, draft_id, page_post(refused.text, "keep", typed=restored))
         )
         saved = followed(
-            browser, send(browser, draft_id, page_post(kept, "save", tick=units_on(kept)))
+            browser,
+            saved_with_corrections(browser, draft_id, page_post(kept, "save", tick=units_on(kept))),
         )
         texts = saved_texts(browser)
 
@@ -7646,7 +7663,9 @@ def test_old_progress_with_words_for_a_row_read_without_any_reads_back_in_its_bo
         held = progress_after(browser, draft_id)
         saved = followed(
             browser,
-            send(browser, draft_id, page_post(later_page, "save", tick=units_on(later_page))),
+            saved_with_corrections(
+                browser, draft_id, page_post(later_page, "save", tick=units_on(later_page))
+            ),
         )
         texts = saved_texts(browser)
 
@@ -7732,7 +7751,10 @@ def test_an_unsure_card_read_without_words_beside_one_with_words_has_its_own_box
         held = progress_after(browser, draft_id)
         reopened = browser.get(f"/parent/imports/{draft_id}").text
         saved = followed(
-            browser, send(browser, draft_id, page_post(reopened, "save", tick=units_on(reopened)))
+            browser,
+            saved_with_corrections(
+                browser, draft_id, page_post(reopened, "save", tick=units_on(reopened))
+            ),
         )
         texts = kept_texts(browser)
 
@@ -7791,7 +7813,10 @@ def test_each_unsure_card_read_without_words_has_its_own_box_and_its_words_are_s
         held = progress_after(browser, draft_id)
         reopened = browser.get(f"/parent/imports/{draft_id}").text
         pressed = followed(
-            browser, send(browser, draft_id, page_post(reopened, "save", tick=units_on(reopened)))
+            browser,
+            saved_with_corrections(
+                browser, draft_id, page_post(reopened, "save", tick=units_on(reopened))
+            ),
         )
         texts = kept_texts(browser)
 
@@ -7861,7 +7886,8 @@ def still_open_tick_and_save(
     unsure = says(page, f"Still to answer: {screenshot_page.OPEN_NAMES['confirm']}.")
     tickable = bool(units_on(page))
     saved = followed(
-        browser, send(browser, draft_id, page_post(page, "save", tick=digests_on(page)))
+        browser,
+        saved_with_corrections(browser, draft_id, page_post(page, "save", tick=digests_on(page))),
     )
     return unsure, tickable, saved
 
@@ -8571,13 +8597,13 @@ def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_th
         titles = [f"correct:{box_subject(page, 'title', n)}" for n in range(2)]
         [other] = [t for t in titles if json.loads(t.removeprefix("correct:"))[0] in open_unit]
         posted = page_post(page, "save", tick=[first_unit], typed={other: "Chains Guide Six"})
-        first = followed(browser, send(browser, draft_id, posted))
+        first = followed(browser, saved_with_corrections(browser, draft_id, posted))
         drafts = state_of(browser).import_drafts
         real = drafts.snapshot
         monkeypatch.setattr(drafts, "snapshot", busy_store(busy))
         again = send(browser, draft_id, posted)
         monkeypatch.setattr(drafts, "snapshot", real)
-        healthy = send(browser, draft_id, posted)
+        healthy = saved_with_corrections(browser, draft_id, posted)
 
     counts = ["Saved: 1 new assignment. 1 still needs checking."]
     shown = OUTCOME.search(again.text)
@@ -8646,14 +8672,14 @@ def test_a_read_refused_after_a_save_committed_says_what_it_saved_and_gives_the_
         drafts = state_of(browser).import_drafts
         real = drafts.snapshot
         if path == "replay":
-            assert send(browser, draft_id, posted).status_code == 200
+            assert saved_with_corrections(browser, draft_id, posted).status_code == 200
         before = assignment_count(browser)
         at = {"save": 3, "replay": 2}[path]
         monkeypatch.setattr(drafts, "snapshot", failing_read(real, at, busy))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.setattr(drafts, "snapshot", real)
         refused = assignment_count(browser)
-        again = send(browser, draft_id, posted)
+        again = saved_with_corrections(browser, draft_id, posted)
         after = assignment_count(browser)
 
     counts = "Saved: 1 new assignment. 1 still needs checking."
@@ -8956,7 +8982,7 @@ def test_answers_that_couldn_t_be_kept_are_said_unkept_when_the_review_can_t_be_
         drafts = state_of(browser).import_drafts
         put_write = restored(drafts, FAILED_WRITES[press], busy_store(StoreBusy))
         put_read = restored(drafts, "snapshot", failing_read(drafts.snapshot, 2, StoreBusy))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         put_read()
         put_write()
         stored = stored_answers(browser, draft_id)
@@ -8987,7 +9013,7 @@ def test_answers_that_couldn_t_be_kept_come_back_in_the_review_when_it_can_be_re
         posted = page_post(page, press, typed={title: "Chains Guide Six"}, tick=units_on(page))
         drafts = state_of(browser).import_drafts
         put_write = restored(drafts, FAILED_WRITES[press], busy_store(WriterBusy))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         put_write()
 
     assert answer.status_code == 503
@@ -9889,7 +9915,7 @@ def test_an_ended_review_s_page_leaves_out_the_rows_left_unsaved_and_keeps_the_t
                     restored(drafts, "snapshot", failing_read(drafts.snapshot, 3, DraftExpired))
                 )
             stored = what_a_save_stores(monkeypatch)
-            answers[mode] = send(browser, draft_id, posted)
+            answers[mode] = saved_with_corrections(browser, draft_id, posted)
             for undo in puts:
                 undo()
 
@@ -9949,13 +9975,13 @@ def test_a_committed_save_whose_review_reads_busy_keeps_its_counts_and_the_way_b
             )
             monkeypatch.setattr(imports, "save_homework", lambda *_, **__: saved)
         if case == "resent":
-            assert send(browser, draft_id, posted).status_code == 200
+            assert saved_with_corrections(browser, draft_id, posted).status_code == 200
             refuse = busy_store(busy)
         else:
             refuse = failing_read(drafts.snapshot, 3 if case == "typing left open" else 2, busy)
         stored = what_a_save_stores(monkeypatch)
         put_back = restored(drafts, "snapshot", refuse)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         put_back()
 
     shown = OUTCOME.search(answer.text)
@@ -10159,7 +10185,7 @@ def test_a_save_whose_review_ended_after_its_answers_were_kept_says_what_was_kep
         monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved(ending))
         typed = {title: "Chains"} if answered else {}
         posted = page_post(page, "save", tick=units_on(page)[:1], typed=typed)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
 
     text = page_text(answer)
     assert answer.status_code == 409
@@ -10378,7 +10404,7 @@ def test_a_save_with_a_new_instruction_correction_doesn_t_save_a_stale_choice(
         assert box_of(review_form(page), box)[1] == first  # type: ignore[index]
         record = state_of(browser).project_state
         before = record.school_instruction_readings(["assignment-grammar-practice-eeee4444"])
-        sent = send(
+        sent = saved_with_corrections(
             browser,
             draft_id,
             page_post(
@@ -10449,7 +10475,10 @@ def test_no_assigned_date_survives_later_reopening_and_save(
         held = progress_after(browser, draft_id)
         reopened = browser.get(f"/parent/imports/{draft_id}").text
         saved = followed(
-            browser, send(browser, draft_id, page_post(reopened, "save", tick=units_on(reopened)))
+            browser,
+            saved_with_corrections(
+                browser, draft_id, page_post(reopened, "save", tick=units_on(reopened))
+            ),
         )
         [row] = [
             a
@@ -10940,7 +10969,10 @@ def test_a_confident_field_corrected_saves_with_no_call(
         }
         corrected = followed(browser, send(browser, draft_id, page_post(page, "keep", typed=typed)))
         saved = followed(
-            browser, send(browser, draft_id, page_post(corrected, "save", tick=units_on(corrected)))
+            browser,
+            saved_with_corrections(
+                browser, draft_id, page_post(corrected, "save", tick=units_on(corrected))
+            ),
         )
         [row] = [
             a
@@ -10972,7 +11004,7 @@ def test_a_correction_saved_with_its_group_isn_t_said_to_be_unsaved(
         )
         assert says_each(kept, KEPT_THEN_WARNING)
         first = next(u for u in units_on(kept) if u in digests_on(kept))
-        taken = send(browser, draft_id, page_post(kept, "save", tick=[first]))
+        taken = saved_with_corrections(browser, draft_id, page_post(kept, "save", tick=[first]))
         titles = [a.title for a in state_of(browser).project_state.all_assignments()]
 
     assert says(taken.text, "Saved: 1 new assignment. 1 still needs checking.")
@@ -11239,7 +11271,7 @@ def later_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
 
 def save_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
     draft_id, page = review_and_page(browser, monkeypatch)
-    return lambda: send(browser, draft_id, typed_post(page, "save"))
+    return lambda: saved_with_corrections(browser, draft_id, typed_post(page, "save"))
 
 
 def partly_post(page: str) -> list[tuple[str, str]]:
@@ -11254,7 +11286,7 @@ def partly_post(page: str) -> list[tuple[str, str]]:
 def partly_save_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
     draft_id, page = review_and_page(browser, monkeypatch)
     page = her_name_answered(browser, draft_id, page)
-    return lambda: send(browser, draft_id, partly_post(page))
+    return lambda: saved_with_corrections(browser, draft_id, partly_post(page))
 
 
 def resent_save_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
@@ -11262,8 +11294,8 @@ def resent_save_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> P
     draft_id, page = review_and_page(browser, monkeypatch)
     page = her_name_answered(browser, draft_id, page)
     posted = partly_post(page)
-    assert send(browser, draft_id, posted).status_code == 200
-    return lambda: send(browser, draft_id, posted)
+    assert saved_with_corrections(browser, draft_id, posted).status_code == 200
+    return lambda: saved_with_corrections(browser, draft_id, posted)
 
 
 def closed_resend_press(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Press:
@@ -11657,7 +11689,9 @@ def test_a_save_whose_answers_were_kept_before_the_file_was_held_says_it_saved_n
         draft_id, page = review_and_page(browser, monkeypatch)
         posted = typed_post(page, "save")
         monkeypatch.setitem(
-            PRESSES, "partly save", lambda *_: lambda: send(browser, draft_id, posted)
+            PRESSES,
+            "partly save",
+            lambda *_: lambda: saved_with_corrections(browser, draft_id, posted),
         )
         answer, before, after, _ = committed_then_held(
             browser, monkeypatch, watch, "save after its answers"
@@ -12629,7 +12663,7 @@ def test_a_save_whose_first_read_is_refused_with_rows_open_answers_as_if_the_rea
                 only_inside_the_save(
                     monkeypatch, drafts, "snapshot", lambda _: refuses(REFUSED_READS[refusal])
                 )
-            answers[mode] = send(
+            answers[mode] = saved_with_corrections(
                 browser,
                 draft_id,
                 page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER}),
@@ -12692,7 +12726,7 @@ def test_a_save_that_finished_its_review_says_the_cleanup_closes_it(
         drafts = state_of(browser).import_drafts
         box = f"correct:{box_subject(page, field, 0)}"
         typed = page_post(page, "save", tick=units_on(page), typed={box: text})
-        first = send(browser, draft_id, typed)
+        first = saved_with_corrections(browser, draft_id, typed)
         posted = page_post(first.text, "save", tick=units_on(first.text))
         real_close = drafts.clean_up
 
@@ -12705,7 +12739,7 @@ def test_a_save_that_finished_its_review_says_the_cleanup_closes_it(
         else:
             only_inside_the_save(monkeypatch, drafts, "clean_up", lambda _: refuses(StoreBusy))
         monkeypatch.setattr(drafts, "clean_up", close_counted)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         swept = drafts.sweep()
         stored = on_record(browser, text)
@@ -12770,7 +12804,7 @@ def test_a_save_whose_follow_up_read_fails_promises_no_cleanup(
         put_back = restored(
             drafts, "snapshot", from_the_read(drafts.snapshot, 2, UNKNOWN_READS[refusal])
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         put_back()
 
     shown = the_saved_heading(answer, ONE_OF_TWO)
@@ -12799,7 +12833,7 @@ def test_a_save_whose_review_has_ended_promises_no_cleanup(
         drafts = state_of(browser).import_drafts
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
         put_back = restored(drafts, "snapshot", from_the_read(drafts.snapshot, 2, ending))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         put_back()
 
     shown = the_saved_heading(answer, ONE_LEFT_THEN)
@@ -12830,9 +12864,9 @@ def test_a_review_closed_by_another_tab_never_costs_the_counts_or_the_typing(
         drafts = state_of(browser).import_drafts
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
         if path == "resent":
-            assert send(browser, draft_id, posted).status_code == 200
+            assert saved_with_corrections(browser, draft_id, posted).status_code == 200
         put_back = restored(drafts, "snapshot", closed_from_the_read(drafts.snapshot, at))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         put_back()
 
     its_page_s_read = {"save": 3, "resent": 2}[path]
@@ -12855,7 +12889,7 @@ def test_a_page_after_a_commit_takes_one_read_of_the_review_as_it_is(
         drafts = state_of(browser).import_drafts
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
         if path == "resent":
-            assert send(browser, draft_id, posted).status_code == 200
+            assert saved_with_corrections(browser, draft_id, posted).status_code == 200
         real: Callable[..., object] = drafts.snapshot
         calls: list[int] = []
 
@@ -12864,7 +12898,7 @@ def test_a_page_after_a_commit_takes_one_read_of_the_review_as_it_is(
             return real(*args, **kwargs)
 
         put_back = restored(drafts, "snapshot", counted_read)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         put_back()
 
     assert answer.status_code == 200
@@ -12912,7 +12946,7 @@ def test_the_finished_page_gives_back_only_the_typing_the_save_did_not_write(
             monkeypatch.setattr(record, "homework_counts", lambda *_, **__: (1, 0, 0, 0))
             put_back = restored(drafts, "snapshot", closed_from_the_read(drafts.snapshot, 2))
             evidence = what_a_save_stores(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         if path == "resent":
             put_back()
         monkeypatch.undo()
@@ -12945,14 +12979,14 @@ def test_a_date_left_off_saved_work_is_given_back_when_the_save_closes_the_revie
         if not units_on(page):
             page = her_name_answered(browser, again, page)
         box = f"correct:{box_subject(page, 'due')}"
-        asked = send(
+        asked = saved_with_corrections(
             browser, again, page_post(page, "save", tick=units_on(page), typed={box: typed})
         )
         assert asked.status_code == 409
         [question] = fields_named(review_form(asked.text), "answer:due:")
         choice = {f"answer:due:{question}": "2026-10-08"}
         kept = followed(browser, send(browser, again, page_post(asked.text, "keep", choose=choice)))
-        saved = send(browser, again, page_post(kept, "save", tick=units_on(kept)))
+        saved = saved_with_corrections(browser, again, page_post(kept, "save", tick=units_on(kept)))
         student = state_of(browser).project_state.student_id()
         closed = state_of(browser).import_drafts.snapshot(student, again).closed_at
         stored = on_record(browser, typed)
@@ -13017,7 +13051,7 @@ def test_an_unexpected_error_after_the_commit_keeps_the_saved_result(
             monkeypatch.setattr(imports, "save_homework", saving)
             put_back = lambda: None  # noqa: E731
         with caplog.at_level(logging.WARNING):
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
         put_back()
         monkeypatch.undo()
 
@@ -13049,7 +13083,7 @@ def test_an_unexpected_error_on_a_resent_press_keeps_the_saved_result(
         page = her_name_answered(browser, draft_id, page)
         first_unit, _, other = typed_on_the_row_left(page)
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
-        assert send(browser, draft_id, posted).status_code == 200
+        assert saved_with_corrections(browser, draft_id, posted).status_code == 200
         state = state_of(browser)
         if where == "homework_counts":
             monkeypatch.setattr(state.project_state, "homework_counts", refuses(error))
@@ -13060,7 +13094,7 @@ def test_an_unexpected_error_on_a_resent_press_keeps_the_saved_result(
                 from_the_read(state.import_drafts.snapshot, 2, error),
             )
         with caplog.at_level(logging.WARNING):
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert answer.status_code == 200
@@ -13084,9 +13118,9 @@ def test_a_resent_press_whose_read_gets_another_refusal_keeps_the_way_back(
         first_unit, _, other = typed_on_the_row_left(page)
         drafts = state_of(browser).import_drafts
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
-        assert send(browser, draft_id, posted).status_code == 200
+        assert saved_with_corrections(browser, draft_id, posted).status_code == 200
         put_back = restored(drafts, "snapshot", from_the_read(drafts.snapshot, 2, refusal))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         put_back()
 
     shown = the_saved_heading(answer, ONE_OF_TWO)
@@ -13109,14 +13143,14 @@ def test_a_press_resent_after_a_refused_close_says_what_the_first_said(
         page = her_name_answered(browser, draft_id, page)
         first_unit, _, other = typed_on_the_row_left(page)
         drafts = state_of(browser).import_drafts
-        one = send(
+        one = saved_with_corrections(
             browser,
             draft_id,
             page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER}),
         )
         posted = page_post(one.text, "save", tick=units_on(one.text))
         only_inside_the_save(monkeypatch, drafts, "clean_up", lambda _: refuses(StoreBusy))
-        pressed = send(browser, draft_id, posted)
+        pressed = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         answer = send(browser, draft_id, posted)
         swept = drafts.sweep()
@@ -13149,7 +13183,7 @@ def test_a_refused_post_of_another_press_redirects_though_its_acceptance_is_on_r
         first_unit, _, other = typed_on_the_row_left(page)
         typed = {other: TYPED_ON_THE_OTHER}
         posted = page_post(page, "save", tick=[first_unit], typed=typed)
-        assert send(browser, draft_id, posted).status_code == 200
+        assert saved_with_corrections(browser, draft_id, posted).status_code == 200
         monkeypatch.setattr(imports, "review_post", no_post)
         answer = send(browser, draft_id, page_post(page, press, tick=[first_unit], typed=typed))
         monkeypatch.undo()
@@ -13203,9 +13237,9 @@ def test_a_recorded_save_whose_post_is_refused_on_a_readable_review_keeps_its_re
         page = her_name_answered(browser, draft_id, page)
         first_unit, _, other = typed_on_the_row_left(page)
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
-        assert send(browser, draft_id, posted).status_code == 200
+        assert saved_with_corrections(browser, draft_id, posted).status_code == 200
         monkeypatch.setattr(imports, "review_post", no_post_once_read())
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     the_saved_heading(answer, ONE_OF_TWO)
@@ -13272,10 +13306,10 @@ def test_a_resent_press_whose_post_can_t_be_read_against_the_page_keeps_its_typi
         first_unit, _, other = typed_on_the_row_left(page)
         drafts = state_of(browser).import_drafts
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
-        assert send(browser, draft_id, posted).status_code == 200
+        assert saved_with_corrections(browser, draft_id, posted).status_code == 200
         monkeypatch.setattr(imports, "review_post", no_post_once_read())
         put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 1, StoreBusy))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         put_back()
         monkeypatch.undo()
 
@@ -13316,7 +13350,7 @@ def test_a_save_on_record_whose_post_reader_reads_nothing_gives_back_each_box_ho
         first_unit, _, other = typed_on_the_row_left(page)
         drafts = state_of(browser).import_drafts
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
-        assert send(browser, draft_id, posted).status_code == 200
+        assert saved_with_corrections(browser, draft_id, posted).status_code == 200
         monkeypatch.setattr(imports, "review_post", no_post)
         if first_read == "refused as busy":
             put_back = restored(drafts, "snapshot", failing_read(drafts.snapshot, 1, StoreBusy))
@@ -13355,7 +13389,7 @@ def test_a_store_failure_after_the_commit_is_no_programming_error(
 
         monkeypatch.setattr(imports, "save_homework", saving)
         with caplog.at_level(logging.WARNING):
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     the_saved_heading(answer, ONE_OF_TWO)
@@ -13412,7 +13446,9 @@ def test_joined_pieces_with_competing_typed_dates_give_back_the_date_not_chosen(
             browser, send(browser, draft_id, page_post(asked, "keep", choose={question: chosen}))
         )
         before = assignment_count(browser)
-        answer = send(browser, draft_id, page_post(kept, "save", tick=units_on(kept)))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(kept, "save", tick=units_on(kept))
+        )
         made = state_of(browser).project_state.all_assignments()
 
     assert len(made) == before + 1
@@ -13493,7 +13529,7 @@ def test_a_review_closed_for_real_before_its_rows_are_read_keeps_the_saved_resul
         drafts = state_of(browser).import_drafts
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
         if path == "resent":
-            assert send(browser, draft_id, posted).status_code == 200
+            assert saved_with_corrections(browser, draft_id, posted).status_code == 200
         real_rows: Callable[..., Awaitable[object]] = imports.rows_of
 
         async def closed_first(*args: object, **kwargs: object) -> object:
@@ -13504,7 +13540,7 @@ def test_a_review_closed_for_real_before_its_rows_are_read_keeps_the_saved_resul
 
         monkeypatch.setattr(imports, "rows_of", closed_first)
         stored = what_a_save_stores(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         student = state_of(browser).project_state.student_id()
         closed = drafts.snapshot(student, draft_id).closed_at
@@ -13540,7 +13576,7 @@ def test_a_date_chosen_on_saved_work_is_stored_and_not_given_back(
         if not units_on(page):
             page = her_name_answered(browser, again, page)
         box = f"correct:{box_subject(page, 'due')}"
-        asked = send(
+        asked = saved_with_corrections(
             browser, again, page_post(page, "save", tick=units_on(page), typed={box: typed})
         )
         [question] = fields_named(review_form(asked.text), "answer:due:")
@@ -13552,7 +13588,7 @@ def test_a_date_chosen_on_saved_work_is_stored_and_not_given_back(
                 page_post(asked.text, "keep", choose={f"answer:due:{question}": typed}),
             ),
         )
-        saved = send(browser, again, page_post(kept, "save", tick=units_on(kept)))
+        saved = saved_with_corrections(browser, again, page_post(kept, "save", tick=units_on(kept)))
         items = state_of(browser).project_state.all_assignments()
 
     assert [i.due_date for i in items if i.title == "Sentence Composing"] == [date(2026, 10, 9)]
@@ -13573,13 +13609,13 @@ def test_a_save_whose_evidence_can_t_be_read_still_commits_and_gives_everything_
         page = her_name_answered(browser, draft_id, page)
         box = f"correct:{box_subject(page, 'title')}"
         typed = page_post(page, "save", tick=units_on(page), typed={box: "Worded Anew"})
-        first = send(browser, draft_id, typed)
+        first = saved_with_corrections(browser, draft_id, typed)
         posted = page_post(first.text, "save", tick=units_on(first.text))
         record = state_of(browser).project_state
         monkeypatch.setattr(
             screenshot_save, "values_on_record", refuses(lambda: ValueError(UNEXPECTED))
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         titles = [item.title for item in record.all_assignments()]
 
@@ -13628,12 +13664,14 @@ def test_a_partial_save_gives_back_a_date_left_off_saved_work_beside_the_rows(
     with here(open_settings(tmp_path)) as browser:
         again, page, piece = landing_beside_an_open_row(browser, monkeypatch)
         box = "correct:" + json.dumps([f"date:{piece}", "due"], separators=(",", ":"))
-        asked = send(browser, again, page_post(page, "save", tick=[piece], typed={box: typed}))
+        asked = saved_with_corrections(
+            browser, again, page_post(page, "save", tick=[piece], typed={box: typed})
+        )
         [question] = fields_named(review_form(asked.text), "answer:due:")
         choice = {f"answer:due:{question}": "2026-10-08"}
         kept = followed(browser, send(browser, again, page_post(asked.text, "keep", choose=choice)))
         posted = page_post(kept, "save", tick=[piece])
-        first = send(browser, again, posted)
+        first = saved_with_corrections(browser, again, posted)
         held = what_a_save_stores(monkeypatch)
         answer = send(browser, again, posted) if path == "resent" else first
         stored = on_record(browser, typed)
@@ -13685,7 +13723,7 @@ def test_joined_pieces_beside_an_open_row_give_back_the_date_not_chosen(
             browser, send(browser, draft_id, page_post(asked, "keep", choose={question: chosen}))
         )
         [joined] = [unit for unit in units_on(kept) if "+" in unit]
-        answer = send(browser, draft_id, page_post(kept, "save", tick=[joined]))
+        answer = saved_with_corrections(browser, draft_id, page_post(kept, "save", tick=[joined]))
         items = state_of(browser).project_state.all_assignments()
 
     [stored] = [item for item in items if item.title == "Sentence Composing"]
@@ -13709,12 +13747,12 @@ def test_a_partial_save_asks_for_no_copy_of_what_it_shows_it_stored_and_a_resend
         first_unit, _, other = typed_on_the_row_left(page)
         titles = [f"correct:{box_subject(page, 'title', n)}" for n in range(2)]
         [mine] = [box for box in titles if box != other]
-        asked = send(
+        asked = saved_with_corrections(
             browser, draft_id, page_post(page, "save", tick=[first_unit], typed={mine: typed})
         )
         posted = page_post(asked.text, "save", tick=[first_unit])
         held = what_a_save_stores(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         by_the_save = list(held)
         resent = send(browser, draft_id, posted)
         stored = on_record(browser, typed)
@@ -13766,7 +13804,7 @@ def test_a_review_closed_with_a_couldn_t_read_item_open_keeps_the_saved_result(
         monkeypatch.setattr(imports, "rows_of", closed_first)
         posted = page_post(page, "save", tick=[first_unit], typed={title: typed})
         stored = what_a_save_stores(monkeypatch)
-        pressed = send(browser, draft_id, posted)
+        pressed = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     shown = OUTCOME.search(pressed.text)
@@ -13812,9 +13850,9 @@ def test_a_recorded_press_whose_post_now_refuses_says_what_it_saved(
             if json.loads(subject) == [piece, "title"]
         ]
         posted = page_post(page, "save", tick=units_on(page), typed={f"correct:{title}": typed})
-        first = send(browser, draft_id, posted)
+        first = saved_with_corrections(browser, draft_id, posted)
         keep(browser, draft_id, ("due_read", piece, "2026-10-08"))
-        again = send(browser, draft_id, posted)
+        again = saved_with_corrections(browser, draft_id, posted)
 
     assert first.status_code == 200
     assert again.status_code == 200
@@ -13857,11 +13895,11 @@ def test_a_second_press_refused_by_the_first_says_what_the_first_saved(
             if not fired:
                 fired.append(1)
                 monkeypatch.setattr(drafts, "keep_answers", real_keep)
-                assert send(browser, draft_id, posted).status_code == 200
+                assert saved_with_corrections(browser, draft_id, posted).status_code == 200
             return real_keep(*args, **kwargs)
 
         monkeypatch.setattr(drafts, "keep_answers", after_the_first_press)
-        second = send(browser, draft_id, posted)
+        second = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert second.status_code == 200
@@ -13947,7 +13985,7 @@ def test_a_review_discarded_before_the_page_s_read_gives_the_typing_back(
             drafts.discard_review(student, draft_id, version=version)
 
         if path == "resent":
-            assert send(browser, draft_id, posted).status_code == 200
+            assert saved_with_corrections(browser, draft_id, posted).status_code == 200
             discard()
         else:
             real_save: Callable[..., object] = save_homework
@@ -13959,7 +13997,7 @@ def test_a_review_discarded_before_the_page_s_read_gives_the_typing_back(
 
             monkeypatch.setattr(imports, "save_homework", saving)
         stored = what_a_save_stores(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     shown = the_saved_heading(answer, ONE_LEFT_THEN)
@@ -13990,7 +14028,7 @@ def test_an_instruction_typed_and_not_chosen_on_saved_work_is_given_back(
         if not units_on(page):
             page = her_name_answered(browser, again, page)
         box = f"correct:{box_subject(page, 'instruction:0')}"
-        asked = send(
+        asked = saved_with_corrections(
             browser, again, page_post(page, "save", tick=units_on(page), typed={box: note})
         )
         [question] = fields_named(review_form(asked.text), "answer:instructions:")
@@ -14000,7 +14038,7 @@ def test_an_instruction_typed_and_not_chosen_on_saved_work_is_given_back(
             )
         }
         kept = followed(browser, send(browser, again, page_post(asked.text, "keep", choose=choice)))
-        saved = send(browser, again, page_post(kept, "save", tick=units_on(kept)))
+        saved = saved_with_corrections(browser, again, page_post(kept, "save", tick=units_on(kept)))
 
     assert saved.status_code == 200
     assert TYPED_BACK.findall(saved.text) == [note]
@@ -14042,13 +14080,13 @@ def test_a_resent_press_with_no_counts_on_record_is_no_programming_error(
         page = her_name_answered(browser, draft_id, page)
         first_unit, _, other = typed_on_the_row_left(page)
         posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
-        assert send(browser, draft_id, posted).status_code == 200
+        assert saved_with_corrections(browser, draft_id, posted).status_code == 200
         record = state_of(browser).project_state
         monkeypatch.setattr(record, "homework_counts", lambda *_, **__: None)
         drafts = state_of(browser).import_drafts
         put_back = restored(drafts, "snapshot", closed_from_the_read(drafts.snapshot, 2))
         with caplog.at_level(logging.WARNING):
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
         put_back()
         monkeypatch.undo()
 
@@ -14106,7 +14144,9 @@ def about_to_commit_a_typed_title(
     page = her_name_answered(browser, draft_id, page)
     unit = units_on(page)[0]
     typed = {correct_box(unit, "title"): "Worded Anew"}
-    first = send(browser, draft_id, page_post(page, "save", tick=[unit], typed=typed))
+    first = saved_with_corrections(
+        browser, draft_id, page_post(page, "save", tick=[unit], typed=typed)
+    )
     assert first.status_code == 409
     return draft_id, page_post(first.text, "save", tick=units_on(first.text))
 
@@ -14167,12 +14207,12 @@ def test_a_read_back_that_costs_the_transaction_never_says_saved(
 
         monkeypatch.setattr(screenshot_save, "values_on_record", read_back)
         with caplog.at_level(logging.WARNING):
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         after_it = on_the_file(browser, dict(posted)["acceptance"])
         records = [r for r in caplog.records if r.levelno >= logging.ERROR]
         again = page_post(answer.text, "save", tick=units_on(answer.text))
-        retried = send(browser, draft_id, again)
+        retried = saved_with_corrections(browser, draft_id, again)
         retried_on_file = on_the_file(browser, dict(again)["acceptance"])
 
     assert said in page_text(answer)
@@ -14197,7 +14237,7 @@ def test_an_unexpected_error_in_the_read_back_costs_only_the_evidence(
             screenshot_save, "values_on_record", refuses(lambda: ValueError(UNEXPECTED))
         )
         with caplog.at_level(logging.WARNING):
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         saved = on_the_file(browser, dict(posted)["acceptance"])
 
@@ -14224,7 +14264,7 @@ def test_a_save_refuses_to_join_a_transaction_already_open(
             return real_save(*args, **kwargs)
 
         monkeypatch.setattr(imports, "save_homework", saving)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         on_file = on_the_file(browser, dict(posted)["acceptance"])
         record._connection.rollback()
@@ -14247,7 +14287,9 @@ def commit_on_saved_work(
     if not units_on(page):
         page = her_name_answered(browser, again, page)
     typed = {f"correct:{box_subject(page, 'instruction:0')}": "A note of my own"}
-    asked = send(browser, again, page_post(page, "save", tick=units_on(page), typed=typed))
+    asked = saved_with_corrections(
+        browser, again, page_post(page, "save", tick=units_on(page), typed=typed)
+    )
     [question] = fields_named(review_form(asked.text), "answer:instructions:")
     choice = {
         f"answer:instructions:{question}": option_for(
@@ -14304,7 +14346,7 @@ def test_a_save_begins_and_commits_one_transaction_of_its_own(
                 seen.append(first)
 
         record._connection.set_trace_callback(statement)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         record._connection.set_trace_callback(None)
         monkeypatch.undo()
 
@@ -14414,9 +14456,9 @@ def test_no_date_ticked_doesn_t_cost_the_words_beside_it(
         [tick] = [name for name in ticks if key in name]
         posted = page_post(page, "save", tick=[first], choose={tick: "none"})
         held = what_a_save_stores(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         by_the_save = list(held)
-        resent = send(browser, draft_id, posted)
+        resent = saved_with_corrections(browser, draft_id, posted)
 
     assert TYPED_BACK.findall(answer.text) == [CARRIED]
     leaves_out_only_what_the_save_stored(posted, [], by_the_save, boxes_returned(answer))
@@ -14441,7 +14483,7 @@ def test_no_date_ticked_on_the_row_being_saved_keeps_the_words_on_its_first_pres
         typed = {correct_box(f"date:{key}", "assigned"): CARRIED}
         kept = followed(browser, send(browser, draft_id, page_post(page, "keep", typed=typed)))
         tick = html.unescape(re.findall(r'name="(none:[^"]+)"', review_form(kept))[0])
-        first = send(
+        first = saved_with_corrections(
             browser, draft_id, page_post(kept, "save", tick=digests_on(kept), choose={tick: "none"})
         )
 
@@ -14458,7 +14500,7 @@ def test_words_carried_with_no_tick_are_given_back_since_a_hidden_field_isn_t_a_
         draft_id, page, first, _ = carried_beside_a_date_box(
             browser, monkeypatch, SECOND_CARDS["it read an assigned date"], "typed"
         )
-        answer = send(browser, draft_id, page_post(page, "save", tick=[first]))
+        answer = saved_with_corrections(browser, draft_id, page_post(page, "save", tick=[first]))
 
     assert TYPED_BACK.findall(answer.text) == [CARRIED]
 
@@ -14488,7 +14530,9 @@ def test_a_rendered_field_holding_the_exact_text_needs_no_copy(
             correct_box(key, "title"): "Inner  spaced",
             correct_box(f"date:{key}", "due"): "2026-10-20",
         }
-        answer = send(browser, draft_id, page_post(page, "save", tick=[first], typed=typed))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(page, "save", tick=[first], typed=typed)
+        )
 
     assert TYPED_BACK.findall(answer.text) == []
     assert says(answer.text, imports.PRESS_SAID["unsaved_typing"])
@@ -14519,7 +14563,9 @@ def test_a_stray_space_stays_in_its_box_as_sent_and_the_changes_line_stays(
             correct_box(key, "title"): "Spaced ",
             correct_box(key, "instruction:0"): "Line one.\n",
         }
-        answer = send(browser, draft_id, page_post(page, "save", tick=[first], typed=typed))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(page, "save", tick=[first], typed=typed)
+        )
 
     assert TYPED_BACK.findall(answer.text) == []
     assert drawn_value(answer.text, correct_box(key, "title")) == "Spaced "
@@ -14550,7 +14596,7 @@ def test_a_changed_row_on_a_review_closed_before_its_rows_says_nothing_of_checki
             page, "save", tick=[first_unit, open_unit], typed={other: TYPED_ON_THE_OTHER}
         )
         stored = what_a_save_stores(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     said = page_text(answer)
@@ -14639,14 +14685,14 @@ def test_a_second_press_whose_keep_fails_says_what_the_first_saved(
             if not fired:
                 fired.append(1)
                 monkeypatch.setattr(drafts, "keep_answers", real_keep)
-                assert send(browser, draft_id, posted).status_code == 200
+                assert saved_with_corrections(browser, draft_id, posted).status_code == 200
                 if failure == "a busy store":
                     raise StoreBusy
                 raise coded_error(sqlite3.SQLITE_IOERR, "SQLITE_IOERR")
             return real_keep(*args, **kwargs)
 
         monkeypatch.setattr(drafts, "keep_answers", after_the_first_press)
-        second = send(browser, draft_id, posted)
+        second = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     text = html.unescape(second.text)
@@ -14703,7 +14749,7 @@ def test_the_line_about_the_rows_below_depends_on_the_rows_shown(
 
         monkeypatch.setattr(imports, "rows_of", aside)
         stored = what_a_save_stores(monkeypatch)
-        pressed = send(browser, draft_id, posted)
+        pressed = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert says(pressed.text, imports.PRESS_SAID["unsaved_typing"]) == (what == "shown")
@@ -14756,7 +14802,7 @@ def test_the_line_about_the_rows_below_keeps_its_place_among_the_press_s_lines(
 
         monkeypatch.setattr(imports, "save_homework", saving)
         typed = {correct_box(second_unit, "title"): "Changed title"}
-        pressed = send(
+        pressed = saved_with_corrections(
             browser, draft_id, page_post(page, "save", tick=[first_unit, second_unit], typed=typed)
         )
         monkeypatch.undo()
@@ -14973,7 +15019,7 @@ def test_a_save_press_on_a_closed_review_gives_its_typing_back(
         draft_id, page, first, other = two_rows(browser, monkeypatch)
         posted = page_post(page, "save", tick=[first] if ticks else [], typed=typed_on(other))
         ending(browser, monkeypatch, draft_id)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         held = on_the_record(browser)
 
@@ -15020,7 +15066,7 @@ def test_a_review_that_ends_before_its_rows_says_so_not_the_press_s_line(
             "rows_of",
             ended_before_the_press if how == "closed" else lambda b, m, d: swept(b, m, d),
         )(browser, monkeypatch, draft_id)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     if how == "closed":
@@ -15057,11 +15103,13 @@ def test_a_closed_review_answers_with_an_earlier_save_first(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, other = two_rows(browser, monkeypatch)
         posted = page_post(page, "save", tick=[first], typed=typed_on(other))
-        assert "Saved: 1 new assignment." in page_text(send(browser, draft_id, posted))
+        assert "Saved: 1 new assignment." in page_text(
+            saved_with_corrections(browser, draft_id, posted)
+        )
         if case == "b, at the keep":
             first_read_finds_nothing(browser, monkeypatch)
         ending(browser, monkeypatch, draft_id)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         held = on_the_record(browser)
 
@@ -15249,7 +15297,7 @@ def press_left_open(
 
     monkeypatch.setattr(screenshot_save, "_homework_transaction", arming)
     monkeypatch.setattr(imports, "save_homework", saving)
-    answer = send(browser, draft_id, posted)
+    answer = saved_with_corrections(browser, draft_id, posted)
     monkeypatch.undo()
     return answer
 
@@ -15355,7 +15403,9 @@ def test_a_single_refused_commit_is_evidence_nothing_was_written(
         pressed = press_left_open(browser, monkeypatch, draft_id, posted, file_error, None)
         settled = not state_of(browser).project_state.transaction_left_open()
         held = on_the_record(browser)
-        again = send(browser, draft_id, page_post(pressed.text, "save", tick=[first]))
+        again = saved_with_corrections(
+            browser, draft_id, page_post(pressed.text, "save", tick=[first])
+        )
         held_after = on_the_record(browser)
 
     assert WASNT_SAVED in page_text(pressed)
@@ -15396,12 +15446,14 @@ def test_a_refused_first_read_of_a_save_s_acceptance_says_it_saved_no_homework(
         draft_id, page, first, other = two_rows(browser, monkeypatch)
         posted = page_post(page, "save", tick=[first], typed=typed_on(other))
         if press == "resend":
-            assert "Saved: 1 new assignment." in page_text(send(browser, draft_id, posted))
+            assert "Saved: 1 new assignment." in page_text(
+                saved_with_corrections(browser, draft_id, posted)
+            )
         before = on_the_record(browser)
         writes = spying_on_the_writes(browser, monkeypatch)
         Refusing(monkeypatch, ("save_press", read, 1, refusal))
         with caplog.at_level(logging.WARNING):
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         after = on_the_record(browser)
 
@@ -15503,7 +15555,7 @@ def test_a_save_press_whose_earlier_save_can_t_be_asked_says_its_homework_lines_
         posted = posted_at_site(page, "save", first, other, site)
         arranged_at_site(browser, monkeypatch, draft_id, site)
         refusing_after(browser, monkeypatch, refusal, REPLAY_SITES[site][2])
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         held = on_the_record(browser)
 
@@ -15594,7 +15646,7 @@ def test_a_transaction_left_open_during_a_save_press_leaves_only_its_own_save_un
             monkeypatch.setattr(imports, "save_homework", saving)
         else:
             open_at(browser, monkeypatch, window)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         ending_transaction(browser)
         held = on_the_record(browser)
@@ -15652,13 +15704,15 @@ def test_the_resend_of_a_save_that_committed_can_t_tell_until_the_transaction_en
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, other = two_rows(browser, monkeypatch)
         posted = page_post(page, "save", tick=[first], typed=typed_on(other))
-        assert "Saved: 1 new assignment." in page_text(send(browser, draft_id, posted))
+        assert "Saved: 1 new assignment." in page_text(
+            saved_with_corrections(browser, draft_id, posted)
+        )
         beginning(browser)
         held = on_the_record(browser)
         unsettled = send(browser, draft_id, posted)
         held_after = on_the_record(browser)
         ending_transaction(browser)
-        settled = send(browser, draft_id, posted)
+        settled = saved_with_corrections(browser, draft_id, posted)
 
     says_it_can_t_tell(unsettled, owed_texts(posted))
     assert held == held_after
@@ -15676,7 +15730,7 @@ def test_a_confirmed_save_keeps_its_counts_though_a_transaction_opens_after_it_i
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, other = two_rows(browser, monkeypatch)
         posted = page_post(page, "save", tick=[first], typed=typed_on(other))
-        send(browser, draft_id, posted)
+        saved_with_corrections(browser, draft_id, posted)
         record = state_of(browser).project_state
         real: Callable[..., object] = record.homework_acceptance
 
@@ -15687,7 +15741,7 @@ def test_a_confirmed_save_keeps_its_counts_though_a_transaction_opens_after_it_i
 
         monkeypatch.setattr(record, "homework_acceptance", reading)
         held = what_a_save_stores(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         ending_transaction(browser)
 
@@ -15715,8 +15769,10 @@ def test_the_review_shows_no_rows_from_a_transaction_left_open(
         unsettled = browser.get(f"/parent/imports/{draft_id}", headers=PAGE_HEADERS)
         ending_transaction(browser)
         settled = browser.get(f"/parent/imports/{draft_id}", headers=PAGE_HEADERS)
-        same_post = send(browser, draft_id, posted)
-        saved = send(browser, draft_id, page_post(same_post.text, "save", tick=[first]))
+        same_post = saved_with_corrections(browser, draft_id, posted)
+        saved = saved_with_corrections(
+            browser, draft_id, page_post(same_post.text, "save", tick=[first])
+        )
         held = on_the_record(browser)
 
     text = page_text(unsettled)
@@ -15845,7 +15901,7 @@ def test_a_committed_press_keeps_its_counts_when_a_transaction_opens_after_it(
 
         monkeypatch.setattr(imports, "save_homework", saving)
         held = what_a_save_stores(monkeypatch)
-        pressed = send(browser, draft_id, posted)
+        pressed = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         ending_transaction(browser)
 
@@ -16140,7 +16196,9 @@ def landing_with_a_question(
     if words is not None:
         other = next(unit for unit in units_on(page) if unit != piece)
         typed[correct_box(f"date:{other}", "assigned")] = words
-    asked = send(browser, draft_id, page_post(page, "save", tick=[piece], typed=typed))
+    asked = saved_with_corrections(
+        browser, draft_id, page_post(page, "save", tick=[piece], typed=typed)
+    )
     return draft_id, asked.text, piece
 
 
@@ -16197,20 +16255,22 @@ def test_an_instruction_ticked_beside_none_of_these_apply_comes_back_to_correct(
             page, press, typed={correct_box(other, "title"): A_TYPED_TITLE}, tick=ticks
         )
         before = on_the_record(browser)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         after = on_the_record(browser)
         form = review_form(answer.text)
         block = fieldset_of(answer.text, field)
         # Typing on the row a Save ticks takes its tick off the rows it comes back to.
         still_ticked = [unit for unit, shown in unit_ticks(answer.text).items() if shown]
-        again = send(browser, draft_id, both_ticked(answer.text, press, tick=still_ticked)[0])
+        again = saved_with_corrections(
+            browser, draft_id, both_ticked(answer.text, press, tick=still_ticked)[0]
+        )
         after_again = on_the_record(browser)
         corrected = [
             (name, posted_value)
             for name, posted_value in page_post(answer.text, press, tick=still_ticked)
             if not (name == field and posted_value != "")
         ]
-        done = send(browser, draft_id, corrected)
+        done = saved_with_corrections(browser, draft_id, corrected)
         finally_held = on_the_record(browser)
         stored = stored_answers(browser, draft_id)
 
@@ -16302,7 +16362,7 @@ def test_a_conflict_gives_back_typing_on_a_row_another_tab_saved(
             typed={correct_box(other, "title"): STRAY_TITLE},
             tick=[piece] if press == "save" else [],
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
 
     assert answer.status_code == 422, answer.text[:400]
     assert STRAY_TITLE in typed_in(posted)
@@ -16327,7 +16387,7 @@ def test_a_conflict_with_typing_on_the_same_card_keeps_the_typing_and_the_senten
             typed={correct_box(piece, "title"): "A New Title"},
             tick=[piece] if press == "save" else [],
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         after = on_the_record(browser)
 
     assert answer.status_code == 422, answer.text[:400]
@@ -16351,7 +16411,7 @@ def test_a_conflict_with_a_correction_too_long_says_both(
         posted, field, value = both_ticked(
             page, "save", typed={correct_box(other, "title"): "x" * 400}
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
 
     assert answer.status_code == 422
     assert CONFLICT_SAID in page_text(answer)
@@ -16371,9 +16431,9 @@ def test_a_conflict_on_a_press_already_recorded_keeps_its_counts(
             for name, value in page_post(page, "save", tick=ticks)
             if not (name == field and value != "")
         ]
-        send(browser, draft_id, [*first[:-1], (field, ""), first[-1]])
+        saved_with_corrections(browser, draft_id, [*first[:-1], (field, ""), first[-1]])
         posted, _, _ = both_ticked(page, "save", tick=ticks)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
 
     assert "Saved:" in page_text(answer)
     assert NOTHING_KEPT not in page_text(answer)
@@ -17175,7 +17235,7 @@ def test_a_choice_that_can_t_carry_is_said_for_any_cause(
     with here(open_settings(tmp_path)) as browser:
         review = a_review_of_choices(browser, monkeypatch)
         before = on_the_record(browser)
-        answer = send(
+        answer = saved_with_corrections(
             browser,
             review.draft_id,
             shown_post(
@@ -17203,7 +17263,7 @@ def test_a_tick_the_rebuilt_rows_can_t_show_is_said(
     with here(open_settings(tmp_path)) as browser:
         review = three_groups(browser, monkeypatch)
         unit = next(unit for unit, shown in unit_ticks(review.page).items() if shown)
-        answer = send(
+        answer = saved_with_corrections(
             browser,
             review.draft_id,
             shown_post(
@@ -17296,7 +17356,7 @@ def test_a_receipt_at_the_same_version_behind_its_save_says_its_choices_aren_t_s
         review, posted = receipt_and_a_later_press(
             browser, monkeypatch, first_changes_an_answer=False
         )
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
 
     text = page_text(answer)
     assert "Saved: 1 new assignment." in text
@@ -17322,7 +17382,7 @@ def test_a_conflict_beside_a_receipt_doesn_t_get_past_another_tab_s_save_for_lat
         version, revision, _ = review_row(browser, review.draft_id)
         send(browser, review.draft_id, shown_post(now, "later", drop=[("unit", ticked)]))
         moved = review_row(browser, review.draft_id)
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         held = review_row(browser, review.draft_id)
 
     text = page_text(answer)
@@ -17345,7 +17405,7 @@ def test_a_receipt_on_a_page_since_changed_says_its_choices_aren_t_shown(
         review, posted = receipt_and_a_later_press(
             browser, monkeypatch, first_changes_an_answer=True
         )
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
 
     text = page_text(answer)
     assert "Saved: 1 new assignment." in text
@@ -17440,7 +17500,9 @@ def a_save_committed(
 ) -> tuple[str, list[tuple[str, str]]]:
     draft_id, page, first, other = two_rows(browser, monkeypatch)
     posted = page_post(page, "save", tick=[first], typed=typed_on(other))
-    assert "Saved: 1 new assignment." in page_text(send(browser, draft_id, posted))
+    assert "Saved: 1 new assignment." in page_text(
+        saved_with_corrections(browser, draft_id, posted)
+    )
     return draft_id, posted
 
 
@@ -17457,7 +17519,7 @@ def test_a_receipt_s_counts_that_can_t_be_read_leave_the_save_standing(
         draft_id, posted = a_save_committed(browser, monkeypatch)
         record = state_of(browser).project_state
         monkeypatch.setattr(record, "homework_counts", refusal)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         held = on_the_record(browser)
 
@@ -17707,7 +17769,7 @@ def test_a_save_that_raises_and_leaves_its_transaction_open_can_t_tell_as_the_re
             raise ValueError(UNEXPECTED)
 
         monkeypatch.setattr(imports, "save_homework", saving)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         ending_transaction(browser)
 
@@ -17723,7 +17785,7 @@ def test_a_store_that_won_t_say_if_a_transaction_is_open_is_no_evidence_of_one(
         record = state_of(browser).project_state
         monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("failed"))
         monkeypatch.setattr(record, "transaction_left_open", refusing_coded("SQLITE_IOERR"))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert WASNT_SAVED in page_text(answer)
@@ -17745,7 +17807,7 @@ class TwoCopies:
     answers: list[Answer]
 
     def the_copy_commits(self) -> None:
-        self.answers.append(send(self.browser, self.draft_id, self.posted))
+        self.answers.append(saved_with_corrections(self.browser, self.draft_id, self.posted))
 
     def nothing_else_happens(self) -> None:
         return None
@@ -18010,7 +18072,7 @@ def test_a_copy_s_receipt_answers_before_the_last_page(
         two = two_copies(browser, monkeypatch)
         receipts, homework = receipts_and_homework(browser)
         LAST_PAGES[where].arrange(two, two.the_copy_commits)
-        answer = send(browser, two.draft_id, two.posted)
+        answer = saved_with_corrections(browser, two.draft_id, two.posted)
         monkeypatch.undo()
         on_file = receipts_and_homework(browser)
 
@@ -18034,7 +18096,7 @@ def test_no_receipt_leaves_the_last_page_as_it_was(
         two = two_copies(browser, monkeypatch)
         on_file = receipts_and_homework(browser)
         page.arrange(two, two.nothing_else_happens)
-        answer = send(browser, two.draft_id, two.posted)
+        answer = saved_with_corrections(browser, two.draft_id, two.posted)
         monkeypatch.undo()
         after = receipts_and_homework(browser)
 
@@ -18058,7 +18120,7 @@ def test_a_receipt_that_can_t_be_read_before_the_last_page_says_it_saved_no_home
         on_file = receipts_and_homework(browser)
         page.arrange(two, two.nothing_else_happens)
         refusing_after(browser, monkeypatch, raising(file_error), page.earlier)
-        answer = send(browser, two.draft_id, two.posted)
+        answer = saved_with_corrections(browser, two.draft_id, two.posted)
         monkeypatch.undo()
         after = receipts_and_homework(browser)
 
@@ -18082,7 +18144,7 @@ def test_a_transaction_left_open_before_the_last_page_leaves_only_its_own_save_u
     with here(open_settings(tmp_path)) as browser:
         two = two_copies(browser, monkeypatch)
         LAST_PAGES[where].arrange(two, functools.partial(beginning, browser))
-        answer = send(browser, two.draft_id, two.posted)
+        answer = saved_with_corrections(browser, two.draft_id, two.posted)
         monkeypatch.undo()
         ending_transaction(browser)
 
@@ -18133,7 +18195,7 @@ def test_the_kept_line_stays_true_at_the_read_that_can_t_be_made(
         two = kept_on_this_press(browser, monkeypatch)
         as_its_page_begins(two, functools.partial(ending, two))
         refusing_after(browser, monkeypatch, raising(file_error), 2)
-        answer = send(browser, two.draft_id, two.posted)
+        answer = saved_with_corrections(browser, two.draft_id, two.posted)
         monkeypatch.undo()
 
     says_it_can_t_tell(answer, owed_texts(two.posted), NO_HOMEWORK_PAIR)
@@ -18147,7 +18209,7 @@ def test_the_kept_line_stays_true_when_the_save_couldn_t_start(
     with here(open_settings(tmp_path)) as browser:
         two = kept_on_this_press(browser, monkeypatch)
         refusing_after(browser, monkeypatch, raising(file_error), 1)
-        answer = send(browser, two.draft_id, two.posted)
+        answer = saved_with_corrections(browser, two.draft_id, two.posted)
         monkeypatch.undo()
 
     says_it_can_t_tell(answer, owed_texts(two.posted), NO_HOMEWORK_PAIR)
@@ -18162,7 +18224,7 @@ def test_the_kept_line_stays_true_when_the_save_finds_the_review_closed(
         posted = page_post(page, "save", tick=[first], typed=typed_on(other))
         monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("closed"))
         refusing_after(browser, monkeypatch, raising(file_error), 1)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     says_it_can_t_tell(answer, owed_texts(posted), NO_HOMEWORK_PAIR)
@@ -18289,12 +18351,12 @@ def test_a_commit_after_the_last_look_goes_unseen_and_that_page_s_save_adds_noth
         two = two_copies(browser, monkeypatch)
         art = next(value for name, value in two.posted if name == "unit")
         monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("busy"))
-        denied = send(browser, two.draft_id, two.posted)
+        denied = saved_with_corrections(browser, two.draft_id, two.posted)
         monkeypatch.undo()
         two.the_copy_commits()
         on_file = receipts_and_homework(browser)
         again = page_post(denied.text, "save", tick=[art])
-        answer = send(browser, two.draft_id, again)
+        answer = saved_with_corrections(browser, two.draft_id, again)
         after = receipts_and_homework(browser)
 
     assert WASNT_SAVED_BUSY in page_text(denied)
@@ -18364,7 +18426,7 @@ def test_a_press_s_receipt_reads_are_counted_on_its_longest_way(
 
         as_its_page_begins(two, then)
         at_the_names_read(busy_error)(two, two.nothing_else_happens)
-        answer = send(browser, two.draft_id, two.posted)
+        answer = saved_with_corrections(browser, two.draft_id, two.posted)
         monkeypatch.undo()
 
     assert reads.count == expected, page_text(answer)[:400]
@@ -18463,7 +18525,7 @@ def test_a_press_that_committed_says_so_with_its_review_and_receipt_reads_refuse
             return saved
 
         monkeypatch.setattr(imports, "save_homework", saving)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert "Saved: 1 new assignment." in page_text(answer)
@@ -18478,7 +18540,7 @@ def test_counts_that_read_none_with_the_rows_refused_ask_for_the_receipt_once(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, other = two_rows(browser, monkeypatch)
         posted = page_post(page, "save", tick=[first], typed=typed_on(other))
-        send(browser, draft_id, posted)
+        saved_with_corrections(browser, draft_id, posted)
         record = state_of(browser).project_state
         monkeypatch.setattr(record, "homework_counts", lambda *_, **__: None)
 
@@ -18487,7 +18549,7 @@ def test_counts_that_read_none_with_the_rows_refused_ask_for_the_receipt_once(
 
         monkeypatch.setattr(imports, "rows_of", refused)
         reads = counting_receipt_reads(browser, monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert reads.count == 1, page_text(answer)[:400]
@@ -18618,7 +18680,9 @@ def test_an_option_another_review_took_keeps_what_was_typed(
         art = next(value for name, value in one.posted if name == "unit")
         typed = {correct_box(one.math, "title"): A_TYPED_TITLE}
         posted = page_post(one.page, "save", tick=[art], typed=typed)
-        answer = send(browser, one.draft_id, with_the_conflict(posted, one.page, one.question))
+        answer = saved_with_corrections(
+            browser, one.draft_id, with_the_conflict(posted, one.page, one.question)
+        )
 
     says_one_choice_can_t_show(answer)
     assert A_TYPED_TITLE in html.unescape(answer.text)
@@ -18716,7 +18780,9 @@ def test_words_typed_in_the_same_press_that_take_its_question_are_said(
         review, page, unit, _, _ = back_on_a_page_saved_from(browser, monkeypatch)
         box = correct_box(review.card, field)
         posted = page_post(page, "save", tick=[unit], typed={box: "Read chapter nine."})
-        answer = send(browser, review.draft_id, with_the_conflict(posted, page, review.question))
+        answer = saved_with_corrections(
+            browser, review.draft_id, with_the_conflict(posted, page, review.question)
+        )
 
     says_one_choice_can_t_show(answer)
     assert "Read chapter nine." in html.unescape(answer.text)
@@ -18744,7 +18810,9 @@ def test_a_tick_the_rows_can_t_show_beside_a_receipt_is_said(
         review, page, unit, third, _ = back_on_a_page_saved_from(browser, monkeypatch)
         typed = {correct_box(third, "title"): A_TYPED_TITLE}
         posted = page_post(page, "save", tick=[unit, third], typed=typed)
-        answer = send(browser, review.draft_id, with_the_conflict(posted, page, review.question))
+        answer = saved_with_corrections(
+            browser, review.draft_id, with_the_conflict(posted, page, review.question)
+        )
 
     says_one_choice_can_t_show(answer)
 
@@ -19010,9 +19078,9 @@ def says_no_choice_is_lost(answer: Answer) -> None:
 
 def pressed_twice(browser: TestClient, draft_id: str, posted: list[tuple[str, str]]) -> Answer:
     """A double press: the same post again, once the first has committed."""
-    first = send(browser, draft_id, posted)
+    first = saved_with_corrections(browser, draft_id, posted)
     assert "Saved:" in page_text(first), " ".join(page_text(first).split())[60:400]
-    return send(browser, draft_id, posted)
+    return saved_with_corrections(browser, draft_id, posted)
 
 
 def test_her_choice_changed_on_a_plain_resend_is_said_not_carried_and_isn_t_kept(
@@ -19148,7 +19216,7 @@ def test_words_typed_that_take_a_question_on_a_plain_resend_are_said(
         posted = page_post(
             page, "save", tick=[unit], choose={review.question: word}, typed={box: "Read nine."}
         )
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
 
     says_one_choice_can_t_show(answer)
     assert "Read nine." in html.unescape(answer.text)
@@ -19568,7 +19636,7 @@ def test_a_cleared_answer_whose_question_her_typing_took_is_said_at_one_version(
             for name, value in page_post(page, "save", tick=[unit], typed={box: "Read nine."})
             if name != review.question
         ]
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         same = review_row(browser, review.draft_id)[0] == version
 
     says_one_choice_can_t_show(answer)
@@ -19693,7 +19761,7 @@ def test_a_cleared_answer_held_with_its_question_gone_at_another_version_is_said
             for name, value in page_post(page, "save", tick=[unit], typed={box: "Read nine."})
             if name != review.question
         ]
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
 
     says_one_choice_can_t_show(answer)
     assert fieldset_of(answer.text, review.question) is None
@@ -19748,7 +19816,9 @@ def test_a_conflict_with_no_receipt_says_a_cleared_answer_still_held(
             for name, value in page_post(one.page, press, tick=[one.art], typed={box: "Read nine."})
             if name != one.first
         ]
-        answer = send(browser, one.draft_id, with_the_conflict(posted, one.page, one.other))
+        answer = saved_with_corrections(
+            browser, one.draft_id, with_the_conflict(posted, one.page, one.other)
+        )
         held = on_the_record(browser), review_row(browser, one.draft_id)[:2]
 
     assert answer.status_code == 422, page_text(answer)[:400]
@@ -19763,7 +19833,9 @@ def test_a_conflict_with_no_receipt_says_nothing_of_a_blank_not_held(
         one = two_instruction_questions(browser, monkeypatch, first_answered=False)
         box = correct_box(one.card, "instruction:0")
         posted = page_post(one.page, "save", tick=[one.art], typed={box: "Read nine."})
-        answer = send(browser, one.draft_id, with_the_conflict(posted, one.page, one.other))
+        answer = saved_with_corrections(
+            browser, one.draft_id, with_the_conflict(posted, one.page, one.other)
+        )
 
     assert answer.status_code == 422, page_text(answer)[:400]
     assert NOT_CARRIED not in page_text(answer)
@@ -19784,7 +19856,9 @@ def test_a_conflict_beside_a_receipt_says_a_cleared_answer_still_held(
             )
             if name != one.first
         ]
-        answer = send(browser, one.draft_id, with_the_conflict(posted, one.page, one.other))
+        answer = saved_with_corrections(
+            browser, one.draft_id, with_the_conflict(posted, one.page, one.other)
+        )
 
     says_one_choice_can_t_show(answer)
 
@@ -20640,7 +20714,7 @@ def test_save_keeps_its_own_reading_of_whitespace_beside_no_date(
         draft_id, reopened, _, none = words_beside_a_date_box(browser, monkeypatch)
         box = f"correct:{box_subject(reopened, 'assigned')}"
         posted = page_post(reopened, "save", choose=no_date_tick(none), typed={box: in_the_box})
-        answer = send(browser, draft_id, with_carried_text(posted, carried))
+        answer = saved_with_corrections(browser, draft_id, with_carried_text(posted, carried))
 
     assert copied(answer) == typing
     assert says(answer.text, imports.UNSHOWN_TYPED) == bool(typing)
@@ -20814,7 +20888,7 @@ def test_save_beside_another_date_keeps_its_own_note_and_signature(
         box = f"correct:{box_subject(reopened, 'assigned')}"
         posted = page_post(reopened, "save", choose=no_date_tick(none), typed={box: sent})
         other_tab_writes(browser, draft_id, lambda held: held.update({row: {"course": "Later"}}))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         stored = held_corrections(browser, draft_id)
 
     assert answer.status_code == 422
@@ -21011,7 +21085,7 @@ def test_save_s_page_with_words_beside_a_date_keeps_its_own_note_and_signature(
         row = json.loads(box_subject(reopened, "title"))[0]
         posted = page_post(reopened, "save", choose=no_date_tick(none))
         other_tab_writes(browser, draft_id, lambda held: held.update({row: {"course": "Later"}}))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         stored = held_corrections(browser, draft_id)
 
     assert copied(answer) == {WORDS_BESIDE} | owed_texts(posted, returned=boxes_returned(answer))
@@ -22366,7 +22440,7 @@ def test_save_s_conflict_that_sets_words_aside_keeps_its_own_note(
         posted, _, _ = conflict_fields(
             page, "save", none, {correct_box(other, "title"): "Typed Words "}
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
 
     assert answer.status_code == 422
     assert says(answer.text, imports.TYPED_SAID)
@@ -22473,7 +22547,7 @@ def test_save_s_conflict_with_the_date_as_read_beside_the_words_keeps_its_own_re
         draft_id, page, none, other = conflict_with_words(browser, monkeypatch, words=True)
         box = correct_box(f"date:{other}", "assigned")
         posted, _, _ = conflict_fields(page, "save", none, {box: READ_ASSIGNED})
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
 
     assert answer.status_code == 422
     assert says(answer.text, imports.TYPED_SAID)
@@ -23030,7 +23104,7 @@ def an_earlier_save_beside_words(
     draft_id, page, piece, none, words = words_carried_where(browser, monkeypatch, where)
     row = piece.removeprefix("date:")
     unit = next(unit for unit in units_on(page) if row not in unit)
-    saved = send(browser, draft_id, page_post(page, "save", tick=[unit]))
+    saved = saved_with_corrections(browser, draft_id, page_post(page, "save", tick=[unit]))
     assert "Saved:" in page_text(saved)
     return draft_id, page, piece, none, words
 
@@ -23278,7 +23352,7 @@ def row_saved_in_another_tab(browser: TestClient, draft_id: str, row: str, none:
     send(browser, draft_id, page_post(tab, "later", choose=no_date_tick(none)))
     tab = browser.get(f"/parent/imports/{draft_id}").text
     unit = next(unit for unit in units_on(tab) if row in unit)
-    saved = send(browser, draft_id, page_post(tab, "save", tick=[unit]))
+    saved = saved_with_corrections(browser, draft_id, page_post(tab, "save", tick=[unit]))
     assert "Saved: 1 new assignment." in page_text(saved)
 
 
@@ -23948,7 +24022,7 @@ def test_a_read_forced_to_answer_frozen_closed_or_too_many_images_gives_no_copie
         draft_id, page, piece, _, _ = words_carried_where(browser, monkeypatch, "in saved progress")
         posted = page_post(page, press, typed={correct_box(piece, "assigned"): "2026-10-03"})
         faults = Refusing(monkeypatch, (*rule, ANSWERS_NO_TRACED_READ_GIVES[refusal]))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert faults.refused == [rule]
@@ -24686,7 +24760,7 @@ def a_press_that_can_commit(
     page = browser.get(f"/parent/imports/{draft_id}").text
     version = review_as_stored(browser, draft_id)["version"]
     unit = next(unit for unit in units_on(page) if row not in unit)
-    saved = send(browser, draft_id, page_post(page, "save", tick=[unit]))
+    saved = saved_with_corrections(browser, draft_id, page_post(page, "save", tick=[unit]))
     assert "Saved: 1 new assignment." in page_text(saved)
     assert review_as_stored(browser, draft_id)["version"] == version
     return PressBesideASave(
@@ -24714,7 +24788,7 @@ def a_later_from_the_save_s_own_page(
     page = browser.get(f"/parent/imports/{draft_id}").text
     revision = cast(int, review_as_stored(browser, draft_id)["revision"])
     unit = next(unit for unit in units_on(page) if row not in unit)
-    saved = send(browser, draft_id, page_post(page, "save", tick=[unit]))
+    saved = saved_with_corrections(browser, draft_id, page_post(page, "save", tick=[unit]))
     assert "Saved: 1 new assignment." in page_text(saved)
     assert review_as_stored(browser, draft_id)["revision"] == revision + 1
     assert signed_revisions(saved.text) == [str(revision + 1)]
@@ -25013,7 +25087,7 @@ def test_a_receipt_page_no_refused_later_reaches_says_nothing_of_one(
                     state_of(browser).import_drafts, "save_for_later", refusing(StoreBusy)
                 )
                 rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS["a refused file"])
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert answer.status_code == 200, page_text(answer)[:400]
@@ -25404,7 +25478,7 @@ def test_save_storing_answers_with_no_homework_where_a_read_says_closed_says_the
             return NotSaved("failed")
 
         monkeypatch.setattr(imports, "save_homework", closing)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     says_the_review_ended(answer, 200, imports.SAID["closed"], owed_texts(posted))
@@ -25427,7 +25501,7 @@ def test_save_storing_answers_with_no_homework_past_its_next_read_answers_503_wi
         before = review_as_stored(browser, draft_id)
         monkeypatch.setattr(imports, "save_homework", lambda *_, **__: outcome)
         reads = rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS[read])
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         after = review_as_stored(browser, draft_id)
 
@@ -25493,7 +25567,7 @@ def test_save_with_no_rows_at_first_beside_its_receipt_says_the_save_and_what_it
     with here(open_settings(tmp_path)) as browser:
         beside = a_press_beside_a_save(browser, monkeypatch, "save", words=words)
         reads = rows_back_past_its_next_read(monkeypatch, refusing_coded("SQLITE_IOERR"))
-        answer = send(browser, beside.draft_id, beside.posted)
+        answer = saved_with_corrections(browser, beside.draft_id, beside.posted)
         monkeypatch.undo()
 
     owed_here = in_reader_order(beside.posted, [], [WORDS_BESIDE] if words else [], spaces=False)
@@ -25536,7 +25610,7 @@ def test_save_finding_its_receipt_past_its_next_read_says_its_counts_with_no_for
         reads = rows_back_past_its_next_read(
             monkeypatch, THE_NEXT_READ_SAYS.get(read, lambda *_: None)
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert reads.refused == [("ended_under_press", "snapshot", 1)]
@@ -25876,7 +25950,7 @@ def test_save_past_a_closed_answer_says_its_counts_with_no_form(
             else:
                 arming = ending_once_at("snapshot_keeping_typing", lambda *_: armed.append(True))
                 arming(browser, monkeypatch, review.draft_id)
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
 
     assert answer.status_code == 200
@@ -26266,7 +26340,7 @@ def test_save_storing_answers_finding_its_homework_closed_says_they_were_kept_be
             return NotSaved("closed")
 
         monkeypatch.setattr(imports, "save_homework", closing)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     kept = "some_kept_before_ended" if receipt else "kept_before_ended"
@@ -26504,7 +26578,7 @@ def test_a_press_with_no_homework_past_a_refused_read_answers_as_keep_when_it_st
         )
         before = review_as_stored(browser, draft_id)
         rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS[read])
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         after = review_as_stored(browser, draft_id)
 
@@ -26546,7 +26620,7 @@ def test_a_press_with_no_homework_where_a_read_says_the_end_says_it_was_kept_whe
             no_rows_once(monkeypatch, lambda: discarded(browser, draft_id))
         else:
             rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS[read])
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     says_the_review_ended(answer, status, imports.SAID[said], set(typing) | owed_texts(posted))
@@ -27132,7 +27206,7 @@ def test_save_with_nothing_ticked_says_its_line_ahead_of_what_isn_t_saved_yet(
         a_look_that_leaves_its_own_read_open(
             "its first page read refused", browser, monkeypatch, review.draft_id
         )
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
 
     assert not recovery_of(answer).form
@@ -27336,7 +27410,7 @@ def test_save_with_nothing_ticked_keeps_its_typing_when_its_one_more_read_fails(
         a_look_that_leaves_its_own_read_open(
             "its first page read refused", browser, monkeypatch, review.draft_id
         )
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
 
     assert answer.status_code == 200
@@ -27388,7 +27462,7 @@ def test_save_with_nothing_ticked_keeps_its_line_when_a_receipt_s_page_can_t_rea
             "its first page read refused", "open", browser, monkeypatch, review.draft_id
         )
         held = what_a_save_stores(monkeypatch)
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
         shown = page_text(answer)
         after = loaded(browser, review.draft_id)
@@ -27778,7 +27852,7 @@ def test_a_save_s_uncertain_write_says_so_whatever_its_receipt_s_page_finds(
             no_post_to_read_after_the_first(monkeypatch, RuntimeError())
         if finds in THE_ROWS_PAGE_S_FAULTS:
             from_its_rows_page(monkeypatch, *THE_ROWS_PAGE_S_FAULTS[finds])
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert bool(fired) is (own in says)
@@ -27924,7 +27998,7 @@ def test_a_press_s_line_goes_beneath_an_earlier_save_s_counts_it_can_t_show(
         looks = calls_to(monkeypatch, record, "homework_acceptance")
         posts = reads_of_the_post(monkeypatch)
         held = what_a_save_stores(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert not asked
@@ -27972,7 +28046,7 @@ def test_a_save_that_saw_a_close_beside_empty_counts_makes_no_kept_claim_and_can
         counts_unreadable(browser, monkeypatch, "empty")
         no_post_to_read_after_the_first(monkeypatch, sqlite3.OperationalError("refused"))
         held = what_a_save_stores(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert not armed
@@ -28016,7 +28090,7 @@ def test_a_press_s_line_beside_an_earlier_save_on_the_pages_around_empty_counts_
             no_post_to_read_after_the_first(monkeypatch, RuntimeError())
         if finds == "its post past the ceiling":
             no_post_to_read_after_the_first(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert answer.status_code == 200
@@ -28087,7 +28161,7 @@ def test_a_save_s_uncertain_write_says_so_with_no_earlier_save_at_the_read_s_sta
         draft_id, posted, _, _, writes = a_write_that_can_t_tell(
             browser, monkeypatch, "save", committed, read, receipt=False
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert writes == ["save"]
@@ -28134,7 +28208,7 @@ def test_a_save_s_uncertain_write_says_so_beside_its_receipt(
         if page != "its post read":
             no_post_to_read_after_the_first(monkeypatch)
         asked = no_read_for_the_tense(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         shown = followed(browser, answer)
 
@@ -28177,7 +28251,7 @@ def test_a_save_s_uncertain_write_says_so_beside_its_receipt_s_counts_unread(
         for _ in range(unseen):
             a_receipt_unseen_at_first(browser, monkeypatch)
         counts_unreadable(browser, monkeypatch, counts)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     text = page_text(answer)
@@ -28222,7 +28296,7 @@ def test_a_save_s_uncertain_write_says_so_where_it_looks_for_its_receipt(
             monkeypatch.setattr(imports, "rows_of", refuses(homework_saves.TransactionLeftOpen))
         if where == "its rows read refused":
             a_later_look_finds_its_receipt(where, "open", browser, monkeypatch, draft_id)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     text = page_text(answer)
@@ -28281,7 +28355,7 @@ def test_a_save_s_uncertain_write_says_so_where_a_later_look_for_its_receipt_is_
         )
         a_receipt_unseen_at_first(browser, monkeypatch)
         a_receipt_unseen_at_first(browser, monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     text = page_text(answer)
@@ -28331,7 +28405,7 @@ def test_a_save_s_uncertain_write_says_no_homework_was_saved_where_no_result_can
             receipt=False,
             also=also,
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     text = page_text(answer)
@@ -28482,7 +28556,7 @@ def test_a_busy_write_found_closed_at_its_first_page_read_is_said_with_no_try_ag
         if press == "save" and receipt:
             a_receipt_unseen_at_first(browser, monkeypatch)
             a_receipt_unseen_at_first(browser, monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     said_as = "keep" if press == "save" and receipt else press
@@ -28514,7 +28588,7 @@ def test_a_save_s_busy_write_is_said_past_its_next_read(
         if receipt:
             a_receipt_unseen_at_first(browser, monkeypatch)
             a_receipt_unseen_at_first(browser, monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert page_text(answer).count(the_busy_line("keep" if receipt else "save", read)) == 1
@@ -28552,7 +28626,7 @@ def test_a_save_s_busy_write_is_said_at_its_first_look(
             fails=THE_BUSY_REFUSALS[busy],
         )
         a_receipt_unseen_at_first(browser, monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         shown = followed(browser, answer)
 
@@ -29717,7 +29791,7 @@ def test_a_save_from_keep_s_rebuilt_page_over_another_page_s_correction_is_refus
         other_page_saves_for_later(
             browser, draft_id, {correct_box(row, "course"): "Other Tab Course"}
         )
-        answer = send(browser, draft_id, page_post(kept, "save", tick=[row]))
+        answer = saved_with_corrections(browser, draft_id, page_post(kept, "save", tick=[row]))
         held = held_corrections(browser, draft_id)
         saved = saved_from_the_review(browser)
 
@@ -29846,9 +29920,9 @@ def test_a_resent_save_gives_back_its_typing_with_no_form_and_moves_nothing(
         }
         kept = followed(browser, send(browser, draft_id, page_post(settled, "keep", typed=typed)))
         posted = page_post(kept, "save", tick=[row])
-        send(browser, draft_id, posted)
+        saved_with_corrections(browser, draft_id, posted)
         _, saved_at, _ = review_row(browser, draft_id)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         _, resent_at, _ = review_row(browser, draft_id)
 
     page = recovery_of(answer)
@@ -29873,7 +29947,7 @@ def test_a_save_of_one_group_draws_its_form_signing_the_revision_it_committed(
     with here(open_settings(tmp_path)) as browser:
         draft_id, _, row, other = settled_review(browser, monkeypatch)
         _, before, _ = review_row(browser, draft_id)
-        answer = send(
+        answer = saved_with_corrections(
             browser,
             draft_id,
             page_post(
@@ -29911,7 +29985,7 @@ def test_a_save_whose_read_shows_a_newer_revision_draws_no_form(
             return done
 
         monkeypatch.setattr(imports, "save_homework", then_moved)
-        answer = send(
+        answer = saved_with_corrections(
             browser,
             draft_id,
             page_post(
@@ -30055,7 +30129,7 @@ def test_keep_or_an_empty_save_behind_a_committed_save_stays_200_with_no_form(
         _, saved_at, _ = review_row(browser, draft_id)
         typed = {correct_box(other, "title"): "Y Typed"}
         posted = page_post(two, press.split(",")[0], typed=typed)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         _, pressed_at, _ = review_row(browser, draft_id)
 
     page = recovery_of(answer)
@@ -30386,13 +30460,17 @@ def test_a_save_page_with_no_form_gives_back_the_date_typed_beside_carried_words
         elif where == "refused as stale, then behind":
             a_stale_save_left_behind(browser, monkeypatch, draft_id)
         elif where == "a resend of its committed Save":
-            assert "Saved: 1 new assignment." in page_text(send(browser, draft_id, posted))
+            assert "Saved: 1 new assignment." in page_text(
+                saved_with_corrections(browser, draft_id, posted)
+            )
         else:
-            earlier = send(browser, draft_id, page_post(page, "save", tick=[units[0]]))
+            earlier = saved_with_corrections(
+                browser, draft_id, page_post(page, "save", tick=[units[0]])
+            )
             assert "Saved: 1 new assignment." in page_text(earlier)
             earlier_save_page_by("the first read refused", monkeypatch)
         held = held_corrections(browser, draft_id)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         held_after = held_corrections(browser, draft_id)
 
@@ -30457,13 +30535,15 @@ def test_a_resend_says_a_no_date_choice_it_can_t_carry_and_stores_nothing(
             posted = page_post(page, "save", tick=[first])
             if case == "the stored tick taken off":
                 posted = [(name, value) for name, value in posted if name != f"none:{tick}"]
-        assert "Saved: 1 new assignment." in page_text(send(browser, draft_id, posted))
+        assert "Saved: 1 new assignment." in page_text(
+            saved_with_corrections(browser, draft_id, posted)
+        )
         before = (revision_held(browser, draft_id), held_corrections(browser, draft_id))
         record = state_of(browser).project_state
         reads = {
             name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
         }
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         after = (revision_held(browser, draft_id), held_corrections(browser, draft_id))
 
@@ -30553,7 +30633,7 @@ def test_a_press_behind_says_a_no_date_choice_it_can_t_carry_and_stores_nothing(
         elif not case.endswith("no saved progress"):
             assert other_page_saves_for_later(browser, draft_id).status_code == 303
         if case.endswith("no saved progress") or case == "the saved row's stored tick":
-            saved = send(
+            saved = saved_with_corrections(
                 browser, draft_id, page_post(loaded(browser, draft_id), "save", tick=[first])
             )
             assert "Saved: 1 new assignment." in page_text(saved)
@@ -30565,7 +30645,7 @@ def test_a_press_behind_says_a_no_date_choice_it_can_t_carry_and_stores_nothing(
         reads = {
             name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
         }
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         after = (revision_held(browser, draft_id), held_corrections(browser, draft_id))
 
@@ -30628,7 +30708,7 @@ def test_a_press_behind_progress_of_shape_three_says_a_no_date_choice_with_the_s
         reads = {
             name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
         }
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         after = (revision_held(browser, draft_id), held_corrections(browser, draft_id))
 
@@ -30692,8 +30772,10 @@ def test_a_press_behind_says_words_beside_a_no_date_choice_only_with_a_choice_it
             choose, typed = no_date_on(other, piece)
             [row] = [unit for unit in units if unit in piece]
             first_save = page_post(other, "save", tick=[row], choose=choose, typed=typed)
-            asked = send(browser, draft_id, first_save)
-            saved = send(browser, draft_id, page_post(asked.text, "save", tick=[row]))
+            asked = saved_with_corrections(browser, draft_id, first_save)
+            saved = saved_with_corrections(
+                browser, draft_id, page_post(asked.text, "save", tick=[row])
+            )
             assert "Saved: 1 new assignment." in page_text(saved)
         else:
             no_date_saved_for_later(browser, draft_id, piece)
@@ -30708,7 +30790,7 @@ def test_a_press_behind_says_words_beside_a_no_date_choice_only_with_a_choice_it
         reads = {
             name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
         }
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         after = (revision_held(browser, draft_id), held_corrections(browser, draft_id))
 
@@ -30746,7 +30828,9 @@ def test_a_resend_says_words_beside_a_no_date_choice_only_with_a_choice_it_can_t
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, units, piece, none = two_cards_with_words(browser, monkeypatch)
         posted = page_post(page, "save", tick=[units[0]], choose=no_date_tick(none))
-        assert "Saved: 1 new assignment." in page_text(send(browser, draft_id, posted))
+        assert "Saved: 1 new assignment." in page_text(
+            saved_with_corrections(browser, draft_id, posted)
+        )
         if case == "the tick saved progress holds":
             no_date_saved_for_later(browser, draft_id, piece)
         before = (revision_held(browser, draft_id), held_corrections(browser, draft_id))
@@ -30754,7 +30838,7 @@ def test_a_resend_says_words_beside_a_no_date_choice_only_with_a_choice_it_can_t
         reads = {
             name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
         }
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         after = (revision_held(browser, draft_id), held_corrections(browser, draft_id))
 
@@ -30870,7 +30954,7 @@ def test_a_press_behind_compares_a_no_date_confirmation_beside_words_with_answer
         if case.startswith("no confirmation"):
             [row] = [unit for unit in units_on(page) if unit not in piece]
             other = loaded(browser, draft_id)
-            saved = send(browser, draft_id, page_post(other, "save", tick=[row]))
+            saved = saved_with_corrections(browser, draft_id, page_post(other, "save", tick=[row]))
             assert "Saved: 1 new assignment." in page_text(saved)
             saved_progress(browser, draft_id, {"v": 4, "corrected": {}, "selected": []})
             assert not [key for key in stored_answers(browser, draft_id) if key[0] == "confirm"]
@@ -30895,7 +30979,7 @@ def test_a_press_behind_compares_a_no_date_confirmation_beside_words_with_answer
         reads = {
             name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
         }
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         after = (
             revision_held(browser, draft_id),
@@ -30930,7 +31014,7 @@ def test_a_press_behind_says_a_conflict_beside_words_and_a_no_date_choice_saved_
         no_date_saved_for_later(browser, draft_id, json.loads(none)[0])
         before = (revision_held(browser, draft_id), held_corrections(browser, draft_id))
         posted, _, _ = conflict_fields(page, press, none, {})
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         after = (revision_held(browser, draft_id), held_corrections(browser, draft_id))
 
     text = page_text(answer)
@@ -30997,12 +31081,14 @@ def test_a_press_behind_with_its_rows_back_empty_says_a_no_date_choice_as_that_p
                 other = loaded(browser, draft_id)
                 saving, cleared = no_date_on(other, piece)
                 [row] = [unit for unit in units if unit in piece]
-                asked = send(
+                asked = saved_with_corrections(
                     browser,
                     draft_id,
                     page_post(other, "save", tick=[row], choose=saving, typed=cleared),
                 )
-                saved = send(browser, draft_id, page_post(asked.text, "save", tick=[row]))
+                saved = saved_with_corrections(
+                    browser, draft_id, page_post(asked.text, "save", tick=[row])
+                )
                 assert "Saved: 1 new assignment." in page_text(saved)
             choose, typed = no_date_tick(none), {}
         tick = [first] if press == "save" else []
@@ -31013,7 +31099,7 @@ def test_a_press_behind_with_its_rows_back_empty_says_a_no_date_choice_as_that_p
             name: calls_to(monkeypatch, record, name) for name in ("draft_for_save", "student_id")
         }
         no_rows_once(monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         after = (revision_held(browser, draft_id), held_corrections(browser, draft_id))
 
@@ -31340,7 +31426,7 @@ def test_a_press_behind_matches_a_confirmation_only_beside_progress_absent_or_re
         else:
             [row] = [unit for unit in units_on(page) if unit not in piece]
             fresh = loaded(browser, draft_id)
-            saved = send(browser, draft_id, page_post(fresh, "save", tick=[row]))
+            saved = saved_with_corrections(browser, draft_id, page_post(fresh, "save", tick=[row]))
             assert "Saved: 1 new assignment." in page_text(saved)
         stored = progress_beside_a_confirmation(case, piece, other)
         progress_left_as(browser, draft_id, stored)
@@ -31436,7 +31522,7 @@ def test_a_press_behind_whose_rows_were_set_aside_compares_its_ticks_with_shape_
             assert not drafts.set_aside(student, draft_id, version=now.version, keys=keys).closed
 
         returned = before_the_rows_read(monkeypatch, set_aside)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         left = drafts.snapshot(student, draft_id)
 
@@ -31804,7 +31890,7 @@ def a_press_beside_progress_read_again(
     else:
         no_rows_once(monkeypatch, change)
     changed = later_read_with_other_readings(monkeypatch) if other_readings else [True]
-    answer = send(browser, draft_id, posted)
+    answer = saved_with_corrections(browser, draft_id, posted)
     monkeypatch.undo()
     after = review_as_stored(browser, draft_id)
     assert changed == [True]
@@ -32470,7 +32556,7 @@ def test_a_correction_typed_over_another_page_s_after_a_fresh_load_is_saved(
                 page_post(shown, "keep", typed={correct_box(row, "course"): "Her Course"}),
             ),
         )
-        answer = send(browser, draft_id, page_post(kept, "save", tick=[row]))
+        answer = saved_with_corrections(browser, draft_id, page_post(kept, "save", tick=[row]))
         saved = saved_from_the_review(browser)
 
     assert box_text(shown, correct_box(row, "course")) == "Other Tab Course"
@@ -32699,7 +32785,7 @@ def test_another_page_s_class_stands_through_a_save_of_one_group_and_back_to_the
             browser, draft_id, page_post(page, "keep", choose=no_date_tick(none), typed=typed)
         )
         shown = what_the_commit_s_page_leads_to(browser, draft_id, one)
-        saved = send(
+        saved = saved_with_corrections(
             browser,
             draft_id,
             [
@@ -32764,7 +32850,7 @@ def test_a_save_refused_as_stale_and_left_behind_says_the_refused_save_lines(
         outcomes = a_stale_save_left_behind(browser, monkeypatch, draft_id)
         typed = {correct_box(other, "title"): "Y Typed"}
         posted = page_post(mine, "save", tick=[row], typed=typed)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         saved = saved_from_the_review(browser)
 
@@ -32801,7 +32887,7 @@ def test_a_save_refused_as_stale_and_left_behind_keeps_its_line_where_no_rows_ar
             rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS["expired"])
         typed = {correct_box(other, "title"): "Y Typed"}
         posted = page_post(mine, "save", tick=[row], typed=typed)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     text = page_text(answer)
@@ -32835,7 +32921,7 @@ def test_a_save_refused_as_stale_and_left_behind_with_rows_back_empty_says_the_r
         no_rows_once(monkeypatch)
         typed = {correct_box(other, "title"): "Y Typed"}
         posted = page_post(mine, "save", tick=[row], typed=typed)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         saved = saved_from_the_review(browser)
 
@@ -32880,7 +32966,7 @@ def test_a_save_behind_whose_review_ends_before_its_transaction_says_it_ended(
         monkeypatch.setattr(drafts, "keep_answers", then_ended)
         typed = {correct_box(other, "title"): "Y Typed"}
         posted = page_post(mine, "save", tick=[row], typed=typed)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         saved = saved_from_the_review(browser)
 
@@ -32928,7 +33014,7 @@ def test_a_busy_save_draws_its_form_only_when_not_behind(
             monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("busy"))
         typed = {correct_box(other, "title"): "Y Typed"}
         posted = page_post(mine, "save", tick=[row], typed=typed)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     page = recovery_of(answer)
@@ -33109,7 +33195,7 @@ def test_another_page_s_change_stands_through_each_chain_from_a_refused_page(
             elif middle.endswith("out of date"):
                 version = drafts.snapshot(student, draft_id).version
                 drafts.set_aside(student, draft_id, version=version, keys=[d.other])
-            answer = send(browser, draft_id, fields)
+            answer = saved_with_corrections(browser, draft_id, fields)
             monkeypatch.undo()
         page = answer.text if answer.status_code != 303 else followed(browser, answer)
         if 'name="progress_revision"' in page:
@@ -33296,7 +33382,7 @@ def test_a_page_behind_with_only_typing_posted_gives_it_back_and_says_no_choice_
         other_page_saves_for_later(browser, draft_id)
         typed = {correct_box(other, "title"): "Y Typed"}
         posted = page_post(mine, press.split(",")[0], typed=typed)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
 
     page = recovery_of(answer)
     assert not page.form
@@ -33602,7 +33688,7 @@ def a_save_past_carried_words_arranged(
 
         monkeypatch.setattr(imports, "saved_corrections", saved)
     elif route.startswith("sent again"):
-        send(browser, draft_id, posted)
+        saved_with_corrections(browser, draft_id, posted)
         if route == "sent again after another tab's Discard":
             discarded(browser, draft_id)
         elif route == "sent again, the review's read busy":
@@ -33653,7 +33739,7 @@ def a_save_past_carried_words(
         reads = reads_of_the_review(browser, monkeypatch)
         posts = reads_of_the_post(monkeypatch)
         try:
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
         finally:
             for step in afterwards:
                 step()
@@ -33748,7 +33834,7 @@ def test_a_save_that_leaves_a_row_open_draws_a_date_typed_beside_carried_words_a
         draft_id, page, units, piece, _ = two_cards_with_words(browser, monkeypatch)
         typed = the_date_as_read(browser, draft_id, piece) if as_read else ANOTHER_DATE
         box = correct_box(piece, "assigned")
-        answer = send(
+        answer = saved_with_corrections(
             browser, draft_id, page_post(page, "save", tick=[units[0]], typed={box: typed})
         )
 
@@ -33769,8 +33855,8 @@ def test_the_same_save_sent_again_gives_back_a_date_typed_beside_carried_words(
         posted = page_post(
             page, "save", tick=[units[0]], typed={correct_box(piece, "assigned"): typed}
         )
-        send(browser, draft_id, posted)
-        answer = send(browser, draft_id, posted)
+        saved_with_corrections(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
 
     assert answer.status_code == 200
     assert not recovery_of(answer).form
@@ -34022,7 +34108,9 @@ def test_a_save_leaving_a_row_open_draws_its_boxes_with_their_outer_whitespace_a
         )
         page = loaded(browser, draft_id)
         reads = reads_of_the_review(browser, monkeypatch)
-        answer = send(browser, draft_id, page_post(page, "save", tick=[first], typed=spaced(boxes)))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(page, "save", tick=[first], typed=spaced(boxes))
+        )
 
     assert len(reads) == CHANGED_PAGE_READS["a save leaving a row open"]
     assert answer.status_code == 200
@@ -34041,7 +34129,7 @@ def test_a_save_storing_a_spaced_row_gives_back_its_title_class_and_instructions
         assert send(browser, draft_id, later).status_code == 200
         page = loaded(browser, draft_id)
         assert {first, left} <= set(units_on(page))
-        answer = send(
+        answer = saved_with_corrections(
             browser, draft_id, page_post(page, "save", tick=[first, left], typed=spaced(boxes))
         )
         works = state_of(browser).project_state.all_assignments()
@@ -34063,7 +34151,9 @@ def test_a_refusal_at_the_page_s_version_draws_spaced_boxes_exactly_and_copies_n
         draft_id, page, first, _, boxes, mine = two_groups(browser, monkeypatch)
         typed = {mine: "x" * (TITLE_MOST + 1), **spaced(boxes)}
         reads = reads_of_the_review(browser, monkeypatch)
-        answer = send(browser, draft_id, page_post(page, press, tick=[first], typed=typed))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(page, press, tick=[first], typed=typed)
+        )
 
     assert len(reads) == CHANGED_PAGE_READS[f"refused at the page's version, {press}"]
     assert answer.status_code == 422
@@ -34081,7 +34171,9 @@ def test_a_refused_write_draws_spaced_boxes_exactly_and_copies_none(
         write = "save_for_later" if press == "later" else "keep_answers"
         monkeypatch.setattr(drafts, write, busy_store(StoreBusy))
         reads = reads_of_the_review(browser, monkeypatch)
-        answer = send(browser, draft_id, page_post(page, press, tick=[first], typed=spaced(boxes)))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(page, press, tick=[first], typed=spaced(boxes))
+        )
         monkeypatch.undo()
 
     assert len(reads) == CHANGED_PAGE_READS[f"its write refused busy, {press}"]
@@ -34097,7 +34189,7 @@ def test_a_whitespace_only_title_is_refused_and_drawn_exactly_without_a_copy(
     those spaces with no blank copy beside it."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, _, boxes, _ = two_groups(browser, monkeypatch)
-        answer = send(
+        answer = saved_with_corrections(
             browser,
             draft_id,
             page_post(page, press, tick=[first], typed={boxes["title"]: SPACES_ONLY}),
@@ -34116,7 +34208,7 @@ def test_a_whitespace_only_title_is_still_refused_with_422(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, _, boxes, _ = two_groups(browser, monkeypatch)
         before = assignment_count(browser)
-        answer = send(
+        answer = saved_with_corrections(
             browser,
             draft_id,
             page_post(page, press, tick=[first], typed={boxes["title"]: SPACES_ONLY}),
@@ -34168,7 +34260,7 @@ def test_a_refusal_at_the_page_s_version_returns_its_choices_as_posted_and_not_s
         draft_id, page, first, left, _, mine = two_groups(browser, monkeypatch)
         choose = name_misread(page)
         typed = {mine: "x" * (TITLE_MOST + 1)}
-        answer = send(
+        answer = saved_with_corrections(
             browser, draft_id, page_post(page, press, choose=choose, tick=[first], typed=typed)
         )
 
@@ -34263,7 +34355,9 @@ def test_a_save_refused_at_its_version_copies_a_title_holding_a_line_break_as_to
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, _, boxes, mine = two_groups(browser, monkeypatch)
         typed = {mine: "x" * (TITLE_MOST + 1), boxes["title"]: "Set 3\ntyped"}
-        answer = send(browser, draft_id, page_post(page, "save", tick=[first], typed=typed))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(page, "save", tick=[first], typed=typed)
+        )
 
     assert answer.status_code == 422
     assert "Set 3\ntyped" in {as_lf(text) for text in copied(answer)}
@@ -34337,7 +34431,7 @@ def test_a_lone_no_date_choice_behind_with_its_rows_empty_says_it_can_t_be_shown
             page, press, tick=units_on(page), typed={box: ""}, choose=no_date_tick(none)
         )
         reads = reads_of_the_review(browser, monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert len(reads) == CHANGED_PAGE_READS[f"a lone no-date choice behind, {press}"]
@@ -34426,7 +34520,9 @@ def test_a_refused_form_resent_unchanged_posts_the_same_corrections_and_signs_th
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, _, boxes, mine = two_groups(browser, monkeypatch)
         typed = {mine: "x" * (TITLE_MOST + 1), boxes["title"]: "Set 3 typed"}
-        answer = send(browser, draft_id, page_post(page, press, tick=[first], typed=typed))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(page, press, tick=[first], typed=typed)
+        )
 
     assert answer.status_code == 422
     sent, again = dict(page_post(page, press)), dict(page_post(answer.text, press))
@@ -34444,7 +34540,9 @@ def test_a_refusal_at_the_page_s_version_with_its_choices_as_stored_says_nothing
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, left, _, mine = two_groups(browser, monkeypatch)
         typed = {mine: "x" * (TITLE_MOST + 1)}
-        answer = send(browser, draft_id, page_post(page, press, tick=[first, left], typed=typed))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(page, press, tick=[first, left], typed=typed)
+        )
 
     assert answer.status_code == 422
     assert NOT_SAVED_YET not in name_panel(answer.text)
@@ -34593,7 +34691,9 @@ def test_a_press_after_another_page_s_keep_draws_spaced_boxes_exactly_and_copies
         other = send(browser, draft_id, page_post(fresh, "keep", tick=[first, left]))
         assert other.status_code == 200
         reads = reads_of_the_review(browser, monkeypatch)
-        answer = send(browser, draft_id, page_post(page, press, tick=[first], typed=spaced(boxes)))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(page, press, tick=[first], typed=spaced(boxes))
+        )
 
     assert len(reads) == CHANGED_PAGE_READS[f"after another page's keep, {press}"]
     assert answer.status_code == 409
@@ -34617,7 +34717,9 @@ def test_a_refused_form_resent_unchanged_signs_the_stored_version_and_posts_the_
             fresh = loaded(browser, draft_id)
             send(browser, draft_id, page_post(fresh, "keep", tick=[first, left]))
         typed = {boxes["title"]: "Set 3 typed"}
-        answer = send(browser, draft_id, page_post(page, press, tick=[first], typed=typed))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(page, press, tick=[first], typed=typed)
+        )
         monkeypatch.undo()
         student = state_of(browser).project_state.student_id()
         stored = drafts.snapshot(student, draft_id)
@@ -34733,7 +34835,7 @@ def test_a_choice_its_own_typing_takes_off_the_page_is_said_as_not_shown(
         typed = {first_title: "x" * (TITLE_MOST + 1), second_title: "Quiz 9"}
         choose = {f"answer:destination:{piece}": offered}
         reads = reads_of_the_review(browser, monkeypatch)
-        answer = send(
+        answer = saved_with_corrections(
             browser,
             draft_id,
             page_post(page, press, tick=units_on(page), typed=typed, choose=choose),
@@ -34782,7 +34884,12 @@ def test_keep_and_save_for_later_closed_at_their_write_after_a_save_copy_as_toda
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, units, piece, _ = two_cards_with_words(browser, monkeypatch)
         typed = the_date_as_read(browser, draft_id, piece)
-        assert send(browser, draft_id, page_post(page, "save", tick=[units[0]])).status_code == 200
+        assert (
+            saved_with_corrections(
+                browser, draft_id, page_post(page, "save", tick=[units[0]])
+            ).status_code
+            == 200
+        )
         drafts = state_of(browser).import_drafts
         write = "keep_answers" if press == "keep" else "save_for_later"
         monkeypatch.setattr(drafts, write, busy_store(DraftClosed))
@@ -34878,7 +34985,7 @@ def test_a_lone_no_date_choice_behind_matching_the_progress_read_is_silent(
         posted = page_post(
             page, press, tick=units_on(page), typed={box: ""}, choose=no_date_tick(none)
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert screenshot_page.SAID["not_carried"] not in page_text(answer)
@@ -35254,7 +35361,9 @@ def test_supported_typing_on_a_fresh_form_is_never_refused_as_an_unmatched_post(
             ][-1]
         else:
             box = boxes[field]
-        answer = send(browser, draft_id, page_post(fresh, press, typed={box: text}))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(fresh, press, typed={box: text})
+        )
         shown = followed(browser, answer)
 
     for refusal in ("keep_invalid", "later_invalid", "save_invalid", "too_large"):
@@ -35357,7 +35466,7 @@ def test_a_changed_page_works_the_review_out_from_the_record_as_often_as_today(
             write = "save_for_later" if press == "later" else "keep_answers"
             monkeypatch.setattr(drafts, write, busy_store(StoreBusy))
         reads = record_reads_of_the_review(monkeypatch)
-        send(browser, draft_id, page_post(page, press, tick=ticks, typed=typed))
+        saved_with_corrections(browser, draft_id, page_post(page, press, tick=ticks, typed=typed))
         monkeypatch.undo()
 
     assert len(reads) == CHANGED_PAGE_RECORD_READS[case], len(reads)
@@ -35454,7 +35563,7 @@ def test_a_refusal_at_the_page_s_version_behind_carries_no_choices_as_today(
         typed = {first_title: "x" * (TITLE_MOST + 1), second_title: "Quiz 9"}
         choose = {f"answer:destination:{piece}": offered}
         saved_progress(browser, draft_id, {"v": 4, "corrected": {}, "selected": []})
-        answer = send(
+        answer = saved_with_corrections(
             browser,
             draft_id,
             page_post(page, press, tick=units_on(page), typed=typed, choose=choose),
@@ -35654,7 +35763,7 @@ def test_carried_words_no_field_holds_come_back_to_copy_on_a_form_page_before_an
         draft_id, reopened, _, _ = words_beside_a_date_box(browser, monkeypatch)
         title = correct_box(json.loads(box_subject(reopened, "title"))[0], "title")
         typed = {title: "x" * (TITLE_MOST + 1)} if route == "refused" else {}
-        answer = send(browser, draft_id, page_post(reopened, press, typed=typed))
+        answer = saved_with_corrections(browser, draft_id, page_post(reopened, press, typed=typed))
 
     assert answer.status_code == status
     assert drawn_value(answer.text, f"correct:{box_subject(reopened, 'assigned')}") == ""
@@ -35727,7 +35836,7 @@ def test_carried_words_given_back_on_a_form_page_sit_under_the_neutral_note(
         draft_id, reopened, piece, _ = words_beside_a_date_box(browser, monkeypatch)
         title = correct_box(json.loads(box_subject(reopened, "title"))[0], "title")
         typed = {title: "x" * (TITLE_MOST + 1)} if route == "refused" else {}
-        answer = send(browser, draft_id, page_post(reopened, press, typed=typed))
+        answer = saved_with_corrections(browser, draft_id, page_post(reopened, press, typed=typed))
         held = held_corrections(browser, draft_id)
 
     assert answer.status_code == status
@@ -35775,7 +35884,9 @@ def test_a_save_leaving_a_row_open_names_a_copy_by_the_title_its_post_retyped(
             if json.loads(subject)[1] == "title"
         ]
         typed = {titles[-1]: RETYPED_NOW}
-        answer = send(browser, draft_id, page_post(page, "save", tick=units[:1], typed=typed))
+        answer = saved_with_corrections(
+            browser, draft_id, page_post(page, "save", tick=units[:1], typed=typed)
+        )
 
     assert answer.status_code == 200
     assert copies_with_labels(answer) == [
@@ -35809,7 +35920,7 @@ def test_carried_words_on_the_committed_form_sit_under_the_neutral_note(
     words; they come back to copy, labeled by the card the form draws, under the neutral note."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, units, piece, _ = two_cards_with_words(browser, monkeypatch)
-        answer = send(browser, draft_id, page_post(page, "save", tick=units[:1]))
+        answer = saved_with_corrections(browser, draft_id, page_post(page, "save", tick=units[:1]))
         held = held_corrections(browser, draft_id)
 
     named = re.findall(r'visually-hidden"> for ([^<]*)</span>', review_form(answer.text))
@@ -36240,7 +36351,7 @@ def pressed_with_its_reads(
     """The press, its reads of the review and ``draft_for_save`` calls, and the rows' states."""
     reads = reads_of_the_review(browser, monkeypatch)
     record = calls_to(monkeypatch, state_of(browser).project_state, "draft_for_save")
-    answer = send(browser, draft_id, posted)
+    answer = saved_with_corrections(browser, draft_id, posted)
     monkeypatch.undo()
     return answer, (len(reads), len(record)), sorted(row_states(browser, draft_id).values())
 
@@ -36606,7 +36717,7 @@ def an_instructions_question_refused(
             monkeypatch.setattr(drafts, WRITE_OF_THE_PRESS[press], busy_store(StoreBusy))
         reads = reads_of_the_review(browser, monkeypatch)
         record = calls_to(monkeypatch, state_of(browser).project_state, "draft_for_save")
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
     drawn = fieldset_of(answer.text, review.question) is not None
     return answer, drawn, (len(reads), len(record))
@@ -37127,7 +37238,7 @@ def a_receipt_at_its_page_s_revision(
         monkeypatch.setattr(record, "homework_acceptance", lambda *_: [])
         reads = reads_of_the_review(browser, monkeypatch)
         tables = calls_to(monkeypatch, record, "draft_for_save")
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
     return answer, (len(reads), len(tables))
 
@@ -37772,7 +37883,7 @@ def an_earlier_save_sent_again(
     """Real presses: the first group saved from this page. The post of the same page's Save of that
     group with this typing, as it is sent again."""
     first = units_on(page)[0]
-    saved = send(browser, draft_id, page_post(page, "save", tick=[first]))
+    saved = saved_with_corrections(browser, draft_id, page_post(page, "save", tick=[first]))
     assert "Saved: 1 new assignment." in page_text(saved)
     return page_post(page, "save", tick=[first], typed=typed)
 
@@ -38274,7 +38385,7 @@ def test_a_cleared_box_on_a_page_sent_at_another_version_gives_back_the_left_row
         typed[f"correct:{box_subject(page, 'title', 0)}"] = "   "
         left_by_another_page(browser, draft_id, key)
         posted = page_post(page, press, tick=units_on(page), typed=typed)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
 
     assert answer.status_code == 422
     assert PADDING_DELETED in copied(answer)
@@ -38683,7 +38794,7 @@ def test_a_press_at_another_version_gives_back_card_2_typed_back_where_its_card_
         draft_id, page, box = a_stored_correction_on_card_two(browser, monkeypatch)
         other = loaded(browser, draft_id)
         card_2 = units_on(other)[1]
-        saved = send(browser, draft_id, page_post(other, "save", tick=[card_2]))
+        saved = saved_with_corrections(browser, draft_id, page_post(other, "save", tick=[card_2]))
         posted = page_post(page, press, typed={box: READ_WORDS})
         answer = send(browser, draft_id, posted)
 
@@ -39444,7 +39555,7 @@ def test_a_press_with_no_homework_says_one_answers_line_on_both_of_its_routes(
         written = answers_written_by(browser, monkeypatch, writer)
         if route == "past a refused read":
             rows_back_past_its_next_read(monkeypatch, THE_NEXT_READ_SAYS["a refused file"])
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     [kept] = written
@@ -39580,7 +39691,7 @@ def test_a_save_refused_as_changed_that_stored_answers_gives_no_cause_for_the_ch
             state_of(browser).project_state.upsert_assignments([rival])
             posted = page_post(page, "save", tick=units_on(page))
         written = answers_written_by(browser, monkeypatch, "keep_answers")
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
 
     [kept] = written
     assert kept.stored > 0
@@ -39688,7 +39799,7 @@ def test_a_save_with_ticks_that_stored_answers_says_so_on_its_page_with_no_rows(
                 return real_save(*args, **kwargs)
 
             monkeypatch.setattr(imports, "save_homework", saving)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     [kept] = written
@@ -39719,7 +39830,7 @@ def test_a_changed_save_past_an_expired_first_page_read_says_kept_before_the_rev
         written = answers_written_by(browser, monkeypatch, "keep_answers")
         expired = refusing(DraftExpired)
         Refusing(monkeypatch, ("snapshot_keeping_typing", "snapshot", 1, expired))
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
 
     [kept] = written
@@ -39754,7 +39865,7 @@ def test_a_save_that_saved_homework_says_its_answers_were_kept_past_a_refused_ro
         )
         written = answers_written_by(browser, monkeypatch, "keep_answers")
         Refusing(monkeypatch, ("state_of_review", "draft_for_save", 2, FILE_REFUSED))
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
 
     [kept] = written
@@ -39881,7 +39992,7 @@ def test_a_save_s_busy_write_is_said_on_its_page_with_no_rows_and_no_earlier_sav
             receipt=False,
             fails=THE_BUSY_REFUSALS["a busy store"],
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert writes == ["save"]
@@ -39926,7 +40037,7 @@ def test_a_save_s_busy_write_is_said_beneath_the_result_of_an_earlier_save(
         )
         for _ in range(unseen):
             a_receipt_unseen_at_first(browser, monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert writes == ["save"]
@@ -40017,7 +40128,7 @@ def test_a_save_whose_answers_write_and_look_are_both_refused_says_it_saved_no_h
             fails=THE_BUSY_REFUSALS["a busy store"],
         )
         a_receipt_unseen_at_first(browser, monkeypatch)
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert writes == ["save"]
@@ -40051,7 +40162,7 @@ def test_a_save_whose_answers_write_is_refused_says_it_saved_no_homework_at_an_o
         open_at(browser, monkeypatch, window)
         caplog.clear()
         with caplog.at_level(logging.WARNING):
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         ending_transaction(browser)
 
@@ -40082,7 +40193,7 @@ def test_a_save_that_kept_answers_and_whose_homework_was_busy_says_so_past_a_ref
         written = answers_written_by(browser, monkeypatch, "keep_answers")
         monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("busy"))
         Refusing(monkeypatch, ("replayed", "homework_acceptance", 1, FILE_REFUSED))
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
 
     [kept] = written
@@ -40103,7 +40214,7 @@ def test_a_save_whose_first_look_for_a_receipt_is_refused_says_it_saved_no_homew
         posted = page_post(page, "save", tick=[first], typed=typed_on(other))
         writes = spying_on_the_writes(browser, monkeypatch)
         Refusing(monkeypatch, ("save_press", "homework_acceptance", 1, FILE_REFUSED))
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert writes == []
@@ -40142,7 +40253,7 @@ def test_a_save_refused_as_changed_says_it_saved_no_homework_past_a_refused_late
             ("snapshot_keeping_typing", "snapshot", 1, FILE_REFUSED),
             ("replayed", "homework_acceptance", 1, FILE_REFUSED),
         )
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
 
     [kept] = written
@@ -40170,7 +40281,7 @@ def test_a_save_with_nothing_ticked_says_it_saved_no_homework_past_a_refused_lat
             THE_NEXT_READ_SAYS["a refused file"],
             ("replayed", "homework_acceptance", 1, FILE_REFUSED),
         )
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
     assert writes == ["keep"]
@@ -40192,7 +40303,7 @@ def test_a_save_whose_name_read_meets_an_open_transaction_says_it_saved_no_homew
         posted = page_post(page, "save", tick=[first], typed=typed_on(other))
         writes = spying_on_the_writes(browser, monkeypatch)
         open_at(browser, monkeypatch, "image_names")
-        answer = send(browser, draft_id, posted)
+        answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         ending_transaction(browser)
 
@@ -40255,7 +40366,7 @@ def test_a_save_whose_own_homework_write_is_unresolved_still_can_t_tell_whether_
                 return outcomes[-1]
 
             monkeypatch.setattr(imports, "save_homework", saving)
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
             monkeypatch.undo()
             assert [type(outcome) for outcome in outcomes] == [NotSaved]
         else:
@@ -40359,7 +40470,7 @@ def test_a_save_answered_as_already_saved_can_t_tell_of_any_homework_past_a_refu
             ("snapshot_keeping_typing", "snapshot", 1, FILE_REFUSED),
             ("replayed", "homework_acceptance", 1, FILE_REFUSED),
         )
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
 
     [kept] = written
@@ -40382,7 +40493,7 @@ def test_a_save_whose_first_look_meets_an_open_transaction_says_it_saved_no_home
         open_at(browser, monkeypatch, "save_press")
         caplog.clear()
         with caplog.at_level(logging.WARNING):
-            answer = send(browser, draft_id, posted)
+            answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
         ending_transaction(browser)
 
@@ -40497,7 +40608,7 @@ def test_a_save_whose_check_for_an_open_transaction_is_refused_can_t_tell_past_a
         record = state_of(browser).project_state
         monkeypatch.setattr(record, "transaction_left_open", FILE_REFUSED)
         Refusing(monkeypatch, ("replayed", "homework_acceptance", 1, FILE_REFUSED))
-        answer = send(browser, review.draft_id, posted)
+        answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
 
     [kept] = written
@@ -41132,7 +41243,7 @@ def closed_by_its_own_save(
     first_unit, _, other = typed_on_the_row_left(page)
     posted = page_post(page, "save", tick=[first_unit], typed={other: TYPED_ON_THE_OTHER})
     monkeypatch.setattr(imports, "save_homework", lambda *_, **__: saved)
-    return send(browser, draft_id, posted)
+    return saved_with_corrections(browser, draft_id, posted)
 
 
 @pytest.mark.parametrize("left", [1, 0], ids=["one item left", "nothing left"])
@@ -41420,7 +41531,10 @@ def test_a_cleared_due_date_on_a_note_is_kept_as_none_and_saves_no_due_date(
         reopened = kept_for_later(browser, draft_id, page, {due: ""})
         held = progress_after(browser, draft_id)
         ticked = ticked_on(reopened)
-        after = followed(browser, send(browser, draft_id, page_post(reopened, "save", tick=ticked)))
+        after = followed(
+            browser,
+            saved_with_corrections(browser, draft_id, page_post(reopened, "save", tick=ticked)),
+        )
         rows = humanities(browser)
 
     assert list(held.values()) == [{"due": None}]
@@ -41445,7 +41559,10 @@ def test_a_corrected_note_kept_for_later_saves_and_reads_again_as_already_saved(
         typed = {title: "Class project poster", due: "2026-10-07"}
         reopened = kept_for_later(browser, draft_id, page, typed)
         ticked = ticked_on(reopened)
-        saved = followed(browser, send(browser, draft_id, page_post(reopened, "save", tick=ticked)))
+        saved = followed(
+            browser,
+            saved_with_corrections(browser, draft_id, page_post(reopened, "save", tick=ticked)),
+        )
         first = humanities(browser)
         second_id, again = read_review(browser, monkeypatch, (RED, answer))
         if fields_named(review_form(again), "answer:name:"):
@@ -41613,7 +41730,7 @@ def test_a_note_saved_with_its_date_cleared_and_read_again_stays_without_a_due_d
         due = f"correct:{box_subject(page, 'due')}"
         reopened = kept_for_later(browser, draft_id, page, {due: ""})
         sent = page_post(reopened, "save", tick=ticked_on(reopened))
-        saved = followed(browser, send(browser, draft_id, sent))
+        saved = followed(browser, saved_with_corrections(browser, draft_id, sent))
         first = english(browser)
         again_id, again = read_review(browser, monkeypatch, (RED, note_under(day, words)))
         again = answered(browser, again_id, again)
@@ -41660,7 +41777,7 @@ def test_a_due_date_typed_on_a_saved_notes_repeat_is_the_familys_and_untouched_s
         due = f"correct:{box_subject(again, 'due')}"
         kept = kept_for_later(browser, again_id, again, {} if typed is None else {due: typed})
         sent = page_post(kept, "save", tick=ticked_on(kept))
-        resaved = followed(browser, send(browser, again_id, sent))
+        resaved = followed(browser, saved_with_corrections(browser, again_id, sent))
         after, after_claims = english_row(browser)
         third_id, third = read_review(browser, monkeypatch, (RED, answer))
         third = answered(browser, third_id, third)
@@ -41787,7 +41904,7 @@ def test_a_joined_notes_tick_is_kept_for_later_on_reopening_and_through_a_refusa
         reopened = kept_for_later(browser, draft_id, kept, {})
         title = f"correct:{box_subject(reopened, 'title')}"
         refused = [
-            send(
+            saved_with_corrections(
                 browser,
                 draft_id,
                 page_post(reopened, "save", typed={title: typed}, tick=units_on(reopened)),
@@ -41833,7 +41950,9 @@ def test_a_joined_notes_tick_sent_twice_with_different_answers_keeps_and_saves_n
         field = joined_field(page)
         title = f"correct:{box_subject(page, 'title')}"
         fields = page_post(page, press, typed={title: "Short essay outline"}, tick=units_on(page))
-        refused = send(browser, draft_id, [*fields, *((field, value) for value in values)])
+        refused = saved_with_corrections(
+            browser, draft_id, [*fields, *((field, value) for value in values)]
+        )
         held = stored_answers(browser, draft_id)
         record = state_of(browser).project_state
         rows = [a for a in record.all_assignments() if a.course == "Religion 8"]
@@ -41919,11 +42038,13 @@ def test_a_date_set_or_cleared_on_a_note_survives_a_refusal_reopening_save_and_r
         due = f"correct:{box_subject(page, 'due')}"
         as_read = box_of(review_form(page), title)[1]  # type: ignore[index]
         long_title = {title: "x" * 600, due: typed}
-        refused = send(browser, draft_id, page_post(page, "save", typed=long_title))
+        refused = saved_with_corrections(
+            browser, draft_id, page_post(page, "save", typed=long_title)
+        )
         back = refused.text
         reopened = kept_for_later(browser, draft_id, back, {title: as_read})
         sent = page_post(reopened, "save", tick=ticked_on(reopened))
-        saved = followed(browser, send(browser, draft_id, sent))
+        saved = followed(browser, saved_with_corrections(browser, draft_id, sent))
         rows = english(browser)
         again_id, again = read_review(browser, monkeypatch, (RED, answer))
         again = answered(browser, again_id, again)
@@ -42038,7 +42159,7 @@ def test_a_card_date_correction_leaves_a_selected_joined_notes_claim_as_the_note
         due = f"correct:{box_subject(page, 'due')}"
         reopened = kept_for_later(browser, draft_id, page, {due: "2026-11-20"})
         sent = page_post(reopened, "save", tick=ticked_on(reopened))
-        saved = followed(browser, send(browser, draft_id, sent))
+        saved = followed(browser, saved_with_corrections(browser, draft_id, sent))
         row, claims, words = essay_row(browser)
 
     assert JOINED_TICK.findall(review_form(reopened)) == [" checked"]
@@ -42079,7 +42200,7 @@ def test_a_cards_due_date_typed_by_the_family_is_the_familys_beside_the_schools_
         due = f"correct:{box_subject(page, 'due')}"
         reopened = kept_for_later(browser, draft_id, page, {} if typed is None else {due: typed})
         sent = page_post(reopened, "save", tick=ticked_on(reopened))
-        saved = followed(browser, send(browser, draft_id, sent))
+        saved = followed(browser, saved_with_corrections(browser, draft_id, sent))
         row, claims, _ = essay_row(browser)
 
     assert says(saved, imports.counted(1, 0, 0, 0)), saved
@@ -42145,7 +42266,7 @@ def test_a_due_date_chosen_on_a_card_read_again_names_where_the_saved_date_came_
         due = f"correct:{box_subject(page, 'due')}"
         reopened = kept_for_later(browser, draft_id, page, {} if typed is None else {due: typed})
         sent = page_post(reopened, "save", tick=ticked_on(reopened))
-        saved = followed(browser, send(browser, draft_id, sent))
+        saved = followed(browser, saved_with_corrections(browser, draft_id, sent))
         row, _, _ = essay_row(browser)
         read_id, read = read_review(browser, monkeypatch, (BLUE, essay(again)))
         read = answered(browser, read_id, read)
@@ -42323,7 +42444,7 @@ def test_an_untick_of_a_saved_joined_note_is_kept_and_removes_nothing(
         reopened = kept_for_later(browser, draft_id, kept, {})
         title = f"correct:{box_subject(reopened, 'title')}"
         too_long = {title: "x" * (TITLE_MOST + 1)}
-        refused = send(
+        refused = saved_with_corrections(
             browser,
             draft_id,
             page_post(reopened, "save", typed=too_long, tick=units_on(reopened)),
@@ -42912,11 +43033,15 @@ def test_a_joined_notes_tick_sent_twice_stays_unanswered_until_the_family_answer
             return units_on(shown) if press == "save" else []
 
         fields = page_post(page, press, typed={title: "Short essay outline"}, tick=ticks(page))
-        conflict = send(browser, draft_id, [*fields, *((field, value) for value in values)])
-        retry = send(browser, draft_id, page_post(conflict.text, press, tick=ticks(conflict.text)))
+        conflict = saved_with_corrections(
+            browser, draft_id, [*fields, *((field, value) for value in values)]
+        )
+        retry = saved_with_corrections(
+            browser, draft_id, page_post(conflict.text, press, tick=ticks(conflict.text))
+        )
         unwritten = (essay_counts(browser), stored_answers(browser, draft_id))
         chosen = page_post(retry.text, press, choose={field: answer}, tick=ticks(retry.text))
-        answered_page = followed(browser, send(browser, draft_id, chosen))
+        answered_page = followed(browser, saved_with_corrections(browser, draft_id, chosen))
         held = stored_answers(browser, draft_id)
         saved_title, words = "", list[str]()
         if press == "save":
@@ -43028,7 +43153,9 @@ def test_a_box_sent_twice_with_different_values_is_refused_with_both_named_at_it
         fields = page_post(page, "save", typed={other: "Kept typing"}, tick=units_on(page))
         before = stored_answers(browser, draft_id)
         rows_before = saved_rows(browser)
-        refused = send(browser, draft_id, posted_twice(fields, name, values, reverse))
+        refused = saved_with_corrections(
+            browser, draft_id, posted_twice(fields, name, values, reverse)
+        )
         after = stored_answers(browser, draft_id)
         rows = saved_rows(browser)
 
@@ -43221,7 +43348,7 @@ def test_a_family_answer_sent_twice_with_the_same_value_is_one_answer(
             draft_id, fields, repeat = same_twice_post(browser, monkeypatch, family)
             if count == 2:
                 fields = [repeat, *fields] if first else [*fields, repeat]
-            answer = send(browser, draft_id, fields)
+            answer = saved_with_corrections(browser, draft_id, fields)
             pages.append(followed(browser, answer))
             outcomes.append(
                 (answer.status_code, answered_rows(browser), answers_now(browser, draft_id))
@@ -43347,13 +43474,13 @@ def test_a_returned_review_whose_mark_does_not_match_its_page_is_refused_whole(
         chosen = page_post(
             conflict.text, "save", typed=typed, choose=choose, tick=units_on(conflict.text)
         )
-        answered_page = followed(browser, send(browser, draft_id, chosen))
+        answered_page = followed(browser, saved_with_corrections(browser, draft_id, chosen))
         final = answered_page
         if units_on(answered_page):
             # A Save that shows an edit's effects first, or holds a group for checking, is
             # followed by the Save on the page it gives back, as a family would press it.
             again = page_post(answered_page, "save", tick=units_on(answered_page))
-            final = followed(browser, send(browser, draft_id, again))
+            final = followed(browser, saved_with_corrections(browser, draft_id, again))
         rows = answered_rows(browser)
 
     assert conflict.status_code == 422
@@ -43415,14 +43542,14 @@ def test_a_field_sent_twice_stays_unanswered_until_the_family_answers_it(
         else:
             choose[f"empty:{subject}"] = "empty"
         chosen = page_post(retry.text, press, typed=typed, choose=choose, tick=ticks(retry.text))
-        answer = send(browser, draft_id, chosen)
+        answer = saved_with_corrections(browser, draft_id, chosen)
         answered_page = followed(browser, answer)
         final = answered_page
         if press == "save" and units_on(answered_page):
             # A Save that shows an edit's effects first, or holds a group for checking, is
             # followed by the Save on the page it gives back, as a family would press it.
             again = page_post(answered_page, "save", tick=units_on(answered_page))
-            final = followed(browser, send(browser, draft_id, again))
+            final = followed(browser, saved_with_corrections(browser, draft_id, again))
         after = (stored_answers(browser, draft_id), answered_rows(browser))
         reopened = browser.get(f"/parent/imports/{draft_id}").text
 
@@ -43726,7 +43853,9 @@ def shape_effects(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
     """The page a Save with a typed title comes back to: nothing saved, check the effects."""
     draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
     typed = {f"correct:{box_subject(page, 'title')}": "Sentence Combining"}
-    refused = send(browser, draft_id, page_post(page, "save", tick=digests_on(page), typed=typed))
+    refused = saved_with_corrections(
+        browser, draft_id, page_post(page, "save", tick=digests_on(page), typed=typed)
+    )
     assert refused.status_code == 409
     assert says_each(refused.text, CHANGED_BESIDE_ANSWERS)
     return refused.text

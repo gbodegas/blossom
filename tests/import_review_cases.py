@@ -285,6 +285,13 @@ def send(browser: TestClient, draft_id: str, fields: Fields) -> Answer:
     )
 
 
+def saved_with_corrections(browser: TestClient, draft_id: str, fields: Fields) -> Answer:
+    """The one call through which every test makes a Save on the review that carries typed
+    corrections (where that call also makes other presses, they go through it too): the fields
+    posted as a browser sends them."""
+    return send(browser, draft_id, fields)
+
+
 def followed(browser: TestClient, answer: Answer) -> str:
     """The page a press answers with: the review it renders, or the one it redirects to."""
     if answer.status_code != 303:
@@ -1043,7 +1050,7 @@ class Presses:
 
     def press(self, label: str, fields: Fields) -> str:
         """This post sent: the page it comes back with."""
-        answer = send(self.browser, self.draft_id, fields)
+        answer = saved_with_corrections(self.browser, self.draft_id, fields)
         assert answer.status_code != 400, f"{label}: {page_text(answer.text)[:200]}"
         page = followed(self.browser, answer)
         self.pressed.append(
