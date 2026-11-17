@@ -20,13 +20,14 @@ import html
 import json
 import pathlib
 import re
+from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
 
 from blossom.app import create_app
 from blossom.reconciliation import SourceChannel
-from tests.support import SAME_ORIGIN, fixture_settings, store_of
+from tests.support import SAME_ORIGIN, Answer, fixture_settings, store_of
 
 NOTED = """Homework for Wren
 11/02/2026 - Monday
@@ -2735,3 +2736,137 @@ def test_two_joined_ticks_saved_against_a_record_moved_under_the_page_write_noth
     assert after == before
     assert claimed["Short essay"] == []
     assert joined_ticks(card(moved.text, "Short essay")) == {"join-1-0": True, "join-1-1": True}
+
+
+ESSAY_WEEK = (
+    "Homework for Wren\n11/09/2026 - Monday\nHumanities -\n"
+    "Essay due November 20. Write an outline.\n"
+)
+"""A Monday whose only content is a note that settles its deadline, the Friday a week on."""
+
+ESSAY_NEXT_WEEK = ESSAY_WEEK.replace("11/09/2026", "11/16/2026")
+"""The same words listed under the next Monday: another occurrence of the note."""
+
+ALREADY_SAVED = '<span class="pill">Already saved</span>'
+
+
+def test_a_saved_note_read_under_a_later_week_is_new_work_not_already_saved(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note saved under one Monday and read again under that Monday is already saved,
+    selected, and its Save writes nothing. The same words, title and deadline read under the
+    next Monday are not that note: unselected, not already saved, asked nothing, and ticked
+    and saved they add new work beside the first."""
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first = client.post("/parent/inbox/read", data={"text": ESSAY_WEEK}).text
+        saved = client.post("/parent/inbox/keep", data=ticked_form(first) | {"take-0": "1"})
+        before_repeat = record_counts(client)
+        repeat = client.post("/parent/inbox/read", data={"text": ESSAY_WEEK}).text
+        repeated = client.post("/parent/inbox/keep", data=ticked_form(repeat))
+        after_repeat = record_counts(client)
+        later = client.post("/parent/inbox/read", data={"text": ESSAY_NEXT_WEEK}).text
+        later_kept = client.post("/parent/inbox/keep", data=ticked_form(later) | {"take-0": "1"})
+        rows = sorted((row.title, row.due_date) for row in store_of(client).all_assignments())
+
+    assert saved.status_code == 303
+    assert saved.headers["location"].endswith("added=1&updated=0&unchanged=0")
+    assert ALREADY_SAVED in card(repeat, "Essay")
+    assert numbers(repeat, TICKED) == {0}
+    assert repeated.status_code == 303
+    assert repeated.headers["location"].endswith("added=0&updated=0&unchanged=1")
+    assert after_repeat == before_repeat
+    assert after_repeat[0] == 1
+    assert ALREADY_SAVED not in card(later, "Essay")
+    assert numbers(later, TICKED) == set()
+    assert 'name="identity-0"' not in later
+    assert later_kept.status_code == 303
+    assert later_kept.headers["location"].endswith("added=1&updated=0&unchanged=0")
+    assert rows == [("Essay", datetime.date(2026, 11, 20))] * 2
+
+
+SENT_TWICE = (
+    "A choice on this review was sent twice with different answers, so nothing was saved. "
+    "Choose it once, then save."
+)
+CHECK_CARD = '<a href="#card-{key}">Check this assignment</a></p>'
+
+
+def sent_as_pairs(client: TestClient, path: str, fields: list[tuple[str, str]]) -> Answer:
+    """A form posted with its fields in this order, a field repeated where it is listed twice."""
+    return client.post(
+        f"/parent/inbox/{path}",
+        content=urlencode(fields),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+
+
+TWICE = [
+    pytest.param("take-4", ("1", "0"), 4, id="take-ticked-first"),
+    pytest.param("take-4", ("0", "1"), 4, id="take-unticked-first"),
+    pytest.param("join-1-0", ("1", "0"), 1, id="join-ticked-first"),
+    pytest.param("join-1-0", ("0", "1"), 1, id="join-unticked-first"),
+]
+"""A note's tick and a joined note's tick, each sent twice with two different answers, in both
+orders, with the card each names."""
+
+
+@pytest.mark.parametrize(("name", "values", "key"), TWICE)
+def test_a_tick_sent_twice_with_different_answers_saves_nothing_and_names_its_card(
+    tmp_path: pathlib.Path, name: str, values: tuple[str, str], key: int
+) -> None:
+    """The review's form with one tick sent twice, once ticked and once not, beside another
+    note ticked and its title typed: nothing of the paste is written, the review comes back
+    with the other tick and the typed title as sent, the tick sent twice unticked whichever
+    came first, and the summary says why with a link to the card that holds it."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        others = ticked_form(page) | {"take-3": "1", "title-3": "Map project outline"}
+        fields = [*others.items(), *((name, value) for value in values)]
+        refused = sent_as_pairs(client, "keep", fields)
+        counts = record_counts(client)
+
+    assert refused.status_code == 422
+    assert counts == (0, 0, 0)
+    assert f"{SUMMARY}{SENT_TWICE} {CHECK_CARD.format(key=key)}" in refused.text
+    assert numbers(refused.text, TICKED) == {3}
+    assert 'name="title-3" value="Map project outline"' in refused.text
+    assert joined_ticks(card(refused.text, "Short essay")) == {"join-1-0": False}
+
+
+@pytest.mark.parametrize(("name", "values", "key"), TWICE)
+def test_review_changes_with_a_tick_sent_twice_takes_neither_answer(
+    tmp_path: pathlib.Path, name: str, values: tuple[str, str], key: int
+) -> None:
+    """Review changes with a tick sent twice, once ticked and once not, writes nothing and
+    shows that tick unticked whichever came first, with the other tick as sent."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        others = ticked_form(page) | {"take-3": "1", "recheck": "1"}
+        fields = [*others.items(), *((name, value) for value in values)]
+        shown = sent_as_pairs(client, "find", fields)
+        rows = store_of(client).all_assignments()
+
+    assert shown.status_code == 200
+    assert rows == []
+    assert numbers(shown.text, TICKED) == {3}
+    assert joined_ticks(card(shown.text, "Short essay")) == {"join-1-0": False}
+
+
+@pytest.mark.parametrize(
+    ("name", "added"),
+    [("take-4", 3), ("join-1-0", 2), ("offered-4", 2)],
+    ids=["take", "join", "offered"],
+)
+def test_a_tick_sent_twice_with_the_same_answer_saves_in_one_press(
+    tmp_path: pathlib.Path, name: str, added: int
+) -> None:
+    """A tick, a joined note's tick, or a note's offered field sent twice with the same answer
+    is one answer: the save writes in one press, as with it sent once."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        form = ticked_form(page) | {name: "1"}
+        fields = [*form.items(), (name, form[name])]
+        saved = sent_as_pairs(client, "keep", fields)
+
+    assert saved.status_code == 303
+    assert saved.headers["location"].endswith(f"added={added}&updated=0&unchanged=0")

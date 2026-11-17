@@ -186,6 +186,10 @@ EDITS_IN_REVIEW: Final = (
     "Your changes to a title or due date are in this review. Nothing was saved yet. "
     "Check it, then save."
 )
+SENT_TWICE: Final = (
+    "A choice on this review was sent twice with different answers, so nothing was saved. "
+    "Choose it once, then save."
+)
 IDENTITY_FORM_UNREADABLE: Final = (
     "The answers about which homework a card is could not be read, so nothing was saved. "
     "Look at them again below."
@@ -2108,10 +2112,40 @@ def preview_or_recovery(
         return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
 
 
+TICK_FIELDS: Final = frozenset({"offered", "take", "join"})
+"""The fields a review sends for the ticks of readings made from teachers' notes: the note
+offered, its tick, and a joined note's tick."""
+
+
+def sent_twice(fields: Iterable[tuple[str, object]]) -> dict[str, int]:
+    """Each tick field a form sends more than once with different values, read from every
+    field as sent, with the key of the card it is on: ``offered-<key>``, ``take-<key>`` and
+    ``join-<card>-<place>``. A value sent as a file differs from every text. The same value
+    sent twice is one answer."""
+    values: dict[str, set[str | None]] = {}
+    for name, value in fields:
+        head, _, rest = name.partition("-")
+        card = rest.partition("-")[0]
+        if head in TICK_FIELDS and review_key(card):
+            values.setdefault(name, set()).add(value if isinstance(value, str) else None)
+    return {
+        name: int(name.partition("-")[2].partition("-")[0])
+        for name, sent in values.items()
+        if len(sent) > 1
+    }
+
+
 async def submitted(request: Request) -> dict[str, str]:
-    """The form as submitted, every value as text."""
+    """The form as submitted, every value as text. A tick field sent more than once with
+    different values is left out (``sent_twice``), so no answer is taken by the order the
+    values came in."""
     form = await form_of(request)
-    return {name: str(value) for name, value in form.items() if isinstance(value, str)}
+    twice = sent_twice(form.multi_items())
+    return {
+        name: str(value)
+        for name, value in form.items()
+        if isinstance(value, str) and name not in twice
+    }
 
 
 @router.post("/read", response_class=HTMLResponse, include_in_schema=False)
@@ -2572,6 +2606,34 @@ async def keep_readings(request: Request, state: State) -> Response:
                 typed=typed,
                 refused="malformed",
                 notice=PICK_FORM_UNREADABLE,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        twice = sent_twice(fields)
+        if twice:
+            # A tick sent twice with different answers is no form the page wrote, and no
+            # answer is taken by the order its values came in: nothing is written, and the
+            # review comes back with every other answer and the typing as sent, that tick as
+            # if not sent, and a link to its card where there is one card.
+            return await asyncio.to_thread(
+                preview_page,
+                request,
+                state,
+                read,
+                draft,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=read_answers.unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="malformed",
+                check=frozenset(twice.values()),
+                notice=SENT_TWICE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
         if read.items and len(read.left_out) == len(read.items):

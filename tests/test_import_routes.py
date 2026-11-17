@@ -41625,6 +41625,39 @@ def test_a_joined_notes_tick_is_kept_for_later_on_reopening_and_through_a_refusa
     assert rows == []
 
 
+@pytest.mark.parametrize("values", [("1", "0"), ("0", "1")], ids=["ticked-first", "unticked-first"])
+@pytest.mark.parametrize("press", ["save", "keep"])
+def test_a_joined_notes_tick_sent_twice_with_different_answers_keeps_and_saves_nothing(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    values: tuple[str, str],
+    press: str,
+) -> None:
+    """Save, or Keep these answers, sent with the joined note's tick twice, once ticked and
+    once not, beside a title typed: nothing is kept or saved, and the review comes back with
+    the title as typed, the tick unticked whichever came first, and a line naming that
+    tick."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        field = joined_field(page)
+        title = f"correct:{box_subject(page, 'title')}"
+        fields = page_post(page, press, typed={title: "Short essay outline"}, tick=units_on(page))
+        refused = send(browser, draft_id, [*fields, *((field, value) for value in values)])
+        held = stored_answers(browser, draft_id)
+        record = state_of(browser).project_state
+        rows = [a for a in record.all_assignments() if a.course == "Religion 8"]
+
+    form = review_form(refused.text)
+    assert refused.status_code == 422
+    assert rows == []
+    assert [kind for kind, _ in held if kind == "joined"] == []
+    assert JOINED_TICK.findall(form) == [""]
+    assert 'value="Short essay outline"' in form
+    assert says(refused.text, imports.PRESS_SAID["sent_twice"])
+    assert says(refused.text, imports.PRESS_SAID["nothing_kept"])
+
+
 @pytest.mark.parametrize("selected", [False, True])
 def test_a_joined_note_adds_its_claim_and_words_on_save_only_when_selected(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, selected: bool

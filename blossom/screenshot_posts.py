@@ -127,12 +127,23 @@ class ReviewPost:
     held: Mapping[tuple[str, str], str] | None = None
     """The answers the review held, by kind and subject, at the press's latest read of it before
     its write; None where it made none."""
+    sent_twice: tuple[str, ...] = ()
+    """Each joined note's tick, by its field, posted more than once with different values: the
+    press is refused whole, and the tick goes back unticked, whichever value came first."""
 
     @property
     def refused(self) -> bool:
         """Whether the press is refused whole for what it posted: a box it can't take as posted, a
-        choice beside "None of these apply", or a kept row that isn't on the record."""
-        return bool(self.too_long or self.needed or self.both or self.conflicted or self.unresolved)
+        choice beside "None of these apply", a kept row that isn't on the record, or a joined
+        note's tick posted twice with different values."""
+        return bool(
+            self.too_long
+            or self.needed
+            or self.both
+            or self.conflicted
+            or self.unresolved
+            or self.sent_twice
+        )
 
 
 WITHDRAWABLE: Final = (
@@ -143,6 +154,8 @@ WITHDRAWABLE: Final = (
 )
 """The answer fields, by prefix, a press takes back when it posts none of their boxes: each is
 a set of checkboxes, so a box left unticked sends nothing. A joined note's tick is one."""
+JOINED_PREFIX: Final = "answer:joined:"
+"""A joined note's tick's field, by prefix."""
 
 
 def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:
@@ -333,7 +346,10 @@ def read_review(
     kept as a correction only where it differs (``box_corrections``). A date Blossom couldn't read,
     carried back beside its empty date box, stays the box's correction until a date is chosen
     there. A correction longer than its field takes is named in ``too_long`` and kept as typed,
-    never cut, for the page to give back."""
+    never cut, for the page to give back. A joined note's tick the page offered, posted more than
+    once with different values, is named in ``sent_twice`` and taken as neither, so no value is
+    chosen by the order it came in; posted twice with one value, it is refused as any answer
+    posted twice is."""
     hidden = _signed_fields(items, page_key)
     offered, older = _signed_asks(hidden)
     try:
@@ -357,8 +373,13 @@ def read_review(
     none_given: set[str] = set()
     chosen: dict[str, list[str]] = {}
     rows_by_words: dict[str, dict[str, str]] = {}
+    joined_sent: dict[str, set[str]] = {}
     for name, value in rest:
-        if name in ("press", "unit") or name.startswith(READ_PREFIX):
+        if name.startswith(JOINED_PREFIX) and name in offered:
+            joined_sent.setdefault(name, set()).add(value)
+    sent_twice = tuple(sorted(name for name, sent in joined_sent.items() if len(sent) > 1))
+    for name, value in rest:
+        if name in ("press", "unit") or name.startswith(READ_PREFIX) or name in sent_twice:
             continue
         if name.startswith(BOX_PREFIXES):
             prefix = next(p for p in BOX_PREFIXES if name.startswith(p))
@@ -418,7 +439,9 @@ def read_review(
             value = values[0]
         answers.append(_answer(state, kind, subject, value, corrections))
     blank = [
-        _field(name) for name in offered if name not in chosen and name.startswith(WITHDRAWABLE)
+        _field(name)
+        for name in offered
+        if name not in chosen and name not in sent_twice and name.startswith(WITHDRAWABLE)
     ]
     for kind, subject in blank:
         if kind == "joined" and joined_of(subject) in state.proven:
@@ -448,6 +471,7 @@ def read_review(
         choices=_posted_choices(offered, chosen, rest),
         unresolved=tuple(unresolved),
         dropped=folded.dropped,
+        sent_twice=sent_twice,
     )
 
 

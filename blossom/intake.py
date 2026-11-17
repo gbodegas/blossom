@@ -1945,6 +1945,7 @@ def _where(
     apart: Mapping[str, tuple[str, ...]],
     unchanged: Callable[[Assignment, Reading], bool],
     renamed: Sequence[Assignment] = (),
+    noted_elsewhen: Callable[[Assignment, Reading], bool] = lambda item, reading: False,
 ) -> _Where:
     """Which homework a reading is about, by the rules the review page states. Text saved
     before is never asked about again: a reading whose every claim and report one candidate
@@ -1965,7 +1966,9 @@ def _where(
     it's text saved before or an answer to its own question showed every one.
 
     A reading made from a teacher's note that no one row holds from a save before follows
-    ``_where_noted`` instead, where its class and title alone put it on no row."""
+    ``_where_noted`` instead, where its class and title alone put it on no row, and a row
+    that keeps the note's words under another school day (``noted_elsewhen``) holds another
+    occurrence of the note."""
     named = {item.assignment_id for item in candidates}
     elsewhere = [item for item in renamed if item.assignment_id not in named]
     pool = [*candidates, *elsewhere]
@@ -1984,7 +1987,9 @@ def _where(
     if len(saved_before) == 1:
         return _Where(lands=saved_before[0])
     if reading.teacher_note is not None:
-        return _where_noted(reading, candidates, pool, decided, bool(open_hers))
+        elsewhen = frozenset(item.assignment_id for item in pool if noted_elsewhen(item, reading))
+        hers = frozenset(item.assignment_id for item in open_hers)
+        return _where_noted(reading, candidates, pool, decided, hers, elsewhen)
     if elsewhere:
         if not candidates and len(elsewhere) == 1:
             return _Where(lands=elsewhere[0], today=True)
@@ -2058,11 +2063,18 @@ def _where_noted(
     candidates: list[Assignment],
     pool: list[Assignment],
     decided: tuple[IntakeDecision, ...],
-    hers_open: bool,
+    hers: frozenset[str],
+    elsewhen: frozenset[str] = frozenset(),
 ) -> _Where:
     """Which homework a reading made from a teacher's note is about, when no row holds the
     note from a save before. Its class and title alone never put it on a row. ``pool`` is
-    every row it could be: those of its name (``candidates``) and any chosen for the name.
+    every row it could be: those of its name (``candidates``) and any chosen for the name;
+    ``hers`` are those of her homework not yet settled.
+
+    A row in ``elsewhen`` keeps the note's words under another school day: it holds another
+    occurrence of the note, and equal words, title and deadline never make it this one. A
+    dated reading is never placed there by a kept answer, and such a row due the reading's
+    date is none of its rows, so where no other row is, the reading is new work.
 
     With a date: where the latest answer kept for the name and that date put it, while
     that answer showed every row of the name due that day; her homework asks; the one row
@@ -2074,6 +2086,15 @@ def _where_noted(
     never comes here, and the same words first listed on another school day are another
     occurrence, which is asked about. With no row at all it follows today's rules for a
     reading that lands nowhere."""
+    if reading.due_date is not None:
+        repeated = {
+            item.assignment_id
+            for item in pool
+            if item.assignment_id in elsewhen and item.due_date == reading.due_date
+        }
+        candidates = [item for item in candidates if item.assignment_id not in repeated]
+        pool = [item for item in pool if item.assignment_id not in repeated]
+    hers_open = any(item.assignment_id in hers for item in candidates)
     if not pool:
         return _Where(today=True)
     by_id = {item.assignment_id: item for item in pool}
@@ -2091,6 +2112,7 @@ def _where_noted(
     if (
         latest is not None
         and latest.lands_on in by_id
+        and latest.lands_on not in elsewhen
         and due_that_day <= {*latest.shown, latest.lands_on}
     ):
         return _Where(lands=by_id[latest.lands_on])
@@ -2427,7 +2449,9 @@ def changes_for(
     the row's due date stands with no claim beside it, unless the family gave
     the date the reading carries. Otherwise its class and title alone put it
     on no row (``_where_noted``): a row of its name is a question unless it is
-    due the day the note settles or a kept answer says so. Under the name of
+    due the day the note settles or a kept answer says so, and a row that keeps
+    the note's words under another school day holds another occurrence, which
+    its title, date and words never make this one. Under the name of
     an earlier new reading of the same text it asks whether it is the same
     assignment or new work, however near its date or with none; said to be the
     same with no date of its own, it leaves the first reading's due date as it
@@ -2511,6 +2535,17 @@ def changes_for(
             return (words, note.first_day) in saved.noted(item.assignment_id)
         return bool(reading.claims or reading.reports) and writes_nothing(item, reading, kind)
 
+    def noted_elsewhen(item: Assignment, reading: Reading) -> bool:
+        """Whether a row keeps a teacher's note's words under a school day other than the
+        one the note was first listed under: another occurrence of the same words."""
+        note = reading.teacher_note
+        if note is None:
+            return False
+        words = " ".join(note.words.split())
+        return any(
+            text == words and day != note.first_day for text, day in saved.noted(item.assignment_id)
+        )
+
     seen = _Seen(saved)
     anchors: dict[tuple[str, str], int] = {}
     """The place in ``changes`` of the first new reading under each name in this text."""
@@ -2550,6 +2585,7 @@ def changes_for(
             apart,
             functools.partial(writes_nothing, kind=kind),
             list({item.assignment_id: item for item in remembered}.values()),
+            noted_elsewhen,
         )
         reply = identities.get(key)
         pick = picks.get(key)
@@ -2678,6 +2714,17 @@ def changes_for(
             )
             changes.append(_folded_marker(key, reading, changes[twin].key, kinds, answer))
             continue
+        note = reading.teacher_note
+        if (
+            existing is None
+            and note is not None
+            and reading.occurrence is None
+            and reading.assignment_id in by_id
+            and noted_elsewhen(by_id[reading.assignment_id], reading)
+        ):
+            # The row this reading's name would make keeps the note's words under another
+            # school day: this listing is new work of its own, by its first day and words.
+            reading = dataclasses.replace(reading, occurrence=_note_occurrence(note))
         if existing is None or answer == NEW_WORK:
             change = _new_change(key, reading, existing, answer, asked, kinds, seen, other)
             if change.state == NEW and change.assignment_id in by_id:
