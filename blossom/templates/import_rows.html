@@ -46,7 +46,7 @@
 {{ box.value }}</textarea></label>
   {% else %}
   <label>{{ box.label }}<span class="visually-hidden"> for {{ about }}</span> <input type="{{ box.kind }}" name="{{ box.name }}" value="{{ box.value }}"{% if box.refused %} aria-invalid="true"{% endif %}></label>
-  {% endif %}
+  {% endif %}{% if box.marks %}{% if box.empty %}<div class="choice"><label><input type="checkbox" name="empty:{{ box.subject }}" value="empty"> <span>{{ box.empty }}<span class="visually-hidden"> for {{ about }}</span></span></label></div>{% endif %}{% for name, value in box.marks %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}{% endif %}
   {% if box.hint %}<p class="helper">{{ box.hint }}</p>{% endif %}
   {% if box.none %}<div class="choice"><label><input type="checkbox" name="{{ box.none[0] }}" value="none"{% if box.none[1] %} checked{% endif %}> <span>{{ words.no_assigned_given }}<span class="visually-hidden"> for {{ about }}</span></span></label></div>{% endif %}
   {% if box.carried %}<input type="hidden" name="{{ box.carried[0] }}" value="{{ box.carried[1] }}">{% endif %}
@@ -72,8 +72,8 @@
   <fieldset class="choice" id="{{ piece.anchor }}" tabindex="-1">
     <legend>{{ words.where }}<span class="visually-hidden"> for {{ card.about }}</span></legend>
     {% for choice in piece.choices %}
-      <label><input type="radio" name="answer:destination:{{ piece.name }}" value="{{ choice.value }}"{% if choice.checked %} checked{% endif %}> <span>{{ choice.label }}{% for fact in choice.facts %} <span class="source">{{ fact }}.</span>{% endfor %}</span></label>
-    {% endfor %}
+      <label><input type="radio" name="answer:destination:{{ piece.name }}" value="{{ choice.value }}"{% if choice.checked %} checked{% endif %}{% if piece.required %} required{% endif %}> <span>{{ choice.label }}{% for fact in choice.facts %} <span class="source">{{ fact }}.</span>{% endfor %}</span></label>
+    {% endfor %}{% for name, value in piece.marks %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     {% if piece.unsaved %}<p class="note">{{ words.not_saved_yet }}</p>{% endif %}
     {% if piece.preselected %}<p class="note">{{ words.preselected }}</p>{% endif %}
     {% if piece.stale %}<p class="problem">{{ words.choose_again }}</p>{% endif %}
@@ -91,8 +91,8 @@
         <fieldset class="choice" id="{{ question.anchor }}" tabindex="-1">
           <legend>{{ question.said }}</legend>{% for text in question.notes %}<p class="note">{{ text }}</p>{% endfor %}
           {% for value, label, checked in question.options %}
-            <label><input type="{% if question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
-          {% endfor %}
+            <label><input type="{% if question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}{% if question.required %} required{% endif %}> <span>{{ label }}</span></label>
+          {% endfor %}{% for name, value in question.marks %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
           {% if question.unsaved %}<p class="note">{{ words.not_saved_yet }}</p>{% endif %}
         </fieldset>
       {% endfor %}

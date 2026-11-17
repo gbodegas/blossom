@@ -2106,6 +2106,10 @@ PRESS_SAID: Final = {
         "A box or a choice was sent twice with different answers. Each one is marked below with "
         "both answers. Enter or choose one, then press again."
     ),
+    "field_unanswered": (
+        "A box or a choice sent twice with different answers needs your answer. Each one is "
+        "marked below with both answers. Enter or choose one, then press again."
+    ),
     "too_large": f"This review is too large for Blossom to process. {NOTHING_BY_THIS_ATTEMPT}",
     "save_invalid": (
         "Some of these questions changed before you answered, so nothing was kept or saved. "
@@ -2439,13 +2443,15 @@ def counted(added: int, updated: int, already: int, left: int) -> str:
 def refused_said(post: ReviewPost) -> list[str]:
     """What a press refused whole for a box it can't take says: a correction too long, and each
     box that can't be left as posted, in the box's own words, a joined note's tick posted twice
-    with different values, and that nothing was kept or saved, once."""
+    with different values, a box or answer posted twice with different values or marked so and
+    left unanswered, and that nothing was kept or saved, once."""
     boxes = [NEEDED[field] for _, field in post.needed if field in NEEDED]
     boxes += [PAGE_SAID["both"]] if post.both else []
     boxes += [PAGE_SAID["conflict"]] if post.conflicted else []
     boxes += [PRESS_SAID["sent_twice"]] if post.sent_twice else []
     boxes += [PRESS_SAID["unanswered_twice"]] if post.unanswered else []
     boxes += [PRESS_SAID["field_twice"]] if post.twice else []
+    boxes += [PRESS_SAID["field_unanswered"]] if post.left_open else []
     if post.too_long:
         return [PRESS_SAID["too_long"], *dict.fromkeys(boxes)]
     return [*dict.fromkeys(boxes), PRESS_SAID["nothing_kept"]]
@@ -2879,7 +2885,7 @@ async def with_typing(
             else None,
             sent_twice=frozenset(post.sent_twice) if current else frozenset(),
             unresolved=post.open_choices if current else None,
-            twice=post.twice if current else None,
+            twice={**post.twice, **post.left_open} if current else None,
         )
         said_lost = await choices_said_lost(
             state, draft_id, post, rows, own, current, behind, answers_read=answers_said_lost

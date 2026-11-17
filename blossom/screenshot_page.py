@@ -110,6 +110,10 @@ SAID: Final = {
     "joined_leave": "Don't add it",
     "box_twice": "This box was sent twice with different answers: {sent}. Enter one.",
     "answer_twice": "This was sent twice with different answers: {sent}. Choose one.",
+    "empty_no_due": "No due date",
+    "empty_as_read": "The date as read: {day}",
+    "empty_remove": "Remove these instructions",
+    "empty_no_words": "No instructions",
     "joined_dates": "Due date on this review: {due}. The teacher's note for {day} says {noted}.",
     "joined_undated": "No due date on this review. The teacher's note for {day} says {noted}.",
     "note_day": "From the teacher's note for {day}.",
@@ -486,6 +490,13 @@ class Box:
     carried: tuple[str, str] | None = None
     """For a typed date Blossom can't read: the hidden field that carries it back as typed, and
     its text, so a page posted unchanged keeps it."""
+    empty: str | None = None
+    """What the box left empty means, where it means anything: offered as an explicit choice
+    beside it only while it is marked (``marks``), since a marked box posted empty is
+    unanswered."""
+    marks: tuple[tuple[str, str], ...] = ()
+    """Hidden fields it carries, by name and value: a box sent twice with different values
+    carries the values sent (``UNRESOLVED``) until it is answered."""
 
     @property
     def subject(self) -> str:
@@ -516,6 +527,9 @@ def _text_box(
         refused = NEEDED[field]
     elif typed is not None and len(typed) > field_most(field):
         refused = SAID["too_long"].format(named=named, most=field_most(field))
+    empty = None
+    if field not in NEEDED:
+        empty = SAID["empty_remove"] if read else SAID["empty_no_words"]
     return Box(
         box_name(key, field),
         label,
@@ -524,6 +538,7 @@ def _text_box(
         read_digest(read),
         refused,
         SAID["not_saved_yet"] if unsaved else None,
+        empty=empty,
     )
 
 
@@ -570,6 +585,14 @@ def _date_box(
     if field == "assigned":
         ticked = (given and typed is None) or both or (confirmed and not given)
         none = ("none:" + name.removeprefix("correct:"), ticked)
+    # A due date box left empty is no due date on a note's piece, or where none was read, and is
+    # refused otherwise; an assigned date box left empty is the date as read, and where none was
+    # read "No assigned date was given" says it.
+    empty = None
+    if field == "due" and (as_read is None or _from_a_note(piece)):
+        empty = SAID["empty_no_due"]
+    elif field == "assigned" and as_read is not None:
+        empty = SAID["empty_as_read"].format(day=day_text(as_read))
     return Box(
         name,
         BOX_LABELS[field],
@@ -581,6 +604,7 @@ def _date_box(
         hint,
         none,
         carried,
+        empty,
     )
 
 
@@ -784,6 +808,11 @@ class PieceControl:
     """Its fieldset's id on the page, by its place among the open pieces."""
     unsaved: bool = False
     """Whether what's checked is a choice a refused press sent and the record doesn't hold."""
+    required: bool = False
+    """Whether one of its choices must be chosen before the form is sent."""
+    marks: tuple[tuple[str, str], ...] = ()
+    """Hidden fields it carries, by name and value: a destination sent twice with different
+    answers carries the values sent (``UNRESOLVED``) until it is answered."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -971,6 +1000,11 @@ class NameQuestion:
     """Whether what's checked is a choice a refused press sent and the record doesn't hold."""
     notes: tuple[str, ...] = ()
     """Lines said beneath its legend."""
+    required: bool = False
+    """Whether one of its options must be chosen before the form is sent."""
+    marks: tuple[tuple[str, str], ...] = ()
+    """Hidden fields it carries, by name and value: an answer sent twice with different values
+    carries the values sent (``UNRESOLVED``) until it is answered."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1865,6 +1899,8 @@ def rows_shown(
                     asked_fields.append((box.name, ()))
                     if box.none is not None:
                         asked_fields.append((box.none[0], ("none",)))
+                    if box.marks and box.empty is not None:
+                        asked_fields.append((EMPTY + box.subject, (EMPTY_VALUE,)))
             for question in block.questions:
                 asked_fields.append((question.field, [o[0] for o in question.options]))
     hidden = [
@@ -2000,13 +2036,28 @@ def said_twice(said: str, sent: Sequence[str]) -> str:
     return SAID[said].format(sent=" and ".join(f'"{text}"' for text in sent))
 
 
+EMPTY: Final = "empty:"
+"""The prefix of the explicit choice beside a box marked as sent twice: what the box left
+empty means, chosen."""
+EMPTY_VALUE: Final = "empty"
+"""The value the explicit choice beside a marked box is sent with."""
+
+
 def _box_twice(box: Box, twice: Mapping[str, tuple[str, ...]]) -> Box:
     """A box with the line naming both values, where it, or the date Blossom couldn't read carried
-    beside it, was sent twice with different values; the line opens its fold."""
+    beside it, was sent twice with different values: empty, carrying nothing, marked with the
+    values sent, and offering what it means left empty as an explicit choice where that means
+    anything; the line opens its fold."""
     sent = twice.get(box.name) or twice.get(f"refused:{box.subject}")
     if not sent:
         return box
-    return dataclasses.replace(box, refused=said_twice("box_twice", sent))
+    return dataclasses.replace(
+        box,
+        value="",
+        refused=said_twice("box_twice", sent),
+        carried=None,
+        marks=((f"{UNRESOLVED}{box.name}", json.dumps(list(sent))),),
+    )
 
 
 def _answers_twice(
@@ -2016,29 +2067,54 @@ def _answers_twice(
     twice: Mapping[str, tuple[str, ...]],
 ) -> tuple[list[NameQuestion], tuple[Question, ...], list[UnitShown]]:
     """Everything on the page that asks with each answer sent twice with different values saying,
-    at that answer, both values sent, by the labels its options show them with."""
+    at that answer, both values sent, by the labels its options show them with; its options
+    offered with none chosen, one required, and marked with the values sent."""
 
     def line(field: str, labels: Mapping[str, str]) -> str:
         return said_twice("answer_twice", [labels.get(value, value) for value in twice[field]])
+
+    def mark(field: str) -> tuple[tuple[str, str], ...]:
+        return ((f"{UNRESOLVED}{field}", json.dumps(list(twice[field]))),)
 
     def question(asked: Question) -> Question:
         if asked.field not in twice:
             return asked
         said = line(asked.field, {value: label for value, label, _ in asked.options})
-        return dataclasses.replace(asked, notes=((said, ""), *asked.notes))
+        return dataclasses.replace(
+            asked,
+            options=tuple((value, label, False) for value, label, _ in asked.options),
+            notes=((said, ""), *asked.notes),
+            required=True,
+            marks=mark(asked.field),
+        )
 
     def name_question(asked: NameQuestion) -> NameQuestion:
         if asked.field not in twice:
             return asked
         said = line(asked.field, {value: label for value, label, _ in asked.options})
-        return dataclasses.replace(asked, notes=(said, *asked.notes))
+        return dataclasses.replace(
+            asked,
+            options=tuple((value, label, False) for value, label, _ in asked.options),
+            notes=(said, *asked.notes),
+            required=True,
+            marks=mark(asked.field),
+        )
 
     def card_of(card: CardShown) -> CardShown:
         field = answer_field("destination", card.name)
         control = card.control
         if field in twice:
             said = line(field, {choice.value: choice.label for choice in control.choices})
-            control = dataclasses.replace(control, lost=said, preselected=False)
+            control = dataclasses.replace(
+                control,
+                choices=tuple(
+                    dataclasses.replace(choice, checked=False) for choice in control.choices
+                ),
+                lost=said,
+                preselected=False,
+                required=True,
+                marks=mark(field),
+            )
         return dataclasses.replace(
             card,
             checks=tuple(question(asked) for asked in card.checks),

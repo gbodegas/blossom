@@ -19,6 +19,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
 from blossom.screenshot_page import (
+    EMPTY,
     INSTRUCTIONS_ASKED,
     UNRESOLVED,
     PostRefused,
@@ -142,13 +143,19 @@ class ReviewPost:
     """Each box, or answer of one value, posted more than once with different values, by its
     field, with each value once in the order sent: the press is refused whole, neither value is
     taken, and the page names both at that field."""
+    left_open: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """Each box, or answer of one value, by its field, its page marked as sent twice
+    (``UNRESOLVED``) and this press left unanswered, with the values the mark holds: a box left
+    empty with its explicit choice unchosen, or typed beside that choice, and an answer left
+    unchosen. The press is refused whole, the box isn't taken, and the page names it again."""
 
     @property
     def refused(self) -> bool:
         """Whether the press is refused whole for what it posted: a box it can't take as posted, a
         choice beside "None of these apply", a kept row that isn't on the record, a joined note's
         tick posted twice with different values or marked so and left unanswered, or a box or
-        answer of one value posted twice with different values."""
+        answer of one value posted twice with different values or marked so and left
+        unanswered."""
         return bool(
             self.too_long
             or self.needed
@@ -158,6 +165,7 @@ class ReviewPost:
             or self.sent_twice
             or self.unanswered
             or self.twice
+            or self.left_open
         )
 
 
@@ -378,7 +386,12 @@ def read_review(
     posted with different values, each one its page could send, it is named in ``twice`` and
     taken as neither, and posted twice with one value, it is that one answer. A
     tick its page marks as sent twice (``UNRESOLVED``) is answered by adding the note or by
-    leaving it out; left unanswered, it is named in ``unanswered`` and the press is refused."""
+    leaving it out; left unanswered, it is named in ``unanswered`` and the press is refused. A
+    box its page marks so is answered by a typed value, or by the explicit choice beside it
+    (``EMPTY``, "No assigned date was given" for an assigned date) with the box left empty, which
+    is what the box left empty means; an answer its page marks so, by one of its options. A
+    marked box left empty with that choice unchosen, or typed beside it, and a marked answer left
+    unchosen, are named in ``left_open`` and the press is refused."""
     hidden = _signed_fields(items, page_key)
     offered, older = _signed_asks(hidden)
     try:
@@ -404,6 +417,8 @@ def read_review(
     rows_by_words: dict[str, dict[str, str]] = {}
     joined_sent: dict[str, list[str]] = {}
     marked: dict[str, tuple[str, ...]] = {}
+    marked_open: dict[str, tuple[str, ...]] = {}
+    emptied: set[str] = set()
     declined: set[str] = set()
     for name, value in rest:
         if name.startswith(JOINED_PREFIX) and name in offered:
@@ -414,6 +429,12 @@ def read_review(
             name.startswith(UNRESOLVED + JOINED_PREFIX) and name.removeprefix(UNRESOLVED) in offered
         ):
             marked[name.removeprefix(UNRESOLVED)] = _marked_values(value)
+        elif _marks_one_value(name, offered):
+            marked_open[name.removeprefix(UNRESOLVED)] = _marked_values(value)
+        elif name.startswith(EMPTY):
+            if name not in offered or value not in offered[name]:
+                raise PostRefused
+            emptied.add(f"correct:{name.removeprefix(EMPTY)}")
     sent_twice = tuple(sorted(name for name, sent in joined_sent.items() if len(sent) > 1))
     one_sent: dict[str, list[str]] = {}
     for name, value in rest:
@@ -424,7 +445,7 @@ def read_review(
     twice = {name: tuple(sent) for name, sent in one_sent.items() if len(sent) > 1}
     read_once: set[tuple[str, str]] = set()
     for name, value in rest:
-        if name in ("press", "unit") or name.startswith((READ_PREFIX, UNRESOLVED)):
+        if name in ("press", "unit") or name.startswith((READ_PREFIX, UNRESOLVED, EMPTY)):
             continue
         if name in sent_twice:
             continue
@@ -474,6 +495,20 @@ def read_review(
     for name in none_confirms(state, none_given):
         if name in offered and "as_read" in offered[name]:
             chosen.setdefault(name, ["as_read"])
+    left_open: dict[str, tuple[str, ...]] = {}
+    for name, as_marked in marked_open.items():
+        if name in twice:
+            continue
+        if name.startswith("correct:"):
+            key, field = _box(name.removeprefix("correct:"))
+            typed = bool(boxes.get((key, field), "").strip())
+            chose = name in emptied or (field == "assigned" and key in none_given)
+            # A typed value or the explicit choice answers it; neither, or both, leaves it open.
+            if typed == chose:
+                left_open[name] = as_marked
+                boxes.pop((key, field), None)
+        elif name not in chosen:
+            left_open[name] = as_marked
     folded = box_corrections(state, boxes, carried, none_given)
     corrections = folded.corrections
     answers = []
@@ -504,6 +539,7 @@ def read_review(
         if name not in chosen
         and name not in sent_twice
         and name not in twice
+        and name not in left_open
         and name.startswith(WITHDRAWABLE)
     ]
     for kind, subject in blank:
@@ -544,7 +580,7 @@ def read_review(
         conflicted=conflicted,
         choices={
             **_posted_choices(offered, chosen, rest),
-            **{name: () for name in twice if name.startswith("answer:")},
+            **{name: () for name in (*twice, *left_open) if name.startswith("answer:")},
         },
         unresolved=tuple(unresolved),
         dropped=folded.dropped,
@@ -552,7 +588,17 @@ def read_review(
         unanswered=unanswered,
         open_choices=open_choices,
         twice=twice,
+        left_open=left_open,
     )
+
+
+def _marks_one_value(name: str, offered: Mapping[str, frozenset[str]]) -> bool:
+    """Whether a posted field is an ``UNRESOLVED`` mark its page could carry for a box or an
+    answer of one value it offered."""
+    if not name.startswith(UNRESOLVED):
+        return False
+    field = name.removeprefix(UNRESOLVED)
+    return field.startswith(("correct:", "answer:")) and _one_value(field) and field in offered
 
 
 def _marked_values(value: str) -> tuple[str, ...]:

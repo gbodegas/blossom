@@ -42995,3 +42995,175 @@ def test_a_box_or_answer_sent_twice_with_one_value_is_that_one_answer(
         saved = followed(browser, send(browser, draft_id, [*fields, (name, shown)]))
 
     assert says(saved, imports.counted(2, 0, 0, 0))
+
+
+OPEN_FAMILIES: Final = ["title", "due", "note-due", "assigned", "destination"]
+"""The fields the unchanged retry and the explicit answer are pinned for: a formal card's title,
+due date and assigned date boxes, a note piece's due date box, and a destination answer."""
+NOTE_WORDS: Final = "Essay due November 20. Write about your favorite book."
+
+
+def open_field(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, family: str
+) -> tuple[str, str, str, tuple[str, str]]:
+    """A review with a field of this family: its draft, its page, the field's posted name and two
+    different values its page could send for it."""
+    if family == "destination":
+        draft_id, page, field = asked_with_two_options(browser, monkeypatch, "destination")
+        offered = [value for value, _ in options_of(page, field)]
+        return draft_id, page, field, (offered[0], offered[1])
+    answer = note_under("Monday 11/9/2026", NOTE_WORDS) if family == "note-due" else None
+    draft_id, page = read_review(browser, monkeypatch, (RED, answer or homework_answer()))
+    page = answered(browser, draft_id, page)
+    field = "due" if family == "note-due" else family
+    values = (
+        ("Typed once", "Typed again")
+        if field in ("title", "instruction:0")
+        else ("2026-10-12", "2026-10-13")
+    )
+    return draft_id, page, f"correct:{box_subject(page, field)}", values
+
+
+def empty_choice(form: str, name: str) -> str | None:
+    """The label of the explicit choice beside a marked box, or None where there is none."""
+    subject = name.removeprefix("correct:")
+    found = re.search(
+        rf'<input type="checkbox" name="empty:{re.escape(subject)}" value="empty"> <span>([^<]*)',
+        form,
+    )
+    return None if found is None else found.group(1)
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["first-then-second", "second-then-first"])
+@pytest.mark.parametrize("family", [*OPEN_FAMILIES, "instruction:0"])
+def test_a_field_sent_twice_comes_back_open_marked_and_offering_its_actual_choice(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, family: str, reverse: bool
+) -> None:
+    """Save with a box or a destination sent twice with different values, as injected
+    duplicate submissions, in either order: the box comes back empty with both values
+    named and its mark, and beside it the box's ordinary empty meaning as an explicit choice where
+    it has one; the destination comes back with its options, none chosen, required, marked."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, name, values = open_field(browser, monkeypatch, family)
+        fields = page_post(page, "save", tick=units_on(page))
+        refused = send(browser, draft_id, posted_twice(fields, name, values, reverse))
+
+    form = html.unescape(review_form(refused.text))
+    assert refused.status_code == 422
+    assert f'<input type="hidden" name="unresolved:{name}" value="' in form
+    if family == "destination":
+        radios = re.findall(rf'<input type="radio" name="{re.escape(name)}" [^>]*>', form)
+        assert len(radios) >= 2
+        assert all(" required" in radio and " checked" not in radio for radio in radios)
+        return
+    if family == "instruction:0":
+        assert re.search(rf'<textarea name="{re.escape(name)}" [^>]*>\n</textarea>', form)
+    else:
+        assert re.search(rf'name="{re.escape(name)}" value=""', form)
+    label = empty_choice(form, name)
+    if family == "note-due":
+        assert label == screenshot_page.SAID["empty_no_due"]
+    elif family == "instruction:0":
+        assert label == screenshot_page.SAID["empty_remove"]
+    elif family == "assigned":
+        assert label is not None
+        assert label.startswith("The date as read: ")
+    else:
+        assert label is None
+
+
+def answered_rows(browser: TestClient) -> list[tuple[str, str, date | None, date | None]]:
+    """Every assignment on the record by class, title, due and assigned date."""
+    return sorted(
+        ((a.course, a.title, a.due_date, a.assigned_on) for a in saved_rows(browser)), key=repr
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["first-then-second", "second-then-first"])
+@pytest.mark.parametrize("press", ["save", "keep"])
+@pytest.mark.parametrize("family", OPEN_FAMILIES)
+def test_a_field_sent_twice_stays_unanswered_until_the_family_answers_it(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    family: str,
+    press: str,
+    reverse: bool,
+) -> None:
+    """Save, or Keep these answers, with a box or a destination sent twice with different
+    values, as injected duplicate submissions, in either order: refused, naming it;
+    the returned form sent back unchanged is refused again, 422, the field named again and
+    nothing kept or saved; an explicit answer (a typed value, the box's explicit choice, or an
+    option) then keeps or saves once with exactly that answer."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, name, values = open_field(browser, monkeypatch, family)
+
+        def ticks(shown: str) -> list[str]:
+            return units_on(shown) if press == "save" else []
+
+        before = (stored_answers(browser, draft_id), answered_rows(browser))
+        fields = page_post(page, press, tick=ticks(page))
+        conflict = send(browser, draft_id, posted_twice(fields, name, values, reverse))
+        retry = send(browser, draft_id, page_post(conflict.text, press, tick=ticks(conflict.text)))
+        unwritten = (stored_answers(browser, draft_id), answered_rows(browser))
+        subject = name.removeprefix("correct:")
+        typed: dict[str, str] = {}
+        choose: dict[str, str] = {}
+        if family == "title":
+            typed[name] = "Typed answer"
+        elif family == "due":
+            typed[name] = "2026-10-14"
+        elif family == "destination":
+            choose[name] = values[1]
+        else:
+            choose[f"empty:{subject}"] = "empty"
+        chosen = page_post(retry.text, press, typed=typed, choose=choose, tick=ticks(retry.text))
+        answer = send(browser, draft_id, chosen)
+        answered_page = followed(browser, answer)
+        final = answered_page
+        if press == "save" and units_on(answered_page):
+            # A Save that shows an edit's effects first, or holds a group for checking, is
+            # followed by the Save on the page it gives back, as a family would press it.
+            again = page_post(answered_page, "save", tick=units_on(answered_page))
+            final = followed(browser, send(browser, draft_id, again))
+        after = (stored_answers(browser, draft_id), answered_rows(browser))
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+
+    sent = values[::-1] if reverse else values
+    assert conflict.status_code == 422
+    assert says(conflict.text, imports.PRESS_SAID["field_twice"])
+    assert retry.status_code == 422
+    assert says(retry.text, imports.PRESS_SAID["field_unanswered"])
+    assert unwritten == before
+    for refused in (conflict, retry):
+        form = html.unescape(review_form(refused.text))
+        assert f'name="unresolved:{name}"' in form
+        if family == "destination":
+            labels = tuple(option_label(page, name, value) for value in sent)
+            assert form.count(screenshot_page.said_twice("answer_twice", labels)) == 1
+        else:
+            assert form.count(screenshot_page.said_twice("box_twice", sent)) == 1
+    for shown in (answered_page, final, reopened):
+        assert "unresolved:" not in shown
+        assert not says(shown, imports.PRESS_SAID["field_unanswered"])
+        assert not says(shown, imports.PRESS_SAID["field_twice"])
+    assert answer.status_code != 422
+    new_rows = [row for row in after[1] if row not in before[1]]
+    if press == "keep":
+        assert says(answered_page, imports.PRESS_SAID["answers_kept"])
+        assert new_rows == []
+        if family == "destination":
+            assert after[0][("destination", name.split(":", 2)[2])] == values[1]
+        elif family in ("title", "due"):
+            assert f'value="{typed[name]}"' in html.unescape(review_form(answered_page))
+        return
+    assert re.search(r"Saved: |Nothing new to save", html.unescape(final))
+    assert len(new_rows) == len(set(new_rows))
+    if family == "title":
+        assert [row[1] for row in new_rows].count("Typed answer") == 1
+    elif family == "due":
+        assert [row[2] for row in new_rows].count(date(2026, 10, 14)) == 1
+    elif family == "note-due":
+        assert [(row[1], row[2]) for row in new_rows] == [("Essay", None)]
+    elif family == "assigned":
+        assert date(2026, 10, 5) in {row[3] for row in new_rows}
+        assert not {date(2026, 10, 12), date(2026, 10, 13)} & {row[3] for row in new_rows}
