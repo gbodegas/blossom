@@ -1884,6 +1884,12 @@ def rows_shown(
         *((q.field, [o[0] for o in q.options]) for q in names),
         *((q.field, [o[0] for o in q.options]) for q in splits),
     ]
+    # Each mark of a field sent twice, with the values it holds, is signed with the page, so a
+    # post whose marks differ (one dropped, added or changed) is not the page signed.
+    signed_marks: list[tuple[str, str]] = [
+        *(mark for q in names for mark in q.marks),
+        *(mark for q in splits for mark in q.marks),
+    ]
     for shown_unit in shown_units:
         for block in shown_unit.blocks:
             for card in block.cards:
@@ -1893,16 +1899,28 @@ def rows_shown(
                         [c.value for c in card.control.choices],
                     )
                 )
+                signed_marks += card.control.marks
                 for question in (*card.checks, *((card.type,) if card.type else ())):
                     asked_fields.append((question.field, [o[0] for o in question.options]))
+                    signed_marks += question.marks
                 for box in card.boxes:
                     asked_fields.append((box.name, ()))
+                    signed_marks += box.marks
                     if box.none is not None:
                         asked_fields.append((box.none[0], ("none",)))
                     if box.marks and box.empty is not None:
                         asked_fields.append((EMPTY + box.subject, (EMPTY_VALUE,)))
             for question in block.questions:
                 asked_fields.append((question.field, [o[0] for o in question.options]))
+                signed_marks += question.marks
+    # An answer sent twice is marked below (``_answers_twice``) with the values sent.
+    answers_asked = {name for name, _ in asked_fields if name.startswith("answer:")}
+    signed_marks += [
+        (f"{UNRESOLVED}{field}", json.dumps(list(values)))
+        for field, values in sorted((twice or {}).items())
+        if field in answers_asked
+    ]
+    asked_fields += [(name, (value,)) for name, value in signed_marks]
     hidden = [
         ("version", str(version)),
         ("progress_revision", str(progress_revision)),

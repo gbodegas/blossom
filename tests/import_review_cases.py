@@ -1294,14 +1294,15 @@ def press_over_socket(
 
 def body_of_fields(fields: Fields, count: int, total: int | None = None) -> bytes:
     """This post with fields nothing reads, up to this many fields, each of one length so the body
-    comes to exactly this many bytes, or as short as they can be."""
+    comes to exactly this many bytes, or as short as they can be. The fields one byte longer have
+    a name of their own, so no name is sent twice with different values."""
     body = as_a_browser_sends(fields)
     more = count - len(fields)
-    head = b"&read%3Azz="
+    head, longer = b"&read%3Azz=", b"&read%3Azy="
     if total is None:
         return body + (head + b"1") * more
     each, over = divmod(total - len(body) - more * len(head), more)
-    return body + (head + b"a" * each) * (more - over) + (head + b"a" * (each + 1)) * over
+    return body + (head + b"a" * each) * (more - over) + (longer + b"a" * (each + 1)) * over
 
 
 def body_with_a_paste(fields: Fields, box: str, typed: str, total: int) -> tuple[bytes, str]:
@@ -1322,14 +1323,20 @@ def in_writes(body: bytes, size: int) -> Iterator[bytes]:
 
 def padded_to(body: bytes, total: int, *, each: int = 4 * 1024 * 1024) -> Iterator[bytes]:
     """This body, then fields nothing reads, up to exactly this many bytes as sent, none of them
-    past ``each``."""
-    head = b"&read%3Azz="
+    past ``each``. Each field has a name of its own, so no name is sent twice with different
+    values."""
+
+    def head(count: int) -> bytes:
+        return b"&read%3Azz" + str(count).encode() + b"="
+
     yield body
     left = total - len(body)
-    assert left > len(head)
+    assert left > len(head(0))
+    count = 0
     while left > 0:
         take = min(left, each)
-        if left - take and left - take <= len(head):
-            take -= len(head)
-        yield head + b"a" * (take - len(head))
+        if left - take and left - take <= len(head(count + 1)):
+            take -= len(head(count + 1))
+        yield head(count) + b"a" * (take - len(head(count)))
         left -= take
+        count += 1

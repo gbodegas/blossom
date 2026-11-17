@@ -516,7 +516,9 @@ def read_review(
     from what the page signed (``field_role``): a page field, a ``read:`` mark or an
     ``UNRESOLVED`` mark among them, sent twice with different values refuses the whole post,
     naming no field, and sent twice with one value it is that one value. The group ticks are a
-    family answer of several values: each group sent twice is one tick."""
+    family answer of several values: each group sent twice is one tick. The ``UNRESOLVED`` marks
+    a post carries are exactly the ones its page signed, each with the values signed; a mark
+    dropped, added or holding other values refuses the whole post, naming no field."""
     hidden = _signed_fields(items, page_key)
     offered, older = _signed_asks(hidden)
     try:
@@ -543,6 +545,12 @@ def read_review(
         for name, values in sent_as.items()
     ):
         # A page field sent twice with different values: the whole post, naming no field.
+        raise PostRefused
+    if {
+        name: frozenset(values) for name, values in sent_as.items() if name.startswith(UNRESOLVED)
+    } != {name: values for name, values in offered.items() if name.startswith(UNRESOLVED)}:
+        # Marks other than the ones the page signed, one dropped, added or holding other
+        # values: the whole post, naming no field.
         raise PostRefused
     boxes: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}

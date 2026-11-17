@@ -3678,6 +3678,103 @@ def test_a_choice_sent_twice_stays_unanswered_until_the_family_answers_it(
         assert "Reading log" in rows
 
 
+MARKED = [
+    pytest.param("take", ("1", "0"), "1", id="tick"),
+    pytest.param("title", ("Reading log one", "Reading log two"), "Reading log answered", id="box"),
+    pytest.param("when", ("2026-11-02", "none"), "none", id="answer"),
+]
+"""A note's tick, its title box and its due-date choice, each sent twice, and an explicit answer
+to each."""
+
+
+def conflicted(client: TestClient, head: str, values: tuple[str, str]) -> tuple[str, str, Answer]:
+    """The noted paste's review with Reading log's field of this kind sent twice with these
+    values on Save, Map project ticked: the field, its card's title and the refusal."""
+    page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+    logged, mapped = key_of(page, "Reading log"), key_of(page, "Map project")
+    field = f"{head}-{logged}"
+    others = ticked_form(page) | {f"take-{mapped}": "1"}
+    if head != "take":
+        others[f"take-{logged}"] = "1"
+    sent = [*others.items(), *((field, value) for value in values)]
+    return field, "Reading log", sent_as_pairs(client, "keep", sent)
+
+
+@pytest.mark.parametrize("tamper", ["removed", "changed"])
+@pytest.mark.parametrize(("head", "values", "answer"), MARKED)
+def test_a_returned_review_whose_mark_does_not_match_its_page_is_refused_whole(
+    tmp_path: pathlib.Path, head: str, values: tuple[str, str], answer: str, tamper: str
+) -> None:
+    """A choice sent twice comes back marked, the mark signed with the page; the returned form
+    with that mark removed, or holding other values, is not the page that was signed: Save and
+    Review changes are refused whole as a review that could not be verified, nothing written,
+    the field marked again. The explicit answer on the returned page then saves once."""
+    with client_in(tmp_path) as client:
+        field, title, conflict = conflicted(client, head, values)
+        returned = ticked_form(conflict.text)
+        mark = f"unresolved-{field}"
+        present = mark in returned
+        if tamper == "removed":
+            returned.pop(mark, None)
+        else:
+            returned[mark] = json.dumps(["Another answer"])
+        refused = client.post("/parent/inbox/keep", data=returned)
+        refused_find = client.post("/parent/inbox/find", data=returned | {"recheck": "1"})
+        unwritten = record_counts(client)
+        reviewed = client.post(
+            "/parent/inbox/find",
+            data=ticked_form(conflict.text) | {field: answer, "recheck": "1"},
+        )
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        rows = {row.title: row for row in store_of(client).all_assignments()}
+
+    assert conflict.status_code == 422
+    assert present
+    for again in (refused, refused_find):
+        assert again.status_code == 409
+        assert f"{SUMMARY}{COULD_NOT_BE_VERIFIED}</p>" in again.text
+        assert f'name="{mark}"' in card(again.text, title)
+    assert unwritten == (0, 0, 0)
+    assert reviewed.status_code == 200
+    assert "unresolved-" not in reviewed.text
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=4&updated=0&unchanged=0")
+    if head == "title":
+        assert "Reading log answered" in rows
+    if head == "when":
+        assert rows["Reading log"].due_date is None
+
+
+@pytest.mark.parametrize(("head", "values", "answer"), MARKED)
+def test_a_choice_sent_twice_stays_unanswered_across_a_restart_until_answered(
+    tmp_path: pathlib.Path, head: str, values: tuple[str, str], answer: str
+) -> None:
+    """A choice sent twice comes back marked; the application starts again, so the returned
+    page cannot be verified, and its form sent back unchanged keeps the mark as posted:
+    refused, nothing written, the field marked again. The explicit answer then saves once."""
+    with client_in(tmp_path) as client:
+        field, title, conflict = conflicted(client, head, values)
+    with client_in(tmp_path) as client:
+        retry = client.post("/parent/inbox/keep", data=ticked_form(conflict.text))
+        unwritten = record_counts(client)
+        reviewed = client.post(
+            "/parent/inbox/find",
+            data=ticked_form(retry.text) | {field: answer, "recheck": "1"},
+        )
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        again = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+
+    assert conflict.status_code == 422
+    assert retry.status_code in (409, 422)
+    assert f'name="unresolved-{field}"' in card(retry.text, title)
+    assert unwritten == (0, 0, 0)
+    assert reviewed.status_code == 200
+    assert "unresolved-" not in reviewed.text
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=4&updated=0&unchanged=0")
+    assert again.headers["location"].endswith("added=0&updated=0&unchanged=4")
+
+
 def unresolved_kind(body: str, key: int) -> bool:
     """Whether a card's type comes back as a required choice with its empty first option
     selected and neither Homework nor Task chosen."""

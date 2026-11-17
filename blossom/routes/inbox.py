@@ -439,6 +439,9 @@ class PageMade:
     join_effects: dict[tuple[int, int], tuple[str, str]] = field(default_factory=dict)
     """For each note joined to a card, what the page said saving does with its tick as
     shown, then with it the other way, as ``join_effects`` puts them."""
+    unresolved: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    """Each choice the page marked as sent twice with different answers (``UNRESOLVED``),
+    with the values its mark holds, so a form whose marks differ is not the page signed."""
     verified: bool = field(default=True, compare=False)
     """Whether the form carried this process's signature for its draft. A form without one,
     such as a page made before the application started again, is read as a page that asked
@@ -463,13 +466,15 @@ def made_with_field(
     edits: Mapping[int, tuple[str, str]] | None = None,
     joined: Mapping[tuple[int, int], bool] | None = None,
     join_effects: Mapping[tuple[int, int], tuple[str, str]] | None = None,
+    unresolved: Mapping[str, tuple[str, ...]] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
     ties it to the page's draft. What the page said of the readings made from teachers'
     notes (``tasks``), and the title and due date it showed for each (``edits``), are
     written only when there are such readings; whether each note joined to a card was shown
     ticked (``joined``), and what saving does with its tick either way (``join_effects``),
-    only when there are such notes."""
+    only when there are such notes; each choice marked as sent twice and the values its mark
+    holds (``unresolved``), only when there are such marks."""
     answers = ",".join(f"{card}:{value}" for card, value in sorted((occurrences or {}).items()))
     context = {
         "asked": sorted([card, *question] for card, question in (asked or {}).items()),
@@ -503,6 +508,10 @@ def made_with_field(
         )
         context["join_effects"] = sorted(
             [card, place, *effects] for (card, place), effects in (join_effects or {}).items()
+        )
+    if unresolved:
+        context["unresolved"] = sorted(
+            [which, list(values)] for which, values in unresolved.items()
         )
     made = f"{answers};{json.dumps(context, separators=(',', ':'))}"
     return f"{made}.{_made_with_check(key, draft, made)}"
@@ -570,6 +579,10 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         (int(card), int(place)): (str(shown), str(other))
         for card, place, shown, other in context.get("join_effects", [])
     }
+    unresolved = {
+        str(which): tuple(str(value) for value in values)
+        for which, values in context.get("unresolved", [])
+    }
     return PageMade(
         occurrences,
         asked,
@@ -586,6 +599,7 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         edits,
         joined,
         join_effects,
+        unresolved,
     )
 
 
@@ -2059,6 +2073,7 @@ def preview_page(
                     for place in range(len(change.reading.joined_notes))
                 },
                 join_said,
+                unresolved,
             ),
             "joined_ticked": read.joined,
             "join_labels": join_labels,
@@ -2694,6 +2709,14 @@ def unanswered_marks(
     }
 
 
+def marks_unsigned(made: PageMade, fields: Iterable[tuple[str, object]], read: Read) -> bool:
+    """Whether a form's marks of choices sent twice (``UNRESOLVED``) differ from the ones its
+    page signed: a mark dropped, added, or holding other values. A page that cannot be verified
+    (made before the application started again) keeps every mark as posted, since a mark only
+    ever asks for an answer."""
+    return made.verified and unresolved_of(fields, read) != made.unresolved
+
+
 def unresolved_cards(unresolved: Mapping[str, object]) -> frozenset[int]:
     """The keys of the cards with an unresolved choice, a joined note's by its card."""
     return frozenset(int(which.split("-")[1]) for which in unresolved)
@@ -2917,10 +2940,15 @@ async def search_review(request: Request, state: State) -> Response:
             identities=identities,
             picks=page_made.picks,
         )
-        if page_twice(fields) or any(role != ANSWER for role in roles.values()):
-            # A page field sent twice with different answers is no form the page wrote: the
-            # whole press is refused as a review that could not be verified, before any press
-            # is taken, naming no field, the marks of unanswered choices kept.
+        unsigned = marks_unsigned(page_made, fields, read)
+        if unsigned or page_twice(fields) or any(role != ANSWER for role in roles.values()):
+            # A page field sent twice with different answers, or marks other than the ones the
+            # page signed, are no form the page wrote: the whole press is refused as a review
+            # that could not be verified, before any press is taken, naming no field, the
+            # marks of unanswered choices kept, every mark the page signed where its marks
+            # differ.
+            if unsigned:
+                unmet = {**unmet, **page_made.unresolved}
             shown = page_made.query
             return await asyncio.to_thread(
                 preview_or_recovery,
@@ -3247,11 +3275,15 @@ async def keep_readings(request: Request, state: State) -> Response:
             identities=identities,
             picks=picks,
         )
-        if page_twice(fields) or any(role != ANSWER for role in roles.values()):
-            # A page field sent twice with different answers is no form the page wrote:
-            # before any other refusal, nothing is written, and the whole form is refused as a
-            # review that could not be verified, naming no field, the marks of unanswered
-            # choices kept.
+        unsigned = marks_unsigned(page_made, fields, read)
+        if unsigned or page_twice(fields) or any(role != ANSWER for role in roles.values()):
+            # A page field sent twice with different answers, or marks other than the ones the
+            # page signed, are no form the page wrote: before any other refusal, nothing is
+            # written, and the whole form is refused as a review that could not be verified,
+            # naming no field, the marks of unanswered choices kept, with every mark
+            # the page signed where its marks differ.
+            if unsigned:
+                unmet = {**unmet, **page_made.unresolved}
             return await asyncio.to_thread(
                 preview_or_recovery,
                 request,
