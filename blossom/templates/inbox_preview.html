@@ -105,12 +105,12 @@
         <input type="hidden" name="folded-{{ change.key }}" value="{{ change.folded_into }}">
         {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}{% if change.reading.teacher_note %}
         {# A folded note is selected, and its tick travels with its answer. #}
-        <input type="hidden" name="offered-{{ change.key }}" value="1">
-        <input type="hidden" name="take-{{ change.key }}" value="1">
-        {# So do its title and due date, as typed. #}{% set fields = note_fields[change.key] %}
-        <input type="hidden" name="title-{{ change.key }}" value="{{ fields.title }}">{% if fields.chosen %}
+        <input type="hidden" name="offered-{{ change.key }}" value="1">{% if ("take-" ~ change.key) not in unresolved %}
+        <input type="hidden" name="take-{{ change.key }}" value="1">{% endif %}
+        {# So do its title and due date, as typed, except one sent twice, which its card below asks for. #}{% set fields = note_fields[change.key] %}{% if ("title-" ~ change.key) not in unresolved %}
+        <input type="hidden" name="title-{{ change.key }}" value="{{ fields.title }}">{% endif %}{% if ("when-" ~ change.key) not in unresolved %}{% if fields.chosen %}
         <input type="hidden" name="when-{{ change.key }}" value="{{ fields.chosen }}">{% endif %}
-        <input type="hidden" name="when_other-{{ change.key }}" value="{{ fields.other }}">{% endif %}{% for task in change.reading.joined_notes %}{% if (change.key, loop.index0) in joined_ticked %}
+        <input type="hidden" name="when_other-{{ change.key }}" value="{{ fields.other }}">{% endif %}{% endif %}{% for task in change.reading.joined_notes %}{% if (change.key, loop.index0) in joined_ticked and ("join-" ~ change.key ~ "-" ~ loop.index0) not in unresolved %}
         {# A note joined to a folded card travels with it, ticked as it was. #}
         <input type="hidden" name="join-{{ change.key }}-{{ loop.index0 }}" value="1">{% endif %}{% endfor %}
       {% endfor %}
@@ -127,7 +127,28 @@
           <p class="note">
             {% if week.helper %}{{ week.helper }}{% else %}{% set chosen = week.changes|rejectattr("left_out")|list|length %}{{ chosen }} assignment{% if chosen != 1 %}s{% endif %}:
             {{ week.count("new") }} new, {{ week.count("claimed") }} update{% if week.count("claimed") != 1 %}s{% endif %}, {{ week.count("known") }} already saved{% if week.count("review") %}, {{ week.count("review") }} need{% if week.count("review") == 1 %}s{% endif %} your answer{% endif %}.{% endif %}
-          </p>
+          </p>{% if loop.first %}{% for change in folded if change.key in folded_open %}
+          {# A carried answer of a folded card sent twice with different answers: the card shown again for that field only, nothing chosen and marked until it is answered, the answer that folded it kept as given. #}
+          {% set reading = change.reading %}{% set fields = note_fields.get(change.key) %}<article class="assignment reading-folded" id="card-{{ change.key }}" tabindex="-1">
+          <p class="course-name">{{ reading.course }}</p>
+          <h2>{{ reading.title }}</h2>
+          <p class="note">Folded into the card for the same assignment, as you said. Answer the choice below, then save.</p>{% if reading.teacher_note %}{% if ("title-" ~ change.key) in unresolved %}
+          <label>Title<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span>{% for said in twice_said.get("title-" ~ change.key, ()) %} <span class="problem">{{ said }}</span>{% endfor %} <input type="text" name="title-{{ change.key }}" value="" maxlength="{{ title_max_length }}" autocomplete="off" id="title-{{ change.key }}"></label>{% for name, value in unresolved["title-" ~ change.key] %}
+          <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}{% endif %}{% if ("when-" ~ change.key) in unresolved %}
+          <fieldset class="choice" id="when-{{ change.key }}" tabindex="-1">
+            <legend>Due date<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></legend>{% for said in twice_said.get("when-" ~ change.key, ()) %}
+            <p class="problem">{{ said }}</p>{% endfor %}{% for name, value in unresolved["when-" ~ change.key] %}
+            <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
+            {% for value, words, chosen in fields.choices %}<label><input type="radio" name="when-{{ change.key }}" value="{{ value }}"> <span>{{ words }}</span></label>
+            {% endfor %}<label><input type="radio" name="when-{{ change.key }}" value="other"> <span>Another date</span></label>
+            <label><span class="visually-hidden"> Another date for {{ reading.title }}, {{ reading.course }}</span> <input type="date" name="when_other-{{ change.key }}" value="{{ fields.other }}"></label>
+          </fieldset>{% endif %}{% endif %}{% for task in reading.joined_notes %}{% set join_field = "join-" ~ change.key ~ "-" ~ loop.index0 %}{% if join_field in unresolved %}
+          <div class="choice">
+            <label><input type="radio" name="{{ join_field }}" value="1" required> <span>Add this note to the assignment<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
+            <label><input type="radio" name="{{ join_field }}" value="0" required> <span>Don't add it<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>{% for name, value in unresolved[join_field] %}<input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}{% for said in twice_said.get(join_field, ()) %}
+            <p class="problem">{{ said }}</p>{% endfor %}
+          </div>{% endif %}{% endfor %}
+          </article>{% endfor %}{% endif %}
           {% for change in week.changes %}
             {% set reading = change.reading %}{# A note not selected that asks once selected shows that question before it is selected. #}{% set asking = unselected_asks.get(change.key, change) %}{% set given = occurrence_given.get(change.key) %}
             <article class="assignment reading-{{ change.state }}"{% if check_card == change.key %} id="card-{{ change.key }}" tabindex="-1"{% endif %}>
@@ -136,9 +157,7 @@
               <p class="status">
                 <span class="pill">{{ change.label }}</span>
                 {% if reading.reported_status %}<span class="pill">School reported: {{ reading.reported_status }}</span>{% endif %}
-              </p>{% if change.key in twice_on %}
-              {# A field of this card with no line of its own sent twice with different answers, so the page refused it whole. #}
-              <p class="problem">A choice on this card was sent twice with different answers. Choose it once.</p>{% endif %}
+              </p>
               {% if (change.dates_differ or asking.state == "review") and asking.beside and reading.due_date %}
                 <dl class="compare">
                   <dt>{% if asking.on_record %}Saved due date{% else %}Also due in this text{% endif %}</dt>
@@ -212,7 +231,10 @@
                 {% endif %}
                 {% set described = ((["problem-summary"] if problem_target == change.key else []) + (["kept-separate-" ~ change.key] if change.kept_separate else []))|join(" ") %}
                 <fieldset class="choice identity" id="identity-question-{{ change.key }}" tabindex="-1"{% if described %} aria-describedby="{{ described }}"{% endif %}>
-                  <legend>{% if change.identity_question == "report" and report %}Which homework is this report about?{% elif change.candidates|length == 1 %}Is this the same homework?{% else %}Which homework is this?{% endif %}</legend>
+                  <legend>{% if change.identity_question == "report" and report %}Which homework is this report about?{% elif change.candidates|length == 1 %}Is this the same homework?{% else %}Which homework is this?{% endif %}</legend>{% for said in twice_said.get("identity-" ~ change.key, ()) %}
+                  <p class="problem">{{ said }}</p>{% endfor %}{% for name, value in unresolved.get("identity-" ~ change.key, ()) %}
+                  {# An answer sent twice with different answers, unanswered: every choice offered, none chosen, marked until one is. #}
+                  <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
                   {% for candidate in change.candidates %}
                     <label><input type="radio" name="identity-{{ change.key }}" value="{{ same_as(candidate.assignment_id) }}"> <span>{% if change.candidates|length == 1 %}Same homework{% else %}<span class="authored-text">{{ candidate.title }}</span>, {{ candidate.course }}{% endif %} <span class="source">{% if candidate.due_date %}Due {{ spoken_day(candidate.due_date) }}{% else %}No due date yet{% endif %}. {% if candidate.assignment_id in change.identity_hers %}From her note{% if candidate.note_by == "student" %}: <q class="authored-text">{{ candidate.note }}</q>{% else %}.{% endif %}{% elif came_from(candidate) %}{{ came_from(candidate) }}{% endif %} {% if change.candidates|length == 1 and change.identity_question == "hers" %}{% if reading.origin == "PARENT_ENTRY" %}The dates entered here go to her assignment.{% else %}The school's dates, reports, and instructions go to her assignment.{% endif %} Her note stays hers. {% endif %}Id {{ candidate.assignment_id }}.</span></span></label>
                   {% endfor %}
@@ -226,14 +248,17 @@
                 {# The page notes the cards it asks which homework they are. #}
                 <input type="hidden" name="which-{{ change.key }}" value="1">{% endif %}
                 <fieldset class="choice" id="occurrence-question-{{ change.key }}" tabindex="-1"{% if problem_target == change.key %} aria-describedby="problem-summary"{% endif %}>
-                  <legend>Which is it?</legend>
+                  <legend>Which is it?</legend>{% for said in twice_said.get("occurrence-" ~ change.key, ()) %}
+                  <p class="problem">{{ said }}</p>{% endfor %}{% for name, value in unresolved.get("occurrence-" ~ change.key, ()) %}
+                  {# An answer sent twice with different answers, unanswered: every choice offered, none chosen, marked until one is. #}
+                  <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
                   {% if reading.teacher_note and asking.beside %}{# A note's choices say what each does to the due date; the date is changed only by the choice that says so. An answer given on a note not selected stays chosen. #}<label><input type="radio" name="occurrence-{{ change.key }}" value="keep"{% if given == "keep" %} checked{% endif %}> The same assignment; keep its due date of {{ spoken_day(asking.beside) }}</label>{% if reading.due_date and reading.due_date != asking.beside %}
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="update"{% if given == "update" %} checked{% endif %}> The same assignment; change its due date from {{ spoken_day(asking.beside) }} to {{ spoken_day(reading.due_date) }}</label>{% endif %}{% else %}<label><input type="radio" name="occurrence-{{ change.key }}" value="update"{% if given == "update" %} checked{% endif %}> {% if reading.teacher_note %}The same assignment{% else %}The same assignment, its due date changed{% endif %}</label>{% endif %}
                   <label><input type="radio" name="occurrence-{{ change.key }}" value="new"{% if given == "new" %} checked{% endif %}> New work under the same name</label>
                 </fieldset>
-              {% elif change.occurrence %}
-                {# An answer given already rides along, so a page returned for another question keeps it. #}
-                <input type="hidden" name="occurrence-{{ change.key }}" value="{{ change.occurrence }}">
+              {% elif change.occurrence or change.key in occurrence_kept %}
+                {# An answer given already rides along, so a page returned for another question keeps it, as does the answer that folded a note whose tick waits for the family's answer. #}
+                <input type="hidden" name="occurrence-{{ change.key }}" value="{{ change.occurrence or occurrence_kept[change.key] }}">
               {% endif %}
               {% if change.key in answered %}
                 {# So does an answer about which homework this is, with the token its question was signed with. #}
@@ -276,7 +301,8 @@
                 {% set looking = search_view is not none and search_view.key == change.key %}
                 <details class="rename" id="rename-{{ change.key }}"{% if looking or change.key in unsaved_picks or focus == "rename-" ~ change.key %} open{% endif %}>
                   <summary{% if focus == "rename-" ~ change.key %} autofocus{% endif %}>Is this homework already here under another name?</summary>
-                  <p class="helper">Search the homework saved here by words from its class or title, then choose it. Nothing is saved until you press Save.</p>
+                  <p class="helper">Search the homework saved here by words from its class or title, then choose it. Nothing is saved until you press Save.</p>{% for said in twice_said.get("search-" ~ change.key, ()) %}
+                  <p class="problem">{{ said }}</p>{% endfor %}
                   <div class="search-line">
                     <label for="search-{{ change.key }}">Class or title words</label>
                     <input type="text" id="search-{{ change.key }}" name="search-{{ change.key }}" maxlength="{{ query_max_length }}" value="{{ typed.get(change.key, '') }}" autocomplete="off">
@@ -309,7 +335,7 @@
               <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
               <input type="hidden" name="shown-{{ change.key }}" value="{{ change.kind.value }}">
               {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}
-              {% set kind_open = ("kind-" ~ change.key) in unresolved %}<label class="type-choice">Type
+              {% set kind_open = ("kind-" ~ change.key) in unresolved %}<label class="type-choice">Type{% for said in twice_said.get("kind-" ~ change.key, ()) %} <span class="problem">{{ said }}</span>{% endfor %}
                 <select name="kind-{{ change.key }}" data-saved="{{ change.suggested.value }}"{% if kind_open %} required{% endif %}>{% if kind_open %}
                   {# A type sent twice with different answers, unanswered: both offered, neither chosen, marked until one is. #}
                   <option value="" selected>Choose one</option>{% endif %}

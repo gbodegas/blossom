@@ -19,6 +19,7 @@ import asyncio
 import hmac
 import json
 import logging
+import re
 import secrets
 import sqlite3
 from collections.abc import Collection, Iterable, Mapping, Sequence
@@ -201,6 +202,14 @@ TITLE_TWICE: Final = "The title was sent twice with different answers: {values}.
 WHEN_TWICE: Final = "The due date was sent twice with different answers: {values}. Choose one."
 OTHER_TWICE: Final = (
     "The date beside Another date was sent twice with different answers: {values}. Choose one."
+)
+KIND_TWICE: Final = "The type was sent twice with different answers. Choose one."
+SEARCH_TWICE: Final = "The search words were sent twice with different answers. Type them again."
+OCCURRENCE_TWICE: Final = (
+    "The answer to which it is was sent twice with different answers. Choose one."
+)
+IDENTITY_TWICE: Final = (
+    "The answer to which homework this is was sent twice with different answers. Choose one."
 )
 UNANSWERED_TWICE: Final = (
     "A choice sent twice with different answers needs your answer, so nothing was saved. "
@@ -593,21 +602,27 @@ def identity_answers(
     field as sent: each names a homework the signed question listed, or different homework,
     with the creation token the page made for that card. The second value says whether
     anything was sent that the page did not ask or give: an answer on a card it did not ask,
-    a homework it did not list, a token it did not make, or a field sent twice or as a
-    file, which leaves that card with no answer. Such a form is refused whole."""
+    a homework it did not list, a token it did not make, a token sent twice, or a field sent
+    as a file, which leaves that card with no answer. Such a form is refused whole. An answer
+    sent twice with the same value is that answer; sent twice with different values it leaves
+    the card with no answer, and ``sent_twice`` names it at its question."""
     answers: dict[int, IdentityAnswer] = {}
     unreadable = False
-    seen: set[str] = set()
+    seen: dict[str, str] = {}
     bent: set[int] = set()
     for name, value in fields:
         head, _, card = name.rpartition("-")
         if head not in ("identity", "creation") or not review_key(card):
             continue
+        if head == "identity" and name in seen and isinstance(value, str):
+            if value != seen[name]:
+                bent.add(int(card))
+            continue
         if name in seen or not isinstance(value, str):
             unreadable = True
             bent.add(int(card))
             continue
-        seen.add(name)
+        seen[name] = value
         question = page.identities.get(int(card))
         if question is None:
             unreadable = True
@@ -2052,9 +2067,23 @@ def preview_page(
             ),
             "note_fields": note_fields(changes, read, moment_of(state, draft)[1]),
             "editing": opened,
-            "twice_on": cards_twice(twice or {}),
             "twice_said": twice_said(twice or {}),
             "unresolved": unresolved_at(unresolved or {}),
+            # A folded note's card with a carried answer sent twice is shown again so that
+            # field can be answered, the answer that folded it kept as given.
+            "folded_open": {change.key for change in folded}
+            & {
+                int(which.split("-")[1])
+                for which in unresolved or {}
+                if which.split("-")[0] in ("take", "join", *BOX_FIELDS)
+            },
+            # The answer to which it is of a note whose tick waits for the family's answer,
+            # carried as given, so the answer that folded it stays.
+            "occurrence_kept": {
+                key: value
+                for key, value in (occurrences or {}).items()
+                if f"take-{key}" in (unresolved or {}) and key in read.left_out
+            },
             # The note cards whose title or due-date answers were sent, which a card shown as
             # reviewed carries as sent.
             "answered_tasks": frozenset(answer.key for answer in read.answers),
@@ -2202,24 +2231,227 @@ PAGE_FIELDS: Final = frozenset({"text", *ENTRY_FIELDS, *STAMPS, "made_with"})
 """The fields a review sends once for the whole page, each one answer: the draft, the day and
 moment it was first read, and the page's signature."""
 
+ANSWER: Final = "answer"
+"""A family answer: a control the family sets, or one such answer the page carries hidden."""
+PAGE: Final = "page"
+"""A page field: signed state, a technical field of a card, or a mark the page writes."""
+PRESS: Final = "press"
+"""A press: the name of a submit button."""
+VISIBLE: Final = "visible"
+HIDDEN: Final = "hidden"
+
+NUMBER: Final = "(?:0|[1-9][0-9]{0,5})"
+"""A key or a place as the page writes it, spelled as ``review_key`` reads it."""
+
+
+def _numbered(heads: str, places: int = 1) -> str:
+    """The exact grammar of a card's field: one of ``heads``, then that many numbers."""
+    return f"(?:{heads})" + f"-{NUMBER}" * places
+
+
+MARKED: Final = "|".join(
+    (
+        _numbered("take|title|when|when_other|kind|occurrence|identity"),
+        _numbered("join", 2),
+    )
+)
+"""The grammar of the fields an ``unresolved-<field>`` mark names."""
+
+
+@dataclass(frozen=True)
+class ReviewField:
+    """One family of the fields the School text review's own form posts, to Save and to the
+    review's own presses: the exact grammar of its names, how the page renders it
+    (``visible``, ``hidden``, or ``press`` for a submit button), its class (``answer``,
+    ``page`` or ``press``), and its shape (``one``: each name carries one value)."""
+
+    grammar: str
+    rendering: str
+    role: str
+    shape: str = "one"
+
+
+REVIEW_FIELDS: Final = (
+    ReviewField("text", HIDDEN, PAGE),
+    ReviewField("|".join(ENTRY_FIELDS), HIDDEN, PAGE),
+    ReviewField("|".join(STAMPS), HIDDEN, PAGE),
+    ReviewField(MADE_WITH, HIDDEN, PAGE),
+    ReviewField(_numbered("offered"), HIDDEN, PAGE),
+    ReviewField(_numbered("take|title|when|when_other"), VISIBLE, ANSWER),
+    ReviewField(_numbered("take|title|when|when_other"), HIDDEN, ANSWER),
+    ReviewField(_numbered("join", 2), VISIBLE, ANSWER),
+    ReviewField(_numbered("join", 2), HIDDEN, ANSWER),
+    ReviewField(_numbered("editing"), HIDDEN, PAGE),
+    ReviewField(f"unresolved-(?:{MARKED})", HIDDEN, PAGE),
+    ReviewField(_numbered("occurrence|kind|search"), VISIBLE, ANSWER),
+    ReviewField(_numbered("occurrence|kind|search"), HIDDEN, PAGE),
+    ReviewField(_numbered("suggested|shown|chosen|folded|asked|which"), HIDDEN, PAGE),
+    ReviewField(_numbered("identity"), VISIBLE, ANSWER),
+    ReviewField(_numbered("identity"), HIDDEN, ANSWER),
+    ReviewField(_numbered("creation|picked|instructions|unsaved_why"), HIDDEN, PAGE),
+    ReviewField(_numbered("link|apply", 2), VISIBLE, ANSWER),
+    ReviewField(_numbered("none"), VISIBLE, ANSWER),
+    ReviewField(_numbered("row|instruction|unsaved_unshown|unsaved_none", 2), HIDDEN, PAGE),
+    ReviewField(_numbered("unsaved|unsaved_row", 3), HIDDEN, PAGE),
+    ReviewField("recheck|details|find|results_page|choose|remove", PRESS, PRESS),
+)
+"""Every field of the School text review's own form, each family once per rendering: the
+draft, the day and moment it was read, and the signature; a note's offered mark, its tick,
+title, due date and date box (answers where shown and where a closed or folded card carries
+them), a joined note's tick, the mark of details open and of a field sent twice; which it is,
+its type and its search words (answers where shown, page fields where carried); what the page
+showed and suggested beside them; which homework it is, shown or carried, with its signed
+token; homework chosen under another name; her notes to link; the school's instructions asked
+about and the choices said back as not saved; and the presses."""
+
+
+def review_field(name: str, rendering: str) -> ReviewField | None:
+    """The entry of ``REVIEW_FIELDS`` whose grammar matches the whole of ``name`` as rendered
+    so, or ``None``: no prefix of a name matches."""
+    return next(
+        (
+            entry
+            for entry in REVIEW_FIELDS
+            if entry.rendering == rendering and re.fullmatch(entry.grammar, name)
+        ),
+        None,
+    )
+
+
+@dataclass(frozen=True)
+class Shown:
+    """What a review showed of the fields a page renders as a control on one card and hidden
+    on another, worked out again from the read and the answers sent with it: the cards shown
+    with their Type select, and the cards that ask which it is."""
+
+    selects: frozenset[int]
+    asks: frozenset[int]
+
+
+def shown_of(changes: Sequence[Change], when_selected: Sequence[Change], read: Read) -> Shown:
+    """The cards a review shows with their Type select (selected and not folded) and those
+    that ask which it is: a card shown that asks, and a note not selected that asks once
+    selected beside a card of its name in the text."""
+    shown = [change for change in changes if change.state != FOLDED]
+    here = {
+        change.reading.pair
+        for change in shown
+        if change.reading.teacher_note is None and not change.left_out
+    }
+    return Shown(
+        frozenset(change.key for change in shown if not change.left_out),
+        frozenset(change.key for change in shown if not change.left_out and change.ambiguous)
+        | frozenset(
+            change.key
+            for change in when_selected
+            if change.key in read.left_out
+            and change.reading.pair in here
+            and change.ambiguous
+            and change.on_record is None
+        ),
+    )
+
+
+def field_role(name: str, read: Read, made: PageMade, shown: Shown) -> str | None:
+    """The class the server takes for a field a form sent, from the page it signed or worked
+    out again from the read, never from the name alone: ``answer``, ``page``, ``press``, or
+    ``None`` for a name outside ``REVIEW_FIELDS``. A note's tick, title and due date are
+    answers on a note's card, shown or carried; a card's type is one where the card shows its
+    select, its answer to which it is where it asks and the signed page carries no answer
+    for it, its search words where the signed page offered the search, and its answer to
+    which homework it is where the signed page asked or carried it. Any of these anywhere
+    else is a page field."""
+    roles = {entry.role for entry in REVIEW_FIELDS if re.fullmatch(entry.grammar, name)}
+    if not roles:
+        return None
+    head, _, rest = name.partition("-")
+    if not rest or head not in {"take", "join", *BOX_FIELDS, *MARKED_HEADS, "search"}:
+        return next(iter(roles)) if len(roles) == 1 else PAGE
+    numbers = [int(number) for number in rest.split("-")]
+    key = numbers[0]
+    if head in ("take", *BOX_FIELDS):
+        on_note = key < len(read.items) and read.items[key].teacher_note is not None
+        return ANSWER if on_note else PAGE
+    if head == "join":
+        joined = key < len(read.items) and numbers[1] < len(read.items[key].joined_notes)
+        return ANSWER if joined else PAGE
+    if head == KIND_FIELD:
+        return ANSWER if key in shown.selects else PAGE
+    if head == "occurrence":
+        carried = key in made.occurrences and key not in read.left_out
+        return ANSWER if not carried and key in shown.asks else PAGE
+    if head == "search":
+        return ANSWER if key in made.offers else PAGE
+    if head == "identity":
+        return ANSWER if key in made.identities else PAGE
+    return next(iter(roles)) if len(roles) == 1 else PAGE
+
+
+def twice_roles(
+    state: ApplicationState,
+    read: Read,
+    made: PageMade,
+    twice: Mapping[str, int],
+    *,
+    occurrences: Mapping[int, str],
+    kinds: Mapping[int, AssignmentKind],
+    identities: Mapping[int, IdentityAnswer],
+    picks: Mapping[int, Pick],
+) -> dict[str, str | None]:
+    """The class the server takes for each field ``sent_twice`` found (``field_role``). The
+    review is compared with the record again only when a card's type or its answer to which
+    it is was sent twice, as only those take their class from what the review shows."""
+    shown = Shown(frozenset(), frozenset())
+    if any(name.partition("-")[0] in (KIND_FIELD, "occurrence") for name in twice):
+        store = state.project_state
+        changes = changes_for(
+            read.items,
+            store,
+            occurrences=occurrences,
+            kinds=kinds,
+            identities=identities,
+            picks=picks,
+            left_out=read.left_out,
+        )
+        when_selected = changes
+        if read.left_out:
+            when_selected = changes_for(
+                read.items,
+                store,
+                occurrences={
+                    key: value for key, value in occurrences.items() if key not in read.left_out
+                },
+                kinds=kinds,
+                identities=identities,
+                picks=picks,
+                left_out=frozenset(),
+            )
+        shown = shown_of(changes, when_selected, read)
+    return {name: field_role(name, read, made, shown) for name in twice}
+
+
+TWICE_HEADS: Final = TICK_FIELDS | BOX_FIELDS | CARD_FIELDS | {"identity"}
+"""The heads of the fields of a card ``sent_twice`` reads, beside the marks of them."""
+
 
 def sent_twice(fields: Iterable[tuple[str, object]]) -> dict[str, int]:
     """Each field a form sends once for a card that came more than once with different
     values, read from every field as sent, with the key of the card it is on: the ticks
     ``offered-<key>``, ``take-<key>`` and ``join-<card>-<place>``, the note boxes
-    ``title-<key>``, ``when-<key>`` and ``when_other-<key>``, and the ``CARD_FIELDS``. A
-    value sent as a file differs from every text. The same value sent twice is one answer."""
+    ``title-<key>``, ``when-<key>`` and ``when_other-<key>``, the ``CARD_FIELDS``, the answer
+    ``identity-<key>``, and the mark ``unresolved-<field>`` of any of them. A value sent as a
+    file differs from every text. The same value sent twice is one answer."""
     values: dict[str, set[str | None]] = {}
+    keys: dict[str, int] = {}
     for name, value in fields:
         head, _, rest = name.partition("-")
+        if head == UNRESOLVED:
+            head, _, rest = rest.partition("-")
         card = rest.partition("-")[0]
-        if head in TICK_FIELDS | BOX_FIELDS | CARD_FIELDS and review_key(card):
+        if head in TWICE_HEADS and review_key(card):
             values.setdefault(name, set()).add(value if isinstance(value, str) else None)
-    return {
-        name: int(name.partition("-")[2].partition("-")[0])
-        for name, sent in values.items()
-        if len(sent) > 1
-    }
+            keys[name] = int(card)
+    return {name: keys[name] for name, sent in values.items() if len(sent) > 1}
 
 
 def page_twice(fields: Iterable[tuple[str, object]]) -> frozenset[str]:
@@ -2264,19 +2496,32 @@ def said_date(value: str) -> str:
         return f'"{value}"'
 
 
+FIELD_TWICE: Final = {
+    "join": JOIN_TWICE,
+    "kind": KIND_TWICE,
+    "search": SEARCH_TWICE,
+    "occurrence": OCCURRENCE_TWICE,
+    "identity": IDENTITY_TWICE,
+}
+"""What a joined note's tick, a card's type, its search words, its answer to which it is and
+its answer to which homework it is say at their field when sent twice with different
+answers."""
+
+
 def twice_said(twice: Mapping[str, tuple[str, ...]]) -> dict[str, list[str]]:
-    """For each field of a note card sent twice with different answers, the lines said at the
-    field they sit at: ``take-<key>`` beside the note's tick, ``title-<key>`` in the title's
-    label, ``when-<key>`` in the due date's fieldset, and ``join-<card>-<place>`` beside a
-    joined note's tick. Each line says which choice it is and, for a title or a date, each
-    value sent."""
+    """For each family answer sent twice with different answers, the lines said at the field
+    they sit at: ``take-<key>`` beside the note's tick, ``title-<key>`` in the title's label,
+    ``when-<key>`` in the due date's fieldset, ``join-<card>-<place>`` beside a joined note's
+    tick, ``kind-<key>`` in the type's label, ``search-<key>`` above the search box, and
+    ``occurrence-<key>`` and ``identity-<key>`` in their question. Each line says which choice
+    it is and, for a title or a date, each value sent."""
     said: dict[str, list[str]] = {}
     for name, values in sorted(twice.items()):
         head, _, rest = name.partition("-")
-        if head in ("offered", "take"):
-            at, line = f"take-{rest}", TICK_TWICE
-        elif head == "join":
-            at, line = name, JOIN_TWICE
+        if head == "take":
+            at, line = name, TICK_TWICE
+        elif head in FIELD_TWICE:
+            at, line = name, FIELD_TWICE[head]
         elif head == "title":
             at = name
             line = TITLE_TWICE.format(values=" and ".join(f'"{value}"' for value in values))
@@ -2295,37 +2540,42 @@ def twice_said(twice: Mapping[str, tuple[str, ...]]) -> dict[str, list[str]]:
 UNRESOLVED: Final = "unresolved"
 """The head of the field a returned review carries for each choice sent twice with different
 answers, ``unresolved-<field>``, holding the values sent, until the family answers it: a
-note's tick, a joined note's tick, a title box, a due-date choice, a date box or a card's
-type."""
+note's tick, a joined note's tick, a title box, a due-date choice, a date box, a card's type,
+its answer to which it is, or its answer to which homework it is."""
 
 KIND_FIELD: Final = "kind"
 """The field of a card's Homework or Task choice, which a conflict leaves open until the
 family chooses one, on any card."""
 
+MARKED_HEADS: Final = frozenset({KIND_FIELD, "occurrence", "identity"})
+"""The answers of any card, beside a note's fields, that a conflict leaves marked until the
+family answers them."""
+
 
 def unresolved_from(twice: Mapping[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
-    """The choices among those sent twice the family answers on the page, each by the field
-    it is answered with (a note's offered field by its tick), with the values sent: the note
-    fields and a card's type."""
+    """The family answers among those sent twice that the family answers again on the page,
+    with the values sent: the note fields, and a card's type, its answer to which it is and
+    its answer to which homework it is."""
     found: dict[str, tuple[str, ...]] = {}
     for name, values in twice.items():
-        head, _, rest = name.partition("-")
-        if head in TICK_FIELDS | BOX_FIELDS or head == KIND_FIELD:
-            found[f"take-{rest}" if head == "offered" else name] = values
+        head = name.partition("-")[0]
+        if head in {"take", "join", *BOX_FIELDS, *MARKED_HEADS}:
+            found[name] = values
     return found
 
 
 def unresolved_of(fields: Iterable[tuple[str, object]], read: Read) -> dict[str, tuple[str, ...]]:
     """The choices a form marks as sent twice with different answers (``UNRESOLVED``), each
-    with the values the marks hold: a note field, or a card's type; a mark on no such field of
-    this read, or sent as a file, is ignored, and values that cannot be read are none."""
+    with the values the marks hold: a note field, or a card's type, answer to which it is or
+    answer to which homework it is; a mark on no such field of this read, or sent as a file,
+    is ignored, and values that cannot be read are none."""
     notes = {key for key, item in enumerate(read.items) if item.teacher_note is not None}
     joined = {
         f"join-{key}-{place}"
         for key, item in enumerate(read.items)
         for place in range(len(item.joined_notes))
     }
-    typed = {f"{KIND_FIELD}-{key}" for key in range(len(read.items))}
+    typed = {f"{head}-{key}" for head in MARKED_HEADS for key in range(len(read.items))}
     marked: dict[str, list[str]] = {}
     for name, value in fields:
         head, _, which = name.partition("-")
@@ -2346,13 +2596,18 @@ def unresolved_of(fields: Iterable[tuple[str, object]], read: Read) -> dict[str,
 
 def answered(form: Mapping[str, str], which: str) -> bool:
     """Whether a form answers a choice marked as sent twice: a tick by either choice, a title
-    box by a title, a due date by a choice, another date with its date, and a card's type by
-    Homework or Task."""
+    box by a title, a due date by a choice, another date with its date, a card's type by
+    Homework or Task, its answer to which it is by one of its choices, and its answer to
+    which homework it is by any answer, which the save then checks against the question."""
     head, _, key = which.partition("-")
     if head in ("take", "join"):
         return form.get(which) in ("1", "0")
     if head == KIND_FIELD:
         return form.get(which) in dict(KIND_CHOICES)
+    if head == "occurrence":
+        return form.get(which) in (UPDATE, NEW_WORK, KEEP_DATE)
+    if head == "identity":
+        return bool(form.get(which))
     if head == "title":
         return bool(form.get(which, "").strip())
     when = form.get(f"when-{key}", "")
@@ -2393,17 +2648,6 @@ def unresolved_at(unresolved: Mapping[str, tuple[str, ...]]) -> dict[str, list[t
         anchor = f"when-{rest}" if head == "when_other" else which
         at.setdefault(anchor, []).append((which, json.dumps(list(values))))
     return at
-
-
-def cards_twice(twice: Mapping[str, object]) -> frozenset[int]:
-    """The keys of the cards with one of the ``CARD_FIELDS`` sent twice with different
-    answers, which the card says above its fields, as they have no line of their own."""
-    return frozenset(
-        int(rest.partition("-")[0])
-        for name in twice
-        for head, _, rest in [name.partition("-")]
-        if head in CARD_FIELDS
-    )
 
 
 async def submitted(request: Request) -> dict[str, str]:
@@ -2593,13 +2837,55 @@ async def search_review(request: Request, state: State) -> Response:
         }
         twice = sent_twice(fields)
         unmet = unanswered_marks(form, fields, read)
+        roles = await asyncio.to_thread(
+            twice_roles,
+            state,
+            read,
+            page_made,
+            twice,
+            occurrences=occurrences,
+            kinds=kinds,
+            identities=identities,
+            picks=page_made.picks,
+        )
+        if page_twice(fields) or any(role != ANSWER for role in roles.values()):
+            # A page field sent twice with different answers is no form the page wrote: the
+            # whole press is refused as a review that could not be verified, before any press
+            # is taken, naming no field, the marks of unanswered choices kept.
+            shown = page_made.query
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=page_made.picks,
+                search=None if shown is None else SearchShown(shown[0], shown[1], shown[2]),
+                typed=typed,
+                refused="stale",
+                check=frozenset(),
+                twice=unmet,
+                unresolved=unmet,
+                editing=editing | unresolved_boxes(unmet),
+                notice=REVIEW_UNVERIFIED,
+                status_code=status.HTTP_409_CONFLICT,
+            )
         if twice or unmet:
-            # A field sent once for a card that came twice with different answers, or a note
-            # field marked as sent twice and not answered since: before any press is taken, no
+            # A family answer sent once for a card that came twice with different answers, or
+            # one marked as sent twice and not answered since: before any press is taken, no
             # answer is taken by the order its values came in, and the review comes back
-            # saying so at each field, as Save does, each note field offering its actual
-            # choice with nothing chosen and marked until it is answered, the details of a
-            # note box concerned open.
+            # saying so at each field, as Save does, each offering its actual choice with
+            # nothing chosen and marked until it is answered, the details of a note box
+            # concerned open.
             sent = twice_values(fields, twice)
             unresolved = {**unmet, **unresolved_from(sent)}
             shown = page_made.query
@@ -2881,10 +3167,52 @@ async def keep_readings(request: Request, state: State) -> Response:
         occurrences, kinds = answers_from(form, await asyncio.to_thread(unasked_for, state, read))
         twice = sent_twice(fields)
         unmet = unanswered_marks(form, fields, read)
+        roles = await asyncio.to_thread(
+            twice_roles,
+            state,
+            read,
+            page_made,
+            twice,
+            occurrences=occurrences,
+            kinds=kinds,
+            identities=identities,
+            picks=picks,
+        )
+        if page_twice(fields) or any(role != ANSWER for role in roles.values()):
+            # A page field sent twice with different answers is no form the page wrote:
+            # before any other refusal, nothing is written, and the whole form is refused as a
+            # review that could not be verified, naming no field, the marks of unanswered
+            # choices kept.
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=read_answers.unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=page_made.picks if pick_unreadable else picks,
+                search=search,
+                typed=typed,
+                refused="stale",
+                check=frozenset(),
+                twice=unmet,
+                unresolved=unmet,
+                editing=held_open | unresolved_boxes(unmet),
+                notice=REVIEW_UNVERIFIED,
+                status_code=status.HTTP_409_CONFLICT,
+            )
         if twice or unmet:
-            # A field sent once for a card that came twice with different answers is no form
-            # the page wrote, and no answer is taken by the order its values came in; nor is a
-            # note field marked as sent twice and not answered since: before any other
+            # A family answer sent once for a card that came twice with different answers is
+            # no form the page wrote, and no answer is taken by the order its values came in;
+            # nor is one marked as sent twice and not answered since: before any other
             # refusal, nothing is written, and the review comes back with every other answer
             # and the typing as sent, that field saying so where it is, a note field offering
             # its actual choice with nothing chosen and marked until it is answered, the

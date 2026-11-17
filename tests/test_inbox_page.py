@@ -2224,7 +2224,7 @@ def test_each_question_on_the_paste_review_sits_in_a_week_of_the_review() -> Non
     week = page.split('<section class="review-week">', 1)[1].split("</section>", 1)[0]
     identity = week.split('<fieldset class="choice identity"', 1)[1].split("</fieldset>", 1)[0]
 
-    assert page.count('<fieldset class="choice') == week.count('<fieldset class="choice') == 5
+    assert page.count('<fieldset class="choice') == week.count('<fieldset class="choice') == 6
     assert identity.count("<label>") == identity.count("<label><input") == 2
     assert identity.count('"> <span>') == 2
     assert "Id {{ candidate.assignment_id }}.</span></span></label>" in identity

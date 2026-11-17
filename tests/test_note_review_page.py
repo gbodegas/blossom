@@ -20,6 +20,7 @@ import html
 import json
 import pathlib
 import re
+from html.parser import HTMLParser
 from urllib.parse import urlencode
 
 import pytest
@@ -27,7 +28,8 @@ from fastapi.testclient import TestClient
 
 from blossom.app import create_app
 from blossom.reconciliation import SourceChannel
-from tests.support import SAME_ORIGIN, Answer, fixture_settings, store_of
+from blossom.routes.inbox import REVIEW_FIELDS, review_field
+from tests.support import SAME_ORIGIN, Answer, fixture_settings, homework_from_a_note, store_of
 
 NOTED = """Homework for Wren
 11/02/2026 - Monday
@@ -3274,8 +3276,7 @@ def key_of_card(page: str, title: str) -> int:
 
 
 CARD_FIELDS_TWICE = [
-    pytest.param("occurrence-{key}", ("update", "new"), id="occurrence"),
-    pytest.param("kind-{key}", ("HOMEWORK", "TASK"), id="kind"),
+    pytest.param("occurrence-{key}", ("update", "new"), id="occurrence-not-asked"),
     pytest.param("suggested-{key}", ("HOMEWORK", "TASK"), id="suggested"),
     pytest.param("shown-{key}", ("HOMEWORK", "TASK"), id="shown"),
     pytest.param("chosen-{key}", ("1", "2"), id="chosen"),
@@ -3283,30 +3284,34 @@ CARD_FIELDS_TWICE = [
     pytest.param("asked-{key}", ("1", "2"), id="asked"),
     pytest.param("which-{key}", ("1", "2"), id="which"),
     pytest.param("editing-{key}", ("1", "2"), id="editing"),
-    pytest.param("search-{key}", ("essay", "quiz"), id="search"),
     pytest.param("unsaved_why-{key}", ("stale", "differ"), id="unsaved-why"),
     pytest.param("unsaved-{key}-0-0", ("Use ink.", "Use pencil."), id="unsaved"),
     pytest.param("unsaved_row-{key}-0-0", ("1", "2"), id="unsaved-row"),
     pytest.param("unsaved_unshown-{key}-0", ("1", "2"), id="unsaved-unshown"),
     pytest.param("unsaved_none-{key}-0", ("1", "2"), id="unsaved-none"),
+    pytest.param("offered-{note}", ("1", "0"), id="offered"),
+    pytest.param("unresolved-take-{note}", ('["1", "0"]', '["0"]'), id="unresolved-mark"),
+    pytest.param("kind-{note}", ("HOMEWORK", "TASK"), id="kind-on-a-card-with-no-select"),
 ]
-"""Each single-answer field the review posts once for a card, beside the note fields, with two
-different answers for it."""
+"""Each page field the review posts once for a card, injected twice with two different
+answers: the technical fields of a card, a note's offered mark, a mark of a field sent twice,
+and a card's type or which-it-is answer where the page shows no control for it (a note not
+selected has no type; a card that asks nothing has no question of which it is)."""
 
 
 @pytest.mark.parametrize("path", ["keep", "find"])
 @pytest.mark.parametrize("reverse", [False, True], ids=["in-order", "reversed"])
 @pytest.mark.parametrize(("field", "values"), CARD_FIELDS_TWICE)
-def test_a_cards_single_answer_field_sent_twice_with_different_answers_saves_nothing(
+def test_a_cards_page_field_sent_twice_with_different_answers_is_refused_whole(
     tmp_path: pathlib.Path, path: str, reverse: bool, field: str, values: tuple[str, str]
 ) -> None:
-    """Save or Review changes with one of a card's single-answer fields sent twice with
-    different answers, in either order: refused whole, nothing written, the summary says why
-    with a link to the card, and the card says so."""
+    """Save or Review changes with one of a card's page fields sent twice with different
+    answers, in either order: the whole form is refused as a review that could not be
+    verified, nothing is written, and no card or field is named."""
     with client_in(tmp_path) as client:
         page = client.post("/parent/inbox/read", data={"text": NOTED}).text
         essay = key_of_card(page, "Short essay")
-        name = field.format(key=essay)
+        name = field.format(key=essay, note=key_of(page, "Reading log"))
         form = ticked_form(page) | ({"recheck": "1"} if path == "find" else {})
         form.pop(name, None)
         fields = [
@@ -3316,10 +3321,68 @@ def test_a_cards_single_answer_field_sent_twice_with_different_answers_saves_not
         refused = sent_as_pairs(client, path, fields)
         counts = record_counts(client)
 
+    assert refused.status_code == 409
+    assert counts == (0, 0, 0)
+    assert f"{SUMMARY}{COULD_NOT_BE_VERIFIED}</p>" in refused.text
+    if field.startswith("unresolved"):
+        # A mark only forces an answer: the field it names stays offered with nothing chosen.
+        assert unresolved_control(refused.text, name.removeprefix("unresolved-"))
+    else:
+        assert "sent twice" not in refused.text
+    assert 'id="card-' not in refused.text
+
+
+KIND_TWICE = "The type was sent twice with different answers. Choose one."
+SEARCH_TWICE = "The search words were sent twice with different answers. Type them again."
+OCCURRENCE_TWICE = "The answer to which it is was sent twice with different answers. Choose one."
+IDENTITY_TWICE = (
+    "The answer to which homework this is was sent twice with different answers. Choose one."
+)
+"""What a card's type, search words, answer to which it is, and answer to which homework it
+is say at their field when sent twice with different answers."""
+
+
+@pytest.mark.parametrize("path", ["keep", "find"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["in-order", "reversed"])
+@pytest.mark.parametrize(
+    ("head", "values"),
+    [("kind", ("HOMEWORK", "TASK")), ("search", ("essay", "quiz"))],
+    ids=["type", "search"],
+)
+def test_a_cards_type_or_search_words_sent_twice_say_so_at_that_field(
+    tmp_path: pathlib.Path, path: str, reverse: bool, head: str, values: tuple[str, str]
+) -> None:
+    """Save or Review changes with a card's type or its search words sent twice with
+    different answers, in either order: nothing is written, the summary says why with a link
+    to the card, and the line sits at that field, never above the card's fields; the search
+    box comes back empty."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        essay = key_of_card(page, "Short essay")
+        name = f"{head}-{essay}"
+        form = ticked_form(page) | ({"recheck": "1"} if path == "find" else {})
+        form.pop(name, None)
+        fields = [
+            *form.items(),
+            *((name, value) for value in (values[::-1] if reverse else values)),
+        ]
+        refused = sent_as_pairs(client, path, fields)
+        counts = record_counts(client)
+
+    body = card(refused.text, "Short essay")
     assert refused.status_code == 422
     assert counts == (0, 0, 0)
     assert f"{SUMMARY}{SENT_TWICE} {CHECK_CARD.format(key=essay)}" in refused.text
-    assert card(refused.text, "Short essay").count(TWICE_LINE) == 1
+    assert TWICE_LINE not in body
+    if head == "kind":
+        label = re.search(r'<label class="type-choice">.*?</label>', body, re.S)
+        assert label is not None
+        assert f'<span class="problem">{KIND_TWICE}</span>' in label.group(0)
+    else:
+        rename = re.search(r'<details class="rename".*?</details>', body, re.S)
+        assert rename is not None
+        assert f'<p class="problem">{SEARCH_TWICE}</p>' in rename.group(0)
+        assert re.search(rf'name="search-{essay}" maxlength="\d+" value=""', rename.group(0))
 
 
 PAGE_FIELDS_TWICE = [
@@ -3663,7 +3726,8 @@ def test_a_type_sent_twice_stays_unanswered_until_the_family_chooses_one(
         body = card(refused.text, "Short essay")
         assert unresolved_kind(body, essay)
         assert f'name="unresolved-{field}"' in body
-        assert body.count(TWICE_LINE) == 1
+        assert body.count(f'<span class="problem">{KIND_TWICE}</span>') == 1
+        assert TWICE_LINE not in body
     assert reviewed.status_code == 200
     assert "unresolved-" not in reviewed.text
     assert reviewed.text.count(SAVE_SELECTED) == 1
@@ -3699,3 +3763,396 @@ def test_a_same_or_new_answer_sent_twice_comes_back_unanswered_and_its_retry_wri
     assert unwritten == (0, 0, 0)
     assert kept.status_code == 303
     assert kept.headers["location"].endswith("added=2&updated=0&unchanged=0")
+
+
+class ReviewControls(HTMLParser):
+    """Every named control of a review's own form, the one posted to Save and to Review
+    changes, with how the page renders it: ``hidden`` (a hidden input, or the hidden text),
+    ``visible`` (any other input, a select, a text area shown), or ``press`` (a button)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.inside = False
+        self.found: list[tuple[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        given = dict(attrs)
+        if tag == "form":
+            self.inside = given.get("action") == "/parent/inbox/keep"
+            return
+        name = given.get("name")
+        if not self.inside or name is None:
+            return
+        if tag == "button":
+            self.found.append((name, "press"))
+        elif tag in ("input", "select", "textarea"):
+            hidden = given.get("type") == "hidden" if tag == "input" else "hidden" in given
+            self.found.append((name, "hidden" if hidden else "visible"))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form":
+            self.inside = False
+
+
+def review_controls(page: str) -> list[tuple[str, str]]:
+    """The named controls of a page's review form, each with how it is rendered."""
+    parser = ReviewControls()
+    parser.feed(page)
+    parser.close()
+    return parser.found
+
+
+GUIDE_NOTE = "Get it signed at dinner."
+GUIDE_CARD = (
+    "Homework for Wren\n- 09/02/2026 - Wednesday\n"
+    "Health - Assigned: Course Guide Due: (Due:09/09/2026)\n"
+    "Return the course guide signed by a parent after reading it.\n"
+)
+"""A card whose class and title are those of homework she added from a note, which asks
+which homework it is."""
+
+
+def every_review_shape(tmp_path: pathlib.Path) -> dict[str, str]:
+    """Each shape of the School text review this file builds, by name: the first view with
+    and without text that needs review, a card's details open, the review after Review
+    changes, refusals (a tick, a title and a type sent twice), a folded card, the question
+    of which it is, the question of which homework it is, and search results."""
+    shapes: dict[str, str] = {}
+    with client_in(tmp_path / "notes") as client:
+        first = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        shapes["first view with text that needs review"] = first
+        shapes["first view"] = client.post(
+            "/parent/inbox/read", data={"text": ONE_HOMEWORK_NOTE}
+        ).text
+        shapes["details open"] = opened(client, first, key_of(first, "Map project")).text
+        shapes["after Review changes"] = homework_selected(client, NOTED)
+        others = ticked_form(first)
+        for name, values in (
+            ("take-4", ("1", "0")),
+            ("title-3", ("A", "B")),
+            (f"kind-{key_of_card(first, 'Short essay')}", ("HOMEWORK", "TASK")),
+        ):
+            pairs = [*others.items(), *((name, value) for value in values)]
+            shapes[f"refusal, {name} sent twice"] = sent_as_pairs(client, "keep", pairs).text
+        shapes["refusal, a title no review showed"] = client.post(
+            "/parent/inbox/keep", data=others | {"take-3": "1", "title-3": "Typed"}
+        ).text
+        asking = homework_selected(client, TWICE_NOTED)
+        shapes["the question of which it is"] = asking
+        shapes["a folded card"] = client.post(
+            "/parent/inbox/find",
+            data=ticked_form(asking) | {"occurrence-1": "update", "recheck": "1"},
+        ).text
+    with client_in(tmp_path / "search") as client:
+        saved = client.post("/parent/inbox/read", data={"text": NO_NOTE}).text
+        assert client.post("/parent/inbox/keep", data=ticked_form(saved)).status_code == 303
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        found = client.post(
+            "/parent/inbox/find",
+            data=ticked_form(page) | {"search-0": "practice", "find": "0"},
+        ).text
+        shapes["search results"] = found
+        target = re.search(r'name="choose" value="(0:[^"]+)"', found)
+        assert target is not None
+        shapes["a choice made from the results"] = client.post(
+            "/parent/inbox/find", data=ticked_form(found) | {"choose": target.group(1)}
+        ).text
+    with client_in(tmp_path / "hers", today="2026-09-03") as client:
+        homework_from_a_note(
+            store_of(client),
+            course="Health",
+            title="Course Guide Due",
+            due_date=datetime.date(2026, 9, 9),
+            note=GUIDE_NOTE,
+        )
+        shapes["the question of which homework it is"] = client.post(
+            "/parent/inbox/read", data={"text": GUIDE_CARD}
+        ).text
+    return shapes
+
+
+def test_every_field_of_every_review_shape_is_in_the_review_forms_table(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Each shape of the School text review, rendered: every named control of its own form
+    has an entry in the server's table of the review form's fields, by exact name and by how
+    it is rendered, a press only as a press, a visible control only as a family answer. A
+    name outside the table's grammar, or rendered other than its entry says, fails."""
+    shapes = every_review_shape(tmp_path)
+    seen: set[tuple[str, str]] = set()
+    unknown: list[tuple[str, str, str]] = []
+    for shape, page in shapes.items():
+        controls = review_controls(page)
+        assert controls, shape
+        for name, rendering in controls:
+            entry = review_field(name, rendering)
+            if entry is None:
+                unknown.append((shape, name, rendering))
+                continue
+            seen.add((entry.grammar, rendering))
+
+    assert unknown == []
+    assert 'id="needs-review"' in shapes["first view with text that needs review"]
+    assert 'id="needs-review"' not in shapes["first view"]
+    assert 'name="folded-1"' in shapes["a folded card"]
+    assert 'id="occurrence-question-1"' in shapes["the question of which it is"]
+    assert 'id="identity-question-0"' in shapes["the question of which homework it is"]
+    assert 'name="choose"' in shapes["search results"]
+    assert 'name="picked-0"' in shapes["a choice made from the results"]
+    for entry in REVIEW_FIELDS:
+        assert entry.role == {"press": "press", "visible": "answer"}.get(
+            entry.rendering, entry.role
+        ), entry
+        assert entry.role in ("answer", "page", "press"), entry
+        assert entry.shape == "one", entry
+    assert {rendering for _, rendering in seen} == {"hidden", "visible", "press"}
+
+
+@pytest.mark.parametrize(
+    ("name", "rendering"),
+    [
+        ("take-01", "visible"),
+        ("take-4x", "visible"),
+        ("takes-4", "visible"),
+        ("take-4-0", "visible"),
+        ("take-1234567", "visible"),
+        ("join-1", "visible"),
+        ("suggested-0", "visible"),
+        ("editing-0", "visible"),
+        ("unresolved-take-4-1", "hidden"),
+        ("unresolved-made_with", "hidden"),
+        ("recheck", "visible"),
+        ("details", "hidden"),
+        ("made_with_x", "hidden"),
+        ("link-1", "visible"),
+    ],
+)
+def test_a_name_outside_the_grammar_or_rendered_otherwise_has_no_entry(
+    name: str, rendering: str
+) -> None:
+    """The table matches whole names only, each by its own grammar and rendering: a padded
+    number, a longer name, a name with a place it does not take, a page field shown as a
+    control, a mark of no field, and a press as anything but a press have no entry."""
+    assert review_field(name, rendering) is None
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["empty-first", "empty-last"])
+def test_a_hidden_suggestion_injected_twice_on_a_notes_only_paste_is_refused_whole(
+    tmp_path: pathlib.Path, reverse: bool
+) -> None:
+    """A notes-only paste whose form carries a card's suggested type, which that page never
+    shows, injected twice with different answers: the whole form is refused as a review that
+    could not be verified, nothing is written, and no card line points at a choice the page
+    does not show."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": ONE_HOMEWORK_NOTE}).text
+        values = ("", "x")[::-1] if reverse else ("", "x")
+        fields = [*ticked_form(page).items(), *(("suggested-0", value) for value in values)]
+        refused = sent_as_pairs(client, "keep", fields)
+        counts = record_counts(client)
+
+    assert refused.status_code == 409
+    assert counts == (0, 0, 0)
+    assert f"{SUMMARY}{COULD_NOT_BE_VERIFIED}</p>" in refused.text
+    assert "sent twice" not in refused.text
+
+
+def fieldset_of(page: str, ident: str) -> str:
+    """The fieldset of a page with this id, from its opening tag to its end."""
+    found = re.search(rf'<fieldset [^>]*id="{ident}".*?</fieldset>', page, re.S)
+    assert found is not None, ident
+    return found.group(0)
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["same-first", "different-first"])
+def test_an_answer_to_which_homework_it_is_sent_twice_stays_unanswered_until_answered(
+    tmp_path: pathlib.Path, reverse: bool
+) -> None:
+    """The answer to which homework a card is about sent twice with different answers, in
+    either order: refused with nothing written and the line in that question, the question
+    offered with nothing chosen and marked; the returned form sent back unchanged writes
+    nothing; the explicit answer then saves. The same answer sent twice is one answer."""
+    with client_in(tmp_path, today="2026-09-03") as client:
+        homework_from_a_note(
+            store_of(client),
+            course="Health",
+            title="Course Guide Due",
+            due_date=datetime.date(2026, 9, 9),
+            note=GUIDE_NOTE,
+        )
+        page = client.post("/parent/inbox/read", data={"text": GUIDE_CARD}).text
+        mine, different = re.findall(r'name="identity-0" value="([^"]+)"', page)
+        before = record_counts(client)
+        values = (different, mine) if reverse else (mine, different)
+        conflict = sent_as_pairs(
+            client, "keep", [*ticked_form(page).items(), *(("identity-0", v) for v in values)]
+        )
+        retry = client.post("/parent/inbox/keep", data=ticked_form(conflict.text))
+        unwritten = record_counts(client)
+        kept = client.post(
+            "/parent/inbox/keep", data=ticked_form(retry.text) | {"identity-0": mine}
+        )
+    with client_in(tmp_path / "again", today="2026-09-03") as client:
+        homework_from_a_note(
+            store_of(client),
+            course="Health",
+            title="Course Guide Due",
+            due_date=datetime.date(2026, 9, 9),
+            note=GUIDE_NOTE,
+        )
+        page = client.post("/parent/inbox/read", data={"text": GUIDE_CARD}).text
+        hers = re.findall(r'name="identity-0" value="([^"]+)"', page)[0]
+        once = sent_as_pairs(
+            client, "keep", [*ticked_form(page).items(), ("identity-0", hers), ("identity-0", hers)]
+        )
+
+    assert conflict.status_code == 422
+    assert f"{SUMMARY}{SENT_TWICE}" in conflict.text
+    assert retry.status_code == 422
+    assert f"{SUMMARY}{UNANSWERED_TWICE}" in retry.text
+    for refused in (conflict, retry):
+        asked = fieldset_of(refused.text, "identity-question-0")
+        assert unescaped(asked).count(IDENTITY_TWICE) == 1
+        assert 'name="unresolved-identity-0"' in asked
+        assert "checked" not in asked
+    assert unwritten == before
+    assert kept.status_code == 303
+    assert once.status_code == 303
+
+
+@pytest.mark.parametrize("values", [("update", "new"), ("new", "update")], ids=str)
+def test_an_answer_to_which_it_is_sent_twice_says_so_in_its_question_until_answered(
+    tmp_path: pathlib.Path, values: tuple[str, str]
+) -> None:
+    """The answer to whether a note is the same assignment or new work sent twice with
+    different answers, in either order: the line sits in that question, which is marked
+    until answered; the unchanged retry writes nothing; the explicit answer saves."""
+    with client_in(tmp_path) as client:
+        page = homework_selected(client, TWICE_NOTED)
+        conflict = sent_as_pairs(
+            client,
+            "keep",
+            [*ticked_form(page).items(), *(("occurrence-1", value) for value in values)],
+        )
+        retry = client.post("/parent/inbox/keep", data=ticked_form(conflict.text))
+        unwritten = record_counts(client)
+        kept = client.post(
+            "/parent/inbox/keep", data=ticked_form(retry.text) | {"occurrence-1": "new"}
+        )
+
+    assert conflict.status_code == 422
+    assert retry.status_code == 422
+    assert f"{SUMMARY}{UNANSWERED_TWICE}" in retry.text
+    for refused in (conflict, retry):
+        asked = fieldset_of(refused.text, "occurrence-question-1")
+        assert unescaped(asked).count(OCCURRENCE_TWICE) == 1
+        assert 'name="unresolved-occurrence-1"' in asked
+        assert "checked" not in asked
+    assert unwritten == (0, 0, 0)
+    assert kept.status_code == 303
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["carried-first", "carried-last"])
+@pytest.mark.parametrize("head", ["title", "when"])
+def test_a_closed_cards_carried_answer_sent_twice_opens_it_and_stays_unanswered(
+    tmp_path: pathlib.Path, head: str, reverse: bool
+) -> None:
+    """A note card closed after Review changes carries its reviewed title and due date
+    hidden. One of them injected twice with different answers, in either order: nothing is
+    written, the card's details open with the field named and marked; the returned form sent
+    back unchanged writes nothing."""
+    with client_in(tmp_path) as client:
+        first = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        key = key_of(first, "Map project")
+        opened_page = opened(client, first, key).text
+        reviewed = client.post(
+            "/parent/inbox/find",
+            data=ticked_form(opened_page)
+            | {f"take-{key}": "1", f"title-{key}": "Map outline", "recheck": "1"},
+        ).text
+        form = ticked_form(reviewed)
+        name = f"{head}-{key}"
+        carried = form.pop(name)
+        values = (carried, "Other title" if head == "title" else "none")
+        conflict = sent_as_pairs(
+            client,
+            "keep",
+            [*form.items(), *((name, value) for value in (values[::-1] if reverse else values))],
+        )
+        retry = client.post("/parent/inbox/keep", data=ticked_form(conflict.text))
+        counts = record_counts(client)
+
+    assert f'<input type="hidden" name="{name}" value="{carried}">' in reviewed
+    assert conflict.status_code == 422
+    assert retry.status_code == 422
+    assert counts == (0, 0, 0)
+    for refused in (conflict, retry):
+        body = card(refused.text, "Map project" if head == "title" else "Map outline")
+        assert f'name="editing-{key}"' in body
+        assert f'name="unresolved-{name}"' in body
+        assert unresolved_control(body, name)
+        assert unescaped(body).count(said_for(head, values[::-1] if reverse else values)) == 1
+
+
+def said_for(head: str, sent: tuple[str, ...]) -> str:
+    """The start of the line a note field sent twice with these answers, in this order, says
+    at that field."""
+    if head == "take":
+        return TICK_TWICE
+    if head == "title":
+        return twice_said("title", sent)
+    if head == "when":
+        return "The due date was sent twice with different answers: "
+    return "The date beside Another date was sent twice with different answers: "
+
+
+FOLDED_CARRIED = [
+    pytest.param("take", "0", id="tick"),
+    pytest.param("title", "Another title", id="title"),
+    pytest.param("when", "none", id="due-date"),
+    pytest.param("when_other", "2026-11-05", id="date-box"),
+]
+"""Each answer a folded note's card carries hidden, with another answer to inject beside it."""
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["carried-first", "carried-last"])
+@pytest.mark.parametrize(("head", "other"), FOLDED_CARRIED)
+def test_a_folded_cards_carried_answer_sent_twice_shows_that_card_until_answered(
+    tmp_path: pathlib.Path, head: str, other: str, reverse: bool
+) -> None:
+    """A note's card folded into the card for the same assignment carries its tick, title
+    and due date hidden. One of them injected twice with different answers, in either order:
+    nothing is written, and the review shows that note's card again with the field offered
+    and marked, the answer that folded it kept as the family gave it; the returned form sent
+    back unchanged writes nothing."""
+    with client_in(tmp_path) as client:
+        asking = homework_selected(client, TWICE_NOTED)
+        folded = client.post(
+            "/parent/inbox/find",
+            data=ticked_form(asking) | {"occurrence-1": "update", "recheck": "1"},
+        ).text
+        form = ticked_form(folded)
+        name = f"{head}-1"
+        carried = form.pop(name)
+        values = (carried, other)
+        conflict = sent_as_pairs(
+            client,
+            "keep",
+            [*form.items(), *((name, value) for value in (values[::-1] if reverse else values))],
+        )
+        retry = client.post("/parent/inbox/keep", data=ticked_form(conflict.text))
+        counts = record_counts(client)
+
+    assert f'<input type="hidden" name="{name}" value="{carried}">' in folded
+    assert conflict.status_code == 422
+    assert retry.status_code == 422
+    assert f"{SUMMARY}{UNANSWERED_TWICE}" in retry.text
+    assert counts == (0, 0, 0)
+    anchor = "when" if head == "when_other" else head
+    for refused in (conflict, retry):
+        assert re.search(r'name="occurrence-1" value="update"( checked)?>', refused.text)
+        assert f'<input type="hidden" name="{name}"' not in refused.text
+        assert f'name="unresolved-{name}"' in refused.text
+        assert unresolved_control(refused.text, f"{anchor}-1")
+        said = said_for(head, values[::-1] if reverse else values)
+        assert unescaped(refused.text).count(said) == 1
