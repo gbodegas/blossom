@@ -1247,6 +1247,12 @@ button[disabled] {
   padding: 0.65rem 0.95rem;
 }
 
+/* A field's own line inside its label, such as a title sent twice with different answers. */
+label > .problem {
+  display: block;
+  margin-block: 0.35rem;
+}
+
 /* A refusal on Family review, and on the page that stands in for it, can name a request by
    its 32-character id, one word wider than a phone's line, and her week's problem line can
    name an assignment or a class by a word as long. The alert at the top of the family page,

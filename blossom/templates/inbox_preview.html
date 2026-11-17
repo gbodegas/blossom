@@ -137,7 +137,7 @@
                 <span class="pill">{{ change.label }}</span>
                 {% if reading.reported_status %}<span class="pill">School reported: {{ reading.reported_status }}</span>{% endif %}
               </p>{% if change.key in twice_on %}
-              {# A choice on this card sent twice with different answers, so the page refused it whole. #}
+              {# A field of this card with no line of its own sent twice with different answers, so the page refused it whole. #}
               <p class="problem">A choice on this card was sent twice with different answers. Choose it once.</p>{% endif %}
               {% if (change.dates_differ or asking.state == "review") and asking.beside and reading.due_date %}
                 <dl class="compare">
@@ -160,20 +160,29 @@
               <p class="effect" data-base="{{ change.effect_base }}">{{ change.effect }}</p>{% if reading.teacher_note %}
               {# A reading made from a teacher's note is offered with a tick; the page says it was offered, so a tick not sent is a choice. #}
               <input type="hidden" name="offered-{{ change.key }}" value="1">
-              <div class="choice">
-                <label><input type="checkbox" name="take-{{ change.key }}" value="1"{% if not change.left_out %} checked{% endif %}> <span>Save this as homework<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
+              <div class="choice">{% if ("take-" ~ change.key) in unresolved %}
+                {# A tick sent twice with different answers, unanswered: the actual choice, neither side chosen, marked until it is answered. #}
+                <label><input type="radio" name="take-{{ change.key }}" value="1" required> <span>Save this as homework<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
+                <label><input type="radio" name="take-{{ change.key }}" value="0" required> <span>Leave it out<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>{% for name, value in unresolved["take-" ~ change.key] %}<input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}{% else %}
+                <label><input type="checkbox" name="take-{{ change.key }}" value="1"{% if not change.left_out %} checked{% endif %}> <span>Save this as homework<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>{% endif %}{% for said in twice_said.get("take-" ~ change.key, ()) %}
+                <p class="problem">{{ said }}</p>{% endfor %}
               </div>{% if change.left_out %}
               {# What the note does once it is selected, which the page signs, so a tick set here saves in one press. #}
               <p class="helper">If selected: {{ if_selected[change.key] }}.</p>{% endif %}
               {% set fields = note_fields[change.key] %}{% if change.key in editing %}
               {# The title and due date a parent may correct, open for editing; Review changes shows them as reviewed, and the page signs them only then, so a save writes no other. #}
               <input type="hidden" name="editing-{{ change.key }}" value="1">
-              <label>Title<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span> <input type="text" name="title-{{ change.key }}" value="{{ fields.title }}" maxlength="{{ title_max_length }}" autocomplete="off" id="title-{{ change.key }}"{% if problem_link and problem_link[0] == "title-" ~ change.key %} aria-describedby="problem-summary"{% endif %}></label>
+              <label>Title<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span>{% for said in twice_said.get("title-" ~ change.key, ()) %} <span class="problem">{{ said }}</span>{% endfor %} <input type="text" name="title-{{ change.key }}" value="{% if ("title-" ~ change.key) not in unresolved %}{{ fields.title }}{% endif %}" maxlength="{{ title_max_length }}" autocomplete="off" id="title-{{ change.key }}"{% if problem_link and problem_link[0] == "title-" ~ change.key %} aria-describedby="problem-summary"{% endif %}></label>{% for name, value in unresolved.get("title-" ~ change.key, ()) %}
+              {# A title sent twice with different answers, unanswered: the box to be filled again, marked until it is. #}
+              <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
               {% for said in fields.named_too_far %}<p class="source">{{ said }}</p>
               {% endfor %}<fieldset class="choice" id="when-{{ change.key }}" tabindex="-1"{% if problem_link and problem_link[0] == "when-" ~ change.key %} aria-describedby="problem-summary"{% endif %}>
-                <legend>Due date<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></legend>
-                {% for value, words, chosen in fields.choices %}<label><input type="radio" name="when-{{ change.key }}" value="{{ value }}"{% if chosen %} checked{% endif %}> <span>{{ words }}</span></label>
-                {% endfor %}<label><input type="radio" name="when-{{ change.key }}" value="other"{% if fields.other_chosen %} checked{% endif %}> <span>Another date</span></label>
+                <legend>Due date<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></legend>{% for said in twice_said.get("when-" ~ change.key, ()) %}
+                <p class="problem">{{ said }}</p>{% endfor %}{% set date_open = ("when-" ~ change.key) in unresolved %}{% for name, value in unresolved.get("when-" ~ change.key, ()) %}
+                {# A due date sent twice with different answers, unanswered: every choice of the card, none chosen, marked until one is. #}
+                <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
+                {% for value, words, chosen in fields.choices %}<label><input type="radio" name="when-{{ change.key }}" value="{{ value }}"{% if chosen and not date_open %} checked{% endif %}> <span>{{ words }}</span></label>
+                {% endfor %}<label><input type="radio" name="when-{{ change.key }}" value="other"{% if fields.other_chosen and not date_open %} checked{% endif %}> <span>Another date</span></label>
                 <label><span class="visually-hidden"> Another date for {{ reading.title }}, {{ reading.course }}</span> <input type="date" name="when_other-{{ change.key }}" value="{{ fields.other }}"></label>
               </fieldset>{% else %}
               {# The title and due date as reviewed, with the press that opens them for editing; answers sent for them travel as sent, so the save writes what the page showed. #}
@@ -367,8 +376,12 @@
               {# Both dates and where each was read, before anything is saved; a selected note's date is the school's evidence and never the card's due date. #}
               <p class="source">{% if reading.due_date %}The card says due {{ spoken_day(reading.due_date) }}{% else %}The card gives no due date{% endif %}; the teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} says {{ spoken_day(task.deadline) }}.</p>{% endif %}
               {# A joined note adds nothing to the card until it is selected; the page signs its tick as shown. #}
-              <div class="choice">
-                <label><input type="checkbox" name="join-{{ change.key }}-{{ place }}" value="1"{% if (change.key, place) in joined_ticked %} checked{% endif %}> <span>Add this note to the assignment<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
+              <div class="choice">{% set join_field = "join-" ~ change.key ~ "-" ~ place %}{% if join_field in unresolved %}
+                {# A joined note's tick sent twice with different answers, unanswered: the actual choice, neither side chosen, marked until it is answered. #}
+                <label><input type="radio" name="{{ join_field }}" value="1" required> <span>Add this note to the assignment<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
+                <label><input type="radio" name="{{ join_field }}" value="0" required> <span>Don't add it<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>{% for name, value in unresolved[join_field] %}<input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}{% else %}
+                <label><input type="checkbox" name="join-{{ change.key }}-{{ place }}" value="1"{% if (change.key, place) in joined_ticked %} checked{% endif %}> <span>Add this note to the assignment<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>{% endif %}{% for said in twice_said.get("join-" ~ change.key ~ "-" ~ place, ()) %}
+                <p class="problem">{{ said }}</p>{% endfor %}
               </div>{% if join_labels.get((change.key, place)) %}
               {# What saving does with the tick the other way, which the page signs, so a tick changed here saves in one press. #}
               <p class="helper">{% if (change.key, place) in joined_ticked %}If not selected{% else %}If selected{% endif %}: {{ join_labels[(change.key, place)] }}.</p>{% endif %}{% endfor %}{% if reading.teacher_note and reading.due_date and reading.due_date == reading.teacher_note.deadline %}{# Said only while the due date is the note's own, so it never outlives a date the family changed or cleared. #}{% for day in reading.teacher_note.listed_after %}

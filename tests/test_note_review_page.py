@@ -2876,7 +2876,9 @@ def test_a_tick_sent_twice_with_different_answers_saves_nothing_and_names_its_ca
     assert f"{SUMMARY}{SENT_TWICE} {CHECK_CARD.format(key=key)}" in refused.text
     assert numbers(refused.text, TICKED) == {3}
     assert 'name="title-3" value="Map project outline"' in refused.text
-    assert joined_ticks(card(refused.text, "Short essay")) == {"join-1-0": False}
+    joined = card(refused.text, "Short essay")
+    assert joined_ticks(joined) == ({} if name.startswith("join") else {"join-1-0": False})
+    assert unresolved_control(joined, "join-1-0") == name.startswith("join")
 
 
 @pytest.mark.parametrize(("name", "values", "key"), TWICE)
@@ -2896,9 +2898,12 @@ def test_review_changes_with_a_tick_sent_twice_takes_neither_answer(
     assert shown.status_code == 422
     assert rows == []
     assert f"{SUMMARY}{SENT_TWICE} {CHECK_CARD.format(key=key)}" in shown.text
-    assert shown.text.count(TWICE_LINE) == 1
+    said = TICK_TWICE if name.startswith("take") else JOIN_TWICE
+    assert unescaped(shown.text).count(said) == 1
     assert numbers(shown.text, TICKED) == {3}
-    assert joined_ticks(card(shown.text, "Short essay")) == {"join-1-0": False}
+    joined = card(shown.text, "Short essay")
+    assert joined_ticks(joined) == ({} if name.startswith("join") else {"join-1-0": False})
+    assert unresolved_control(joined, "join-1-0") == name.startswith("join")
 
 
 @pytest.mark.parametrize(
@@ -3212,7 +3217,7 @@ def test_a_note_box_sent_twice_with_different_answers_saves_nothing_and_names_it
     assert counts == (0, 0, 0)
     assert f"{SUMMARY}{SENT_TWICE} {CHECK_CARD.format(key=logged)}" in refused.text
     body = card(refused.text, "Reading log")
-    assert body.count(TWICE_LINE) == 1
+    assert unescaped(body).count(twice_said(head, values)) == 1
     assert f'<input type="text" name="title-{logged}"' in body
     assert numbers(refused.text, TICKED) == {logged, mapped}
     assert f'<input type="text" name="title-{mapped}" value="Map project outline"' in refused.text
@@ -3251,9 +3256,14 @@ def test_choices_sent_twice_on_several_cards_name_each_card_and_save_nothing(
     assert refused.status_code == 422
     assert counts == (0, 0, 0)
     assert f"{SUMMARY}{SENT_TWICE}</p>" in refused.text
-    assert refused.text.count(TWICE_LINE) == 3
-    for title in ("Reading log", "Map project", "Short essay"):
-        assert card(refused.text, title).count(TWICE_LINE) == 1
+    titled = ("Map two", "Map one") if reverse else ("Map one", "Map two")
+    for title, said in (
+        ("Reading log", TICK_TWICE),
+        ("Map project", twice_said("title", titled)),
+        ("Short essay", JOIN_TWICE),
+    ):
+        assert unescaped(card(refused.text, title)).count(said) == 1
+    assert TWICE_LINE not in refused.text
 
 
 def key_of_card(page: str, title: str) -> int:
@@ -3261,3 +3271,338 @@ def key_of_card(page: str, title: str) -> int:
     found = re.search(r'name="kind-(\d+)"', card(page, title))
     assert found is not None, title
     return int(found.group(1))
+
+
+CARD_FIELDS_TWICE = [
+    pytest.param("occurrence-{key}", ("update", "new"), id="occurrence"),
+    pytest.param("kind-{key}", ("HOMEWORK", "TASK"), id="kind"),
+    pytest.param("suggested-{key}", ("HOMEWORK", "TASK"), id="suggested"),
+    pytest.param("shown-{key}", ("HOMEWORK", "TASK"), id="shown"),
+    pytest.param("chosen-{key}", ("1", "2"), id="chosen"),
+    pytest.param("folded-{key}", ("1", "2"), id="folded"),
+    pytest.param("asked-{key}", ("1", "2"), id="asked"),
+    pytest.param("which-{key}", ("1", "2"), id="which"),
+    pytest.param("editing-{key}", ("1", "2"), id="editing"),
+    pytest.param("search-{key}", ("essay", "quiz"), id="search"),
+    pytest.param("unsaved_why-{key}", ("stale", "differ"), id="unsaved-why"),
+    pytest.param("unsaved-{key}-0-0", ("Use ink.", "Use pencil."), id="unsaved"),
+    pytest.param("unsaved_row-{key}-0-0", ("1", "2"), id="unsaved-row"),
+    pytest.param("unsaved_unshown-{key}-0", ("1", "2"), id="unsaved-unshown"),
+    pytest.param("unsaved_none-{key}-0", ("1", "2"), id="unsaved-none"),
+]
+"""Each single-answer field the review posts once for a card, beside the note fields, with two
+different answers for it."""
+
+
+@pytest.mark.parametrize("path", ["keep", "find"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["in-order", "reversed"])
+@pytest.mark.parametrize(("field", "values"), CARD_FIELDS_TWICE)
+def test_a_cards_single_answer_field_sent_twice_with_different_answers_saves_nothing(
+    tmp_path: pathlib.Path, path: str, reverse: bool, field: str, values: tuple[str, str]
+) -> None:
+    """Save or Review changes with one of a card's single-answer fields sent twice with
+    different answers, in either order: refused whole, nothing written, the summary says why
+    with a link to the card, and the card says so."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        essay = key_of_card(page, "Short essay")
+        name = field.format(key=essay)
+        form = ticked_form(page) | ({"recheck": "1"} if path == "find" else {})
+        form.pop(name, None)
+        fields = [
+            *form.items(),
+            *((name, value) for value in (values[::-1] if reverse else values)),
+        ]
+        refused = sent_as_pairs(client, path, fields)
+        counts = record_counts(client)
+
+    assert refused.status_code == 422
+    assert counts == (0, 0, 0)
+    assert f"{SUMMARY}{SENT_TWICE} {CHECK_CARD.format(key=essay)}" in refused.text
+    assert card(refused.text, "Short essay").count(TWICE_LINE) == 1
+
+
+PAGE_FIELDS_TWICE = [
+    pytest.param("text", NOTED.replace("Reading log", "Reading list"), id="text"),
+    pytest.param("made_with", "0" * 16, id="made-with"),
+    pytest.param("read_on", "2026-11-04", id="read-on"),
+    pytest.param("read_at", "2026-11-04T09:00:00-05:00", id="read-at"),
+]
+"""Each single-answer field the review posts once for the whole page, with another answer
+beside the one the page wrote."""
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["page-first", "page-last"])
+@pytest.mark.parametrize(("name", "other"), PAGE_FIELDS_TWICE)
+def test_a_page_field_sent_twice_with_different_answers_takes_neither_and_saves_nothing(
+    tmp_path: pathlib.Path, reverse: bool, name: str, other: str
+) -> None:
+    """Save with the pasted text, the page's signature or the day or moment the text was read
+    sent twice with different answers, in either order, beside a note ticked: neither answer
+    is taken, and nothing is written."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        form = ticked_form(page) | {f"take-{key_of(page, 'Reading log')}": "1"}
+        values = (form.pop(name), other)
+        fields = [
+            *form.items(),
+            *((name, value) for value in (values[::-1] if reverse else values)),
+        ]
+        answer = sent_as_pairs(client, "keep", fields)
+        counts = record_counts(client)
+
+    assert answer.status_code != 303
+    assert counts == (0, 0, 0)
+
+
+TICK_TWICE = 'The choice "Save this as homework" was sent twice with different answers. Choose one.'
+JOIN_TWICE = (
+    'The choice "Add this note to the assignment" was sent twice with different answers. '
+    "Choose one."
+)
+"""What a note's tick and a joined note's tick sent twice with different answers say beside
+them."""
+
+
+def twice_said(field: str, values: tuple[str, ...]) -> str:
+    """What the title box or the due date of a note sent twice with different answers says,
+    naming each value in the order sent."""
+    if field == "title":
+        return (
+            "The title was sent twice with different answers: "
+            + " and ".join(f'"{value}"' for value in values)
+            + ". Type the title."
+        )
+    words = {
+        "2026-11-02": "Monday, November 2, 2026",
+        "2026-11-05": "Thursday, November 5, 2026",
+        "2026-11-06": "Friday, November 6, 2026",
+        "none": "No due date yet",
+    }
+    which = "The due date" if field == "when" else "The date beside Another date"
+    named = " and ".join(words[value] for value in values)
+    return f"{which} was sent twice with different answers: {named}. Choose one."
+
+
+def unescaped(body: str) -> str:
+    """A page's markup with its character references read, so words can be found as said."""
+    return html.unescape(body)
+
+
+@pytest.mark.parametrize("path", ["keep", "find"])
+@pytest.mark.parametrize(("name", "values", "key"), TWICE)
+def test_a_tick_sent_twice_says_so_beside_that_tick(
+    tmp_path: pathlib.Path, path: str, name: str, values: tuple[str, str], key: int
+) -> None:
+    """Save or Review changes with a note's tick or a joined note's tick sent twice with
+    different answers: the line naming that choice sits beside that tick, in its own block,
+    and the card says nothing else of it."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        others = ticked_form(page) | ({"recheck": "1"} if path == "find" else {})
+        fields = [*others.items(), *((name, value) for value in values)]
+        refused = sent_as_pairs(client, path, fields)
+
+    assert refused.status_code == 422
+    shown = unescaped(refused.text)
+    said = TICK_TWICE if name.startswith("take") else JOIN_TWICE
+    label = "Save this as homework" if name.startswith("take") else ADD_THIS_NOTE
+    block = re.search(
+        rf'<div class="choice">\s*<label>[^\n]*name="{name}"[^\n]*{label}.*?</label>\s*'
+        r"(?:<label>[^\n]*\n\s*)?"
+        rf'<p class="problem">{re.escape(said)}</p>\s*</div>',
+        shown,
+    )
+    assert block is not None
+    assert shown.count(said) == 1
+    assert TWICE_LINE not in refused.text
+
+
+@pytest.mark.parametrize("path", ["keep", "find"])
+@pytest.mark.parametrize(("head", "values"), BOXES_TWICE)
+def test_a_note_box_sent_twice_says_so_at_that_field_with_each_value(
+    tmp_path: pathlib.Path, path: str, head: str, values: tuple[str, str]
+) -> None:
+    """Save or Review changes with a note's title box, due-date choice or date box sent twice
+    with different answers: the line naming that field and each value sent sits in the
+    title's label or in the due date's fieldset, and the card says nothing else of it."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        logged = key_of(page, "Reading log")
+        others = ticked_form(page) | {f"take-{logged}": "1"}
+        if path == "find":
+            others["recheck"] = "1"
+        fields = [*others.items(), *((f"{head}-{logged}", value) for value in values)]
+        refused = sent_as_pairs(client, path, fields)
+
+    assert refused.status_code == 422
+    body = unescaped(card(refused.text, "Reading log"))
+    said = twice_said(head, values)
+    assert body.count(said) == 1
+    if head == "title":
+        assert re.search(
+            rf"<label>Title<span[^>]*>[^<]*</span> <span class=\"problem\">"
+            rf"{re.escape(said)}</span> <input type=\"text\" name=\"title-{logged}\"",
+            body,
+        )
+    else:
+        assert re.search(
+            rf'<fieldset class="choice" id="when-{logged}"[^>]*>\s*<legend>.*?</legend>\s*'
+            rf'<p class="problem">{re.escape(said)}</p>',
+            body,
+            re.S,
+        )
+    assert TWICE_LINE not in refused.text
+
+
+def test_several_fields_sent_twice_on_one_card_each_get_their_line(tmp_path: pathlib.Path) -> None:
+    """A note's tick, title box, due-date choice and date box all sent twice with different
+    answers on one card: each field says so at that field, once."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        logged = key_of(page, "Reading log")
+        twice = [
+            (f"take-{logged}", ("1", "0")),
+            (f"title-{logged}", ("Reading log one", "Reading log two")),
+            (f"when-{logged}", ("2026-11-02", "none")),
+            (f"when_other-{logged}", ("2026-11-05", "2026-11-06")),
+        ]
+        fields = [
+            *ticked_form(page).items(),
+            *((name, value) for name, values in twice for value in values),
+        ]
+        refused = sent_as_pairs(client, "keep", fields)
+        counts = record_counts(client)
+
+    assert (refused.status_code, counts) == (422, (0, 0, 0))
+    body = unescaped(card(refused.text, "Reading log"))
+    for said in (
+        TICK_TWICE,
+        twice_said("title", ("Reading log one", "Reading log two")),
+        twice_said("when", ("2026-11-02", "none")),
+        twice_said("when_other", ("2026-11-05", "2026-11-06")),
+    ):
+        assert body.count(said) == 1, said
+    assert body.index(twice_said("when", ("2026-11-02", "none"))) < body.index(
+        twice_said("when_other", ("2026-11-05", "2026-11-06"))
+    )
+
+
+UNANSWERED_TWICE = (
+    "A choice sent twice with different answers needs your answer, so nothing was saved. "
+    "Choose it, then save."
+)
+"""What the review says when a choice sent twice is sent back with no answer."""
+
+RECOVERY = [
+    pytest.param("take", ("1", "0"), id="tick"),
+    pytest.param("take", ("0", "1"), id="tick-reversed"),
+    pytest.param("join", ("1", "0"), id="joined-tick"),
+    pytest.param("join", ("0", "1"), id="joined-tick-reversed"),
+    pytest.param("title", ("Reading log one", "Reading log two"), id="title"),
+    pytest.param("title", ("Reading log two", "Reading log one"), id="title-reversed"),
+    pytest.param("when", ("2026-11-02", "none"), id="due-date"),
+    pytest.param("when", ("none", "2026-11-02"), id="due-date-reversed"),
+]
+"""Each kind of note field sent twice with different answers, in both orders."""
+
+
+def unresolved_control(body: str, field: str) -> bool:
+    """Whether a card offers the field's actual choice with nothing chosen for the family: two
+    unchecked required choices for a tick, an empty title box, or every due-date
+    choice unchecked with no due date among them."""
+    head, _, key = field.partition("-")
+    if head in ("take", "join"):
+        said = (
+            ("Save this as homework", "Leave it out")
+            if head == "take"
+            else (ADD_THIS_NOTE, "Don't add it")
+        )
+        return (
+            all(
+                re.search(
+                    rf'<label><input type="radio" name="{field}" value="{value}" required> '
+                    rf"<span>{words}<",
+                    body,
+                )
+                for value, words in zip(("1", "0"), said, strict=True)
+            )
+            and f'name="{field}" value="1" checked' not in body
+        )
+    if head == "title":
+        return f'<input type="text" name="{field}" value="" ' in body
+    options = when_options(body, int(key))
+    return ("none", False) in options and not any(chosen for _, chosen in options)
+
+
+@pytest.mark.parametrize(("head", "values"), RECOVERY)
+def test_a_choice_sent_twice_stays_unanswered_until_the_family_answers_it(
+    tmp_path: pathlib.Path, head: str, values: tuple[str, str]
+) -> None:
+    """A note's tick, a joined note's tick, a title box or a due date sent twice with
+    different answers: refused with that field named and its actual choice offered with
+    nothing chosen; the returned form sent back unchanged is refused again with zero writes
+    and the field named again, every other edit kept; the explicit answer then gives the
+    ordinary review on Review changes, and Save writes once with that answer."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        logged, mapped = key_of(page, "Reading log"), key_of(page, "Map project")
+        essay = key_of_card(page, "Short essay")
+        field = f"join-{essay}-0" if head == "join" else f"{head}-{logged}"
+        others = ticked_form(page) | {f"take-{mapped}": "1"}
+        if head in ("title", "when"):
+            others[f"take-{logged}"] = "1"
+        conflict = sent_as_pairs(
+            client, "keep", [*others.items(), *((field, value) for value in values)]
+        )
+        retry = client.post("/parent/inbox/keep", data=ticked_form(conflict.text))
+        retried_find = client.post(
+            "/parent/inbox/find", data=ticked_form(conflict.text) | {"recheck": "1"}
+        )
+        unwritten = record_counts(client)
+        answer = {
+            "take": "1",
+            "join": "1",
+            "title": "Reading log answered",
+            "when": "none",
+        }[head]
+        reviewed = client.post(
+            "/parent/inbox/find",
+            data=ticked_form(retry.text) | {field: answer, "recheck": "1"},
+        )
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        again = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        rows = {row.title: row for row in store_of(client).all_assignments()}
+
+    owner = essay if head == "join" else logged
+    title = "Short essay" if head == "join" else "Reading log"
+    said = {"take": TICK_TWICE, "join": JOIN_TWICE}.get(head) or twice_said(head, values)
+    assert conflict.status_code == 422
+    assert f"{SUMMARY}{SENT_TWICE} {CHECK_CARD.format(key=owner)}" in conflict.text
+    for again_refused in (retry, retried_find):
+        assert again_refused.status_code == 422
+        notice = f"{SUMMARY}{UNANSWERED_TWICE} {CHECK_CARD.format(key=owner)}"
+        assert notice in again_refused.text
+    assert unwritten == (0, 0, 0)
+    for refused in (conflict, retry, retried_find):
+        body = card(refused.text, title)
+        assert unescaped(body).count(said) == 1
+        assert unresolved_control(body, field)
+        assert f'name="unresolved-{field}"' in body
+        assert mapped in numbers(refused.text, TICKED)
+    assert reviewed.status_code == 200
+    assert "unresolved-" not in reviewed.text
+    assert said not in unescaped(reviewed.text)
+    assert reviewed.text.count(SAVE_SELECTED) == 1
+    assert kept.status_code == 303
+    added = 3 if head == "join" else 4
+    assert kept.headers["location"].endswith(f"added={added}&updated=0&unchanged=0")
+    assert again.headers["location"].endswith(f"added=0&updated=0&unchanged={added}")
+    if head == "join":
+        assert joined_ticks(card(reviewed.text, "Short essay")) == {field: True}
+    if head == "title":
+        assert "Reading log answered" in rows
+    if head == "when":
+        assert rows["Reading log"].due_date is None
+    if head == "take":
+        assert "Reading log" in rows
