@@ -89,7 +89,7 @@
       <h2 id="name-heading">Student name</h2>
       {% for question in rows.names %}
         <fieldset class="choice" id="{{ question.anchor }}" tabindex="-1">
-          <legend>{{ question.said }}</legend>
+          <legend>{{ question.said }}</legend>{% for text in question.notes %}<p class="note">{{ text }}</p>{% endfor %}
           {% for value, label, checked in question.options %}
             <label><input type="{% if question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
           {% endfor %}

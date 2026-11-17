@@ -23210,7 +23210,6 @@ ALTERATIONS: Final[dict[str, Alteration]] = {
     "a box the page didn't sign": lambda f: [*f, ('correct:["not-a-key","title"]', "x")],
     "a field no page writes": lambda f: [*f, ("extra", "1")],
     "an answer the page didn't ask": lambda f: [*f, ("answer:name:missing", "x")],
-    "a box sent twice": lambda f: [*f, next((n, v) for n, v in f if n.startswith("correct:"))],
     "a none with another value": with_a_none_of_another_value,
 }
 PRESS_ALTERATIONS: Final = ("the press left out", "the press unknown", "the press sent twice")
@@ -42656,8 +42655,8 @@ def test_a_single_answer_field_posted_twice_with_different_answers_writes_nothin
 ) -> None:
     """Save on the review of a card with its joined note, with one single-answer field posted
     twice with different answers, in either order: nothing is kept or saved. A joined note's
-    tick comes back refused with the typing; every other family is refused as a post that
-    doesn't match its page."""
+    tick, a title box and a due date box come back refused with the typing; every other family,
+    a destination no page offers among them, is refused as a post that doesn't match its page."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
         page = answered(browser, draft_id, page)
@@ -42678,6 +42677,9 @@ def test_a_single_answer_field_posted_twice_with_different_answers_writes_nothin
     if family == "joined":
         assert refused.status_code == 422
         assert says(text, imports.PRESS_SAID["sent_twice"])
+    elif family in ("title", "due"):
+        assert refused.status_code == 422
+        assert says(text, imports.PRESS_SAID["field_twice"])
     else:
         assert refused.status_code == 303
         assert any(says(text, imports.PRESS_SAID[said]) for said in INVALID_SAID)
@@ -42818,3 +42820,178 @@ def test_a_date_box_s_read_mark_sent_twice_with_different_values_gives_the_box_b
     ]
 
     assert screenshot_posts.typed_for(items) == (("date:Short essay", "due", "2026-10-09"),)
+
+
+def posted_twice(
+    fields: Sequence[tuple[str, str]], name: str, values: tuple[str, str], reverse: bool
+) -> list[tuple[str, str]]:
+    """A post with one field sent twice, once with each value, in the order given or reversed."""
+    rest = [(field, value) for field, value in fields if field != name]
+    return [*rest, *((name, value) for value in (values[::-1] if reverse else values))]
+
+
+def option_label(page: str, field: str, value: str) -> str:
+    """The label an option of this field shows on the page."""
+    found: list[str] = []
+    for tag, label in re.findall(r"(<input [^>]*>) <span>([^<]*)", review_form(page)):
+        name = re.search(r'name="([^"]+)"', tag)
+        shown = re.search(r'value="([^"]*)"', tag)
+        if (
+            name
+            and shown
+            and (html.unescape(name.group(1)), html.unescape(shown.group(1)))
+            == (
+                field,
+                value,
+            )
+        ):
+            found.append(html.unescape(str(label)).strip())
+    assert found, (field, value)
+    return found[0]
+
+
+def saved_rows(browser: TestClient) -> list[Any]:
+    """Every assignment on the record."""
+    return list(state_of(browser).project_state.all_assignments())
+
+
+TWICE_BOXES: Final = ["course", "title", "instruction:0", "due", "assigned", "refused:due"]
+"""The boxes of a formal card's "Correct what was read", by field, and the date Blossom couldn't
+read carried beside the due date box."""
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["first-then-second", "second-then-first"])
+@pytest.mark.parametrize("family", TWICE_BOXES)
+def test_a_box_sent_twice_with_different_values_is_refused_with_both_named_at_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, family: str, reverse: bool
+) -> None:
+    """Save with one box of a formal card sent twice with different values, in either order:
+    refused whole, 422, nothing kept or saved, the other typing kept, and the card's fold opened
+    with a line at that box naming both values as sent; neither is chosen."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = answered(browser, draft_id, page)
+        field = family.removeprefix("refused:")
+        prefix = "refused:" if family.startswith("refused:") else "correct:"
+        name = f"{prefix}{box_subject(page, field)}"
+        values = (
+            ("2026-10-12", "2026-10-13")
+            if field in ("due", "assigned") and prefix == "correct:"
+            else ("Typed once", "Typed again")
+        )
+        other = f"correct:{box_subject(page, 'title', 1)}"
+        fields = page_post(page, "save", typed={other: "Kept typing"}, tick=units_on(page))
+        before = stored_answers(browser, draft_id)
+        rows_before = saved_rows(browser)
+        refused = send(browser, draft_id, posted_twice(fields, name, values, reverse))
+        after = stored_answers(browser, draft_id)
+        rows = saved_rows(browser)
+
+    sent = values[::-1] if reverse else values
+    form = html.unescape(review_form(refused.text))
+    assert refused.status_code == 422
+    assert says(refused.text, imports.PRESS_SAID["field_twice"])
+    assert after == before
+    assert rows == rows_before
+    assert form.count(screenshot_page.said_twice("box_twice", sent)) == 1
+    assert 'value="Kept typing"' in form
+    assert '<details class="steps" open>' in form
+
+
+TWICE_ANSWERS: Final = ["name", "destination", "kind", "due", "assigned", "split", "due_read"]
+"""The answers a review asks with more than one option, by kind."""
+
+
+def asked_with_two_options(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> tuple[str, str, str]:
+    """A review asking an answer of this kind, its draft and its field."""
+    saved = Assignment(
+        assignment_id="assignment-sentence-composing-cccc2222",
+        course="English 8",
+        title="Sentence Composing",
+        due_date=date(2026, 10, 9),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=date(2026, 10, 1) if kind == "assigned" else None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    if kind == "split":
+        monday, tuesday = split_answers()
+        draft_id, page = read_review(browser, monkeypatch, (RED, monday), (BLUE, tuesday))
+        page = answered(browser, draft_id, page)
+    elif kind == "due_read":
+        due_card = homework_card(
+            badge="DUE",
+            course="Science 8",
+            title="Chains Reading Guide 6",
+            instruction=None,
+            footer="Due (10/8/2026)",
+            y_top=360,
+            y_bottom=430,
+        )
+        answer = homework_answer(cards=[homework_card(), due_card])
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, page)
+    elif kind == "name":
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+    else:
+        state_of(browser).project_state.upsert_assignments([saved])
+        answer = homework_answer(cards=[homework_card()])
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, page)
+        if kind in ("due", "assigned"):
+            [piece] = fields_named(review_form(page), "answer:destination:")
+            existing = json.dumps({"existing": saved.assignment_id}, separators=(",", ":"))
+            keep(browser, draft_id, ("destination", piece, existing))
+            page = browser.get(f"/parent/imports/{draft_id}").text
+    [subject, *_] = fields_named(review_form(page), f"answer:{kind}:")
+    return draft_id, page, f"answer:{kind}:{subject}"
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["first-then-second", "second-then-first"])
+@pytest.mark.parametrize("kind", TWICE_ANSWERS)
+def test_an_answer_sent_twice_with_different_options_is_refused_with_both_named_at_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, kind: str, reverse: bool
+) -> None:
+    """Save with one answer sent twice, once with each of two options its page offered, in either
+    order: refused whole, 422, nothing kept or saved, a line at that answer naming both options
+    as sent, and none of its options chosen."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, field = asked_with_two_options(browser, monkeypatch, kind)
+        offered = [value for value, _ in options_of(page, field)]
+        assert len(offered) >= 2
+        values = (offered[0], offered[1])
+        labels = tuple(option_label(page, field, value) for value in values)
+        fields = page_post(page, "save", tick=units_on(page))
+        before = stored_answers(browser, draft_id)
+        rows_before = saved_rows(browser)
+        refused = send(browser, draft_id, posted_twice(fields, field, values, reverse))
+        after = stored_answers(browser, draft_id)
+        rows = saved_rows(browser)
+
+    sent = labels[::-1] if reverse else labels
+    form = html.unescape(review_form(refused.text))
+    assert refused.status_code == 422
+    assert says(refused.text, imports.PRESS_SAID["field_twice"])
+    assert after == before
+    assert rows == rows_before
+    assert form.count(screenshot_page.said_twice("answer_twice", sent)) == 1
+    assert [checked for _, checked in options_of(refused.text, field)] == [False] * len(offered)
+
+
+@pytest.mark.parametrize("family", ["title", "due", "destination"])
+def test_a_box_or_answer_sent_twice_with_one_value_is_that_one_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, family: str
+) -> None:
+    """Save with a title box, a due date box or a destination sent twice with the same value:
+    one answer, so the card saves once as when it is sent once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = answered(browser, draft_id, page)
+        fields = page_post(page, "save", tick=units_on(page))
+        name = family_field(page, fields, family)
+        shown = next(value for field, value in fields if field == name)
+        saved = followed(browser, send(browser, draft_id, [*fields, (name, shown)]))
+
+    assert says(saved, imports.counted(2, 0, 0, 0))

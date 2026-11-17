@@ -17,7 +17,7 @@ import hashlib
 import hmac
 import json
 import zlib
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 from typing import Final
 
@@ -108,6 +108,8 @@ SAID: Final = {
     "joined_tick": "Add this note to the assignment",
     "joined_sent_twice": "This tick was sent twice with different answers. Choose one.",
     "joined_leave": "Don't add it",
+    "box_twice": "This box was sent twice with different answers: {sent}. Enter one.",
+    "answer_twice": "This was sent twice with different answers: {sent}. Choose one.",
     "joined_dates": "Due date on this review: {due}. The teacher's note for {day} says {noted}.",
     "joined_undated": "No due date on this review. The teacher's note for {day} says {noted}.",
     "note_day": "From the teacher's note for {day}.",
@@ -967,6 +969,8 @@ class NameQuestion:
     """Its fieldset's id on the page, by its place among the review's questions."""
     unsaved: bool = False
     """Whether what's checked is a choice a refused press sent and the record doesn't hold."""
+    notes: tuple[str, ...] = ()
+    """Lines said beneath its legend."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1582,6 +1586,7 @@ def rows_shown(
     destinations: Mapping[str, str] | None = None,
     sent_twice: frozenset[str] = frozenset(),
     unresolved: Mapping[str, tuple[str, ...]] | None = None,
+    twice: Mapping[str, tuple[str, ...]] | None = None,
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
@@ -1590,7 +1595,10 @@ def rows_shown(
     refusals, offers and tick, plus the signed fields the review form carries. A joined note's
     tick a refused press sent twice with different answers (``sent_twice``, by field) says so
     in its own fieldset; one sent twice or marked so and left unanswered (``unresolved``, with
-    the values sent) is offered as the actual choice, neither side chosen, both signed."""
+    the values sent) is offered as the actual choice, neither side chosen, both signed. A box or
+    answer of one value a refused press sent twice with different values (``twice``, by field,
+    with the values sent) names both at that field, the box's fold open, none of the answer's
+    options chosen."""
     values = dict(state.values)
     image_ids = image_ids or {}
     reworked: dict[tuple[str, ...], list[tuple[Offer, Sequence[PreviewEntry]]]] = {}
@@ -1689,6 +1697,8 @@ def rows_shown(
         boxes = fold_boxes(
             piece, own, corrections, unsaved, both, wordless.get(piece.key, ()), none_confirmed
         )
+        if twice:
+            boxes = tuple(_box_twice(box, twice) for box in boxes)
         sources = tuple(
             (
                 SAID["source"].format(shot=places.get(c.sha256, 0), card=c.place + 1),
@@ -1896,6 +1906,8 @@ def rows_shown(
     )
     if sent_twice or unresolved:
         shown_units = _marked_twice(shown_units, sent_twice | frozenset(unresolved or {}))
+    if twice:
+        names, splits, shown_units = _answers_twice(names, splits, shown_units, twice)
     return RowsShown(
         tuple(names),
         splits,
@@ -1979,6 +1991,82 @@ def _marked_twice(units: Sequence[UnitShown], fields: frozenset[str]) -> list[Un
             return asked
         return dataclasses.replace(asked, notes=((SAID["joined_sent_twice"], ""), *asked.notes))
 
+    return _marked_by(units, marked)
+
+
+def said_twice(said: str, sent: Sequence[str]) -> str:
+    """The line at a box (``box_twice``) or an answer (``answer_twice``) sent twice with different
+    values, naming each as sent, in the order sent."""
+    return SAID[said].format(sent=" and ".join(f'"{text}"' for text in sent))
+
+
+def _box_twice(box: Box, twice: Mapping[str, tuple[str, ...]]) -> Box:
+    """A box with the line naming both values, where it, or the date Blossom couldn't read carried
+    beside it, was sent twice with different values; the line opens its fold."""
+    sent = twice.get(box.name) or twice.get(f"refused:{box.subject}")
+    if not sent:
+        return box
+    return dataclasses.replace(box, refused=said_twice("box_twice", sent))
+
+
+def _answers_twice(
+    names: Sequence[NameQuestion],
+    splits: Sequence[Question],
+    units: Sequence[UnitShown],
+    twice: Mapping[str, tuple[str, ...]],
+) -> tuple[list[NameQuestion], tuple[Question, ...], list[UnitShown]]:
+    """Everything on the page that asks with each answer sent twice with different values saying,
+    at that answer, both values sent, by the labels its options show them with."""
+
+    def line(field: str, labels: Mapping[str, str]) -> str:
+        return said_twice("answer_twice", [labels.get(value, value) for value in twice[field]])
+
+    def question(asked: Question) -> Question:
+        if asked.field not in twice:
+            return asked
+        said = line(asked.field, {value: label for value, label, _ in asked.options})
+        return dataclasses.replace(asked, notes=((said, ""), *asked.notes))
+
+    def name_question(asked: NameQuestion) -> NameQuestion:
+        if asked.field not in twice:
+            return asked
+        said = line(asked.field, {value: label for value, label, _ in asked.options})
+        return dataclasses.replace(asked, notes=(said, *asked.notes))
+
+    def card_of(card: CardShown) -> CardShown:
+        field = answer_field("destination", card.name)
+        control = card.control
+        if field in twice:
+            said = line(field, {choice.value: choice.label for choice in control.choices})
+            control = dataclasses.replace(control, lost=said, preselected=False)
+        return dataclasses.replace(
+            card,
+            checks=tuple(question(asked) for asked in card.checks),
+            type=None if card.type is None else question(card.type),
+            control=control,
+        )
+
+    shown = [
+        dataclasses.replace(
+            unit,
+            blocks=tuple(
+                dataclasses.replace(
+                    block,
+                    cards=tuple(card_of(card) for card in block.cards),
+                    questions=tuple(question(asked) for asked in block.questions),
+                )
+                for block in unit.blocks
+            ),
+        )
+        for unit in units
+    ]
+    return [name_question(asked) for asked in names], tuple(question(q) for q in splits), shown
+
+
+def _marked_by(
+    units: Sequence[UnitShown], marked: Callable[[Question], Question]
+) -> list[UnitShown]:
+    """The groups with each card's question as ``marked`` gives it."""
     return [
         dataclasses.replace(
             unit,

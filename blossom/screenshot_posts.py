@@ -138,12 +138,17 @@ class ReviewPost:
     open_choices: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
     """Each tick in ``sent_twice`` or ``unanswered``, with the values sent, for the page to
     offer and mark it until it is answered."""
+    twice: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """Each box, or answer of one value, posted more than once with different values, by its
+    field, with each value once in the order sent: the press is refused whole, neither value is
+    taken, and the page names both at that field."""
 
     @property
     def refused(self) -> bool:
         """Whether the press is refused whole for what it posted: a box it can't take as posted, a
-        choice beside "None of these apply", a kept row that isn't on the record, or a joined
-        note's tick posted twice with different values or marked so and left unanswered."""
+        choice beside "None of these apply", a kept row that isn't on the record, a joined note's
+        tick posted twice with different values or marked so and left unanswered, or a box or
+        answer of one value posted twice with different values."""
         return bool(
             self.too_long
             or self.needed
@@ -152,6 +157,7 @@ class ReviewPost:
             or self.unresolved
             or self.sent_twice
             or self.unanswered
+            or self.twice
         )
 
 
@@ -165,6 +171,16 @@ WITHDRAWABLE: Final = (
 a set of checkboxes, so a box left unticked sends nothing. A joined note's tick is one."""
 JOINED_PREFIX: Final = "answer:joined:"
 """A joined note's tick's field, by prefix."""
+SEVERAL_PREFIXES: Final = ("answer:instructions:", JOINED_PREFIX)
+"""The answer fields, by prefix, that aren't read as one value: an instruction question holds
+several, and a joined note's tick is read on its own (``sent_twice``)."""
+
+
+def _one_value(name: str) -> bool:
+    """Whether a posted field is a box, or an answer that holds one value."""
+    return name.startswith(BOX_PREFIXES) or (
+        name.startswith("answer:") and not name.startswith(SEVERAL_PREFIXES)
+    )
 
 
 def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:
@@ -357,8 +373,10 @@ def read_review(
     there. A correction longer than its field takes is named in ``too_long`` and kept as typed,
     never cut, for the page to give back. A joined note's tick the page offered, posted more than
     once with different values, is named in ``sent_twice`` and taken as neither, so no value is
-    chosen by the order it came in; posted twice with one value, it is that one answer. Any other
-    answer posted twice is refused, except an instruction question's, which holds several. A
+    chosen by the order it came in; posted twice with one value, it is that one answer. A box, or
+    any other answer but an instruction question's, which holds several, is read the same way:
+    posted with different values, each one its page could send, it is named in ``twice`` and
+    taken as neither, and posted twice with one value, it is that one answer. A
     tick its page marks as sent twice (``UNRESOLVED``) is answered by adding the note or by
     leaving it out; left unanswered, it is named in ``unanswered`` and the press is refused."""
     hidden = _signed_fields(items, page_key)
@@ -397,11 +415,23 @@ def read_review(
         ):
             marked[name.removeprefix(UNRESOLVED)] = _marked_values(value)
     sent_twice = tuple(sorted(name for name, sent in joined_sent.items() if len(sent) > 1))
+    one_sent: dict[str, list[str]] = {}
+    for name, value in rest:
+        if _one_value(name):
+            sent = one_sent.setdefault(name, [])
+            if value not in sent:
+                sent.append(value)
+    twice = {name: tuple(sent) for name, sent in one_sent.items() if len(sent) > 1}
+    read_once: set[tuple[str, str]] = set()
     for name, value in rest:
         if name in ("press", "unit") or name.startswith((READ_PREFIX, UNRESOLVED)):
             continue
         if name in sent_twice:
             continue
+        if name in one_sent:
+            if (name, value) in read_once:
+                continue
+            read_once.add((name, value))
         if name.startswith(BOX_PREFIXES):
             prefix = next(p for p in BOX_PREFIXES if name.startswith(p))
             signs = f"correct:{name.removeprefix(prefix)}" if prefix == "refused:" else name
@@ -415,8 +445,9 @@ def read_review(
             elif prefix == "refused:":
                 if field not in PIECE_DATES or (key, field) in carried:
                     raise PostRefused
-                carried[(key, field)] = value
-            else:
+                if name not in twice:
+                    carried[(key, field)] = value
+            elif name not in twice:
                 if (key, field) in boxes:
                     raise PostRefused
                 boxes[(key, field)] = value
@@ -425,6 +456,8 @@ def read_review(
         as_signed = value if older else signed_option(name, value)
         if name not in offered or as_signed not in offered[name]:
             raise PostRefused
+        if name in twice:
+            continue
         if name in chosen and kind == "joined" and value in chosen[name]:
             continue
         if kind == "joined" and value == UNJOINED:
@@ -468,7 +501,10 @@ def read_review(
     blank = [
         _field(name)
         for name in offered
-        if name not in chosen and name not in sent_twice and name.startswith(WITHDRAWABLE)
+        if name not in chosen
+        and name not in sent_twice
+        and name not in twice
+        and name.startswith(WITHDRAWABLE)
     ]
     for kind, subject in blank:
         if kind == "joined" and joined_of(subject) in state.proven:
@@ -506,12 +542,16 @@ def read_review(
         needed=folded.needed,
         both=folded.both,
         conflicted=conflicted,
-        choices=_posted_choices(offered, chosen, rest),
+        choices={
+            **_posted_choices(offered, chosen, rest),
+            **{name: () for name in twice if name.startswith("answer:")},
+        },
         unresolved=tuple(unresolved),
         dropped=folded.dropped,
         sent_twice=sent_twice,
         unanswered=unanswered,
         open_choices=open_choices,
+        twice=twice,
     )
 
 

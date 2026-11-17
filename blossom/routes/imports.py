@@ -1755,6 +1755,7 @@ async def rows_of(
     destinations: Mapping[str, str] | None = None,
     sent_twice: frozenset[str] = frozenset(),
     unresolved: Mapping[str, tuple[str, ...]] | None = None,
+    twice: Mapping[str, tuple[str, ...]] | None = None,
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
@@ -1769,7 +1770,8 @@ async def rows_of(
     (``destinations``) the rows don't select are said (``RowsShown.unselected``). A joined note's
     tick a refused press sent twice with different answers (``sent_twice``) is marked there, and
     one sent twice or marked so and left unanswered (``unresolved``) is offered as its actual
-    choice, neither side chosen, until it is answered."""
+    choice, neither side chosen, until it is answered. A box or answer of one value it sent twice
+    with different values (``twice``) names both at that field."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
     kept = await saved_corrections(state, snapshot)
@@ -1812,6 +1814,7 @@ async def rows_of(
         destinations=destinations,
         sent_twice=sent_twice,
         unresolved=unresolved,
+        twice=twice,
     )
 
 
@@ -2098,6 +2101,10 @@ PRESS_SAID: Final = {
     "unanswered_twice": (
         'The choice "Add this note to the assignment" sent twice with different answers needs '
         "your answer. Choose one, then press again."
+    ),
+    "field_twice": (
+        "A box or a choice was sent twice with different answers. Each one is marked below with "
+        "both answers. Enter or choose one, then press again."
     ),
     "too_large": f"This review is too large for Blossom to process. {NOTHING_BY_THIS_ATTEMPT}",
     "save_invalid": (
@@ -2438,6 +2445,7 @@ def refused_said(post: ReviewPost) -> list[str]:
     boxes += [PAGE_SAID["conflict"]] if post.conflicted else []
     boxes += [PRESS_SAID["sent_twice"]] if post.sent_twice else []
     boxes += [PRESS_SAID["unanswered_twice"]] if post.unanswered else []
+    boxes += [PRESS_SAID["field_twice"]] if post.twice else []
     if post.too_long:
         return [PRESS_SAID["too_long"], *dict.fromkeys(boxes)]
     return [*dict.fromkeys(boxes), PRESS_SAID["nothing_kept"]]
@@ -2871,6 +2879,7 @@ async def with_typing(
             else None,
             sent_twice=frozenset(post.sent_twice) if current else frozenset(),
             unresolved=post.open_choices if current else None,
+            twice=post.twice if current else None,
         )
         said_lost = await choices_said_lost(
             state, draft_id, post, rows, own, current, behind, answers_read=answers_said_lost
