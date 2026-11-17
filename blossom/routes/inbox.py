@@ -183,8 +183,8 @@ REVIEW_UNVERIFIED: Final = (
 )
 CHECK_THIS_ASSIGNMENT: Final = "Check this assignment"
 EDITS_IN_REVIEW: Final = (
-    "Your changes to a title or due date are in this review. Nothing was saved yet. "
-    "Check it, then save."
+    "Your changes to a title or due date were not reviewed, so nothing was saved. "
+    "Check them, then press Review changes."
 )
 SENT_TWICE: Final = (
     "A choice on this review was sent twice with different answers, so nothing was saved. "
@@ -968,14 +968,16 @@ def typing_refused(read: Read) -> tuple[int, Problem] | None:
 class NoteFields:
     """The title box and the due-date choices of one card read from a teacher's note: the
     title the box holds, each choice as a value, its words and whether it is chosen,
-    whether another date is chosen, the date typed beside it, and what the card says of each
-    date the note names that can't be the due date."""
+    whether another date is chosen, the date typed beside it, what the card says of each
+    date the note gives that can't be the due date, and the dates the note leaves open that
+    can, as said."""
 
     title: str
     choices: list[tuple[str, str, bool]]
     other_chosen: bool
     other: str
     named_too_far: tuple[str, ...] = ()
+    left_open: tuple[str, ...] = ()
 
     @property
     def chosen(self) -> str:
@@ -988,28 +990,26 @@ class NoteFields:
 def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int, NoteFields]:
     """The fields of each card read from a teacher's note, by its key. The choices are the
     date as read, each date the note leaves open, each date it names, and no due date, each
-    date once. A date the note names that the due-date check refuses, as of ``today``, is no
+    date once. Any of these dates that the due-date check refuses, as of ``today``, is no
     choice: the card says it, with its year and why it can't be the due date. A card whose
     answers were sent shows them as typed. Otherwise the date as read is chosen, or no due
     date where none was read; on a card that lands on a row whose saved due date is none, or
-    another than the one read, nothing is chosen."""
+    another than the one read, or whose date as read is refused, nothing is chosen."""
     sent = {answer.key: answer for answer in read.answers}
     fields: dict[int, NoteFields] = {}
     for change in changes:
         task = change.reading.teacher_note
         if task is None:
             continue
-        dates: dict[date, str] = {}
+        given: dict[date, str] = {}
         if task.deadline is not None:
-            dates[task.deadline] = f"{spoken_day(task.deadline)}, as the note says"
+            given[task.deadline] = f"{spoken_day(task.deadline)}, as the note says"
         for day in task.choices:
-            dates.setdefault(day, spoken_day(day))
-        too_far = tuple(
-            day for day in task.named if day not in dates and not within_a_school_year(day, today)
-        )
+            given.setdefault(day, spoken_day(day))
         for day in task.named:
-            if day not in too_far:
-                dates.setdefault(day, f"{spoken_day(day)}, named in the note")
+            given.setdefault(day, f"{spoken_day(day)}, named in the note")
+        too_far = tuple(day for day in given if not within_a_school_year(day, today))
+        dates = {day: words for day, words in given.items() if day not in too_far}
         answer = sent.get(change.key)
         if answer is not None:
             title, when, other = answer.title, answer.when, answer.other
@@ -1017,7 +1017,9 @@ def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int,
             title, other = read.items[change.key].title, ""
             when = NO_DUE_DATE if task.deadline is None else task.deadline.isoformat()
             row = change.on_record
-            if row is not None and (row.due_date is None or row.due_date != task.deadline):
+            if task.deadline in too_far or (
+                row is not None and (row.due_date is None or row.due_date != task.deadline)
+            ):
                 when = ""
         values = [day.isoformat() for day in dates]
         if when and when not in (*values, NO_DUE_DATE, ANOTHER_DATE):
@@ -1037,6 +1039,7 @@ def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int,
                 NAMED_TOO_FAR.format(day=spoken_day(day), way="away" if day > today else "ago")
                 for day in too_far
             ),
+            tuple(spoken_day(day) for day in task.choices if day not in too_far),
         )
     return fields
 
@@ -1576,6 +1579,8 @@ def preview_page(
     refused: str | None = None,
     check: Collection[int] | None = None,
     typing: tuple[int, Problem] | None = None,
+    editing: Collection[int] = frozenset(),
+    twice: Collection[int] = frozenset(),
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -1623,7 +1628,14 @@ def preview_page(
     links to the card, with an id given to that card for it, only when there is exactly
     one and the page shows it. ``typing`` holds the card and the problem of a title or due
     date typed on a note that a refusal is about; the summary then links to that field
-    when the page shows its card."""
+    when the page shows its card.
+
+    Each note's card shows its title and due date as reviewed text, with an Edit details
+    press, unless ``editing`` holds its key: then the card shows its title box and due-date
+    choices, and the page offers Review changes and no Save. A card ``twice`` holds says a
+    choice on it was sent twice with different answers. The page signs the title and
+    due date of the cards it shows as reviewed only, so a save sent from a page with details
+    open writes nothing until Review changes shows them."""
     picks = picks or {}
     held = still_unsaved(made, picks, identities)
     if search is not None and search.attempted is not None:
@@ -1880,6 +1892,13 @@ def preview_page(
         for change in changes
         if change.state == FOLDED and change.occurrence in (UPDATE, KEEP_DATE)
     ]
+    # The note cards whose details are open: shown cards only, as a folded card has none.
+    opened = frozenset(editing) & {
+        change.key
+        for change in changes
+        if change.reading.teacher_note is not None
+        and change.key not in {other.key for other in folded}
+    }
     counts = {
         "new": sum(1 for change in shown if change.state == NEW),
         "updated": sum(1 for change in shown if change.state == CLAIMED),
@@ -1983,7 +2002,7 @@ def preview_page(
                 picked,
                 wanted,
                 tasks,
-                edits_of(read),
+                {key: shown for key, shown in edits_of(read).items() if key not in opened},
                 {
                     (change.key, place): (change.key, place) in read.joined
                     for change in changes
@@ -2010,6 +2029,11 @@ def preview_page(
                 ),
             ),
             "note_fields": note_fields(changes, read, moment_of(state, draft)[1]),
+            "editing": opened,
+            "twice_on": frozenset(twice),
+            # The note cards whose title or due-date answers were sent, which a card shown as
+            # reviewed carries as sent.
+            "answered_tasks": frozenset(answer.key for answer in read.answers),
             "title_max_length": TITLE_MAX_LENGTH,
             "check_card": check_card,
             "if_selected": {
@@ -2077,6 +2101,8 @@ def preview_or_recovery(
     refused: str | None = None,
     check: Collection[int] | None = None,
     typing: tuple[int, Problem] | None = None,
+    editing: Collection[int] = frozenset(),
+    twice: Collection[int] = frozenset(),
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -2104,6 +2130,8 @@ def preview_or_recovery(
             refused=refused,
             check=check,
             typing=typing,
+            editing=editing,
+            twice=twice,
             notice=notice,
             status_code=status_code,
         )
@@ -2116,17 +2144,22 @@ TICK_FIELDS: Final = frozenset({"offered", "take", "join"})
 """The fields a review sends for the ticks of readings made from teachers' notes: the note
 offered, its tick, and a joined note's tick."""
 
+BOX_FIELDS: Final = frozenset({"title", "when", "when_other"})
+"""The fields a review sends for the title and due date of a reading made from a teacher's
+note: its title box, its due-date choice, and the date beside Another date."""
+
 
 def sent_twice(fields: Iterable[tuple[str, object]]) -> dict[str, int]:
-    """Each tick field a form sends more than once with different values, read from every
-    field as sent, with the key of the card it is on: ``offered-<key>``, ``take-<key>`` and
-    ``join-<card>-<place>``. A value sent as a file differs from every text. The same value
+    """Each tick or note box field a form sends more than once with different values, read
+    from every field as sent, with the key of the card it is on: ``offered-<key>``,
+    ``take-<key>``, ``join-<card>-<place>``, ``title-<key>``, ``when-<key>`` and
+    ``when_other-<key>``. A value sent as a file differs from every text. The same value
     sent twice is one answer."""
     values: dict[str, set[str | None]] = {}
     for name, value in fields:
         head, _, rest = name.partition("-")
         card = rest.partition("-")[0]
-        if head in TICK_FIELDS and review_key(card):
+        if head in TICK_FIELDS | BOX_FIELDS and review_key(card):
             values.setdefault(name, set()).add(value if isinstance(value, str) else None)
     return {
         name: int(name.partition("-")[2].partition("-")[0])
@@ -2135,9 +2168,15 @@ def sent_twice(fields: Iterable[tuple[str, object]]) -> dict[str, int]:
     }
 
 
+def boxes_twice(twice: Mapping[str, int]) -> frozenset[int]:
+    """The keys of the cards whose title box, due-date choice or date box ``sent_twice``
+    found sent twice with different answers."""
+    return frozenset(key for name, key in twice.items() if name.partition("-")[0] in BOX_FIELDS)
+
+
 async def submitted(request: Request) -> dict[str, str]:
-    """The form as submitted, every value as text. A tick field sent more than once with
-    different values is left out (``sent_twice``), so no answer is taken by the order the
+    """The form as submitted, every value as text. A tick or note box field sent more than once
+    with different values is left out (``sent_twice``), so no answer is taken by the order the
     values came in."""
     form = await form_of(request)
     twice = sent_twice(form.multi_items())
@@ -2195,9 +2234,23 @@ async def edit_draft(request: Request, state: State) -> Response:
         return await asyncio.to_thread(read_refused, request, state, draft, answers, error)
 
 
-SEARCH_PRESSES: Final = ("find", "results_page", "choose", "remove", "recheck")
-"""The presses that change only the review: Find, Next and Previous, Choose, Remove, and
-Review changes."""
+SEARCH_PRESSES: Final = ("find", "results_page", "choose", "remove", "recheck", "details")
+"""The presses that change only the review: Find, Next and Previous, Choose, Remove, Review
+changes, and Edit details."""
+
+EDITING: Final = "editing"
+"""The field a note card with its details open sends, so the presses after it keep them
+open until Review changes shows them as reviewed."""
+
+
+def details_open(form: Mapping[str, str], read: Read) -> frozenset[int]:
+    """The keys of the readings made from teachers' notes whose details a form says are
+    open (``editing-<key>``)."""
+    return frozenset(
+        key
+        for key, item in enumerate(read.items)
+        if item.teacher_note is not None and f"{EDITING}-{key}" in form
+    )
 
 
 def one_press(fields: Iterable[tuple[str, object]]) -> tuple[str, str] | None:
@@ -2218,7 +2271,9 @@ def card_of(value: str) -> int | None:
 async def search_review(request: Request, state: State) -> Response:
     """Find homework already here under another name for one card, page through what was
     found, choose one, or take a choice back, and show the review again; or, for Review
-    changes, show it again with the selections as sent. Nothing is written: Save is the one
+    changes, show it again with the selections as sent and every note card's details as
+    reviewed; or, for Edit details, with that card's title box and due-date choices open.
+    Details open stay open through the other presses. Nothing is written: Save is the one
     press that saves. The draft and every answer on the cards come back as
     sent, questions still open among them, and a choice made on a card stays until Remove,
     whatever is searched. Choose takes only homework the page showed for that card, and holds
@@ -2278,6 +2333,7 @@ async def search_review(request: Request, state: State) -> Response:
 
     pressed = one_press(fields)
     action, value = pressed if pressed is not None else ("", "")
+    editing = details_open(form, read)
     try:
         occurrences, kinds = answers_from(form, await asyncio.to_thread(unasked_for, state, read))
         # An answer about the school's instructions is held to the question the page asked,
@@ -2366,6 +2422,17 @@ async def search_review(request: Request, state: State) -> Response:
                 refused = True
             elif shown is not None:
                 search = SearchShown(shown[0], shown[1], shown[2])
+        elif action == "details":
+            # Edit details: the review again with that card's title box and due-date
+            # choices open, and those of any card open already, the search kept.
+            key = card_of(value)
+            if key is None or key >= len(read.items) or read.items[key].teacher_note is None:
+                refused = True
+            else:
+                editing |= {key}
+                shown = page_made.query
+                if shown is not None:
+                    search = SearchShown(shown[0], shown[1], shown[2])
         else:
             refused = True
         if refused:
@@ -2389,13 +2456,45 @@ async def search_review(request: Request, state: State) -> Response:
                 search=None if shown is None else SearchShown(shown[0], shown[1], shown[2]),
                 typed=typed,
                 refused="malformed",
+                editing=details_open(form, read),
                 notice=PRESS_UNREADABLE,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        twice = sent_twice(fields)
+        if twice:
+            # A tick or a note box sent twice with different answers: no answer is taken by
+            # the order its values came in, and the review comes back saying so on each card
+            # it is on, as Save does, the details of a note box sent twice open.
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="malformed",
+                check=frozenset(twice.values()),
+                twice=frozenset(twice.values()),
+                editing=editing | boxes_twice(twice),
+                notice=SENT_TWICE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
         typing = typing_refused(read) if action == "recheck" else None
         if typing is not None:
             # Review changes with a title or due date typed on a selected note that cannot
-            # be taken: the review again, said why, with everything as typed.
+            # be taken: the review again, said why, with everything as typed and the details
+            # concerned open.
             return await asyncio.to_thread(
                 preview_or_recovery,
                 request,
@@ -2416,9 +2515,12 @@ async def search_review(request: Request, state: State) -> Response:
                 typed=typed,
                 refused="typed",
                 typing=typing,
+                editing=editing | {typing[0]} | edited(read, page_made),
                 notice=typing[1].message,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
+        # Review changes shows every card's details as reviewed; any other press keeps open
+        # the details that were open.
         return await asyncio.to_thread(
             preview_or_recovery,
             request,
@@ -2438,6 +2540,7 @@ async def search_review(request: Request, state: State) -> Response:
             search=search,
             typed=typed,
             focus=focus,
+            editing=frozenset() if action == "recheck" else editing,
         )
     except UnreadableClaim:
         return await asyncio.to_thread(intake_unavailable, request, state, draft, kept_answers)
@@ -2515,6 +2618,9 @@ async def keep_readings(request: Request, state: State) -> Response:
     search = (
         None if shown_query is None else SearchShown(shown_query[0], shown_query[1], shown_query[2])
     )
+    # The note cards whose details the form says are open stay open on every page the save
+    # hands back, with what was typed in them.
+    held_open = details_open(form, read)
     kept_answers = answers_kept(
         form,
         instruction_answers,
@@ -2557,6 +2663,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 refused="malformed",
                 notice=IDENTITY_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                editing=held_open,
             )
         if link_unreadable:
             # A box the page did not offer, a box sent twice, as a file, or with another value,
@@ -2582,6 +2689,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 refused="malformed",
                 notice=LINK_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                editing=held_open,
             )
         if pick_unreadable:
             # A choice of homework under another name the page did not show, or one changed,
@@ -2607,13 +2715,15 @@ async def keep_readings(request: Request, state: State) -> Response:
                 refused="malformed",
                 notice=PICK_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                editing=held_open,
             )
         twice = sent_twice(fields)
         if twice:
-            # A tick sent twice with different answers is no form the page wrote, and no
-            # answer is taken by the order its values came in: nothing is written, and the
-            # review comes back with every other answer and the typing as sent, that tick as
-            # if not sent, and a link to its card where there is one card.
+            # A tick or a note box sent twice with different answers is no form the page wrote,
+            # and no answer is taken by the order its values came in: nothing is written, and
+            # the review comes back with every other answer and the typing as sent, that field
+            # as if not sent, each card it is on saying so, the details of a note box sent
+            # twice open, and a link to its card where there is one card.
             return await asyncio.to_thread(
                 preview_page,
                 request,
@@ -2633,8 +2743,10 @@ async def keep_readings(request: Request, state: State) -> Response:
                 typed=typed,
                 refused="malformed",
                 check=frozenset(twice.values()),
+                twice=frozenset(twice.values()),
                 notice=SENT_TWICE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                editing=held_open | boxes_twice(twice),
             )
         if read.items and len(read.left_out) == len(read.items):
             # Nothing is selected to save: nothing is written, and the review comes back
@@ -2658,6 +2770,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 picks=picks,
                 search=search,
                 typed=typed,
+                editing=held_open,
             )
         # An answer where the page puts no such question is no form the page wrote. The
         # questions the page signed say where it asked, at which revision, and about which
@@ -2705,6 +2818,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 refused="malformed" if unreadable else "contradict",
                 notice=INSTRUCTION_FORM_UNREADABLE if unreadable else INSTRUCTIONS_CONTRADICT,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                editing=held_open,
             )
         typing = typing_refused(read)
         if typing is not None:
@@ -2729,13 +2843,15 @@ async def keep_readings(request: Request, state: State) -> Response:
                 typed=typed,
                 refused="typed",
                 typing=typing,
+                editing=held_open | edited(read, page_made) | {typing[0]},
                 notice=typing[1].message,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
         changed = edited(read, page_made)
         if changed:
-            # A title or due date other than the page showed: nothing is written, and the
-            # review comes back with the edits applied, signed, for a Save that writes them.
+            # A title or due date no review showed, typed by hand or sent from a page with
+            # details open: nothing is written, and the review comes back with those details
+            # open as typed, for Review changes to show them.
             return await asyncio.to_thread(
                 preview_or_recovery,
                 request,
@@ -2755,6 +2871,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 typed=typed,
                 refused="edited",
                 check=changed,
+                editing=held_open | changed,
                 notice=EDITS_IN_REVIEW,
             )
         joins_changed = joins_moved(read, page_made)
@@ -2785,6 +2902,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 check=frozenset(),
                 notice=REVIEW_UNVERIFIED,
                 status_code=status.HTTP_409_CONFLICT,
+                editing=held_open,
             )
 
         def saved() -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
@@ -2865,6 +2983,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             refused="malformed",
             notice=PICK_FORM_UNREADABLE,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            editing=held_open,
         )
     if isinstance(kept, NotAsked):
         # The same check as above, made again where the save writes: another connection's
@@ -2895,6 +3014,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             refused="malformed",
             notice=INSTRUCTION_FORM_UNREADABLE,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            editing=held_open,
         )
     if isinstance(kept, ChangedSinceShown):
         instructions_moved = any(change.instructions_stale for change in kept.changes)
@@ -2986,6 +3106,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 check=about,
                 notice=notice,
                 status_code=code,
+                editing=held_open,
             )
         return await asyncio.to_thread(
             preview_or_recovery,
@@ -3007,6 +3128,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             refused="stale",
             notice=CHANGED_SINCE_SHOWN if instructions_moved else HOMEWORK_CHANGED,
             status_code=status.HTTP_409_CONFLICT,
+            editing=held_open,
         )
     if not isinstance(kept, Kept):
         open_questions = {change.key for change in kept if change.state == REVIEW}
@@ -3056,6 +3178,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             typed=typed,
             refused=refused,
             notice=notice,
+            editing=held_open,
         )
     note = "&kept_note=1" if kept.kept_notes else ""
     note += f"&linked={kept.linked}" if kept.linked else ""

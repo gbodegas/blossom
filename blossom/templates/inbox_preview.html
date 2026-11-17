@@ -136,7 +136,9 @@
               <p class="status">
                 <span class="pill">{{ change.label }}</span>
                 {% if reading.reported_status %}<span class="pill">School reported: {{ reading.reported_status }}</span>{% endif %}
-              </p>
+              </p>{% if change.key in twice_on %}
+              {# A choice on this card sent twice with different answers, so the page refused it whole. #}
+              <p class="problem">A choice on this card was sent twice with different answers. Choose it once.</p>{% endif %}
               {% if (change.dates_differ or asking.state == "review") and asking.beside and reading.due_date %}
                 <dl class="compare">
                   <dt>{% if asking.on_record %}Saved due date{% else %}Also due in this text{% endif %}</dt>
@@ -163,7 +165,9 @@
               </div>{% if change.left_out %}
               {# What the note does once it is selected, which the page signs, so a tick set here saves in one press. #}
               <p class="helper">If selected: {{ if_selected[change.key] }}.</p>{% endif %}
-              {# The title and due date a parent may correct; the page signs what they show, so a save writes no other. #}{% set fields = note_fields[change.key] %}
+              {% set fields = note_fields[change.key] %}{% if change.key in editing %}
+              {# The title and due date a parent may correct, open for editing; Review changes shows them as reviewed, and the page signs them only then, so a save writes no other. #}
+              <input type="hidden" name="editing-{{ change.key }}" value="1">
               <label>Title<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span> <input type="text" name="title-{{ change.key }}" value="{{ fields.title }}" maxlength="{{ title_max_length }}" autocomplete="off" id="title-{{ change.key }}"{% if problem_link and problem_link[0] == "title-" ~ change.key %} aria-describedby="problem-summary"{% endif %}></label>
               {% for said in fields.named_too_far %}<p class="source">{{ said }}</p>
               {% endfor %}<fieldset class="choice" id="when-{{ change.key }}" tabindex="-1"{% if problem_link and problem_link[0] == "when-" ~ change.key %} aria-describedby="problem-summary"{% endif %}>
@@ -171,7 +175,17 @@
                 {% for value, words, chosen in fields.choices %}<label><input type="radio" name="when-{{ change.key }}" value="{{ value }}"{% if chosen %} checked{% endif %}> <span>{{ words }}</span></label>
                 {% endfor %}<label><input type="radio" name="when-{{ change.key }}" value="other"{% if fields.other_chosen %} checked{% endif %}> <span>Another date</span></label>
                 <label><span class="visually-hidden"> Another date for {{ reading.title }}, {{ reading.course }}</span> <input type="date" name="when_other-{{ change.key }}" value="{{ fields.other }}"></label>
-              </fieldset>{% endif %}
+              </fieldset>{% else %}
+              {# The title and due date as reviewed, with the press that opens them for editing; answers sent for them travel as sent, so the save writes what the page showed. #}
+              <p class="source">Title: <span class="authored-text">{{ reading.title }}</span>. Due date: {% if reading.due_date %}{{ spoken_day(reading.due_date) }}{% else %}No due date yet{% endif %}.</p>
+              {% for said in fields.named_too_far %}<p class="source">{{ said }}</p>
+              {% endfor %}{% if fields.left_open %}<p class="source">The note leaves the due date open: {{ fields.left_open|join(" or ") }}.</p>
+              {% endif %}{% if change.key in answered_tasks %}<input type="hidden" name="title-{{ change.key }}" value="{{ fields.title }}">{% if fields.chosen %}
+              <input type="hidden" name="when-{{ change.key }}" value="{{ fields.chosen }}">{% endif %}
+              <input type="hidden" name="when_other-{{ change.key }}" value="{{ fields.other }}">
+              {% endif %}<div class="actions">
+                <button type="submit" class="secondary" formaction="/parent/inbox/find" formnovalidate name="details" value="{{ change.key }}">Edit details<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></button>
+              </div>{% endif %}{% endif %}
               {% if change.state == "review" %}
                 <input type="hidden" name="asked-{{ change.key }}" value="1">
               {% endif %}
@@ -411,9 +425,9 @@
             {% if done and not note_tasks %}
               {# Every card's Type can still change, so the press is offered without scripts; the script shows it as done until a type changes. #}
               <button type="submit" class="primary" data-unchanged-label="Save 0 assignments" data-changed-label="Save changes">Save changes</button>
-            {% elif note_tasks %}
-              {# A tick can change how many assignments a save writes, so this save names no count and the page script has nothing of it to rewrite. #}
-              <button type="submit" class="primary">Save selected assignments</button>
+            {% elif note_tasks %}{% if not editing %}
+              {# A tick can change how many assignments a save writes, so this save names no count and the page script has nothing of it to rewrite. While a card's details are open, Review changes is the action and no Save is offered. #}
+              <button type="submit" class="primary">Save selected assignments</button>{% endif %}
             {% else %}
               <button type="submit" class="primary" data-changed-label="Save changes">{% if to_save == 0 and kept_note %}Keep her note{% elif to_save == 0 and waiting %}Save the ticked links{% else %}Save {{ to_save }} assignment{% if to_save != 1 %}s{% endif %}{% endif %}</button>
             {% endif %}

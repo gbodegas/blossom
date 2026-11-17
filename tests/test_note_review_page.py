@@ -373,7 +373,7 @@ def test_the_same_note_in_the_next_school_week_is_a_card_of_its_own(
     assert "Due Friday, November 6, 2026" in " ".join(packets[0].split())
     assert 'name="occurrence-' not in packets[0]
     assert "Read in the school's note for November 9." in packets[1]
-    assert "Friday, November 13, 2026, as the note says" in " ".join(packets[1].split())
+    assert "Due date: Friday, November 13, 2026." in " ".join(packets[1].split())
     assert 'name="occurrence-' in packets[1]
     assert "Spelling packet" not in review
     assert kept.status_code == 200
@@ -1467,14 +1467,14 @@ Online practice due Tuesday
 weekday it was first listed on, so either Tuesday may be meant."""
 
 EDITS_IN_REVIEW = (
-    "Your changes to a title or due date are in this review. Nothing was saved yet. "
-    "Check it, then save."
+    "Your changes to a title or due date were not reviewed, so nothing was saved. "
+    "Check them, then press Review changes."
 )
 
 
 def key_of(page: str, title: str) -> int:
-    """The key of the note card with this title, as its title box names it."""
-    found = re.search(r'name="title-(\d+)"', card(page, title))
+    """The key of the note card with this title, as its offered field names it."""
+    found = re.search(r'name="offered-(\d+)"', card(page, title))
     assert found is not None, title
     return int(found.group(1))
 
@@ -1518,13 +1518,26 @@ date a weekday may mean; each date the note names; no due date, chosen when none
 and another date."""
 
 
+def details_opened(client: TestClient, page: str, *titles: str) -> str:
+    """The review with the details of the note cards with these titles opened, one Edit
+    details press after another, each from the page the one before returned."""
+    for title in titles:
+        answer = opened(client, page, key_of(page, title))
+        assert answer.status_code == 200
+        page = answer.text
+    return page
+
+
 def test_each_note_card_has_a_title_box_and_one_due_date_choice(tmp_path: pathlib.Path) -> None:
-    """Each note card has a box with its whole title and one group of due-date choices, with
-    the date as read chosen, or no due date when none was read; each control names its card
-    in words a screen reader says. A card read from no note has neither."""
+    """Each note card, its details opened, has a box with its whole title and one group of
+    due-date choices, with the date as read chosen, or no due date when none was read; each
+    control names its card in words a screen reader says. A card read from no note has
+    neither."""
     with client_in(tmp_path) as client:
-        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
-        noted = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        first = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        page = details_opened(client, first, *DUE_CHOICES)
+        noted_first = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        noted = details_opened(client, noted_first, "Reading log")
 
     for title, choices in DUE_CHOICES.items():
         body = card(page, title)
@@ -1540,6 +1553,7 @@ def test_each_note_card_has_a_title_box_and_one_due_date_choice(tmp_path: pathli
         page, "Study for the vocabulary quiz on Thursday"
     )
     assert ">Tuesday, November 10, 2026<" in card(page, "Online practice")
+    assert 'type="text" name="title-' in card(noted, "Reading log")
     for title in ("Textbook page 12", "Short essay"):
         assert 'name="title-' not in card(noted, title)
         assert 'name="when-' not in card(noted, title)
@@ -1566,12 +1580,13 @@ def test_the_page_signs_the_title_and_due_date_each_note_card_shows(
 def test_an_edit_pressed_with_save_writes_nothing_and_comes_back_as_typed(
     tmp_path: pathlib.Path,
 ) -> None:
-    """On the page Review changes returns once the family selects the homework notes, a title
-    changed and Save pressed: nothing is written, the review comes back with the title
-    applied and the ticks, titles and dates as sent, and the summary, which takes the focus,
-    says so and links to the one card changed. Two cards changed: no link."""
+    """On the page Review changes returns once the family selects the homework notes, with a
+    card's details opened, a title changed and Save sent by hand: nothing is written, the
+    review comes back with the title applied and the ticks, titles and dates as sent, and the
+    summary, which takes the focus, says so and links to the one card changed. Two cards
+    changed: no link."""
     with client_in(tmp_path) as client:
-        page = homework_selected(client, FIELDS)
+        page = details_opened(client, homework_selected(client, FIELDS), "Map project")
         mapped, quiz = key_of(page, "Map project"), key_of(page, "Quiz on unit two")
         practice = key_of(page, "Online practice")
         form = ticked_form(page) | {f"title-{mapped}": "Map of the river", f"take-{quiz}": "1"}
@@ -1656,7 +1671,9 @@ def test_a_cleared_date_saves_no_due_date_and_no_school_claim(tmp_path: pathlib.
         row = next(row for row in store.all_assignments() if row.title == "Map project")
         claims = store.claim_history(row.assignment_id)
 
-    assert ("none", True) in when_options(card(reviewed.text, "Map project"), mapped)
+    body = card(reviewed.text, "Map project")
+    assert reviewed_line("Map project", "No due date yet") in body
+    assert f'<input type="hidden" name="when-{mapped}" value="none">' in body
     assert kept.status_code == 303
     assert row.due_date is None
     assert "due_date" not in row.origins
@@ -1665,16 +1682,16 @@ def test_a_cleared_date_saves_no_due_date_and_no_school_claim(tmp_path: pathlib.
 
 def test_an_untouched_review_with_note_fields_saves_in_one_press(tmp_path: pathlib.Path) -> None:
     """The page Review changes returns once the family selects the homework notes, sent back
-    as shown, title boxes and chosen dates with it, saves in one press, each note with its
-    title and date as read."""
+    as shown, with no title or date field since no details were opened, saves in one press,
+    each note with its title and date as read."""
     with client_in(tmp_path) as client:
         page = homework_selected(client, FIELDS)
         form = ticked_form(page)
         kept = client.post("/parent/inbox/keep", data=form)
         rows = {row.title: row for row in store_of(client).all_assignments()}
 
-    assert any(name.startswith("title-") for name in form)
-    assert any(name.startswith("when-") for name in form)
+    assert not any(name.startswith("title-") for name in form)
+    assert not any(name.startswith("when-") for name in form)
     assert kept.status_code == 303
     assert kept.headers["location"].endswith("added=3&updated=0&unchanged=0")
     assert rows["Map project"].due_date == datetime.date(2026, 11, 4)
@@ -1766,9 +1783,10 @@ def test_an_edit_on_a_note_not_selected_does_not_hold_the_save_back(
     """On the page Review changes returns once the family selects the homework notes, an edit
     on a note left out of the save writes nothing, so Save goes ahead for the selected notes
     in one press. The edit, an unreadable date among them, is kept as typed on the page a
-    second Review changes returns, and nothing is refused."""
+    second Review changes returns, carried by the card shown as reviewed, and nothing is
+    refused."""
     with client_in(tmp_path) as client:
-        page = homework_selected(client, FIELDS)
+        page = details_opened(client, homework_selected(client, FIELDS), "Quiz on unit two")
         quiz = key_of(page, "Quiz on unit two")
         form = ticked_form(page) | {
             f"title-{quiz}": "Unit two quiz",
@@ -1782,9 +1800,9 @@ def test_an_edit_on_a_note_not_selected_does_not_hold_the_save_back(
     assert reviewed.status_code == 200
     assert 'id="problem-summary"' not in reviewed.text
     body = card(reviewed.text, "Unit two quiz")
-    assert f'<input type="text" name="title-{quiz}" value="Unit two quiz"' in body
-    assert f'<input type="date" name="when_other-{quiz}" value="soon"' in body
-    assert ("other", True) in when_options(body, quiz)
+    assert f'<input type="hidden" name="title-{quiz}" value="Unit two quiz">' in body
+    assert f'<input type="hidden" name="when_other-{quiz}" value="soon">' in body
+    assert f'<input type="hidden" name="when-{quiz}" value="other">' in body
     assert quiz not in numbers(reviewed.text, TICKED)
     assert kept.status_code == 303
     assert kept.headers["location"].endswith("added=3&updated=0&unchanged=0")
@@ -1896,12 +1914,21 @@ def test_a_page_handed_back_carries_the_titles_and_dates_as_typed(
         typed = {}
         for title, (new_title, when, other) in typing.items():
             key = min(
-                number
-                for number in numbers(page, r'name="title-(\d+)"')
-                if f'name="title-{number}" value="{title}"' in page
+                int(number)
+                for number in re.findall(
+                    rf'<h2>{re.escape(title)}</h2>(?:(?!</article>).)*?name="offered-(\d+)"',
+                    page,
+                    re.S,
+                )
             )
             typed[key] = (new_title, when, other)
-            form |= {f"title-{key}": new_title, f"when-{key}": when, f"when_other-{key}": other}
+            # Typed in the card's details, opened by its Edit details press.
+            form |= {
+                f"title-{key}": new_title,
+                f"when-{key}": when,
+                f"when_other-{key}": other,
+                f"editing-{key}": "1",
+            }
         for name, value in sent.items():
             if value is None:
                 del form[name]
@@ -2000,8 +2027,10 @@ def test_the_page_that_reads_no_store_lists_each_title_and_date_as_sent(
             f"title-{mapped}": "Map of the river",
             f"when-{mapped}": "other",
             f"when_other-{mapped}": "2026-11-06",
+            f"title-{practice}": "Online practice",
             f"when-{practice}": "2026-11-10",
             f"title-{quiz}": "Unit two quiz",
+            f"when-{quiz}": "none",
         }
         saved = client.post("/parent/inbox/keep", data=form)
         pressed = client.post("/parent/inbox/find", data=form | {"recheck": "1"})
@@ -2080,6 +2109,7 @@ def test_corrections_stand_after_the_same_text_is_pasted_again(tmp_path: pathlib
         kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
         rows = {row.title: row for row in store_of(client).all_assignments()}
         again = client.post("/parent/inbox/read", data={"text": CORRECTED}).text
+        poster_open = details_opened(client, again, "Poster")
 
     left_out = offered - named
     assert len(left_out) == 1
@@ -2109,7 +2139,9 @@ def test_corrections_stand_after_the_same_text_is_pasted_again(tmp_path: pathlib
         'It\'s saved here as <span class="authored-text">Map of the river</span>, Humanities, '
         "due Wednesday, November 4, 2026."
     ) in card(again, "Map project")
-    assert not any(chosen for _, chosen in when_options(card(again, "Poster"), poster))
+    poster_choices = when_options(card(poster_open, "Poster"), poster)
+    assert poster_choices
+    assert not any(chosen for _, chosen in poster_choices)
     for asked in ("identity-question-", "occurrence-question-", "instructions-question-"):
         assert asked not in again
     assert "Everything here is saved already; there is nothing to save." in again
@@ -2124,7 +2156,9 @@ def test_a_folded_note_carries_its_edits_to_the_save(tmp_path: pathlib.Path) -> 
     one row with that date as the family's."""
     with client_in(tmp_path) as client:
         page = homework_selected(client, TWICE_NOTED)
+        # Typed in the later note's details, opened by its Edit details press.
         form = ticked_form(page) | {
+            "title-1": "Reading log",
             "when-1": "other",
             "when_other-1": "2026-11-09",
             "recheck": "1",
@@ -2267,6 +2301,7 @@ def test_a_january_date_in_a_december_note_is_shown_with_the_following_year(
     following one, on the card and in its due-date choice."""
     with client_in(tmp_path, today="2026-12-15") as client:
         page = client.post("/parent/inbox/read", data={"text": DECEMBER}).text
+        page = details_opened(client, page, "Essay")
 
     body = " ".join(card(page, "Essay").split())
     assert "Due Friday, January 8, 2027" in body
@@ -2315,6 +2350,8 @@ def test_a_no_homework_statement_with_a_later_deadline_may_be_homework_with_its_
     the notes that may be homework, unselected, with that Friday offered as its due date."""
     with client_in(tmp_path, today="2026-11-02") as client:
         page = client.post("/parent/inbox/read", data={"text": MIXED}).text
+        (only,) = titles(sections(page)[MAY_BE])
+        page = details_opened(client, page, only)
 
     shown = sections(page)
     assert list(shown) == [MAY_BE]
@@ -2509,15 +2546,18 @@ def request_of(button: str) -> dict[str, str]:
 def test_the_first_press_of_every_form_with_note_boxes_is_review_changes(
     tmp_path: pathlib.Path,
 ) -> None:
-    """On every review that shows a note's title or date boxes (with and without text that
-    needs review, after Review changes, an edit pressed with Save, a refused date and a page
-    the application did not sign), the form's first submit button sends Review changes'
-    request, so Enter in a box never sends Edit the text, Find or Save."""
+    """On every review that shows a note's title or date boxes, its details opened (with and
+    without text that needs review, after Review changes, an edit pressed with Save, a
+    refused date and a page the application did not sign), the form's first submit button
+    sends Review changes' request, so Enter in a box never sends Edit the text, Find or Save,
+    and no Save is offered."""
     with client_in(tmp_path) as client:
-        unread = client.post("/parent/inbox/read", data={"text": NOTED}).text
-        alone = client.post("/parent/inbox/read", data={"text": ONE_HOMEWORK_NOTE}).text
-        reviewed = homework_selected(client, NOTED)
-        fields = homework_selected(client, FIELDS)
+        noted = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        unread = details_opened(client, noted, "Reading log")
+        first = client.post("/parent/inbox/read", data={"text": ONE_HOMEWORK_NOTE}).text
+        alone = details_opened(client, first, "Reading log")
+        reviewed = details_opened(client, homework_selected(client, NOTED), "Reading log")
+        fields = details_opened(client, homework_selected(client, FIELDS), "Map project")
         mapped = key_of(fields, "Map project")
         edited = client.post(
             "/parent/inbox/keep", data=ticked_form(fields) | {f"title-{mapped}": "Map of the river"}
@@ -2527,9 +2567,7 @@ def test_the_first_press_of_every_form_with_note_boxes_is_review_changes(
             data=ticked_form(fields)
             | {f"when-{mapped}": "other", f"when_other-{mapped}": "2028-11-04"},
         )
-        chosen = client.post(
-            "/parent/inbox/find", data=ticked_form(alone) | {"take-0": "1", "recheck": "1"}
-        ).text
+        chosen = opened(client, first, 0, **{"take-0": "1"}).text
     with client_in(tmp_path) as client:
         restarted = client.post("/parent/inbox/keep", data=ticked_form(chosen))
 
@@ -2537,7 +2575,8 @@ def test_the_first_press_of_every_form_with_note_boxes_is_review_changes(
     assert 'id="needs-review"' not in alone
     assert (edited.status_code, far.status_code, restarted.status_code) == (200, 422, 409)
     for page in (unread, alone, reviewed, fields, edited.text, far.text, restarted.text):
-        assert 'name="title-' in page
+        assert 'type="text" name="title-' in page
+        assert SAVE_SELECTED not in page
         assert first_press(page) == DEFAULT_PRESS
         assert page.count(DEFAULT_PRESS) == 1
         assert page.count(REVIEW_CHANGES) == 1
@@ -2553,11 +2592,12 @@ def test_the_first_press_of_every_form_with_note_boxes_is_review_changes(
 def test_enter_in_a_title_box_keeps_the_title_and_the_tick_and_writes_nothing(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The first press of a review with text that needs review, sent with a title typed and
-    a note ticked, as Enter in the title box sends it: the review comes back with both, and
-    nothing is written."""
+    """The first press of a review with text that needs review and a card's details open,
+    sent with a title typed and a note ticked, as Enter in the title box sends it: the review
+    comes back with the title reviewed and the tick, and nothing is written."""
     with client_in(tmp_path) as client:
-        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        first = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        page = details_opened(client, first, "Reading log")
         log = key_of(page, "Reading log")
         sent = ticked_form(page) | {f"title-{log}": "Reading log for the week", f"take-{log}": "1"}
         press = request_of(first_press(page))
@@ -2566,7 +2606,10 @@ def test_enter_in_a_title_box_keeps_the_title_and_the_tick_and_writes_nothing(
 
     assert entered.status_code == 200
     assert rows == []
-    assert f'<input type="text" name="title-{log}" value="Reading log for the week"' in entered.text
+    assert f'<input type="hidden" name="title-{log}" value="Reading log for the week">' in (
+        entered.text
+    )
+    assert reviewed_line("Reading log for the week", "Monday, November 2, 2026") in entered.text
     assert log in numbers(entered.text, TICKED)
     assert 'id="needs-review"' in entered.text
 
@@ -2592,6 +2635,8 @@ def test_a_named_date_the_due_date_check_refuses_is_shown_as_the_notes_not_as_a_
     are no due date, chosen, and another date. The note's words stay as written."""
     with client_in(tmp_path, today="2026-12-15") as client:
         page = client.post("/parent/inbox/read", data={"text": text}).text
+        reviewed = page
+        page = details_opened(client, page, "Essay")
 
     body = card(page, "Essay")
     key = key_of(page, "Essay")
@@ -2600,6 +2645,7 @@ def test_a_named_date_the_due_date_check_refuses_is_shown_as_the_notes_not_as_a_
     assert 'value="2028-01-08"' not in body
     assert text.splitlines()[3] in html.unescape(body)
     assert "2027" not in body
+    assert card(reviewed, "Essay").count(FAR_NAMED_LINE) == 1
 
 
 def test_a_far_named_date_leaves_another_date_and_no_due_date_to_save(
@@ -2837,8 +2883,9 @@ def test_a_tick_sent_twice_with_different_answers_saves_nothing_and_names_its_ca
 def test_review_changes_with_a_tick_sent_twice_takes_neither_answer(
     tmp_path: pathlib.Path, name: str, values: tuple[str, str], key: int
 ) -> None:
-    """Review changes with a tick sent twice, once ticked and once not, writes nothing and
-    shows that tick unticked whichever came first, with the other tick as sent."""
+    """Review changes with a tick sent twice, once ticked and once not, writes nothing, says
+    so with a link to the card that holds it, and shows that tick unticked whichever came
+    first, with the other tick as sent."""
     with client_in(tmp_path) as client:
         page = client.post("/parent/inbox/read", data={"text": NOTED}).text
         others = ticked_form(page) | {"take-3": "1", "recheck": "1"}
@@ -2846,8 +2893,10 @@ def test_review_changes_with_a_tick_sent_twice_takes_neither_answer(
         shown = sent_as_pairs(client, "find", fields)
         rows = store_of(client).all_assignments()
 
-    assert shown.status_code == 200
+    assert shown.status_code == 422
     assert rows == []
+    assert f"{SUMMARY}{SENT_TWICE} {CHECK_CARD.format(key=key)}" in shown.text
+    assert shown.text.count(TWICE_LINE) == 1
     assert numbers(shown.text, TICKED) == {3}
     assert joined_ticks(card(shown.text, "Short essay")) == {"join-1-0": False}
 
@@ -2870,3 +2919,345 @@ def test_a_tick_sent_twice_with_the_same_answer_saves_in_one_press(
 
     assert saved.status_code == 303
     assert saved.headers["location"].endswith(f"added={added}&updated=0&unchanged=0")
+
+
+EDIT_DETAILS = (
+    '<button type="submit" class="secondary" formaction="/parent/inbox/find" formnovalidate '
+    'name="details" value="{key}">Edit details<span class="visually-hidden"> for {title}, '
+)
+"""The start of a note card's Edit details press: the review again with that card's title box
+and due-date choices open."""
+
+
+def reviewed_line(title: str, due: str) -> str:
+    """What a note card in the save-ready review says of its title and due date."""
+    return (
+        f'<p class="source">Title: <span class="authored-text">{title}</span>. Due date: {due}.</p>'
+    )
+
+
+def opened(client: TestClient, page: str, key: int, **sent: str) -> Answer:
+    """The review with one card's details opened by its Edit details press, from this page
+    sent back as shown with these fields changed."""
+    return client.post("/parent/inbox/find", data=ticked_form(page) | sent | {"details": str(key)})
+
+
+def test_the_first_view_shows_each_notes_title_and_date_as_text_with_edit_details(
+    tmp_path: pathlib.Path,
+) -> None:
+    """On the first view every note card shows its title and due date as reviewed text, the
+    dates the note leaves open as source information, one Edit details press and its tick,
+    and no title box or date choice; the action is Save selected assignments."""
+    with client_in(tmp_path) as client:
+        noted = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        fields = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+
+    for page in (noted, fields):
+        keys = numbers(page, r'name="offered-(\d+)"')
+        assert keys
+        for key in keys:
+            for head in ("title", "when", "when_other"):
+                assert f'name="{head}-{key}"' not in page
+            assert page.count(f'name="details" value="{key}"') == 1
+        assert page.count(">Edit details<") == len(keys)
+        assert 'type="radio" name="when-' not in page
+        assert page.count(SAVE_SELECTED) == 1
+    for title in ("Map project", "Quiz on unit two", "Online practice"):
+        key = key_of(fields, title)
+        body = card(fields, title)
+        assert EDIT_DETAILS.format(key=key, title=title) in body
+        assert f'<input type="checkbox" name="take-{key}" value="1">' in body
+    assert reviewed_line("Map project", "Wednesday, November 4, 2026") in card(
+        fields, "Map project"
+    )
+    assert reviewed_line("Quiz on unit two", "No due date yet") in card(fields, "Quiz on unit two")
+    assert (
+        '<p class="source">The note leaves the due date open: Tuesday, November 3, 2026 or '
+        "Tuesday, November 10, 2026.</p>"
+    ) in card(fields, "Online practice")
+
+
+def test_a_tick_on_the_first_view_saves_once_and_nothing_selected_saves_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note ticked on the first view and saved is written in one press, and the same press
+    again writes nothing more; a review of notes saved with nothing selected writes nothing
+    and says no assignment is selected."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        logged = key_of(page, "Reading log")
+        form = ticked_form(page) | {f"take-{logged}": "1"}
+        kept = client.post("/parent/inbox/keep", data=form)
+        again = client.post("/parent/inbox/keep", data=form)
+        rows = sorted(row.title for row in store_of(client).all_assignments())
+    with client_in(tmp_path / "alone") as client:
+        alone = client.post("/parent/inbox/read", data={"text": ONE_HOMEWORK_NOTE}).text
+        nothing = client.post("/parent/inbox/keep", data=ticked_form(alone))
+        unwritten = store_of(client).all_assignments()
+
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=3&updated=0&unchanged=0")
+    assert again.status_code == 303
+    assert again.headers["location"].endswith("added=0&updated=0&unchanged=3")
+    assert rows == ["Reading log", "Short essay", "Textbook page 12"]
+    assert (nothing.status_code, unwritten) == (200, [])
+    assert nothing.text.count(f'<p class="empty">{NOTHING_SELECTED}</p>') == 1
+
+
+def test_a_date_the_due_date_check_refuses_at_the_pages_today_is_no_choice(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A draft read again more than a year after the dates it read: a deadline as read and a
+    weekday the note leaves open that the due-date check refuses at the page's today are said
+    on the card with why they can't be the due date, never offered as a choice."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+    with client_in(tmp_path, today="2027-11-10") as client:
+        mapped, practice = key_of(page, "Map project"), key_of(page, "Online practice")
+        shown = client.post("/parent/inbox/find", data=ticked_form(page) | {"recheck": "1"})
+        map_open = opened(client, page, mapped)
+        practice_open = opened(client, page, practice)
+
+    far_map = (
+        '<p class="source">The note names Wednesday, November 4, 2026. It can&#39;t be saved '
+        "as the due date because it&#39;s more than a year ago.</p>"
+    )
+    far_tuesday = (
+        '<p class="source">The note names Tuesday, November 3, 2026. It can&#39;t be saved '
+        "as the due date because it&#39;s more than a year ago.</p>"
+    )
+    assert (shown.status_code, map_open.status_code, practice_open.status_code) == (200,) * 3
+    assert card(shown.text, "Map project").count(far_map) == 1
+    assert card(shown.text, "Online practice").count(far_tuesday) == 1
+    map_card = card(map_open.text, "Map project")
+    assert map_card.count(far_map) == 1
+    assert when_options(map_card, mapped) == [("none", False), ("other", False)]
+    practice_card = card(practice_open.text, "Online practice")
+    assert practice_card.count(far_tuesday) == 1
+    assert when_options(practice_card, practice) == [
+        ("2026-11-10", False),
+        ("none", True),
+        ("other", False),
+    ]
+
+
+def test_edit_details_then_review_changes_then_save_writes_the_edited_title_once(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Reading log ticked, Edit details pressed: the review comes back with that card's title
+    box and due-date choices open, the tick kept, Review changes as the action and first
+    press, no Save, and nothing written. The title typed and Review changes pressed: the
+    save-ready review with the title applied and signed. Save then writes one row with it."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        logged = key_of(page, "Reading log")
+        editing = opened(client, page, logged, **{f"take-{logged}": "1"})
+        unwritten = store_of(client).all_assignments()
+        typed = ticked_form(editing.text) | {f"title-{logged}": "Edited review title"}
+        reviewed = client.post("/parent/inbox/find", data=typed | {"recheck": "1"})
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        rows = sorted(row.title for row in store_of(client).all_assignments())
+
+    assert (editing.status_code, unwritten) == (200, [])
+    body = card(editing.text, "Reading log")
+    assert f'<input type="text" name="title-{logged}" value="Reading log"' in body
+    assert when_options(body, logged) == [("2026-11-02", True), ("none", False), ("other", False)]
+    assert f'name="details" value="{logged}"' not in body
+    assert logged in numbers(editing.text, TICKED)
+    assert SAVE_SELECTED not in editing.text
+    assert editing.text.count(REVIEW_CHANGES) == 1
+    assert first_press(editing.text) == DEFAULT_PRESS
+    assert reviewed.status_code == 200
+    assert 'type="text" name="title-' not in reviewed.text
+    assert reviewed.text.count(SAVE_SELECTED) == 1
+    assert signed_edits(reviewed.text)[logged] == ["Edited review title", "2026-11-02"]
+    assert reviewed_line("Edited review title", "Monday, November 2, 2026") in card(
+        reviewed.text, "Edited review title"
+    )
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=3&updated=0&unchanged=0")
+    assert rows == ["Edited review title", "Short essay", "Textbook page 12"]
+
+
+def test_edit_details_then_review_changes_then_save_writes_the_familys_date_once(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Another date chosen in the opened details of a selected note, reviewed and saved: one
+    press writes the date as the family's entry."""
+    with client_in(tmp_path) as client:
+        page = homework_selected(client, FIELDS)
+        mapped = key_of(page, "Map project")
+        editing = opened(client, page, mapped)
+        typed = ticked_form(editing.text) | {
+            f"when-{mapped}": "other",
+            f"when_other-{mapped}": "2026-11-09",
+        }
+        reviewed = client.post("/parent/inbox/find", data=typed | {"recheck": "1"})
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        rows = {row.title: row for row in store_of(client).all_assignments()}
+
+    assert reviewed.status_code == 200
+    assert reviewed_line("Map project", "Monday, November 9, 2026") in card(
+        reviewed.text, "Map project"
+    )
+    assert kept.status_code == 303
+    assert (rows["Map project"].due_date, rows["Map project"].origins["due_date"]) == (
+        datetime.date(2026, 11, 9),
+        SourceChannel.PARENT_ENTRY,
+    )
+
+
+def test_a_refused_date_keeps_the_details_open_with_the_typing(tmp_path: pathlib.Path) -> None:
+    """Review changes with another date that names no date: refused, nothing written, and the
+    card's details stay open with the date and title as typed and no Save offered."""
+    with client_in(tmp_path) as client:
+        page = homework_selected(client, FIELDS)
+        mapped = key_of(page, "Map project")
+        editing = opened(client, page, mapped)
+        typed = ticked_form(editing.text) | {
+            f"title-{mapped}": "Map of the river",
+            f"when-{mapped}": "other",
+            f"when_other-{mapped}": "soon",
+        }
+        refused = client.post("/parent/inbox/find", data=typed | {"recheck": "1"})
+        rows = store_of(client).all_assignments()
+
+    assert (refused.status_code, rows) == (422, [])
+    body = card(refused.text, "Map of the river")
+    assert f'<input type="text" name="title-{mapped}" value="Map of the river"' in body
+    assert f'<input type="date" name="when_other-{mapped}" value="soon"' in body
+    assert ("other", True) in when_options(body, mapped)
+    assert SAVE_SELECTED not in refused.text
+    assert refused.text.count(REVIEW_CHANGES) == 1
+
+
+def test_a_save_with_details_no_review_showed_writes_nothing_and_opens_them(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A Save carrying a title the save-ready review never showed (a hand-made request), and
+    a Save sent from a review with the details open (which offers no Save): nothing written,
+    the details concerned open with the typing, and the summary says why. Review changes then
+    Save writes the title once."""
+    with client_in(tmp_path) as client:
+        page = homework_selected(client, FIELDS)
+        mapped = key_of(page, "Map project")
+        handmade = client.post(
+            "/parent/inbox/keep", data=ticked_form(page) | {f"title-{mapped}": "Map of the river"}
+        )
+        editing = opened(client, page, mapped)
+        from_editing = client.post("/parent/inbox/keep", data=ticked_form(editing.text))
+        unwritten = store_of(client).all_assignments()
+        reviewed = client.post(
+            "/parent/inbox/find", data=ticked_form(handmade.text) | {"recheck": "1"}
+        )
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        rows = sorted(row.title for row in store_of(client).all_assignments())
+
+    assert (handmade.status_code, from_editing.status_code, unwritten) == (200, 200, [])
+    link = f'<a href="#card-{mapped}">Check this assignment</a></p>'
+    for answer, title in ((handmade, "Map of the river"), (from_editing, "Map project")):
+        assert f"{SUMMARY}{EDITS_IN_REVIEW} {link}" in answer.text
+        body = card(answer.text, title)
+        assert f'<input type="text" name="title-{mapped}" value="{title}"' in body
+        assert SAVE_SELECTED not in answer.text
+        assert answer.text.count(REVIEW_CHANGES) == 1
+    assert kept.status_code == 303
+    assert "Map of the river" in rows
+    assert "Map project" not in rows
+
+
+TWICE_LINE = (
+    '<p class="problem">A choice on this card was sent twice with different answers. '
+    "Choose it once.</p>"
+)
+"""What a card says when a choice on it was sent twice with different answers."""
+
+BOXES_TWICE = [
+    pytest.param("title", ("Reading log one", "Reading log two"), id="title"),
+    pytest.param("title", ("Reading log two", "Reading log one"), id="title-reversed"),
+    pytest.param("when", ("2026-11-02", "none"), id="when"),
+    pytest.param("when", ("none", "2026-11-02"), id="when-reversed"),
+    pytest.param("when_other", ("2026-11-05", "2026-11-06"), id="when-other"),
+    pytest.param("when_other", ("2026-11-06", "2026-11-05"), id="when-other-reversed"),
+]
+"""A note's title box, due-date choice and date box, each sent twice with two different
+answers, in both orders."""
+
+
+@pytest.mark.parametrize("path", ["keep", "find"])
+@pytest.mark.parametrize(("head", "values"), BOXES_TWICE)
+def test_a_note_box_sent_twice_with_different_answers_saves_nothing_and_names_its_card(
+    tmp_path: pathlib.Path, path: str, head: str, values: tuple[str, str]
+) -> None:
+    """Save or Review changes with a note's title box, due-date choice or date box sent twice
+    with different answers: refused, nothing written, the summary says why with a link to the
+    card, the card says so with its details open, and the other tick and typed title come
+    back as sent."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        logged, mapped = key_of(page, "Reading log"), key_of(page, "Map project")
+        others = ticked_form(page) | {
+            f"take-{logged}": "1",
+            f"take-{mapped}": "1",
+            f"title-{mapped}": "Map project outline",
+            f"editing-{mapped}": "1",
+        }
+        if path == "find":
+            others["recheck"] = "1"
+        fields = [*others.items(), *((f"{head}-{logged}", value) for value in values)]
+        refused = sent_as_pairs(client, path, fields)
+        counts = record_counts(client)
+
+    assert refused.status_code == 422
+    assert counts == (0, 0, 0)
+    assert f"{SUMMARY}{SENT_TWICE} {CHECK_CARD.format(key=logged)}" in refused.text
+    body = card(refused.text, "Reading log")
+    assert body.count(TWICE_LINE) == 1
+    assert f'<input type="text" name="title-{logged}"' in body
+    assert numbers(refused.text, TICKED) == {logged, mapped}
+    assert f'<input type="text" name="title-{mapped}" value="Map project outline"' in refused.text
+    assert SAVE_SELECTED not in refused.text
+
+
+@pytest.mark.parametrize("path", ["keep", "find"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["in-order", "reversed"])
+def test_choices_sent_twice_on_several_cards_name_each_card_and_save_nothing(
+    tmp_path: pathlib.Path, path: str, reverse: bool
+) -> None:
+    """Save or Review changes with a tick, a joined note's tick and a title box each sent
+    twice with different answers, on three cards: refused whole, nothing written, and each
+    card concerned says so; the summary links to none of them."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        logged, mapped = key_of(page, "Reading log"), key_of(page, "Map project")
+        essay = key_of_card(page, "Short essay")
+        twice = [
+            (f"take-{logged}", ("1", "0")),
+            (f"join-{essay}-0", ("1", "0")),
+            (f"title-{mapped}", ("Map one", "Map two")),
+        ]
+        others = ticked_form(page) | ({"recheck": "1"} if path == "find" else {})
+        fields = [
+            *others.items(),
+            *(
+                (name, value)
+                for name, values in twice
+                for value in (reversed(values) if reverse else values)
+            ),
+        ]
+        refused = sent_as_pairs(client, path, fields)
+        counts = record_counts(client)
+
+    assert refused.status_code == 422
+    assert counts == (0, 0, 0)
+    assert f"{SUMMARY}{SENT_TWICE}</p>" in refused.text
+    assert refused.text.count(TWICE_LINE) == 3
+    for title in ("Reading log", "Map project", "Short essay"):
+        assert card(refused.text, title).count(TWICE_LINE) == 1
+
+
+def key_of_card(page: str, title: str) -> int:
+    """The key of a card read from no note, as its kind field names it."""
+    found = re.search(r'name="kind-(\d+)"', card(page, title))
+    assert found is not None, title
+    return int(found.group(1))
