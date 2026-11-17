@@ -44,6 +44,7 @@ from blossom.routes.inbox import (
     STORE_REFUSED,
     unsaved_on,
 )
+from blossom.routes.instruction_answers import paste_answers
 from blossom.routes.navigation import instructions_action_href, instructions_review_href
 from blossom.routes.note_details import choice_value
 from blossom.school_instructions import (
@@ -722,7 +723,6 @@ def keep_as_sent(client: TestClient, fields: list[tuple[str, str]]) -> Answer:
         [("instructions-0", "1")],
         [("instruction-0-0", to_wire(A))],
         [("apply-0-1", "0")],
-        [("none-0", "1"), ("none-0", "1")],
         [("apply-0-7", "1")],
         [("apply-0", "1")],
         [("instruction-0-01", to_wire("Bring a calculator."))],
@@ -733,7 +733,6 @@ def keep_as_sent(client: TestClient, fields: list[tuple[str, str]]) -> Answer:
         "the-revision-twice",
         "the-words-twice",
         "a-box-twice",
-        "none-twice",
         "a-box-without-words",
         "a-name-the-page-never-writes",
         "a-padded-place",
@@ -759,6 +758,46 @@ def test_instruction_fields_the_page_did_not_write_refuse_the_whole_paste(
     assert answer.status_code == 422
     assert str(escape(INSTRUCTION_FORM_UNREADABLE)) in answer.text
     assert after == start
+
+
+@pytest.mark.parametrize("box", ["apply-0-1", "none-0"])
+def test_an_instruction_box_sent_twice_with_the_same_value_is_one_answer(
+    tmp_path: pathlib.Path, box: str
+) -> None:
+    """A box of the instruction question sent twice with the same value, an injected duplicate
+    submission, is the one answer it gives: the paste saves what that box sent once saves."""
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK)
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        form = list(review_form(page).items())
+        before = tables(client)
+        answer = keep_as_sent(client, [*form, (box, "1"), (box, "1")])
+        after = tables(client)
+        found = standing(client)
+
+    assert answer.status_code == 303
+    assert after != before
+    assert found.texts == ((B,) if box == "apply-0-1" else ())
+
+
+def test_the_paste_reader_takes_a_box_sent_twice_with_the_same_value_as_one_answer() -> None:
+    """``paste_answers`` reads an ``apply`` or ``none`` box sent twice with the same value as
+    that one answer, and the same box sent with two values, or the words sent twice, as a form
+    the page did not make."""
+    shown = [("instructions-0", "3"), ("instruction-0-0", to_wire(A))]
+    applies = paste_answers([*shown, ("apply-0-0", "1"), ("apply-0-0", "1")])
+    none = paste_answers([*shown, ("none-0", "1"), ("none-0", "1")])
+    differ = paste_answers([*shown, ("apply-0-0", "1"), ("apply-0-0", "0")])
+    words = paste_answers([*shown, ("instruction-0-0", to_wire(A)), ("apply-0-0", "1")])
+
+    assert not applies.malformed
+    assert applies.answers[0].applies == frozenset({A})
+    assert not none.malformed
+    assert none.answers[0].none_applies
+    assert differ.malformed
+    assert differ.answers == {}
+    assert words.malformed
+    assert words.answers == {}
 
 
 def test_a_file_in_place_of_an_instructions_words_refuses_the_whole_paste(

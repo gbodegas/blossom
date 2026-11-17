@@ -656,16 +656,21 @@ def link_answers(
     """The notes of hers ticked to link, as the page offered them, read from every field as
     sent: ``link-<card>-<place>`` names the note the page signed at that place on that
     card, with the homework the card landed on when the page was made, or ``None`` where
-    it asked which. The second value says whether anything was sent that the page did not
-    offer, a box sent as a file among them, or one note ticked more than once, by a box
-    sent twice or on more than one card, since repeated cards for one homework are shown
-    as one; either refuses the form whole."""
+    it asked which. A box sent twice with the same value is the one tick it gives. The second
+    value says whether anything was sent that the page did not offer, a box sent as a file
+    among them, or one note ticked on more than one card, since repeated cards for one
+    homework are shown as one; either refuses the form whole."""
     ticked: dict[int, list[tuple[str, int, str | None]]] = {}
     unreadable = False
+    seen: set[tuple[str, object]] = set()
     for name, value in fields:
         head, _, rest = name.partition("-")
         if head != "link":
             continue
+        if isinstance(value, str):
+            if (name, value) in seen:
+                continue
+            seen.add((name, value))
         card, _, place = rest.partition("-")
         offered = page.links.get(int(card), ()) if review_key(card) else ()
         if value != "1" or not review_key(place) or int(place) >= len(offered):

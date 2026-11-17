@@ -86,7 +86,7 @@ from blossom.stores.import_drafts import (
 )
 from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
 from blossom.uploads import as_new_image, prepare_image
-from tests.import_review_cases import every_row
+from tests.import_review_cases import every_row, written_as_the_older_form
 from tests.support import (
     ARRIVAL_CUE,
     HERS,
@@ -43376,6 +43376,49 @@ def shape_instructions(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> 
     return two_names_with_instructions(browser, monkeypatch, *texts)[1]
 
 
+def shape_effects(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The page a Save with a typed title comes back to: nothing saved, check the effects."""
+    draft_id, page = read_review(browser, monkeypatch, (RED, unsure_answer()))
+    typed = {f"correct:{box_subject(page, 'title')}": "Sentence Combining"}
+    refused = send(browser, draft_id, page_post(page, "save", tick=digests_on(page), typed=typed))
+    assert refused.status_code == 409
+    assert says_each(refused.text, CHANGED_BESIDE_ANSWERS)
+    return refused.text
+
+
+def shape_reopened(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The review opened again after Save review for later kept a typed title."""
+    answer = homework_answer(
+        cards=[homework_card(uncertain=[{"field": "title", "reason": "a smudge over it"}])]
+    )
+    draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+    typed = {f"correct:{box_subject(page, 'title')}": "Sentence Combining"}
+    later = followed(browser, send(browser, draft_id, page_post(page, "later", typed=typed)))
+    assert says(later, imports.PRESS_SAID["later"])
+    reopened = browser.get(f"/parent/imports/{draft_id}").text
+    assert 'value="Sentence Combining"' in review_form(reopened)
+    return reopened
+
+
+def shape_older(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A review asking which instructions apply, its signed list of the shape before, each kept
+    option as its words."""
+    texts = ("Study list one.", "Study list two.")
+    draft_id, page, _ = two_names_with_instructions(browser, monkeypatch, *texts)
+    older = written_as_the_older_form(browser, draft_id, page)
+    assert dict(page_post(older, "keep"))["asked"].startswith("[")
+    return older
+
+
+def shape_unread(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A review with a Couldn't read group, each card's Set aside a button of its own form."""
+    draft_id, page = read_review(browser, monkeypatch, (RED, unreadable_answer()))
+    page = her_name_answered(browser, draft_id, page)
+    assert "Couldn't read" in html.unescape(page)
+    assert page.count('form="leave-item-') == 2
+    return page
+
+
 REVIEW_SHAPES: Final = {
     "first view": shape_read(homework_answer, name_answered=False),
     "her name answered": shape_read(homework_answer),
@@ -43396,11 +43439,17 @@ REVIEW_SHAPES: Final = {
     "a refused date carried": shape_carried,
     "no assigned date given": shape_none_given,
     "which instructions apply": shape_instructions,
+    "check the effects": shape_effects,
+    "reopened after save for later": shape_reopened,
+    "a signed list of the shape before": shape_older,
+    "a couldn't read group": shape_unread,
 }
 """The screenshot review page shapes these tests build, by name: the first view, her name
 answered, after Keep these answers, a card with its joined note, a note alone, each answer asked
 with two options or more, the page a field sent twice comes back to, a typed date refused and
-carried, "No assigned date was given", and the question of several answers."""
+carried, "No assigned date was given", the question of several answers, the page a Save with a
+typed title comes back to, the review reopened after Save review for later, a signed list of the
+shape before, and a Couldn't read group."""
 
 
 @pytest.mark.parametrize("shape", list(REVIEW_SHAPES))
@@ -43481,6 +43530,107 @@ def test_a_name_outside_the_grammar_or_rendered_otherwise_has_no_entry(
 ) -> None:
     """A near miss of a family's grammar, or a family rendered as no page renders it, has no
     entry: no prefix of a name matches."""
+    assert screenshot_posts.review_field(name, rendering) is None
+
+
+ROW_KEY: Final = "0123456789abcdef" * 4
+"""A row key as the page spells one: 64 lowercase hex characters."""
+NOTE_TAG: Final = "fedcba9876543210"
+"""A joined note's tag as the page spells one: 16 lowercase hex characters."""
+
+
+@pytest.mark.parametrize(
+    ("name", "rendering"),
+    [
+        (f"answer:destination:{ROW_KEY}", "visible"),
+        (f"answer:destination:{ROW_KEY}|2026-10-05", "visible"),
+        (f"answer:destination:{ROW_KEY}|due", "visible"),
+        (f"answer:destination:{ROW_KEY}|note-{NOTE_TAG}", "visible"),
+        (f"answer:split:{ROW_KEY}", "visible"),
+        (f"answer:due_read:{ROW_KEY}|due", "visible"),
+        (f"answer:due_read:{ROW_KEY}|note-{NOTE_TAG}", "visible"),
+        (f"answer:kind:{ROW_KEY}", "visible"),
+        (
+            "answer:kind:"
+            + screenshot_review.subject_for(("new", "English 8", "Essay", "1"), [f"{ROW_KEY}|due"]),
+            "visible",
+        ),
+        (
+            "answer:due:"
+            + screenshot_review.subject_for(
+                ("id", "assignment-essay-1"), [f"{ROW_KEY}|2026-10-05", ROW_KEY]
+            ),
+            "visible",
+        ),
+        (
+            "answer:assigned:"
+            + screenshot_review.subject_for(("new", "Math", "Practice", "12"), [ROW_KEY]),
+            "visible",
+        ),
+        ("answer:name:missing", "visible"),
+        (f"answer:name:{ROW_KEY}", "visible"),
+        (f"digest:{ROW_KEY}", "hidden"),
+        (
+            "digest:"
+            + screenshot_review.unit_name([f"{ROW_KEY}|note-{NOTE_TAG}", f"{ROW_KEY}|due"]),
+            "hidden",
+        ),
+        (f"unresolved:answer:destination:{ROW_KEY}|due", "hidden"),
+    ],
+)
+def test_each_answer_subject_and_group_unit_as_the_page_spells_it_has_its_entry(
+    name: str, rendering: str
+) -> None:
+    """Each answer subject and each group's unit, spelled as the page spells it (a row key, a
+    piece name, a unit of piece names joined by "+", a destination's subject, "missing" or a
+    student line's keyed form), has its entry."""
+    assert screenshot_posts.review_field(name, rendering) is not None
+
+
+@pytest.mark.parametrize(
+    ("name", "rendering"),
+    [
+        ("answer:destination:x", "visible"),
+        (f"answer:destination:{ROW_KEY[:-1]}", "visible"),
+        (f"answer:destination:{ROW_KEY}0", "visible"),
+        (f"answer:destination:{ROW_KEY.upper()}", "visible"),
+        (f"answer:destination:{ROW_KEY}|2026-10-5", "visible"),
+        (f"answer:destination:{ROW_KEY}|later", "visible"),
+        (f"answer:destination:{ROW_KEY}|note-{NOTE_TAG.upper()}", "visible"),
+        (f"answer:destination:{ROW_KEY}|note-{NOTE_TAG}0", "visible"),
+        (f"answer:destination:{ROW_KEY}|due+{ROW_KEY}", "visible"),
+        (f"answer:split:{ROW_KEY}|due", "visible"),
+        (f"answer:split:{ROW_KEY}+{ROW_KEY}", "visible"),
+        (f"answer:due_read:{ROW_KEY}|", "visible"),
+        (f"answer:kind:{ROW_KEY}|due", "visible"),
+        ('answer:kind:[["id","a"],[]]', "visible"),
+        (f"answer:due:{ROW_KEY}", "visible"),
+        (f'answer:due:[["new",1],["{ROW_KEY}"]]', "visible"),
+        (f'answer:due:[["new","1"],["{ROW_KEY}"]] ', "visible"),
+        (f'answer:assigned:[["new","01"],["{ROW_KEY}"]]', "visible"),
+        (f'answer:assigned:[["new","English 8","Essay","1"],["{ROW_KEY}"]]', "visible"),
+        (f'answer:assigned:[["found","a"],["{ROW_KEY}"]]', "visible"),
+        ('answer:assigned:[["id","a"],["x"]]', "visible"),
+        (f'answer:assigned:[["id","a"], ["{ROW_KEY}"]]', "visible"),
+        ("answer:name:Missing", "visible"),
+        ("answer:name:missingx", "visible"),
+        (f"answer:name:{ROW_KEY}0", "visible"),
+        (f"answer:name:{ROW_KEY}|due", "visible"),
+        ("digest:x", "hidden"),
+        (f"digest:{ROW_KEY}+", "hidden"),
+        (f"digest:+{ROW_KEY}", "hidden"),
+        (f"digest:{ROW_KEY}|due+{ROW_KEY}|later", "hidden"),
+        (f"digest:{ROW_KEY} ", "hidden"),
+        (f"unresolved:answer:name:{ROW_KEY}0", "hidden"),
+    ],
+)
+def test_a_near_miss_of_an_answer_subject_or_a_group_unit_has_no_entry(
+    name: str, rendering: str
+) -> None:
+    """A near miss of an answer subject's or a group unit's spelling (another hex length or
+    case, a piece suffix the page never writes, a unit where one piece goes, a destination's
+    subject spelled otherwise, a name subject that is neither "missing" nor a keyed form) has no
+    entry."""
     assert screenshot_posts.review_field(name, rendering) is None
 
 

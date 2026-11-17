@@ -2449,9 +2449,7 @@ def two_guides(client: TestClient) -> None:
     [
         "two-homework",
         "two-homework-the-other-way",
-        "one-homework-twice",
         "a-token-twice",
-        "a-note-twice",
         "a-homework-as-a-file",
     ],
 )
@@ -2469,13 +2467,9 @@ def test_an_answer_sent_twice_or_as_a_file_refuses_the_whole_paste(
             form["identity-0"] = [first, second]
         elif sent == "two-homework-the-other-way":
             form["identity-0"] = [second, first]
-        elif sent == "one-homework-twice":
-            form["identity-0"] = [first, first]
         elif sent == "a-token-twice":
             token = review_form(page)["creation-0"]
             form = {**form, "identity-0": DIFFERENT, "creation-0": [token, token]}
-        elif sent == "a-note-twice":
-            form = {**form, "identity-0": first, links_on(page, 0)[0]: ["1", "1"]}
         else:
             files = {"identity-0": ("choice.txt", first.encode(), "text/plain")}
         before = tables(client)
@@ -2492,11 +2486,45 @@ def test_an_answer_sent_twice_or_as_a_file_refuses_the_whole_paste(
     returned = review_form(refused.text)
     assert refused.status_code == 422
     assert returned["text"] == review_form(page)["text"]
-    if sent == "a-note-twice":
-        # Both boxes say the same, so the note comes back ticked, with the homework chosen.
-        assert (returned["identity-0"], returned["link-0-0"]) == (first, "1")
-    else:
-        assert sorted(choices(refused.text, 0)) == sorted([GUIDE_COPY, SECOND_GUIDE, DIFFERENT])
+    assert sorted(choices(refused.text, 0)) == sorted([GUIDE_COPY, SECOND_GUIDE, DIFFERENT])
+
+
+@pytest.mark.parametrize("sent", ["one-homework-twice", "a-note-twice", "an-offered-box-twice"])
+def test_an_answer_sent_twice_with_the_same_value_is_that_one_answer(
+    tmp_path: pathlib.Path, sent: str
+) -> None:
+    """The answer to which homework a card is about, or a note's link box, sent twice with the
+    same value, an injected duplicate submission, is that one answer: the paste saves, and the
+    same answers sent once afterwards write nothing more."""
+    with client_in(tmp_path) as client:
+        if sent == "an-offered-box-twice":
+            name = guide_note(client)
+            page = read(client, GUIDE_CARD)
+            once_sent: dict[str, str | list[str]] = {**review_form(page)}
+        else:
+            two_guides(client)
+            name = guide_note(client)
+            page = read(client, GUIDE_MISSING + "\n" + lab_card("10/15/2026"))
+            once_sent = {**review_form(page), "identity-0": choice_value(GUIDE_COPY)}
+        if sent != "one-homework-twice":
+            once_sent[links_on(page, 0)[0]] = "1"
+        twice_sent: dict[str, str | list[str]] = {**once_sent}
+        if sent == "one-homework-twice":
+            twice_sent["identity-0"] = [choice_value(GUIDE_COPY)] * 2
+        else:
+            twice_sent[links_on(page, 0)[0]] = ["1", "1"]
+        before = tables(client)
+        twice = client.post("/parent/inbox/keep", data=twice_sent)
+        once = tables(client)
+        again = client.post("/parent/inbox/keep", data=once_sent)
+        after = tables(client)
+        note = store_of(client).capture(name)
+
+    assert (twice.status_code, again.status_code) == (303, 303)
+    assert once != before
+    assert after == once
+    assert note is not None
+    assert note.outstanding == (sent == "one-homework-twice")
 
 
 def test_a_failed_save_says_back_no_homework_for_an_answer_sent_twice(
@@ -3367,7 +3395,6 @@ LINKS_UNREADABLE = (
 @pytest.mark.parametrize(
     "sent",
     [
-        "an-offered-box-twice",
         "an-offered-box-as-a-file",
         "an-offered-box-with-another-value",
         "a-box-not-offered",
@@ -3387,9 +3414,7 @@ def test_link_choices_that_cannot_be_read_are_refused_in_words_true_of_each(
         box = links_on(page, 0)[0]
         form: dict[str, str | list[str]] = {**review_form(page)}
         files = None
-        if sent == "an-offered-box-twice":
-            form[box] = ["1", "1"]
-        elif sent == "an-offered-box-as-a-file":
+        if sent == "an-offered-box-as-a-file":
             files = {box: ("tick.txt", b"1", "text/plain")}
         elif sent == "an-offered-box-with-another-value":
             form[box] = "yes"
@@ -3434,9 +3459,12 @@ def test_link_choices_that_cannot_be_read_are_refused_in_words_true_of_each(
 
 
 @pytest.mark.parametrize("beside", ["a-note-ticked", "another-card-answered"])
-def test_an_identity_answer_that_cannot_be_read_keeps_the_other_answers_given(
+def test_an_identity_answer_sent_twice_with_the_same_value_saves_with_the_other_answers_given(
     tmp_path: pathlib.Path, beside: str
 ) -> None:
+    """An identity answer sent twice with the same value, an injected duplicate submission, is
+    that one answer: the paste saves with the other answers given beside it, and the same
+    answers sent once afterwards write nothing more."""
     name = ""
     with client_in(tmp_path) as client:
         if beside == "a-note-ticked":
@@ -3452,20 +3480,12 @@ def test_an_identity_answer_that_cannot_be_read_keeps_the_other_answers_given(
             answer, kept = DIFFERENT, "identity-1"
             form = {**review_form(page), "identity-0": [answer, answer], kept: choice_value(early)}
         before = tables(client)
-        refused = client.post("/parent/inbox/keep", data=form)
-        after = tables(client)
-        returned = review_form(refused.text)
-        corrected = {**returned, "identity-0": answer}
-        saved = client.post("/parent/inbox/keep", data=corrected)
+        saved = client.post("/parent/inbox/keep", data=form)
         once = tables(client)
-        again = client.post("/parent/inbox/keep", data=corrected)
+        again = client.post("/parent/inbox/keep", data={**form, "identity-0": answer})
         twice = tables(client)
         note = store_of(client).capture(name) if name else None
 
-    assert refused.status_code == 422
-    assert after == before
-    assert returned[kept] == form[kept]
-    assert "identity-0" not in returned
     assert (saved.status_code, again.status_code) == (303, 303)
     assert once != before
     assert twice == once

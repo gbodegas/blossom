@@ -215,14 +215,25 @@ BOX_SUBJECT: Final = (
     rf'|instruction:[0-9a-f]{{64}}:{_PLACE})"\]'
 )
 """A box's subject: its row key or its piece's dates key, and its field, as one JSON list."""
-_NAMED: Final = r"[!-~]+"
-"""A piece's or a row's name, or the student-name question's subject, as the page writes it:
-printable ASCII with no space."""
+_ROW: Final = "[0-9a-f]{64}"
+"""A row's key: the SHA-256 of the row in lowercase hex."""
+_PIECE: Final = rf"{_ROW}(?:\|(?:[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}|due|note-[0-9a-f]{{16}}))?"
+"""A piece's name: its row's key, alone or with an assigned day, ``due`` for the undated cards
+of a row split by day, or ``note-`` and a joined note's tag."""
+_UNIT: Final = rf"{_PIECE}(?:\+{_PIECE})*"
+"""A group's unit: its piece names joined by "+"."""
+_DESTINATION: Final = (
+    rf'\[\[(?:"id",{_TEXT}|"new","(?:0|[1-9][0-9]{{0,5}})")\],\["{_PIECE}"(?:,"{_PIECE}")*\]\]'
+)
+"""A destination's question subject as ``subject_for`` writes it: an assignment by its id or a
+new slot by its number, then its piece names."""
+_NAME: Final = "missing|[0-9a-f]{64}"
+"""The student-name question's subject: ``missing``, or the keyed form of a student line."""
 _PAIR: Final = rf"\[{_TEXT},{_TEXT}\]"
 _TEXTS: Final = rf"\[(?:{_TEXT}(?:,{_TEXT})*)?\]"
 ONE_ANSWER: Final = (
-    rf"answer:(?:(?:destination|split|due|assigned|due_read|kind|name):{_NAMED}"
-    rf"|(?:confirm|joined):{_PAIR})"
+    rf"answer:(?:(?:destination|due_read):{_PIECE}|split:{_ROW}|kind:(?:{_ROW}|{_DESTINATION})"
+    rf"|(?:due|assigned):{_DESTINATION}|name:(?:{_NAME})|(?:confirm|joined):{_PAIR})"
 )
 """The grammar of an answer of one value: the kind, then its subject as the page writes it."""
 INSTRUCTIONS_ANSWER: Final = rf"answer:instructions:\[{_TEXTS},{_TEXTS},(?:0|[1-9][0-9]{{0,11}})\]"
@@ -246,7 +257,7 @@ class ReviewField:
 
 REVIEW_FIELDS: Final = (
     ReviewField("version|progress_revision|acceptance|asked|defaults|identity", HIDDEN, PAGE),
-    ReviewField(rf"digest:{_NAMED}", HIDDEN, PAGE),
+    ReviewField(rf"digest:{_UNIT}", HIDDEN, PAGE),
     ReviewField("check", HIDDEN, PAGE),
     ReviewField(rf"read:{BOX_SUBJECT}", HIDDEN, PAGE),
     ReviewField(rf"unresolved:(?:correct:{BOX_SUBJECT}|{ONE_ANSWER})", HIDDEN, PAGE),
