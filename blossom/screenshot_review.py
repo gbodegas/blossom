@@ -24,7 +24,7 @@ from typing import Any, Final, NamedTuple
 import blossom.intake as intake
 from blossom.grades.draft import folded
 from blossom.intake import Reading
-from blossom.reconciliation import SourceChannel
+from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.school_instructions import InstructionSeen, instruction_words
 from blossom.screenshots import (
     INSTRUCTION_MOST,
@@ -312,14 +312,17 @@ def holds_note(piece: Piece, row: SavedRow) -> bool:
     return noted is not None and row.pair[0] == piece.pair[0] and noted in row.noted
 
 
+def same_name_in_window(piece: Piece, row: SavedRow) -> bool:
+    """Whether a saved assignment is the piece's by class, title and due date: never for a
+    piece read from a teacher's note, which only its words and school day recognize
+    (``holds_note``), so a later week's identical note is new work."""
+    return note_of(piece) is None and row.pair == piece.pair and in_window(piece.due, row.due)
+
+
 def listed(piece: Piece, rows: Iterable[SavedRow]) -> list[SavedRow]:
-    """The saved assignments of the piece's class and title in its window, and for a piece
+    """The saved assignments of the piece's class and title in its window, or for a piece
     read from a teacher's note those holding its words and school day, in a fixed order."""
-    found = [
-        r
-        for r in rows
-        if (r.pair == piece.pair and in_window(piece.due, r.due)) or holds_note(piece, r)
-    ]
+    found = [r for r in rows if same_name_in_window(piece, r) or holds_note(piece, r)]
     return sorted(
         found,
         key=lambda r: (
@@ -413,7 +416,7 @@ def offerable(
         return False
     if kind == "existing":
         row = rows[target]
-        return (row.pair == piece.pair and in_window(piece.due, row.due)) or holds_note(piece, row)
+        return same_name_in_window(piece, row) or holds_note(piece, row)
     if kind == "linked":
         return any(r.assignment_id == target for r in linked(piece, picks, rows))
     return True
@@ -485,20 +488,18 @@ def defaults(
     """The two preselections for pieces with no stored destination: "Already saved" for one exact
     match landing on which writes nothing, and a lone piece with nothing listed or linked on new
     slot 1. Two pieces never start on one assignment. A piece read from a teacher's note is
-    preselected "Already saved" on the one assignment holding its words and school day; with
-    none and no due date it is never preselected "Already saved": its class, title and words
+    preselected "Already saved" only on the one assignment holding its words and school day;
+    with none it is never preselected "Already saved": its class, title, due date and words
     don't tell one week's note from another's."""
     picks = list(picks)
     candidates: dict[str, str] = {}
     for piece in pieces:
         if piece.name in stored:
             continue
-        noted = sorted(r.assignment_id for r in rows.values() if holds_note(piece, r))
-        if noted:
+        if note_of(piece) is not None:
+            noted = sorted(r.assignment_id for r in rows.values() if holds_note(piece, r))
             if len(noted) == 1 and writes_nothing(piece, noted[0]):
                 candidates[piece.name] = noted[0]
-            continue
-        if _undated_note(piece):
             continue
         options = listed(piece, rows.values()) + linked(piece, picks, rows)
         exact = sorted(
@@ -532,13 +533,6 @@ def defaults(
         if not listed(piece, rows.values()) and not linked(piece, picks, rows):
             out[piece.name] = {"new": 1}
     return out
-
-
-def _undated_note(piece: Piece) -> bool:
-    """Whether a piece was read from a teacher's note and has no due date."""
-    return (
-        piece.due is None and piece.reading is not None and piece.reading.teacher_note is not None
-    )
 
 
 # ------------------------------------------------------------------ units
@@ -659,6 +653,13 @@ def date_answered(question: DateQuestion, answers: Mapping[tuple[str, str], Any]
     return any(day.isoformat() == got for _, day in question.options)
 
 
+def family_dated(piece: Piece) -> bool:
+    """Whether a piece read from a teacher's note has a due date the family set or cleared:
+    one other than the deadline the note settles, none where it settles one included."""
+    task = None if piece.reading is None else piece.reading.teacher_note
+    return task is not None and piece.due != task.deadline
+
+
 def written_dates(
     members: Sequence[Piece],
     row: SavedRow | None,
@@ -666,13 +667,20 @@ def written_dates(
     answers: Mapping[tuple[str, str], Any],
 ) -> tuple[date | None, date | None, bool]:
     """The due and assigned dates saving writes, and whether every date question is answered;
-    an unanswered due date counts as the saved one."""
+    an unanswered due date counts as the saved one. Where every piece was read from a teacher's
+    note the saved one holds by its words and school day, the due date is the saved one, none
+    included, unless the family set or cleared one on a piece (``family_dated``): then it is
+    the family's."""
     ready = True
-    due = (
-        row.due
-        if row is not None and row.due is not None
-        else (members[0].due if members else None)
-    )
+    if row is not None and members and all(holds_note(p, row) for p in members):
+        given = [p.due for p in members if family_dated(p)]
+        due = given[0] if given else row.due
+    else:
+        due = (
+            row.due
+            if row is not None and row.due is not None
+            else (members[0].due if members else None)
+        )
     assigned = (
         row.assigned
         if row is not None and row.assigned is not None
@@ -1397,14 +1405,8 @@ def corrected(
             change["claims"] = given.claims
             change["field_origins"] = given.field_origins
     elif due is not None and due != reading.due_date:
-        before = None if reading.due_date is None else reading.due_date.isoformat()
         change["due_date"] = due
-        change["claims"] = tuple(
-            c.model_copy(update={"asserted_value": due.isoformat()})
-            if c.asserted_value == before
-            else c
-            for c in reading.claims
-        )
+        change["claims"] = moved_claims(reading, due)
     return dataclasses.replace(reading, **change) if change else reading
 
 
@@ -1605,18 +1607,23 @@ def _settled(
         return with_seen
     if chosen is None or piece.reading is None:
         return dataclasses.replace(with_seen, due_resolved=False)
-    before = None if piece.due is None else piece.due.isoformat()
     reading = dataclasses.replace(
-        piece.reading,
-        due_date=chosen,
-        claims=tuple(
-            c.model_copy(update={"asserted_value": chosen.isoformat()})
-            if c.asserted_value == before
-            else c
-            for c in piece.reading.claims
-        ),
+        piece.reading, due_date=chosen, claims=moved_claims(piece.reading, chosen)
     )
     return dataclasses.replace(with_seen, due=chosen, reading=reading)
+
+
+def moved_claims(reading: Reading, due: date) -> tuple[SourceRecord, ...]:
+    """A card reading's claims with its due date moved to ``due``: each claim of the date it
+    read asserts ``due`` instead, except a claim seen in a teacher's note joined to it, which
+    keeps the note's date and where it was seen."""
+    before = None if reading.due_date is None else reading.due_date.isoformat()
+    return tuple(
+        c.model_copy(update={"asserted_value": due.isoformat()})
+        if c.asserted_value == before and c.seen_in != intake.TEACHER_NOTE
+        else c
+        for c in reading.claims
+    )
 
 
 def piece_names(

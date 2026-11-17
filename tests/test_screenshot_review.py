@@ -853,7 +853,8 @@ def test_a_set_aside_note_row_never_carries_to_a_sibling_task_from_the_same_card
 
 def test_an_undated_note_is_never_preselected_already_saved_by_its_name_and_words() -> None:
     """An undated note's words with its class and title don't tell one week's note from the
-    next, so a saved row of that name holding those words is offered, never preselected."""
+    next, so a saved row of that name holding those words is neither listed nor preselected:
+    the note is new work, on a new slot."""
     note = homework_card(
         badge=None, course="Math 8", title="Practice set", instruction=None, footer=None
     )
@@ -864,8 +865,10 @@ def test_an_undated_note_is_never_preselected_already_saved_by_its_name_and_word
     assert p.due is None
     saved = SavedRow("assignment-practice-set", p.course, p.title, None, None, p.words)
 
-    assert review.listed(p, [saved]) == [saved]
-    assert review.defaults([p], groups_of(p), rows_of(saved), [], {}, nothing_writes) == {}
+    assert review.listed(p, [saved]) == []
+    assert review.defaults([p], groups_of(p), rows_of(saved), [], {}, nothing_writes) == {
+        p.name: {"new": 1}
+    }
 
 
 def test_a_formal_undated_piece_is_preselected_already_saved() -> None:

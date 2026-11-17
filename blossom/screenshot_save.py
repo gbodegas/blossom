@@ -1537,6 +1537,8 @@ def _write(
     readings = tuple(landing(record, p.reading, target) for p in members if p.reading)
     dates = dict.fromkeys(range(len(readings)), (due, assigned))
     _keep(record, target, readings, choice, dates, kinds(len(readings)), now, today)
+    if due is None and row is not None and row.due is not None:
+        _cleared_due(record, target)
     hooks.after_keep(target)
     named = {p.pair: p for p in members if p.reading is not None}
     for pair, piece in sorted(named.items()):
@@ -1564,6 +1566,17 @@ def _write(
         )
         hooks.after_renamed(target)
     return target
+
+
+def _cleared_due(record: ProjectStateStore, target: str) -> None:
+    """The row ``target`` with no due date and no origin for one, in the save's transaction:
+    the due date the family cleared on a teacher's note the row holds (``written_dates``).
+    The claims kept under it stay as they are."""
+    current = next(a for a in record.all_assignments() if a.assignment_id == target)
+    if current.due_date is None:
+        return
+    origins = {name: channel for name, channel in current.origins.items() if name != "due_date"}
+    record.put_on_record([current.model_copy(update={"due_date": None, "origins": origins})], {})
 
 
 def _keep(

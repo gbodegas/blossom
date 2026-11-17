@@ -109,6 +109,10 @@ SAID: Final = {
     "leave it unticked.",
     "joined_dates": "Due date on this review: {due}. The teacher's note for {day} says {noted}.",
     "joined_undated": "No due date on this review. The teacher's note for {day} says {noted}.",
+    "note_day": "From the teacher's note for {day}.",
+    "note_open": "The note doesn't settle a due date.",
+    "note_could_mean": "It could mean {days}.",
+    "note_names": "It names {days}.",
     "too_long": "Keep the {named} to {most:,} characters or fewer.",
     "nothing": "none",
     "lost_correction": "This card's corrections changed since you chose, so choose where it goes "
@@ -738,7 +742,8 @@ def unread_shown(
 def fact_text(fact_kind: str, entry_day: date | None, piece_day: date | None, about: str) -> str:
     """One fact beside an entry, as text."""
     if fact_kind == "due_differs":
-        return f"Due {day_text(entry_day) or SAID['no_due']}: this card says {day_text(piece_day)}"
+        piece_due = day_text(piece_day) or SAID["no_due"]
+        return f"Due {day_text(entry_day) or SAID['no_due']}: this card says {piece_due}"
     if fact_kind == "assigned_differs":
         return f"Assigned {day_text(entry_day)}: this card says {day_text(piece_day)}"
     if fact_kind == "also_saved_in":
@@ -1283,6 +1288,7 @@ def _card_head(
     quiet = [_assigned_line(entry, row, members), effect if kind is None else f"{effect} {kind}"]
     if not entry.nothing_new and not entry.adds:
         quiet.insert(0, SAID["no_new_words"])
+    quiet += note_lines(members)
     return CardHead(
         course,
         title,
@@ -1309,8 +1315,37 @@ def _own_head(piece: Piece) -> CardHead:
         piece.title,
         due,
         tuple(("From the school:", text) for text in texts),
-        (assigned,),
+        (assigned, *note_lines([piece])),
     )
+
+
+def note_lines(pieces: Iterable[Piece]) -> list[str]:
+    """For each piece read from a teacher's note: the school day it was first listed under,
+    and, where the note settles no due date, that it doesn't, with the dates it could mean
+    and the dates it names, as text and never as choices. A date in another year than the
+    school day's is said with its year."""
+    out: list[str] = []
+    for piece in pieces:
+        task = None if piece.reading is None else piece.reading.teacher_note
+        if task is None:
+            continue
+        out.append(SAID["note_day"].format(day=long_day(task.first_day)))
+        if task.deadline is not None or not (task.choices or task.named):
+            continue
+        year = task.first_day.year
+        out.append(SAID["note_open"])
+        if task.choices:
+            days = " or ".join(_day_in(day, year) for day in task.choices)
+            out.append(SAID["note_could_mean"].format(days=days))
+        if task.named:
+            days = " and ".join(_day_in(day, year) for day in task.named)
+            out.append(SAID["note_names"].format(days=days))
+    return out
+
+
+def _day_in(day: date, year: int) -> str:
+    """A day as her week's card says it, with its year when it is not ``year``."""
+    return long_day(day) if day.year == year else f"{long_day(day)}, {day.year}"
 
 
 def row_texts_of(piece: Piece) -> tuple[str, ...]:
