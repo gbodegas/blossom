@@ -29,7 +29,14 @@ from fastapi.testclient import TestClient
 from blossom.app import create_app
 from blossom.reconciliation import SourceChannel
 from blossom.routes.inbox import REVIEW_FIELDS, review_field
-from tests.support import SAME_ORIGIN, Answer, fixture_settings, homework_from_a_note, store_of
+from tests.support import (
+    SAME_ORIGIN,
+    Answer,
+    fixture_settings,
+    homework_from_a_note,
+    store_of,
+    waiting_note,
+)
 
 NOTED = """Homework for Wren
 11/02/2026 - Monday
@@ -3815,8 +3822,11 @@ which homework it is."""
 def every_review_shape(tmp_path: pathlib.Path) -> dict[str, str]:
     """Each shape of the School text review this file builds, by name: the first view with
     and without text that needs review, a card's details open, the review after Review
-    changes, refusals (a tick, a title and a type sent twice), a folded card, the question
-    of which it is, the question of which homework it is, and search results."""
+    changes, refusals (a tick, a title, a type, the answer to which it is, the answer to
+    which homework it is, a box to link her note, an instruction's box and the box that none
+    applies sent twice), a folded card and that card shown again for its carried title sent
+    twice, the question of which it is, the question of which homework it is, and search
+    results."""
     shapes: dict[str, str] = {}
     with client_in(tmp_path / "notes") as client:
         first = client.post("/parent/inbox/read", data={"text": NOTED}).text
@@ -3843,6 +3853,27 @@ def every_review_shape(tmp_path: pathlib.Path) -> dict[str, str]:
             "/parent/inbox/find",
             data=ticked_form(asking) | {"occurrence-1": "update", "recheck": "1"},
         ).text
+        shapes["refusal, occurrence-1 sent twice"] = sent_as_pairs(
+            client,
+            "keep",
+            [*ticked_form(asking).items(), ("occurrence-1", "update"), ("occurrence-1", "new")],
+        ).text
+        folded = ticked_form(shapes["a folded card"])
+        carried = folded.pop("title-1")
+        shapes["a folded card shown again"] = sent_as_pairs(
+            client,
+            "keep",
+            [*folded.items(), ("title-1", carried), ("title-1", "Another title")],
+        ).text
+    with client_in(tmp_path / "boxes") as client:
+        asked, _ = box_page(client, "apply-1-0")
+        for name in ("apply-1-0", "none-1"):
+            pairs = [*returned_form(asked).items(), (name, "1"), (name, "0")]
+            shapes[f"refusal, {name} sent twice"] = sent_as_pairs(client, "keep", pairs).text
+    with client_in(tmp_path / "links", today="2026-09-03") as client:
+        offered, _ = box_page(client, "link-0-0")
+        pairs = [*returned_form(offered).items(), ("link-0-0", "1"), ("link-0-0", "0")]
+        shapes["refusal, link-0-0 sent twice"] = sent_as_pairs(client, "keep", pairs).text
     with client_in(tmp_path / "search") as client:
         saved = client.post("/parent/inbox/read", data={"text": NO_NOTE}).text
         assert client.post("/parent/inbox/keep", data=ticked_form(saved)).status_code == 303
@@ -3865,8 +3896,13 @@ def every_review_shape(tmp_path: pathlib.Path) -> dict[str, str]:
             due_date=datetime.date(2026, 9, 9),
             note=GUIDE_NOTE,
         )
-        shapes["the question of which homework it is"] = client.post(
-            "/parent/inbox/read", data={"text": GUIDE_CARD}
+        identified = client.post("/parent/inbox/read", data={"text": GUIDE_CARD}).text
+        shapes["the question of which homework it is"] = identified
+        answers = re.findall(r'name="identity-0" value="([^"]+)"', identified)
+        shapes["refusal, identity-0 sent twice"] = sent_as_pairs(
+            client,
+            "keep",
+            [*ticked_form(identified).items(), *(("identity-0", value) for value in answers)],
         ).text
     return shapes
 
@@ -3899,6 +3935,11 @@ def test_every_field_of_every_review_shape_is_in_the_review_forms_table(
     assert 'id="identity-question-0"' in shapes["the question of which homework it is"]
     assert 'name="choose"' in shapes["search results"]
     assert 'name="picked-0"' in shapes["a choice made from the results"]
+    for mark in ("occurrence-1", "identity-0", "apply-1-0", "none-1", "link-0-0"):
+        assert f'name="unresolved-{mark}"' in shapes[f"refusal, {mark} sent twice"], mark
+    shown_again = shapes["a folded card shown again"]
+    assert 'name="folded-1"' in shown_again
+    assert 'name="unresolved-title-1"' in shown_again
     for entry in REVIEW_FIELDS:
         assert entry.role == {"press": "press", "visible": "answer"}.get(
             entry.rendering, entry.role
@@ -4156,3 +4197,161 @@ def test_a_folded_cards_carried_answer_sent_twice_shows_that_card_until_answered
         assert unresolved_control(refused.text, f"{anchor}-1")
         said = said_for(head, values[::-1] if reverse else values)
         assert unescaped(refused.text).count(said) == 1
+
+
+LINK_TWICE = 'The choice "Link her note" was sent twice with different answers. Choose one.'
+APPLY_TWICE = "The choice for this instruction was sent twice with different answers. Choose one."
+NONE_TWICE = (
+    'The choice "No school instruction applies now" was sent twice with different answers. '
+    "Choose one."
+)
+"""What a box to link her note, a box of an instruction that applies, and the box that no
+instruction applies say at the box when sent twice with different answers."""
+
+INSTRUCTION_FORM_UNREADABLE = (
+    "The answers about the school&#39;s instructions could not be read, so nothing was saved. "
+    "Look at them again below."
+)
+"""What the summary says when only the boxes of the school's instructions were sent twice."""
+
+BOXES = [
+    pytest.param("link-0-0", 0, LINK_TWICE, ("1", "0"), id="link"),
+    pytest.param("link-0-0", 0, LINK_TWICE, ("0", "1"), id="link-reversed"),
+    pytest.param("apply-1-0", 1, APPLY_TWICE, ("1", "0"), id="apply"),
+    pytest.param("apply-1-0", 1, APPLY_TWICE, ("0", "1"), id="apply-reversed"),
+    pytest.param("none-1", 1, NONE_TWICE, ("1", "0"), id="none"),
+    pytest.param("none-1", 1, NONE_TWICE, ("0", "1"), id="none-reversed"),
+]
+"""A box to link her note, a box of an instruction, and the box that none applies, each an
+injected duplicate submission with two different answers, in both orders, with its card."""
+
+HER_WAITING_NOTE = "Course guide back by Friday, heard in class."
+
+
+def returned_form(page: str) -> dict[str, str]:
+    """A returned review as a browser sends it back untouched: ``ticked_form`` with every
+    other checked box and checked choice of the page too."""
+    fields = ticked_form(page)
+    for name, value, rest in re.findall(
+        r'<input type="(?:checkbox|radio)" name="([^"]+)" value="([^"]*)"([^>]*)>', page
+    ):
+        if "checked" in rest:
+            fields[name] = html.unescape(value)
+    return fields
+
+
+def box_page(client: TestClient, field: str) -> tuple[str, str | None]:
+    """The review that offers this box, with her note's id where there is one: her waiting
+    note offered to link on a card of its class and title, or a joined note ticked so its
+    card asks which instructions apply."""
+    if field.startswith("link"):
+        note = waiting_note(
+            store_of(client),
+            course="Health",
+            title="Course Guide Due",
+            text=HER_WAITING_NOTE,
+            due_date=datetime.date(2026, 9, 11),
+        )
+        return client.post("/parent/inbox/read", data={"text": GUIDE_CARD}).text, note
+    page = client.post("/parent/inbox/read", data={"text": INKED}).text
+    asked = client.post("/parent/inbox/keep", data=ticked_form(page) | {"join-1-0": "1"})
+    assert asked.status_code == 200
+    return asked.text, None
+
+
+def box_answer(field: str, value: str) -> dict[str, str]:
+    """An explicit answer to the box, with what makes its card's question whole: an
+    instruction's box beside the other instruction, and none applying left out beside both
+    instructions."""
+    if field.startswith("apply"):
+        return {field: value, "apply-1-1": "1"}
+    if field.startswith("none") and value == "0":
+        return {field: value, "apply-1-0": "1", "apply-1-1": "1"}
+    return {field: value}
+
+
+def box_counts(client: TestClient, note: str | None) -> tuple[int, int, int, int]:
+    """``record_counts`` with whether her note is linked to a row."""
+    found = None if note is None else store_of(client).capture(note)
+    return (*record_counts(client), int(found is not None and found.assignment_id is not None))
+
+
+def box_today(field: str) -> str:
+    """The day the review of this box is read on."""
+    return "2026-09-03" if field.startswith("link") else "2026-11-03"
+
+
+@pytest.mark.parametrize(("field", "key", "said", "values"), BOXES)
+def test_a_box_sent_twice_with_different_answers_is_named_at_the_box(
+    tmp_path: pathlib.Path, field: str, key: int, said: str, values: tuple[str, str]
+) -> None:
+    """A box to link her note, an instruction's box, or the box that none applies, sent twice
+    with different answers, whichever came first: nothing is written, the summary says why
+    with a link to its card (for the instructions' boxes, in the words the instructions' own
+    refusal says), and the box says so where it is, offered as its actual choice, two
+    required choices with neither chosen, marked until it is answered."""
+    with client_in(tmp_path, today=box_today(field)) as client:
+        page, note = box_page(client, field)
+        start = box_counts(client, note)
+        fields = [*returned_form(page).items(), *((field, value) for value in values)]
+        refused = sent_as_pairs(client, "keep", fields)
+        after = box_counts(client, note)
+
+    notice = SENT_TWICE if field.startswith("link") else INSTRUCTION_FORM_UNREADABLE
+    assert refused.status_code == 422
+    assert after == start
+    assert f"{SUMMARY}{notice} {CHECK_CARD.format(key=key)}" in refused.text
+    assert unescaped(refused.text).count(said) == 1
+    for value in ("1", "0"):
+        assert f'<input type="radio" name="{field}" value="{value}" required>' in refused.text
+    assert f'name="{field}" value="1" checked' not in refused.text
+    assert f'name="unresolved-{field}"' in refused.text
+
+
+@pytest.mark.parametrize(("field", "key", "said", "values"), BOXES)
+def test_a_box_sent_twice_comes_back_and_its_unchanged_retry_writes_nothing(
+    tmp_path: pathlib.Path, field: str, key: int, said: str, values: tuple[str, str]
+) -> None:
+    """The returned review of a box sent twice, sent back unchanged, writes nothing and says
+    the choice needs an answer; so does it sent back unchanged again."""
+    with client_in(tmp_path, today=box_today(field)) as client:
+        page, note = box_page(client, field)
+        start = box_counts(client, note)
+        fields = [*returned_form(page).items(), *((field, value) for value in values)]
+        refused = sent_as_pairs(client, "keep", fields)
+        retry = client.post("/parent/inbox/keep", data=returned_form(refused.text))
+        again = client.post("/parent/inbox/keep", data=returned_form(retry.text))
+        after = box_counts(client, note)
+
+    assert (retry.status_code, again.status_code) == (422, 422)
+    assert after == start
+    for answer in (retry, again):
+        assert f"{SUMMARY}{UNANSWERED_TWICE}" in answer.text
+        assert f'name="unresolved-{field}"' in answer.text
+
+
+@pytest.mark.parametrize("answer", ["1", "0"], ids=["ticked", "unticked"])
+@pytest.mark.parametrize(("field", "key", "said", "values"), BOXES)
+def test_a_box_sent_twice_is_resolved_by_an_explicit_answer(
+    tmp_path: pathlib.Path,
+    field: str,
+    key: int,
+    said: str,
+    values: tuple[str, str],
+    answer: str,
+) -> None:
+    """The returned review of a box sent twice, answered explicitly either way, saves once:
+    the note linked only when the answer links it, the instructions as answered."""
+    with client_in(tmp_path, today=box_today(field)) as client:
+        page, note = box_page(client, field)
+        fields = [*returned_form(page).items(), *((field, value) for value in values)]
+        refused = sent_as_pairs(client, "keep", fields)
+        saved = client.post(
+            "/parent/inbox/keep", data=returned_form(refused.text) | box_answer(field, answer)
+        )
+        counts = box_counts(client, note)
+
+    assert saved.status_code == 303
+    assert counts[0] == (1 if field.startswith("link") else 2)
+    if field.startswith("link"):
+        assert counts[3] == (1 if answer == "1" else 0)
