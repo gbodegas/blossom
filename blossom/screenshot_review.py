@@ -136,6 +136,9 @@ class Piece:
     the parent gave settles which one Blossom uses."""
     as_read: AsRead | None = dataclasses.field(default=None, compare=False, repr=False)
     """Its fields with no correction, which a box is compared with."""
+    noted_cards: tuple[CardPlace, ...] = dataclasses.field(default=(), compare=False)
+    """The note cards of each joined note the family selected, whose screenshots count in the
+    name check beside its own cards'; their uncertain fields are among ``uncertain``."""
 
     @property
     def due_choices(self) -> tuple[date, ...]:
@@ -1444,7 +1447,8 @@ def pieces_from(
     undated cards, each read from its own cards and dated by them alone. Each piece keeps its
     fields with no correction beside the corrected ones. A piece takes what each joined note
     the family selected adds, by piece name and note tag in ``joined`` (``with_joined``), before
-    its corrections, so the page, a refusal and the save read one reading."""
+    its corrections, so the page, a refusal and the save read one reading; with it, the places
+    of those notes' cards (``Piece.noted_cards``) and their uncertain fields."""
     rows = list(homework_assembly(list(readings), now=now).rows)
     placed = cards_placed(readings)
     corrections = corrections or {}
@@ -1485,16 +1489,73 @@ def pieces_from(
             bare,
             carried,
         )
-        return _piece(name, row.key, fixed, cards, is_split, marks, read)
+        mine_noted = tags & {note_tag(task) for task in reading.joined_notes}
+        selected = [found for found in row.joined if found.tag in mine_noted]
+        noted_marks = frozenset(mark for found in selected for mark in found.marks)
+        piece = _piece(name, row.key, fixed, cards, is_split, marks | noted_marks, read)
+        places = tuple(dict.fromkeys(place for found in selected for place in found.places))
+        return dataclasses.replace(piece, noted_cards=places) if places else piece
 
-    def own(
-        row: ScreenshotRow, cards: Sequence[CardPlace], name: str, is_split: bool, day: date | None
-    ) -> Piece:
+    def own(cards: Sequence[CardPlace], day: date | None) -> tuple[Reading, frozenset[str]]:
         mine = [r for r in readings if r.sha256 in {c.sha256 for c in cards}]
         found = [r for r in homework_assembly(mine, now=now).rows if set(cards) & set(r.sources)]
         best = max(found, key=lambda r: len(set(cards) & set(r.sources)))
-        reading = dataclasses.replace(best.reading, assigned_on=day)
-        return made(row, name, reading, cards, is_split, best.marks)
+        return dataclasses.replace(best.reading, assigned_on=day, joined_notes=()), best.marks
+
+    def split_up(row: ScreenshotRow) -> list[Piece]:
+        """The pieces of a row answered "These are different assignments": one per assigned
+        day and one for its undated cards, each read from its own cards; each of the row's
+        joined notes joins the one piece it ``joins`` under the school days that piece's cards
+        were read under, and where none or several qualify it is a note reading of its own."""
+        parts: list[tuple[str, tuple[CardPlace, ...], bool, date | None]] = [
+            (f"{row.key}|{day.day.isoformat()}", day.sources, True, day.day) for day in row.assigned
+        ]
+        dated = {c for day in row.assigned for c in day.sources}
+        undated = tuple(c for c in row.sources if c not in dated)
+        if undated:
+            parts.append((f"{row.key}|due", undated, False, None))
+        read = [own(cards, day) for _, cards, _, day in parts]
+        days = [
+            frozenset(
+                day
+                for c in cards
+                if (seen := placed.get(c)) is not None
+                and seen.heading is not None
+                and (day := seen.heading.day) is not None
+            )
+            for _, cards, _, _ in parts
+        ]
+        sources = {source.tag: source for source in row.joined}
+        alone: list[NoteTask] = []
+        for task in row.reading.joined_notes:
+            index = intake.the_one(
+                [
+                    at
+                    for at, (reading, _) in enumerate(read)
+                    if intake.joins(reading, task, _read_under(days[at]))
+                ]
+            )
+            if index is None:
+                alone.append(task)
+                continue
+            reading, marks = read[index]
+            read[index] = (
+                dataclasses.replace(reading, joined_notes=(*reading.joined_notes, task)),
+                marks,
+            )
+        out = [
+            made(row, name, reading, cards, is_split, marks)
+            for (name, cards, is_split, _), (reading, marks) in zip(parts, read, strict=True)
+        ]
+        for task in alone:
+            source = sources.get(note_tag(task))
+            places = () if source is None else source.places
+            marks = frozenset() if source is None else source.marks
+            noted = intake.note_reading(task, now=now)
+            as_note = row._replace(reading=noted, marks=marks, assigned=(), sources=places)
+            name = f"{row.key}|note-{note_tag(task)}"
+            out.append(made(as_note, name, noted, places, False, marks))
+        return out
 
     for row in rows:
         if row.key in aside:
@@ -1506,18 +1567,18 @@ def pieces_from(
         if answer is None:
             asking.append(row)
         elif answer == "split":
-            for day in row.assigned:
-                out.append(own(row, day.sources, f"{row.key}|{day.day.isoformat()}", True, day.day))
-            dated = {c for day in row.assigned for c in day.sources}
-            undated = [c for c in row.sources if c not in dated]
-            if undated:
-                out.append(own(row, undated, f"{row.key}|due", False, None))
+            out += split_up(row)
         else:
             chosen = date.fromisoformat(answer[1])
             reading = dataclasses.replace(row.reading, assigned_on=chosen)
             out.append(made(row, row.key, reading, row.sources, False, row.marks))
     settled = [_settled(piece, readings, corrections, due_read or {}) for piece in out]
     return sorted(settled, key=lambda p: p.name), asking, rows
+
+
+def _read_under(days: frozenset[date]) -> Callable[[Collection[date]], bool]:
+    """Whether one of the school days a piece's cards were read under is among those given."""
+    return lambda given: not days.isdisjoint(given)
 
 
 def _settled(
@@ -1827,7 +1888,7 @@ def change_told(
         key, _, part = name.partition("|")
         if key not in old or (part and key in result.named):
             continue
-        day = date.fromisoformat(part) if part and part != "due" else None
+        day = date.fromisoformat(part) if part[:1].isdigit() else None
         row = ClearedRow(old[key].reading.title, day, copy_group(old[key]) in shown)
         if row not in rows:
             rows.append(row)

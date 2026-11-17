@@ -45,6 +45,8 @@ from blossom import (
     screenshot_reading,
     screenshot_review,
     screenshot_save,
+    screenshots,
+    teacher_notes,
 )
 from blossom.anthropic_client import ScreenshotAnswer
 from blossom.app import create_app
@@ -41240,6 +41242,20 @@ def test_the_read_press_counts_homework_rows_and_notes_to_check(
     assert imports.read_said_line(1, 2) == "1 screenshot read: 2 assignments found."
 
 
+def test_the_read_press_counts_a_joined_note_as_a_note_to_check_apart_from_its_card(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The essay card with the note that joins it: one assignment found and one note to check,
+    as the review offers that note's tick."""
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+
+    assert lines_in(TOLD.search(page)) == [imports.read_said_line(1, 1, 1)]
+    assert imports.read_said_line(1, 1, 1) == (
+        "1 screenshot read: 1 assignment found, 1 note to check."
+    )
+
+
 def test_the_read_press_counts_every_note_as_a_note_to_check_apart_from_the_cards(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -41921,6 +41937,218 @@ def test_a_joined_tick_pressed_with_save_against_a_moved_record_writes_nothing(
     assert after == before
     assert ("2026-10-07", intake.TEACHER_NOTE) not in claims
     assert words == []
+
+
+SOURCES_NOTE: Final = "Short essay. Use two sources from the library."
+"""Religion 8's second note under Monday 10/5/2026, naming the essay with no date."""
+
+
+def two_notes_answer() -> dict[str, object]:
+    """The "Short essay" card of ``essay_answer`` with two teacher's notes naming it."""
+    answer = essay_answer()
+    cards = cast("list[object]", answer["cards"])
+    return {**answer, "cards": [*cards, note_card("Religion 8", SOURCES_NOTE, 400)]}
+
+
+def joined_field_of(page: str, words: str) -> str:
+    """The joined tick of the note with these words, under Monday 10/5/2026."""
+    tag = screenshots.note_tag(note_task_of(words))
+    [subject] = [s for s in fields_named(review_form(page), "answer:joined:") if tag in s]
+    return f"answer:joined:{subject}"
+
+
+def note_task_of(words: str) -> teacher_notes.NoteTask:
+    """The task a Religion 8 note card with these words under Monday 10/5/2026 reads as."""
+    block = teacher_notes.NoteBlock("Religion 8", date(2026, 10, 5), (words,), 0, suspect=False)
+    [task] = teacher_notes.read_notes([block])
+    return task
+
+
+@pytest.mark.parametrize("ticked", [(ESSAY_NOTE,), (SOURCES_NOTE,), (ESSAY_NOTE, SOURCES_NOTE)])
+def test_either_or_both_joined_notes_of_one_card_ticked_and_saved_write_in_one_press(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ticked: tuple[str, ...]
+) -> None:
+    """Two joined notes on one card, shown unticked: either ticked alone, or both, and pressed
+    with Save writes the card once with what each ticked note adds and nothing of the other."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, two_notes_answer()))
+        page = answered(browser, draft_id, page)
+        choose = {joined_field_of(page, words): "1" for words in ticked}
+        saved = followed(
+            browser,
+            send(browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page))),
+        )
+        row, claims, words = essay_row(browser)
+
+    assert JOINED_TICK.findall(review_form(page)) == ["", ""]
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert row.due_date == date(2026, 10, 9)
+    assert (("2026-10-07", intake.TEACHER_NOTE) in claims) is (ESSAY_NOTE in ticked)
+    assert sorted(words) == sorted(ticked)
+
+
+@pytest.mark.parametrize("values", [("1", "0"), ("0", "1")], ids=["ticked-first", "unticked-first"])
+def test_the_one_of_two_joined_ticks_sent_twice_is_marked_on_the_page(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, values: tuple[str, str]
+) -> None:
+    """Two joined notes on one card; Save sent with the second note's tick twice, once ticked
+    and once not: nothing is saved, and the review marks that note's tick, and not the
+    other's, beside the line at the top."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, two_notes_answer()))
+        page = answered(browser, draft_id, page)
+        twice = joined_field_of(page, SOURCES_NOTE)
+        once = joined_field_of(page, ESSAY_NOTE)
+        fields = page_post(page, "save", tick=units_on(page))
+        refused = send(browser, draft_id, [*fields, *((twice, value) for value in values)])
+        counts = essay_counts(browser)
+
+    form = html.unescape(review_form(refused.text))
+    mark = screenshot_page.SAID["joined_sent_twice"]
+    [twice_set] = [chunk for chunk in form.split("<fieldset") if f'name="{twice}"' in chunk]
+    [once_set] = [chunk for chunk in form.split("<fieldset") if f'name="{once}"' in chunk]
+    assert refused.status_code == 422
+    assert counts == (0, 0, 0)
+    assert says(refused.text, imports.PRESS_SAID["sent_twice"])
+    assert form.count(mark) == 1
+    assert mark in twice_set
+    assert mark not in once_set
+
+
+def test_one_of_two_joined_notes_ticked_against_a_moved_record_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The essay saved from another review after this one was shown: one of its two joined
+    notes ticked and pressed with Save writes nothing and gives the existing explanation."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, two_notes_answer()))
+        page = answered(browser, draft_id, page)
+        other_id, other = read_review(browser, monkeypatch, (RED, two_notes_answer()))
+        other = answered(browser, other_id, other)
+        followed(browser, send(browser, other_id, page_post(other, "save", tick=units_on(other))))
+        before = essay_counts(browser)
+        choose = {joined_field_of(page, SOURCES_NOTE): "1"}
+        moved = followed(
+            browser,
+            send(browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page))),
+        )
+        after = essay_counts(browser)
+        _, _, words = essay_row(browser)
+
+    assert says(moved, imports.PRESS_SAID["changed_beside_answers"])
+    assert after == before
+    assert words == []
+
+
+def essay_and_note_apart(
+    student: dict[str, object] | None, uncertain: Sequence[str] = ()
+) -> tuple[dict[str, object], dict[str, object]]:
+    """The essay card in a screenshot naming Wren, and its note in another screenshot naming
+    ``student``, its fields in ``uncertain`` marked so."""
+    card = essay_answer()["cards"][0]  # type: ignore[index]
+    note = note_card("Religion 8", ESSAY_NOTE, 300)
+    note["uncertain"] = [{"field": field, "reason": "faint"} for field in uncertain]
+    return homework_answer(cards=[card]), homework_answer(cards=[note], active_student=student)
+
+
+def name_form_of(page: str, name: str) -> str:
+    """The name question's form for the screenshot naming ``name``."""
+    after = review_form(page).split(f"names {name}", 1)[1]
+    return fields_named(after, "answer:name:")[0]
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_a_joined_note_from_a_screenshot_with_no_name_needs_that_confirmation_once_selected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, selected: bool
+) -> None:
+    """The card's screenshot names Wren, answered as her name; the note's shows no name.
+    Unselected, the card saves as before. Selected, Save writes nothing until the screenshots
+    with no name are confirmed as her homework, and then saves once with the note."""
+    card, unnamed = essay_and_note_apart({"name": None, "uncertain": None})
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, card), (BLUE, unnamed))
+        keep(browser, draft_id, ("name", name_form_of(page, "Wren"), "hers"))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        choose = {joined_field(page): "1"} if selected else {}
+        send(browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page)))
+        between = essay_counts(browser)
+        if selected:
+            keep(browser, draft_id, ("name", "missing", "confirmed"))
+            page = browser.get(f"/parent/imports/{draft_id}").text
+            again = followed(
+                browser,
+                send(
+                    browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page))
+                ),
+            )
+        row, claims, words = essay_row(browser)
+
+    if selected:
+        assert between == (0, 0, 0)
+        assert says(again, imports.counted(1, 0, 0, 0))
+        assert ("2026-10-07", intake.TEACHER_NOTE) in claims
+        assert words == [ESSAY_NOTE]
+    else:
+        assert between[0] == 1
+        assert words == []
+    assert row.due_date == date(2026, 10, 9)
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_a_joined_note_from_a_screenshot_naming_another_student_is_refused_once_selected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, selected: bool
+) -> None:
+    """The card's screenshot names Wren, answered as her name; the note's names Ivy, not
+    answered. Selected, the note waits for that answer as it would alone and nothing is
+    written; unselected, the card saves as before."""
+    card, other = essay_and_note_apart({"name": "Ivy", "uncertain": None})
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, card), (BLUE, other))
+        keep(browser, draft_id, ("name", name_form_of(page, "Wren"), "hers"))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        choose = {joined_field(page): "1"} if selected else {}
+        send(browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page)))
+        counts = essay_counts(browser)
+
+    if selected:
+        assert counts == (0, 0, 0)
+    else:
+        assert counts[0] == 1
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_a_joined_note_whose_title_is_marked_uncertain_needs_it_confirmed_once_selected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, selected: bool
+) -> None:
+    """The note in a screenshot of its own, both naming Wren, its title marked uncertain: it
+    joins its card. Selected, Save writes nothing until the title is confirmed, then saves
+    once with the note; unselected, the card saves as before."""
+    card, unsure = essay_and_note_apart({"name": "Wren", "uncertain": None}, ("title",))
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, card), (BLUE, unsure))
+        page = her_name_answered(browser, draft_id, page)
+        choose = {joined_field(page): "1"} if selected else {}
+        first = send(browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page)))
+        between = essay_counts(browser)
+        if selected:
+            [subject] = fields_named(review_form(followed(browser, first)), "answer:confirm:")
+            keep(browser, draft_id, ("confirm", subject, "as_read"))
+            page = browser.get(f"/parent/imports/{draft_id}").text
+            again = followed(
+                browser,
+                send(
+                    browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page))
+                ),
+            )
+        _, _, words = essay_row(browser)
+
+    if selected:
+        assert between == (0, 0, 0)
+        assert says(again, imports.counted(1, 0, 0, 0))
+        assert words == [ESSAY_NOTE]
+    else:
+        assert between[0] == 1
+        assert words == []
 
 
 def test_a_saved_joined_note_on_the_familys_dated_row_starts_selected_and_adds_nothing(

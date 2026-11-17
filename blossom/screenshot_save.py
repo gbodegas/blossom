@@ -660,9 +660,10 @@ class ReviewState:
     piece lands on (``saved_notes``): it starts ticked with no answer kept, and a press that
     leaves it unticked keeps that as an answer."""
     joined_previews: tuple[tuple[PreviewEntry, ...], ...] = ()
-    """Where a piece has a joined note, the preview with every joined note unticked and with
-    every one ticked, at the same destinations and answers, so the group's check covers each
-    joined note's selected and unselected effects alike (``unit_digests``)."""
+    """Where a piece has a joined note, the preview with every joined note unticked, with every
+    one ticked, and with each one ticked alone and unticked alone, at the same destinations and
+    answers, so the group's check covers each joined note's selected and unselected effects
+    alike, alone or beside the others (``unit_digests``)."""
 
     @property
     def by_name(self) -> dict[str, Piece]:
@@ -863,9 +864,13 @@ def _review_state(
         return work(mapping, defaulted, {}, these)[1]
 
     # A joined note's tick changed and pressed with Save keeps the check the page signed when
-    # saving does what the page showed either way: the check covers both.
+    # saving does what the page showed either way: the check covers each note selected alone
+    # and unselected alone, as well as none and every one.
+    tick_sets = {frozenset(), every_note} if every_note else set()
+    for found in every_note:
+        tick_sets |= {frozenset({found}), every_note - {found}}
     joined_previews = tuple(
-        previewed(ticks) for ticks in ((frozenset(), every_note) if every_note else ())
+        previewed(ticks) for ticks in sorted(tick_sets, key=lambda ticks: sorted(ticks))
     )
 
     def rework(other: Mapping[str, Destination]) -> tuple[Validation, tuple[PreviewEntry, ...]]:
@@ -908,9 +913,9 @@ def _review_state(
 
 def unit_digests(state: ReviewState) -> dict[str, tuple[str, ...]]:
     """Each unit's preview digests, as a page signs them and a save compares them. Where a
-    piece has a joined note, a unit's digests also hold those of its preview with every joined
-    note unticked and with every one ticked, each once, so one joined note's tick changed
-    leaves them as they were while saving does what the page showed either way."""
+    piece has a joined note, a unit's digests also hold those of its ``joined_previews``, each
+    once, so a joined note's tick changed, alone or beside another, leaves them as they were
+    while saving does what the page showed for each."""
     out: dict[str, list[str]] = {}
     for entry in state.preview:
         out.setdefault(unit_name(entry.unit), []).append(entry.digest)
@@ -1439,7 +1444,8 @@ def _identity(
     images: dict[str, set[str]] = {}
     for unit in ready:
         for name in unit:
-            for card in state.by_name[name].cards:
+            piece = state.by_name[name]
+            for card in (*piece.cards, *piece.noted_cards):
                 images.setdefault(card.sha256, set()).add(unit_name(unit))
     seen = {sha: names.get(sha, ("unknown", None)) for sha in images}
 

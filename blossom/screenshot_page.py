@@ -105,6 +105,8 @@ SAID: Final = {
     "Blossom use?",
     "joined_note": "The teacher's note for {day} also says: {words}",
     "joined_tick": "Add this note to the assignment",
+    "joined_sent_twice": "This tick was sent twice with different answers. Tick it once or "
+    "leave it unticked.",
     "joined_dates": "Due date on this review: {due}. The teacher's note for {day} says {noted}.",
     "joined_undated": "No due date on this review. The teacher's note for {day} says {noted}.",
     "too_long": "Keep the {named} to {most:,} characters or fewer.",
@@ -1498,12 +1500,15 @@ def rows_shown(
     own: frozenset[str] = frozenset(),
     progress: Corrections | None = None,
     destinations: Mapping[str, str] | None = None,
+    sent_twice: frozenset[str] = frozenset(),
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
     its own questions, each card with its source, its questions about what was read, its fold
     of corrections and where it goes, a row's Type on its first open card; then the group's
-    refusals, offers and tick, plus the signed fields the review form carries."""
+    refusals, offers and tick, plus the signed fields the review form carries. A joined note's
+    tick a refused press sent twice with different answers (``sent_twice``, by field) says so
+    in its own fieldset."""
     values = dict(state.values)
     image_ids = image_ids or {}
     reworked: dict[tuple[str, ...], list[tuple[Offer, Sequence[PreviewEntry]]]] = {}
@@ -1806,6 +1811,8 @@ def rows_shown(
     names, splits, shown_units, not_carried, beyond_its_save = _carried(
         names, splits, shown_units, choices or {}, conflicted or {}, marks
     )
+    if sent_twice:
+        shown_units = _marked_twice(shown_units, sent_twice)
     return RowsShown(
         tuple(names),
         splits,
@@ -1878,6 +1885,33 @@ def _unselected(
             else SAID["not_selected_as"].format(card=card, destination=label)
         )
     return tuple(dict.fromkeys(out))
+
+
+def _marked_twice(units: Sequence[UnitShown], fields: frozenset[str]) -> list[UnitShown]:
+    """The groups with each card's question whose field is in ``fields`` saying, above its
+    options, that it was sent twice with different answers."""
+
+    def marked(asked: Question) -> Question:
+        if asked.field not in fields:
+            return asked
+        return dataclasses.replace(asked, notes=((SAID["joined_sent_twice"], ""), *asked.notes))
+
+    return [
+        dataclasses.replace(
+            unit,
+            blocks=tuple(
+                dataclasses.replace(
+                    block,
+                    cards=tuple(
+                        dataclasses.replace(card, checks=tuple(marked(q) for q in card.checks))
+                        for card in block.cards
+                    ),
+                )
+                for block in unit.blocks
+            ),
+        )
+        for unit in units
+    ]
 
 
 def _carried(
@@ -2216,7 +2250,7 @@ def _still_open(
             still.append(field)
     if any(not m.due_resolved for m in members):
         still.append("due_read")
-    if any(c.sha256 in waiting for m in members for c in m.cards):
+    if any(c.sha256 in waiting for m in members for c in (*m.cards, *m.noted_cards)):
         still.append("name")
     return still
 

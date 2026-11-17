@@ -1753,6 +1753,7 @@ async def rows_of(
     own: frozenset[str] = frozenset(),
     answers_read: list[tuple[Mapping[tuple[str, str], str], Corrections] | None] | None = None,
     destinations: Mapping[str, str] | None = None,
+    sent_twice: frozenset[str] = frozenset(),
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
@@ -1764,7 +1765,8 @@ async def rows_of(
     transaction left open the reads refuse, so rows are never made from what it holds. What its read
     of the review finds the answers to be, with the corrections saved progress keeps as worked out
     here, goes in ``answers_read``, None with no review. Destinations an offer or a found row posted
-    (``destinations``) the rows don't select are said (``RowsShown.unselected``)."""
+    (``destinations``) the rows don't select are said (``RowsShown.unselected``). A joined note's
+    tick a refused press sent twice with different answers (``sent_twice``) is marked there."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
     kept = await saved_corrections(state, snapshot)
@@ -1805,6 +1807,7 @@ async def rows_of(
         own=own,
         progress=kept,
         destinations=destinations,
+        sent_twice=sent_twice,
     )
 
 
@@ -2024,15 +2027,16 @@ def read_said(snapshot: DraftSnapshot, now: datetime) -> list[str]:
     """What a Read press says the review's screenshots read as: how many are read as homework
     lists, the assignments found on their cards and the teacher's notes to check, and how many
     are read as something else. Every note is a note to check, whether it reads as homework, as
-    unclear, or as no homework."""
+    unclear, or as no homework, and whether it is a row of its own or joins a card's row."""
     kinds = {reading.sha256: reading.kind for reading in snapshot.readings}
     read = [image for image in snapshot.images if image.read]
     lists = sum(1 for image in read if kinds.get(image.sha256) == "homework_list")
     out = []
     if lists:
         rows = homework_assembly(snapshot.readings, now=now).rows
-        notes = sum(1 for row in rows if row.reading.teacher_note is not None)
-        out.append(read_said_line(lists, len(rows) - notes, notes))
+        own = sum(1 for row in rows if row.reading.teacher_note is not None)
+        joined = sum(len(row.reading.joined_notes) for row in rows)
+        out.append(read_said_line(lists, len(rows) - own, own + joined))
     if len(read) > lists:
         out.append(not_a_list_line(len(read) - lists))
     return out
@@ -2856,6 +2860,7 @@ async def with_typing(
             destinations={a.subject: a.value for a in post.answers if a.kind == "destination"}
             if stale
             else None,
+            sent_twice=frozenset(post.sent_twice) if current else frozenset(),
         )
         said_lost = await choices_said_lost(
             state, draft_id, post, rows, own, current, behind, answers_read=answers_said_lost

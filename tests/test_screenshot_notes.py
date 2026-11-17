@@ -153,6 +153,28 @@ def test_a_title_that_begins_the_instruction_is_kept_once() -> None:
     assert begun.reading == split.reading
 
 
+@pytest.mark.parametrize(
+    ("title", "instruction", "words"),
+    [
+        ("Study chapter 1", "Study chapter 10.", "Study chapter 1 Study chapter 10."),
+        ("Essay", "Essay due Friday.", "Essay due Friday."),
+        ("Bring form A", "Bring form AB.", "Bring form A Bring form AB."),
+        ("Study chapter 1", "Study chapter 1. Bring a pencil.", "Study chapter 1. Bring a pencil."),
+    ],
+)
+def test_a_title_and_an_instruction_collapse_only_when_one_begins_the_other_at_a_word(
+    title: str, instruction: str, words: str
+) -> None:
+    """A title and an instruction read as one note when one equals or begins the other at a
+    word boundary; otherwise both are the note's words, as if read in one field."""
+    both = assembled("both", shot(note("Math 8", title=title, instruction=instruction)))
+    one = assembled("one", shot(note("Math 8", instruction=words)))
+
+    assert both.unread == one.unread == ()
+    assert [row.reading for row in both.rows] == [row.reading for row in one.rows]
+    assert [row.key for row in both.rows] == [row.key for row in one.rows]
+
+
 # ------------------------------------------------------------------ standing
 
 
@@ -386,7 +408,10 @@ def test_a_note_naming_its_card_under_the_same_day_is_that_card_s_row() -> None:
 
     row = only_row(found)
     assert row.reading.teacher_note is None
-    assert row == essay_alone("essay")
+    assert row._replace(joined=()) == essay_alone("essay")
+    assert [(source.marks, len(source.places)) for source in row.joined] == [
+        (frozenset({"title"}), 1)
+    ]
 
 
 def test_a_note_naming_a_card_of_another_day_stays_a_note_row() -> None:
@@ -551,6 +576,83 @@ def test_a_joined_card_keeps_its_literal_key_in_every_order_of_the_images() -> N
     assert found.unread == ()
     assert [row.key for row in found.rows] == [WORKSHEET_KEY]
     assert [row.key for row in homework_rows(stored("joined", worksheet, named))] == [WORKSHEET_KEY]
+
+
+PRACTICE_NOTE = "Practice set. Show your work on every problem."
+
+
+def practice(instruction: str) -> dict[str, object]:
+    """Math 8's "Practice set", assigned on the day it is listed under and due 11/20."""
+    return homework_card(
+        badge="ASSIGNED",
+        course="Math 8",
+        title="Practice set",
+        instruction=instruction,
+        footer="Due (11/20/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+
+
+def split_practice(*note_shots: dict[str, object]) -> tuple[ScreenshotRow, list[Piece]]:
+    """The "Practice set" row read under Monday 11/16 and Tuesday 11/17, beside the given
+    screenshots of its note, and its pieces once split, with every joined note ticked under
+    every piece."""
+    images = stored(
+        "split",
+        shot(practice("Problems 1 to 10.")),
+        shot(practice("Problems 11 to 20."), day=TUESDAY),
+        *note_shots,
+    )
+    [row] = [r for r in homework_assembly(images, now=NOW).rows if r.assigned_dates_disagree]
+    answer = {row.key: "split"}
+    first, _, _ = review.pieces_from(images, answer, frozenset(), NOW)
+    tags = {note_tag(task) for task in row.reading.joined_notes}
+    ticked = {(piece.name, tag) for piece in first for tag in tags}
+    pieces, _, _ = review.pieces_from(images, answer, frozenset(), NOW, joined=ticked)
+    return row, pieces
+
+
+def test_a_split_row_s_joined_note_joins_the_one_piece_of_its_listing_day() -> None:
+    """The note listed on the Monday joins the row before the split and the Monday piece after
+    it, so its tick adds its words there and nowhere else."""
+    row, pieces = split_practice(shot(note("Math 8", title=PRACTICE_NOTE)))
+    by_day = {piece.reading.assigned_on: piece for piece in pieces if piece.reading is not None}
+
+    assert [task.words for task in row.reading.joined_notes] == [PRACTICE_NOTE]
+    assert set(by_day) == {date(2026, 11, 16), date(2026, 11, 17)}
+    assert len(pieces) == 2
+    monday, tuesday = by_day[date(2026, 11, 16)], by_day[date(2026, 11, 17)]
+    assert monday.reading is not None
+    assert tuesday.reading is not None
+    assert [task.words for task in monday.reading.joined_notes] == [PRACTICE_NOTE]
+    assert tuesday.reading.joined_notes == ()
+    assert PRACTICE_NOTE in monday.words
+    assert PRACTICE_NOTE not in tuesday.words
+
+
+def test_a_split_row_s_joined_note_no_one_piece_takes_is_a_note_reading_of_its_own() -> None:
+    """The note listed on the Monday and the Tuesday joins the row before the split; after it,
+    both pieces qualify, so it joins neither and is a note reading of its own, never lost."""
+    listed_twice = two_days(
+        note("Math 8", title=PRACTICE_NOTE, y_top=200),
+        note("Math 8", title=PRACTICE_NOTE, y_top=300),
+    )
+    row, pieces = split_practice(listed_twice)
+    cards = [piece for piece in pieces if piece.reading and piece.reading.teacher_note is None]
+    notes = [piece for piece in pieces if piece.reading and piece.reading.teacher_note]
+
+    assert [task.words for task in row.reading.joined_notes] == [PRACTICE_NOTE]
+    assert len(cards) == 2
+    assert all(piece.reading and piece.reading.joined_notes == () for piece in cards)
+    assert all(PRACTICE_NOTE not in piece.words for piece in cards)
+    [own] = notes
+    assert own.reading is not None
+    assert own.reading.teacher_note is not None
+    assert own.reading.teacher_note.words == PRACTICE_NOTE
+    assert own.key == row.key
+    assert own.cards != ()
+    assert set(own.cards).isdisjoint(row.sources)
 
 
 # ------------------------------------------------------------------ the text path's words

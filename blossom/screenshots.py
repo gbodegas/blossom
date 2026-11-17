@@ -367,6 +367,15 @@ class AssignedDay(NamedTuple):
     sources: tuple[CardPlace, ...]
 
 
+class JoinedSource(NamedTuple):
+    """Where a row's joined note was read: its ``note_tag``, the fields marked uncertain on its
+    note cards and day headings, and the places of those cards."""
+
+    tag: str
+    marks: frozenset[str]
+    places: tuple[CardPlace, ...]
+
+
 class ScreenshotRow(NamedTuple):
     """One row the screenshots read as: its key (what its own cards would write and its
     layer), the reading it would write, the fields marked uncertain on any card it came from,
@@ -384,6 +393,9 @@ class ScreenshotRow(NamedTuple):
     first copy, 1 for the second. For telling copies apart on the page, never for an id."""
     sources: tuple[CardPlace, ...]
     """Every card the row came from, by its image's SHA-256 and its place there, in order."""
+    joined: tuple["JoinedSource", ...] = ()
+    """Where each of its reading's joined notes was read, in their order, and the fields marked
+    uncertain on its cards; neither is in the key nor among ``sources`` and ``marks``."""
 
     @property
     def assigned_dates_disagree(self) -> bool:
@@ -490,9 +502,10 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     readable day heading is read with the other note cards of its layer, its layer being how
     many note cards above it in its screenshot have its class, words and day; each task they
     read as is a row whose key holds its standing, unless it joins the one row read from cards
-    that ``_named_card`` finds: that row keeps the task among its reading's joined notes and
-    keeps its reading, key, cards and marks as read, so what the note adds waits until the
-    family selects the note. Every other card stays a visible item with its
+    that ``_named_card`` finds: that row keeps the task among its reading's joined notes, with
+    the note's places and marks among its ``joined``, and keeps its reading, key, cards and
+    marks as read, so what the note adds waits until the family selects the note. Every other
+    card stays a visible item with its
     reason, never merged into another. ``now`` stamps the claims and is in no key.
     """
     images: dict[str, tuple[str, HomeworkReading | None]] = {}
@@ -604,7 +617,10 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
             if named is not None:
                 as_read = rows[named].reading
                 kept = dataclasses.replace(as_read, joined_notes=(*as_read.joined_notes, task))
-                rows[named] = rows[named]._replace(reading=kept)
+                source = JoinedSource(note_tag(task), note_marks, note_places)
+                rows[named] = rows[named]._replace(
+                    reading=kept, joined=(*rows[named].joined, source)
+                )
                 continue
             noted_reading = _in_round(note_reading(task, now=now), rounds)
             key = _key(_written(noted_reading, note_marks, layer, (), note=str(task.standing)))
@@ -810,16 +826,23 @@ def _reason(card: Card | None) -> ItemReason:
 def _note_words(card: Card) -> str | None:
     """The words of a teacher's note on a card: its title, then its instruction, each
     single-spaced, joined by one space, as the reader may put a note in either field or split
-    it across both. When one equals or begins the other, only the longer is kept. ``None``
-    when neither has words."""
+    it across both. When one equals the other or begins it at a word boundary, only the longer
+    is kept: "Essay" begins "Essay due Friday.", but "Study chapter 1" does not begin "Study
+    chapter 10.", so both of those are kept. ``None`` when neither has words."""
     parts = [
         folded(text) for text in (card.title, card.instruction) if text is not None and _words(text)
     ]
-    if len(parts) == 2 and parts[1].startswith(parts[0]):
+    if len(parts) == 2 and _begins(parts[0], parts[1]):
         parts = [parts[1]]
-    elif len(parts) == 2 and parts[0].startswith(parts[1]):
+    elif len(parts) == 2 and _begins(parts[1], parts[0]):
         parts = [parts[0]]
     return " ".join(parts) or None
+
+
+def _begins(start: str, text: str) -> bool:
+    """Whether ``start`` is ``text`` or begins it at a word boundary: what follows it in
+    ``text`` is not a letter or a digit."""
+    return text.startswith(start) and not text[len(start) : len(start) + 1].isalnum()
 
 
 def _has_structure(card: Card) -> bool:
