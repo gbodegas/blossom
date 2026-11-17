@@ -17,6 +17,7 @@ import pytest
 
 from blossom import intake, screenshot_page
 from blossom import screenshot_review as review
+from blossom.reconciliation import SourceChannel
 from blossom.screenshot_review import EarlierPick, Piece, Refusal, SavedRow
 from blossom.screenshot_save import confirm_fields
 from blossom.screenshots import CardPlace, ScreenshotRow, homework_assembly
@@ -722,7 +723,11 @@ def test_typed_corrections_reach_the_piece() -> None:
     [p], _, _ = review.pieces_from(readings, {}, frozenset(), OBSERVED_AT, fixes)
     assert (p.title, p.words, p.due) == ("Vocab Quiz 2", frozenset({W1}), THU)
     assert p.reading is not None
-    assert {c.asserted_value for c in p.reading.claims} == {THU.isoformat()}
+    assert {(c.channel, c.asserted_value) for c in p.reading.claims} == {
+        (SourceChannel.LMS, WED.isoformat()),
+        (SourceChannel.PARENT_ENTRY, THU.isoformat()),
+    }
+    assert p.reading.origin_of("due_date") is SourceChannel.PARENT_ENTRY
 
 
 def test_a_typed_date_reads_iso_or_the_portals_form_and_nothing_else() -> None:
@@ -1112,9 +1117,16 @@ def test_an_assigned_date_edit_on_a_split_piece_moves_only_that_piece() -> None:
     assert moved[f"{row_.key}|due"] == (WED, None)
 
 
-def test_a_due_card_s_due_box_moves_its_due_date_and_claims() -> None:
-    """The probe of a due card joined to its assigned card, inverted: its due box moves the due
-    date, and the claims that asserted the date as read, and leaves the assigned date."""
+def said_of(reading: intake.Reading | None) -> set[tuple[SourceChannel, str, str | None]]:
+    """A reading's due-date claims: who gave each, the date it asserts and where it was seen."""
+    assert reading is not None
+    return {(c.channel, c.asserted_value, c.seen_in) for c in reading.claims}
+
+
+def test_a_due_card_s_due_box_is_the_familys_due_date_beside_the_schools_claims() -> None:
+    """The probe of a due card joined to its assigned card, inverted: its due box sets the due
+    date as the family's entry, with the family's claim of it, keeps every claim the school
+    gave at its own date, and leaves the assigned date."""
     readings = mon_wed_row()
     read = one_piece(readings)
     moved = one_piece(readings, {review.dates_key(read.name): {"due": THU.isoformat()}})
@@ -1124,10 +1136,56 @@ def test_a_due_card_s_due_box_moves_its_due_date_and_claims() -> None:
     assert read.reading is not None
     assert moved.reading is not None
     assert WED.isoformat() in {c.asserted_value for c in read.reading.claims}
-    assert WED.isoformat() not in {c.asserted_value for c in moved.reading.claims}
-    assert THU.isoformat() in {c.asserted_value for c in moved.reading.claims}
+    assert said_of(moved.reading) == said_of(read.reading) | {
+        (SourceChannel.PARENT_ENTRY, THU.isoformat(), None)
+    }
+    assert read.reading.origin_of("due_date") is SourceChannel.LMS
+    assert moved.reading.origin_of("due_date") is SourceChannel.PARENT_ENTRY
     assert moved.as_read is not None
     assert (moved.as_read.due, moved.as_read.assigned) == (WED, MON)
+
+
+def test_a_due_card_s_due_box_cleared_leaves_the_card_as_read() -> None:
+    """A due card's due box given as none is passed over: the due date, its claims and where it
+    came from are the school's, as read."""
+    readings = mon_wed_row()
+    read = one_piece(readings)
+    cleared = one_piece(readings, {review.dates_key(read.name): {"due": None}})
+
+    assert cleared.due == WED
+    assert cleared.reading is not None
+    assert said_of(cleared.reading) == said_of(read.reading)
+    assert cleared.reading.origin_of("due_date") is SourceChannel.LMS
+
+
+def test_the_familys_choice_between_a_due_line_and_a_day_heading_is_the_familys_entry() -> None:
+    """A due card whose due line says Wednesday under a Monday heading, the family choosing one:
+    the chosen date is the family's entry, with the family's claim of it, and both of the
+    school's claims stay at the dates the school gave."""
+    card = homework_card(
+        badge="DUE",
+        course=C,
+        title=Q,
+        instruction=W1,
+        footer="Due (10/14/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    readings = [shot("mon", "Monday 10/12/2026", card)]
+    read = one_piece(readings)
+    assert set(read.due_choices) == {MON, WED}
+    school = said_of(read.reading)
+
+    for chosen in (MON, WED):
+        [settled], _, _ = review.pieces_from(
+            readings, {}, frozenset(), OBSERVED_AT, None, {read.name: chosen.isoformat()}
+        )
+        assert settled.due == chosen
+        assert settled.reading is not None
+        assert said_of(settled.reading) == school | {
+            (SourceChannel.PARENT_ENTRY, chosen.isoformat(), None)
+        }
+        assert settled.reading.origin_of("due_date") is SourceChannel.PARENT_ENTRY
 
 
 def test_an_assigned_date_can_be_set_where_none_was_read() -> None:

@@ -42012,8 +42012,11 @@ def test_a_card_date_correction_leaves_a_selected_joined_notes_claim_as_the_note
 ) -> None:
     """The essay card due Wednesday 11/18 under Monday 11/16, its note naming the same
     Wednesday, the note selected and the card's due date corrected to Friday 11/20: the save
-    keeps 11/20, the note's claim stays 11/18 as seen in the teacher's note, and the card's
-    own claim moves to 11/20."""
+    keeps 11/20 as the family's entry, with the family's claim of it; the note's claim stays
+    11/18 as seen in the teacher's note, and the card's own claim stays 11/18 as seen on its
+    own line."""
+    from blossom.reconciliation import SourceChannel
+
     card = homework_card(
         course="Religion 8",
         title="Short essay",
@@ -42040,10 +42043,81 @@ def test_a_card_date_correction_leaves_a_selected_joined_notes_claim_as_the_note
     assert JOINED_TICK.findall(review_form(reopened)) == [" checked"]
     assert says(saved, imports.counted(1, 0, 0, 0)), saved
     assert row.due_date == date(2026, 11, 20)
+    assert row.origins["due_date"] is SourceChannel.PARENT_ENTRY
     assert ("2026-11-18", intake.TEACHER_NOTE) in claims
     assert ("2026-11-20", intake.TEACHER_NOTE) not in claims
-    assert ("2026-11-20", "the assignment's own line") in claims
+    assert ("2026-11-18", intake.OWN_LINE) in claims
+    assert ("2026-11-20", intake.OWN_LINE) not in claims
+    assert ("2026-11-20", None) in claims
     assert words == [ESSAY_NOTE]
+
+
+@pytest.mark.parametrize("typed", [None, "2026-11-20"], ids=["untouched", "typed"])
+def test_a_cards_due_date_typed_by_the_family_is_the_familys_beside_the_schools_claim(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, typed: str | None
+) -> None:
+    """The essay card due Wednesday 11/18 under Monday 11/16, its due date typed as Friday
+    11/20, kept for later, reopened and saved: 11/20 is saved as the family's entry, with the
+    family's claim of it, and the card's own claim stays 11/18. Left as read, the save keeps
+    the school's date, and the school as where it came from."""
+    from blossom.reconciliation import SourceChannel
+
+    card = homework_card(
+        course="Religion 8",
+        title="Short essay",
+        instruction=None,
+        footer="Due (11/18/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    heading = {"text": "Monday 11/16/2026", "y": 150, "uncertain": None}
+    answer = homework_answer(headings=[heading], cards=[card])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, page)
+        due = f"correct:{box_subject(page, 'due')}"
+        reopened = kept_for_later(browser, draft_id, page, {} if typed is None else {due: typed})
+        sent = page_post(reopened, "save", tick=ticked_on(reopened))
+        saved = followed(browser, send(browser, draft_id, sent))
+        row, claims, _ = essay_row(browser)
+
+    assert says(saved, imports.counted(1, 0, 0, 0)), saved
+    if typed is None:
+        assert row.due_date == date(2026, 11, 18)
+        assert row.origins["due_date"] is SourceChannel.LMS
+        assert claims == {("2026-11-18", intake.OWN_LINE)}
+    else:
+        assert row.due_date == date(2026, 11, 20)
+        assert row.origins["due_date"] is SourceChannel.PARENT_ENTRY
+        assert claims == {("2026-11-18", intake.OWN_LINE), ("2026-11-20", None)}
+
+
+@pytest.mark.parametrize("chosen", ["2026-10-05", "2026-10-08"], ids=["heading", "due-line"])
+def test_the_familys_choice_between_a_due_line_and_a_day_heading_saves_as_the_familys(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, chosen: str
+) -> None:
+    """A due card whose due line says Thursday 10/8 under a Monday 10/5 heading, the family
+    choosing one, the review reopened and saved: the chosen date is saved as the family's
+    entry, with the family's claim of it, and the school's claim, seen on the day heading,
+    stays 10/5."""
+    from blossom.reconciliation import SourceChannel
+
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, disagreeing_due_card()))
+        page = her_name_answered(browser, draft_id, page)
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        keep(browser, draft_id, ("due_read", piece, chosen))
+        settled = browser.get(f"/parent/imports/{draft_id}").text
+        sent = page_post(settled, "save", tick=units_on(settled))
+        saved = followed(browser, send(browser, draft_id, sent))
+        record = state_of(browser).project_state
+        [row] = [a for a in record.all_assignments() if a.title == "Sentence Composing"]
+        claims = {(c.asserted_value, c.seen_in) for c in record.deadline_records(row.assignment_id)}
+
+    assert says(saved, imports.counted(1, 0, 0, 0)), saved
+    assert row.due_date == date.fromisoformat(chosen)
+    assert row.origins["due_date"] is SourceChannel.PARENT_ENTRY
+    assert claims == {("2026-10-05", intake.DAY_HEADER), (chosen, None)}
 
 
 def test_a_familys_due_date_stays_when_a_selected_joined_note_is_saved(

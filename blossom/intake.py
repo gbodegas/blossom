@@ -1139,10 +1139,20 @@ def with_family_deadline(reading: Reading, day: date | None, *, now: datetime) -
     origins = {
         name: channel for name, channel in reading.field_origins.items() if name != "due_date"
     }
-    if day is not None:
-        claims += (claim(SourceChannel.PARENT_ENTRY, day, None, now, FAMILY_CONFIDENCE),)
-        origins["due_date"] = SourceChannel.PARENT_ENTRY
-    return dataclasses.replace(reading, due_date=day, claims=claims, field_origins=origins)
+    left = dataclasses.replace(reading, due_date=None, claims=claims, field_origins=origins)
+    return left if day is None else family_due(left, day, now=now)
+
+
+def family_due(reading: Reading, day: date, *, now: datetime) -> Reading:
+    """The reading with ``day`` as the due date the family gives it, made as a typed entry
+    makes it: the parent's claim of that date is added, and the due date's origin is the
+    parent's entry. Every claim already on the reading stays with the date and source it
+    was given. Nothing is changed in place."""
+    origins = {**reading.field_origins, "due_date": SourceChannel.PARENT_ENTRY}
+    said = claim(SourceChannel.PARENT_ENTRY, day, None, now, FAMILY_CONFIDENCE)
+    return dataclasses.replace(
+        reading, due_date=day, claims=(*reading.claims, said), field_origins=origins
+    )
 
 
 def _day_answered(answer: TaskAnswer, today: date) -> tuple[bool, date | None]:

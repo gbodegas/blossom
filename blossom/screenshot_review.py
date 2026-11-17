@@ -24,7 +24,7 @@ from typing import Any, Final, NamedTuple
 import blossom.intake as intake
 from blossom.grades.draft import folded
 from blossom.intake import Reading
-from blossom.reconciliation import SourceChannel, SourceRecord
+from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionSeen, instruction_words
 from blossom.screenshots import (
     INSTRUCTION_MOST,
@@ -1331,10 +1331,12 @@ def corrected(
     each text once, and its own due and assigned dates, the assigned date set to none where she
     said none was given. In saved progress of shape 3, an instruction correction replaces
     every text, or is added where none was read, and the due line and day heading set the
-    dates ``date_target`` names. A correction Blossom can't use is passed over. On a reading
-    made from a teacher's note, a due date other than the one read, or none where its own
-    date is given as none, is the family's entry (``intake.with_family_deadline``, made at
-    ``now``); a due date given as none on any other reading is passed over."""
+    dates ``date_target`` names. A correction Blossom can't use is passed over. A due date
+    other than the one read is the family's entry, made at ``now``: on a reading made from a
+    teacher's note through ``intake.with_family_deadline``, which also takes none where its
+    own date is given as none; on any other reading through ``intake.family_due``, every
+    claim the school gave kept at its own date and source. A due date given as none on a
+    reading made from no note is passed over."""
     fields, dates = fields or {}, dates or {}
     if not fields and not dates:
         return reading
@@ -1405,8 +1407,10 @@ def corrected(
             change["claims"] = given.claims
             change["field_origins"] = given.field_origins
     elif due is not None and due != reading.due_date:
-        change["due_date"] = due
-        change["claims"] = moved_claims(reading, due)
+        given = intake.family_due(reading, due, now=now)
+        change["due_date"] = given.due_date
+        change["claims"] = given.claims
+        change["field_origins"] = given.field_origins
     return dataclasses.replace(reading, **change) if change else reading
 
 
@@ -1574,7 +1578,7 @@ def pieces_from(
             chosen = date.fromisoformat(answer[1])
             reading = dataclasses.replace(row.reading, assigned_on=chosen)
             out.append(made(row, row.key, reading, row.sources, False, row.marks))
-    settled = [_settled(piece, readings, corrections, due_read or {}) for piece in out]
+    settled = [_settled(piece, readings, corrections, due_read or {}, now) for piece in out]
     return sorted(settled, key=lambda p: p.name), asking, rows
 
 
@@ -1588,12 +1592,14 @@ def _settled(
     readings: Sequence[StoredReading],
     corrections: Corrections,
     due_read: Mapping[str, str],
+    now: datetime,
 ) -> Piece:
     """A piece with what its cards said of their dates. Where a due card's due line and day
     heading name different dates, the parent's answer of which one Blossom uses sets the due
-    date, as a correction that sets the due date does; until one of them is given the piece
-    isn't settled, and with no correction it has no due date. A correction of the assigned
-    date answers nothing of it. The row's key is never touched."""
+    date as the family's entry, made at ``now`` (``intake.family_due``), as a correction that
+    sets the due date does; the school's claims keep their dates. Until one of them is given
+    the piece isn't settled, and with no correction it has no due date. A correction of the
+    assigned date answers nothing of it. The row's key is never touched."""
     seen = dates_seen(readings, piece.cards)
     with_seen = dataclasses.replace(piece, seen=seen)
     choices = with_seen.due_choices
@@ -1607,23 +1613,8 @@ def _settled(
         return with_seen
     if chosen is None or piece.reading is None:
         return dataclasses.replace(with_seen, due_resolved=False)
-    reading = dataclasses.replace(
-        piece.reading, due_date=chosen, claims=moved_claims(piece.reading, chosen)
-    )
+    reading = intake.family_due(piece.reading, chosen, now=now)
     return dataclasses.replace(with_seen, due=chosen, reading=reading)
-
-
-def moved_claims(reading: Reading, due: date) -> tuple[SourceRecord, ...]:
-    """A card reading's claims with its due date moved to ``due``: each claim of the date it
-    read asserts ``due`` instead, except a claim seen in a teacher's note joined to it, which
-    keeps the note's date and where it was seen."""
-    before = None if reading.due_date is None else reading.due_date.isoformat()
-    return tuple(
-        c.model_copy(update={"asserted_value": due.isoformat()})
-        if c.asserted_value == before and c.seen_in != intake.TEACHER_NOTE
-        else c
-        for c in reading.claims
-    )
 
 
 def piece_names(
