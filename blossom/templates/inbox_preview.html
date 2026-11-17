@@ -309,13 +309,16 @@
               <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
               <input type="hidden" name="shown-{{ change.key }}" value="{{ change.kind.value }}">
               {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}
-              <label class="type-choice">Type
-                <select name="kind-{{ change.key }}" data-saved="{{ change.suggested.value }}">
+              {% set kind_open = ("kind-" ~ change.key) in unresolved %}<label class="type-choice">Type
+                <select name="kind-{{ change.key }}" data-saved="{{ change.suggested.value }}"{% if kind_open %} required{% endif %}>{% if kind_open %}
+                  {# A type sent twice with different answers, unanswered: both offered, neither chosen, marked until one is. #}
+                  <option value="" selected>Choose one</option>{% endif %}
                   {% for value, label in kind_choices %}
-                    <option value="{{ value }}"{% if value == change.kind.value %} selected{% endif %}>{{ label }}</option>
+                    <option value="{{ value }}"{% if value == change.kind.value and not kind_open %} selected{% endif %}>{{ label }}</option>
                   {% endfor %}
                 </select>
-              </label>
+              </label>{% for name, value in unresolved.get("kind-" ~ change.key, ()) %}
+              <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
               <p class="helper">Task: a form to sign, supplies to bring, or similar. {% if change.on_record %}As saved; change it if it is wrong.{% else %}Suggested from the title; change it if it is wrong.{% endif %}</p>{% endif %}
               {% if change.key in unsaved_on %}
                 {#

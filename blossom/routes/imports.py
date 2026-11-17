@@ -1754,6 +1754,7 @@ async def rows_of(
     answers_read: list[tuple[Mapping[tuple[str, str], str], Corrections] | None] | None = None,
     destinations: Mapping[str, str] | None = None,
     sent_twice: frozenset[str] = frozenset(),
+    unresolved: Mapping[str, tuple[str, ...]] | None = None,
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
@@ -1766,7 +1767,9 @@ async def rows_of(
     of the review finds the answers to be, with the corrections saved progress keeps as worked out
     here, goes in ``answers_read``, None with no review. Destinations an offer or a found row posted
     (``destinations``) the rows don't select are said (``RowsShown.unselected``). A joined note's
-    tick a refused press sent twice with different answers (``sent_twice``) is marked there."""
+    tick a refused press sent twice with different answers (``sent_twice``) is marked there, and
+    one sent twice or marked so and left unanswered (``unresolved``) is offered as its actual
+    choice, neither side chosen, until it is answered."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
     kept = await saved_corrections(state, snapshot)
@@ -1808,6 +1811,7 @@ async def rows_of(
         progress=kept,
         destinations=destinations,
         sent_twice=sent_twice,
+        unresolved=unresolved,
     )
 
 
@@ -2088,8 +2092,12 @@ PRESS_SAID: Final = {
     ),
     "nothing_kept": "Nothing was kept or saved.",
     "sent_twice": (
-        'The tick "Add this note to the assignment" was sent twice with different answers. '
-        "Tick it once or leave it unticked, then press again."
+        'The choice "Add this note to the assignment" was sent twice with different answers. '
+        "Choose one, then press again."
+    ),
+    "unanswered_twice": (
+        'The choice "Add this note to the assignment" sent twice with different answers needs '
+        "your answer. Choose one, then press again."
     ),
     "too_large": f"This review is too large for Blossom to process. {NOTHING_BY_THIS_ATTEMPT}",
     "save_invalid": (
@@ -2429,6 +2437,7 @@ def refused_said(post: ReviewPost) -> list[str]:
     boxes += [PAGE_SAID["both"]] if post.both else []
     boxes += [PAGE_SAID["conflict"]] if post.conflicted else []
     boxes += [PRESS_SAID["sent_twice"]] if post.sent_twice else []
+    boxes += [PRESS_SAID["unanswered_twice"]] if post.unanswered else []
     if post.too_long:
         return [PRESS_SAID["too_long"], *dict.fromkeys(boxes)]
     return [*dict.fromkeys(boxes), PRESS_SAID["nothing_kept"]]
@@ -2861,6 +2870,7 @@ async def with_typing(
             if stale
             else None,
             sent_twice=frozenset(post.sent_twice) if current else frozenset(),
+            unresolved=post.open_choices if current else None,
         )
         said_lost = await choices_said_lost(
             state, draft_id, post, rows, own, current, behind, answers_read=answers_said_lost

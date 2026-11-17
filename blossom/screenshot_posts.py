@@ -20,6 +20,7 @@ from typing import Final, NamedTuple
 
 from blossom.screenshot_page import (
     INSTRUCTIONS_ASKED,
+    UNRESOLVED,
     PostRefused,
     asks_read,
     page_check,
@@ -129,13 +130,20 @@ class ReviewPost:
     its write; None where it made none."""
     sent_twice: tuple[str, ...] = ()
     """Each joined note's tick, by its field, posted more than once with different values: the
-    press is refused whole, and the tick goes back unticked, whichever value came first."""
+    press is refused whole, and the tick goes back as the actual choice, neither side chosen,
+    whichever value came first."""
+    unanswered: tuple[str, ...] = ()
+    """Each joined note's tick, by its field, its page marked as sent twice (``UNRESOLVED``) and
+    this press left unanswered: the press is refused whole, and it goes back as it was."""
+    open_choices: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """Each tick in ``sent_twice`` or ``unanswered``, with the values sent, for the page to
+    offer and mark it until it is answered."""
 
     @property
     def refused(self) -> bool:
         """Whether the press is refused whole for what it posted: a box it can't take as posted, a
         choice beside "None of these apply", a kept row that isn't on the record, or a joined
-        note's tick posted twice with different values."""
+        note's tick posted twice with different values or marked so and left unanswered."""
         return bool(
             self.too_long
             or self.needed
@@ -143,6 +151,7 @@ class ReviewPost:
             or self.conflicted
             or self.unresolved
             or self.sent_twice
+            or self.unanswered
         )
 
 
@@ -348,8 +357,10 @@ def read_review(
     there. A correction longer than its field takes is named in ``too_long`` and kept as typed,
     never cut, for the page to give back. A joined note's tick the page offered, posted more than
     once with different values, is named in ``sent_twice`` and taken as neither, so no value is
-    chosen by the order it came in; posted twice with one value, it is refused as any answer
-    posted twice is."""
+    chosen by the order it came in; posted twice with one value, it is that one answer. Any other
+    answer posted twice is refused, except an instruction question's, which holds several. A
+    tick its page marks as sent twice (``UNRESOLVED``) is answered by adding the note or by
+    leaving it out; left unanswered, it is named in ``unanswered`` and the press is refused."""
     hidden = _signed_fields(items, page_key)
     offered, older = _signed_asks(hidden)
     try:
@@ -373,13 +384,23 @@ def read_review(
     none_given: set[str] = set()
     chosen: dict[str, list[str]] = {}
     rows_by_words: dict[str, dict[str, str]] = {}
-    joined_sent: dict[str, set[str]] = {}
+    joined_sent: dict[str, list[str]] = {}
+    marked: dict[str, tuple[str, ...]] = {}
+    declined: set[str] = set()
     for name, value in rest:
         if name.startswith(JOINED_PREFIX) and name in offered:
-            joined_sent.setdefault(name, set()).add(value)
+            sent = joined_sent.setdefault(name, [])
+            if value not in sent:
+                sent.append(value)
+        elif (
+            name.startswith(UNRESOLVED + JOINED_PREFIX) and name.removeprefix(UNRESOLVED) in offered
+        ):
+            marked[name.removeprefix(UNRESOLVED)] = _marked_values(value)
     sent_twice = tuple(sorted(name for name, sent in joined_sent.items() if len(sent) > 1))
     for name, value in rest:
-        if name in ("press", "unit") or name.startswith(READ_PREFIX) or name in sent_twice:
+        if name in ("press", "unit") or name.startswith((READ_PREFIX, UNRESOLVED)):
+            continue
+        if name in sent_twice:
             continue
         if name.startswith(BOX_PREFIXES):
             prefix = next(p for p in BOX_PREFIXES if name.startswith(p))
@@ -404,6 +425,12 @@ def read_review(
         as_signed = value if older else signed_option(name, value)
         if name not in offered or as_signed not in offered[name]:
             raise PostRefused
+        if name in chosen and kind == "joined" and value in chosen[name]:
+            continue
+        if kind == "joined" and value == UNJOINED:
+            # Offered only beside a tick marked as sent twice: the family leaving the note out.
+            declined.add(name)
+            continue
         if name in chosen and kind != "instructions":
             raise PostRefused
         if older and kind == "instructions" and value:
@@ -453,6 +480,17 @@ def read_review(
             if not (kind == "joined" and joined_of(subject) in state.proven)
         )
     )
+    unanswered = tuple(
+        sorted(
+            name
+            for name in marked
+            if name not in sent_twice and name not in chosen and name not in declined
+        )
+    )
+    open_choices = {
+        **{name: tuple(joined_sent[name]) for name in sent_twice},
+        **{name: marked[name] for name in unanswered},
+    }
     return ReviewPost(
         presses[0],
         _number(hidden["version"]),
@@ -472,7 +510,20 @@ def read_review(
         unresolved=tuple(unresolved),
         dropped=folded.dropped,
         sent_twice=sent_twice,
+        unanswered=unanswered,
+        open_choices=open_choices,
     )
+
+
+def _marked_values(value: str) -> tuple[str, ...]:
+    """The values a tick's ``UNRESOLVED`` mark holds, each once; none where it can't be read."""
+    try:
+        said = json.loads(value)
+    except (ValueError, RecursionError):
+        return ()
+    if not isinstance(said, list):
+        return ()
+    return tuple(dict.fromkeys(text for text in said if isinstance(text, str)))
 
 
 def _kept_of(subject: str, kept: Mapping[str, Mapping[str, str]]) -> Mapping[str, str]:
@@ -513,6 +564,16 @@ its box, and "No assigned date was given"."""
 READ_PREFIX: Final = "read:"
 """The unsigned field beside each box that tells a box posted unchanged, read only when a
 review that has gone gives its typing back (``typed_back``)."""
+
+
+def _read_marks(items: Sequence[tuple[str, str]]) -> dict[str, str]:
+    """Each ``read:`` mark a post sent, by the box it names. A mark sent twice with different
+    values is none, so neither is taken by the order it came in and the box counts as typed."""
+    sent: dict[str, set[str]] = {}
+    for name, value in items:
+        if name.startswith(READ_PREFIX):
+            sent.setdefault(name.removeprefix(READ_PREFIX), set()).add(value)
+    return {named: next(iter(values)) for named, values in sent.items() if len(values) == 1}
 
 
 def _box(subject: str) -> tuple[str, str]:
@@ -679,11 +740,7 @@ def typed_for(
     seen: set[tuple[str, str, str]] = set()
     typed_over: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
-    unchanged = {
-        name.removeprefix(READ_PREFIX): value
-        for name, value in items
-        if name.startswith(READ_PREFIX)
-    }
+    unchanged = _read_marks(items)
     for name, value in items:
         prefix = next((p for p in ("correct:", "refused:") if name.startswith(p)), None)
         if prefix is None:
@@ -743,11 +800,7 @@ def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str
     boxes: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
     ticked: set[tuple[str, str]] = set()
-    unchanged = {
-        name.removeprefix(READ_PREFIX): value
-        for name, value in items
-        if name.startswith(READ_PREFIX)
-    }
+    unchanged = _read_marks(items)
     for name, value in items:
         prefix = next((p for p in ("correct:", "refused:", "none:") if name.startswith(p)), None)
         if prefix is None:

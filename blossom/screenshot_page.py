@@ -27,6 +27,7 @@ from blossom.school_instructions import to_wire
 from blossom.screenshot_review import (
     JOINED,
     KINDS,
+    UNJOINED,
     ChangeTold,
     Corrections,
     DateQuestion,
@@ -105,8 +106,8 @@ SAID: Final = {
     "Blossom use?",
     "joined_note": "The teacher's note for {day} also says: {words}",
     "joined_tick": "Add this note to the assignment",
-    "joined_sent_twice": "This tick was sent twice with different answers. Tick it once or "
-    "leave it unticked.",
+    "joined_sent_twice": "This tick was sent twice with different answers. Choose one.",
+    "joined_leave": "Don't add it",
     "joined_dates": "Due date on this review: {due}. The teacher's note for {day} says {noted}.",
     "joined_undated": "No due date on this review. The teacher's note for {day} says {noted}.",
     "note_day": "From the teacher's note for {day}.",
@@ -811,6 +812,50 @@ class Question:
     it does for the save, with no option checked. A joined note's tick is always answered."""
     unsaved: bool = False
     """Whether what's checked is a choice a refused press sent and the record doesn't hold."""
+    required: bool = False
+    """Whether one of its options must be chosen before the form is sent."""
+    marks: tuple[tuple[str, str], ...] = ()
+    """Hidden fields it carries, by name and value: a joined note's tick sent twice with
+    different answers carries the values sent (``UNRESOLVED``) until it is answered."""
+
+
+UNRESOLVED: Final = "unresolved:"
+"""The prefix of the unsigned field a returned review carries for a joined note's tick sent
+twice with different answers, holding the values sent, until the family answers it."""
+
+
+def _unresolved_ticks(
+    units: Sequence["UnitShown"], unresolved: Mapping[str, tuple[str, ...]]
+) -> list["UnitShown"]:
+    """The groups with each joined note's tick in ``unresolved`` offered as the actual choice,
+    adding the note or not, both required and neither chosen, marked with the values sent."""
+
+    def opened(asked: Question) -> Question:
+        if asked.field not in unresolved:
+            return asked
+        return dataclasses.replace(
+            asked,
+            options=((JOINED, SAID["joined_tick"], False), (UNJOINED, SAID["joined_leave"], False)),
+            required=True,
+            marks=((f"{UNRESOLVED}{asked.field}", json.dumps(list(unresolved[asked.field]))),),
+        )
+
+    return [
+        dataclasses.replace(
+            unit,
+            blocks=tuple(
+                dataclasses.replace(
+                    block,
+                    cards=tuple(
+                        dataclasses.replace(card, checks=tuple(opened(q) for q in card.checks))
+                        for card in block.cards
+                    ),
+                )
+                for block in unit.blocks
+            ),
+        )
+        for unit in units
+    ]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1536,6 +1581,7 @@ def rows_shown(
     progress: Corrections | None = None,
     destinations: Mapping[str, str] | None = None,
     sent_twice: frozenset[str] = frozenset(),
+    unresolved: Mapping[str, tuple[str, ...]] | None = None,
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
@@ -1543,7 +1589,8 @@ def rows_shown(
     of corrections and where it goes, a row's Type on its first open card; then the group's
     refusals, offers and tick, plus the signed fields the review form carries. A joined note's
     tick a refused press sent twice with different answers (``sent_twice``, by field) says so
-    in its own fieldset."""
+    in its own fieldset; one sent twice or marked so and left unanswered (``unresolved``, with
+    the values sent) is offered as the actual choice, neither side chosen, both signed."""
     values = dict(state.values)
     image_ids = image_ids or {}
     reworked: dict[tuple[str, ...], list[tuple[Offer, Sequence[PreviewEntry]]]] = {}
@@ -1788,6 +1835,7 @@ def rows_shown(
     splits = tuple(
         dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(splits, len(names) + 1)
     )
+    shown_units = _unresolved_ticks(shown_units, unresolved or {})
     asked_fields: list[tuple[str, Sequence[str]]] = [
         *((q.field, [o[0] for o in q.options]) for q in names),
         *((q.field, [o[0] for o in q.options]) for q in splits),
@@ -1846,8 +1894,8 @@ def rows_shown(
     names, splits, shown_units, not_carried, beyond_its_save = _carried(
         names, splits, shown_units, choices or {}, conflicted or {}, marks
     )
-    if sent_twice:
-        shown_units = _marked_twice(shown_units, sent_twice)
+    if sent_twice or unresolved:
+        shown_units = _marked_twice(shown_units, sent_twice | frozenset(unresolved or {}))
     return RowsShown(
         tuple(names),
         splits,

@@ -2293,38 +2293,46 @@ def twice_said(twice: Mapping[str, tuple[str, ...]]) -> dict[str, list[str]]:
 
 
 UNRESOLVED: Final = "unresolved"
-"""The head of the field a returned review carries for each note field sent twice with
-different answers, ``unresolved-<field>``, holding the values sent, until the family answers
-it: a note's tick, a joined note's tick, a title box, a due-date choice or a date box."""
+"""The head of the field a returned review carries for each choice sent twice with different
+answers, ``unresolved-<field>``, holding the values sent, until the family answers it: a
+note's tick, a joined note's tick, a title box, a due-date choice, a date box or a card's
+type."""
+
+KIND_FIELD: Final = "kind"
+"""The field of a card's Homework or Task choice, which a conflict leaves open until the
+family chooses one, on any card."""
 
 
 def unresolved_from(twice: Mapping[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
-    """The note fields among those sent twice, each by the field the family answers it with
-    (a note's offered field by its tick), with the values sent."""
+    """The choices among those sent twice the family answers on the page, each by the field
+    it is answered with (a note's offered field by its tick), with the values sent: the note
+    fields and a card's type."""
     found: dict[str, tuple[str, ...]] = {}
     for name, values in twice.items():
         head, _, rest = name.partition("-")
-        if head in TICK_FIELDS | BOX_FIELDS:
+        if head in TICK_FIELDS | BOX_FIELDS or head == KIND_FIELD:
             found[f"take-{rest}" if head == "offered" else name] = values
     return found
 
 
 def unresolved_of(fields: Iterable[tuple[str, object]], read: Read) -> dict[str, tuple[str, ...]]:
-    """The note fields a form marks as sent twice with different answers (``UNRESOLVED``),
-    each with the values the marks hold; a mark on no note field of this read, or sent as a
-    file, is ignored, and values that cannot be read are none."""
+    """The choices a form marks as sent twice with different answers (``UNRESOLVED``), each
+    with the values the marks hold: a note field, or a card's type; a mark on no such field of
+    this read, or sent as a file, is ignored, and values that cannot be read are none."""
     notes = {key for key, item in enumerate(read.items) if item.teacher_note is not None}
     joined = {
         f"join-{key}-{place}"
         for key, item in enumerate(read.items)
         for place in range(len(item.joined_notes))
     }
+    typed = {f"{KIND_FIELD}-{key}" for key in range(len(read.items))}
     marked: dict[str, list[str]] = {}
     for name, value in fields:
         head, _, which = name.partition("-")
         kind, _, key = which.partition("-")
         on_note = kind in ("take", *BOX_FIELDS) and review_key(key) and int(key) in notes
-        if head != UNRESOLVED or not isinstance(value, str) or not (on_note or which in joined):
+        on_card = on_note or which in joined or which in typed
+        if head != UNRESOLVED or not isinstance(value, str) or not on_card:
             continue
         try:
             said = json.loads(value)
@@ -2337,11 +2345,14 @@ def unresolved_of(fields: Iterable[tuple[str, object]], read: Read) -> dict[str,
 
 
 def answered(form: Mapping[str, str], which: str) -> bool:
-    """Whether a form answers a note field marked as sent twice: a tick by either choice, a
-    title box by a title, and a due date by a choice, another date with its date."""
+    """Whether a form answers a choice marked as sent twice: a tick by either choice, a title
+    box by a title, a due date by a choice, another date with its date, and a card's type by
+    Homework or Task."""
     head, _, key = which.partition("-")
     if head in ("take", "join"):
         return form.get(which) in ("1", "0")
+    if head == KIND_FIELD:
+        return form.get(which) in dict(KIND_CHOICES)
     if head == "title":
         return bool(form.get(which, "").strip())
     when = form.get(f"when-{key}", "")
@@ -2351,7 +2362,7 @@ def answered(form: Mapping[str, str], which: str) -> bool:
 def unanswered_marks(
     form: Mapping[str, str], fields: Iterable[tuple[str, object]], read: Read
 ) -> dict[str, tuple[str, ...]]:
-    """The note fields a form marks as sent twice that it does not answer."""
+    """The choices a form marks as sent twice that it does not answer."""
     return {
         which: values
         for which, values in unresolved_of(fields, read).items()
@@ -2360,7 +2371,7 @@ def unanswered_marks(
 
 
 def unresolved_cards(unresolved: Mapping[str, object]) -> frozenset[int]:
-    """The keys of the cards with an unresolved note field, a joined note's by its card."""
+    """The keys of the cards with an unresolved choice, a joined note's by its card."""
     return frozenset(int(which.split("-")[1]) for which in unresolved)
 
 

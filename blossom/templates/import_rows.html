@@ -18,8 +18,8 @@
 {% macro question_fields(question) %}
   {% for text, target in question.notes %}<p class="note">{% if target %}<a href="#{{ target }}">{{ text }}</a>{% else %}{{ text }}{% endif %}</p>{% endfor %}
   {% for value, label, checked in question.options %}
-    <label><input type="{% if question.many or question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
-  {% endfor %}
+    <label><input type="{% if question.many or question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}{% if question.required %} required{% endif %}> <span>{{ label }}</span></label>
+  {% endfor %}{% for name, value in question.marks %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
   {% if question.unsaved %}<p class="note">{{ words.not_saved_yet }}</p>{% endif %}
   {% if question.helper %}<p class="helper">{{ question.helper }}</p>{% endif %}
   {% if question.fold %}<p class="helper">{{ words.correct_it }} <a href="#{{ question.fold }}">{{ words.fold }}</a></p>{% endif %}

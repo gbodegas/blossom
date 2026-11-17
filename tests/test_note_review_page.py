@@ -105,7 +105,7 @@ def ticked_form(page: str) -> dict[str, str]:
         for name, value in re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', page)
     }
     for name, body in re.findall(r'<select name="([^"]+)"[^>]*>(.*?)</select>', page, re.S):
-        chosen = re.search(r'<option value="([^"]+)" selected>', body)
+        chosen = re.search(r'<option value="([^"]*)" selected>', body)
         assert chosen is not None, name
         fields[name] = chosen.group(1)
     for name in re.findall(
@@ -3606,3 +3606,96 @@ def test_a_choice_sent_twice_stays_unanswered_until_the_family_answers_it(
         assert rows["Reading log"].due_date is None
     if head == "take":
         assert "Reading log" in rows
+
+
+def unresolved_kind(body: str, key: int) -> bool:
+    """Whether a card's type comes back as a required choice with its empty first option
+    selected and neither Homework nor Task chosen."""
+    found = re.search(rf'<select name="kind-{key}"([^>]*)>(.*?)</select>', body, re.S)
+    assert found is not None
+    attributes, options = found.groups()
+    return (
+        " required" in attributes
+        and re.match(r'\s*<option value="" selected>', options) is not None
+        and options.count(" selected>") == 1
+        and '<option value="HOMEWORK">' in options
+        and '<option value="TASK">' in options
+    )
+
+
+@pytest.mark.parametrize("values", [("HOMEWORK", "TASK"), ("TASK", "HOMEWORK")], ids=str)
+def test_a_type_sent_twice_stays_unanswered_until_the_family_chooses_one(
+    tmp_path: pathlib.Path, values: tuple[str, str]
+) -> None:
+    """A card's Homework or Task choice sent twice with different answers, in either order:
+    refused with the card named and the type offered with neither chosen; the returned form
+    sent back unchanged is refused again with zero writes, through Save and Review changes;
+    the explicit choice then gives the ordinary review, and Save writes once with it."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": NOTED}).text
+        essay = key_of_card(page, "Short essay")
+        field = f"kind-{essay}"
+        form = ticked_form(page)
+        form.pop(field)
+        conflict = sent_as_pairs(
+            client, "keep", [*form.items(), *((field, value) for value in values)]
+        )
+        retry = client.post("/parent/inbox/keep", data=ticked_form(conflict.text))
+        retried_find = client.post(
+            "/parent/inbox/find", data=ticked_form(conflict.text) | {"recheck": "1"}
+        )
+        unwritten = record_counts(client)
+        reviewed = client.post(
+            "/parent/inbox/find",
+            data=ticked_form(retry.text) | {field: "TASK", "recheck": "1"},
+        )
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        rows = {row.title: row for row in store_of(client).all_assignments()}
+
+    assert conflict.status_code == 422
+    assert f"{SUMMARY}{SENT_TWICE} {CHECK_CARD.format(key=essay)}" in conflict.text
+    for again_refused in (retry, retried_find):
+        assert again_refused.status_code == 422
+        notice = f"{SUMMARY}{UNANSWERED_TWICE} {CHECK_CARD.format(key=essay)}"
+        assert notice in again_refused.text
+    assert unwritten == (0, 0, 0)
+    for refused in (conflict, retry, retried_find):
+        body = card(refused.text, "Short essay")
+        assert unresolved_kind(body, essay)
+        assert f'name="unresolved-{field}"' in body
+        assert body.count(TWICE_LINE) == 1
+    assert reviewed.status_code == 200
+    assert "unresolved-" not in reviewed.text
+    assert reviewed.text.count(SAVE_SELECTED) == 1
+    assert kept.status_code == 303
+    assert rows["Short essay"].kind.value == "TASK"
+
+
+@pytest.mark.parametrize("values", [("update", "new"), ("new", "update")], ids=str)
+def test_a_same_or_new_answer_sent_twice_comes_back_unanswered_and_its_retry_writes_nothing(
+    tmp_path: pathlib.Path, values: tuple[str, str]
+) -> None:
+    """The answer to whether a note is the same assignment or new work sent twice with
+    different answers, in either order: refused with neither answer chosen; the returned form
+    sent back unchanged writes nothing; the explicit answer then saves."""
+    with client_in(tmp_path) as client:
+        page = homework_selected(client, TWICE_NOTED)
+        form = ticked_form(page)
+        conflict = sent_as_pairs(
+            client, "keep", [*form.items(), *(("occurrence-1", value) for value in values)]
+        )
+        retry = client.post("/parent/inbox/keep", data=ticked_form(conflict.text))
+        unwritten = record_counts(client)
+        kept = client.post(
+            "/parent/inbox/keep", data=ticked_form(retry.text) | {"occurrence-1": "new"}
+        )
+
+    assert conflict.status_code == 422
+    assert "<legend>Which is it?</legend>" in conflict.text
+    for refused in (conflict, retry):
+        assert not re.search(r'name="occurrence-1" value="[a-z]+" checked', refused.text)
+        assert 'type="hidden" name="occurrence-1"' not in refused.text
+    assert retry.status_code != 303
+    assert unwritten == (0, 0, 0)
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=2&updated=0&unchanged=0")

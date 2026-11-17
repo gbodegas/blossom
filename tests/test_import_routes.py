@@ -61,6 +61,7 @@ from blossom.screenshot_save import (
     Saved,
     SaveHooks,
     correction_digest,
+    read_digest,
     save_homework,
 )
 from blossom.screenshots import TITLE_MOST
@@ -41824,8 +41825,8 @@ def test_a_joined_notes_tick_sent_twice_with_different_answers_keeps_and_saves_n
 ) -> None:
     """Save, or Keep these answers, sent with the joined note's tick twice, once ticked and
     once not, beside a title typed: nothing is kept or saved, and the review comes back with
-    the title as typed, the tick unticked whichever came first, and a line naming that
-    tick."""
+    the title as typed, the tick offered as adding the note or not with neither chosen,
+    whichever came first, and a line naming that tick."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
         page = answered(browser, draft_id, page)
@@ -41841,7 +41842,8 @@ def test_a_joined_notes_tick_sent_twice_with_different_answers_keeps_and_saves_n
     assert refused.status_code == 422
     assert rows == []
     assert [kind for kind, _ in held if kind == "joined"] == []
-    assert JOINED_TICK.findall(form) == [""]
+    assert JOINED_TICK.findall(form) == []
+    assert unresolved_tick(html.unescape(form), field)
     assert 'value="Short essay outline"' in form
     assert says(refused.text, imports.PRESS_SAID["sent_twice"])
     assert says(refused.text, imports.PRESS_SAID["nothing_kept"])
@@ -42612,3 +42614,207 @@ def test_a_note_that_joins_no_card_of_its_name_asks_same_or_new_with_both_dates(
     assert [d for d in dates if "2026-10-07" in d or "2026-10-15" in d] == dates
     assert len(dates) == 2
     assert rows == []
+
+
+def family_field(page: str, fields: Sequence[tuple[str, str]], family: str) -> str:
+    """The field of a family the review form posts, as this page names it."""
+    if family == "joined":
+        return joined_field(page)
+    if family in ("title", "due"):
+        return f"correct:{box_subject(page, family)}"
+    if family in ("digest", "destination"):
+        prefix = "digest:" if family == "digest" else "answer:destination:"
+        return next(name for name, _ in fields if name.startswith(prefix))
+    return family
+
+
+SINGLE_ANSWER_FAMILIES: Final = [
+    "version",
+    "progress_revision",
+    "acceptance",
+    "asked",
+    "defaults",
+    "identity",
+    "check",
+    "digest",
+    "press",
+    "title",
+    "due",
+    "destination",
+    "joined",
+]
+"""Each family of single-answer fields a review of a card with its joined note posts."""
+
+INVALID_SAID: Final = ("keep_invalid", "save_invalid", "later_invalid")
+"""The keys of what a press whose post doesn't match its page says."""
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["as-shown-first", "as-shown-last"])
+@pytest.mark.parametrize("family", SINGLE_ANSWER_FAMILIES)
+def test_a_single_answer_field_posted_twice_with_different_answers_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, family: str, reverse: bool
+) -> None:
+    """Save on the review of a card with its joined note, with one single-answer field posted
+    twice with different answers, in either order: nothing is kept or saved. A joined note's
+    tick comes back refused with the typing; every other family is refused as a post that
+    doesn't match its page."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        fields = page_post(page, "save", tick=units_on(page))
+        name = family_field(page, fields, family)
+        shown = next((value for field, value in fields if field == name), "1")
+        values = (shown, "0" if family == "joined" else f"{shown}x")
+        rest = [(field, value) for field, value in fields if field != name]
+        posted = [*rest, *((name, value) for value in (values[::-1] if reverse else values))]
+        before = stored_answers(browser, draft_id)
+        refused = send(browser, draft_id, posted)
+        after = stored_answers(browser, draft_id)
+        counts = essay_counts(browser)
+        text = followed(browser, refused)
+
+    assert counts == (0, 0, 0)
+    assert after == before
+    if family == "joined":
+        assert refused.status_code == 422
+        assert says(text, imports.PRESS_SAID["sent_twice"])
+    else:
+        assert refused.status_code == 303
+        assert any(says(text, imports.PRESS_SAID[said]) for said in INVALID_SAID)
+
+
+@pytest.mark.parametrize("press", ["save", "keep"])
+def test_a_joined_notes_tick_posted_twice_with_one_answer_is_that_answer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Save, or Keep these answers, with the joined note's tick posted twice, ticked both
+    times: one answer, so Save writes the card with the note's words once and Keep keeps the
+    tick, as when it is posted once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        field = joined_field(page)
+        fields = page_post(page, press, tick=units_on(page) if press == "save" else ())
+        answer = send(browser, draft_id, [*fields, (field, "1"), (field, "1")])
+        text = followed(browser, answer)
+        held = stored_answers(browser, draft_id)
+        words = essay_row(browser)[2] if press == "save" else []
+
+    if press == "save":
+        assert says(text, imports.counted(1, 0, 0, 0))
+        assert words == [ESSAY_NOTE]
+    else:
+        assert [value for (kind, _), value in held.items() if kind == "joined"] == ["1"]
+        assert JOINED_TICK.findall(review_form(text)) == [" checked"]
+
+
+def test_one_group_ticked_twice_is_refused_as_a_post_that_doesn_t_match(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Save with the one group's tick posted twice: the group ticks are a field of several
+    values, one per group, and the same group twice is refused as a post that doesn't match
+    its page, so nothing is saved."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        [unit] = units_on(page)
+        refused = send(browser, draft_id, page_post(page, "save", tick=[unit, unit]))
+        counts = essay_counts(browser)
+        text = followed(browser, refused)
+
+    assert counts == (0, 0, 0)
+    assert says(text, imports.PRESS_SAID["save_invalid"])
+
+
+def unresolved_tick(form: str, field: str) -> bool:
+    """Whether a joined note's tick comes back as the actual choice, adding the note or not,
+    both required and neither chosen, marked with the values sent."""
+    offered = [
+        re.search(rf'<input type="radio" name="{re.escape(field)}" value="{value}" required>', form)
+        for value in ("1", "0")
+    ]
+    return (
+        all(offered)
+        and f'name="{field}" value="1" checked' not in form
+        and f'name="{field}" value="0" checked' not in form
+        and f'<input type="hidden" name="unresolved:{field}"' in form
+    )
+
+
+@pytest.mark.parametrize("answer", ["1", "0"], ids=["add-it", "leave-it-out"])
+@pytest.mark.parametrize("values", [("1", "0"), ("0", "1")], ids=["ticked-first", "unticked-first"])
+@pytest.mark.parametrize("press", ["save", "keep"])
+def test_a_joined_notes_tick_sent_twice_stays_unanswered_until_the_family_answers_it(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    press: str,
+    values: tuple[str, str],
+    answer: str,
+) -> None:
+    """Save, or Keep these answers, with the joined note's tick sent twice with different
+    answers beside a title typed: refused with the tick offered as adding the note or not,
+    neither chosen; the returned form sent back unchanged is refused again with nothing kept
+    or saved, the title kept; the explicit answer then keeps or saves once with it."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        field = joined_field(page)
+        title = f"correct:{box_subject(page, 'title')}"
+
+        def ticks(shown: str) -> list[str]:
+            return units_on(shown) if press == "save" else []
+
+        fields = page_post(page, press, typed={title: "Short essay outline"}, tick=ticks(page))
+        conflict = send(browser, draft_id, [*fields, *((field, value) for value in values)])
+        retry = send(browser, draft_id, page_post(conflict.text, press, tick=ticks(conflict.text)))
+        unwritten = (essay_counts(browser), stored_answers(browser, draft_id))
+        chosen = page_post(retry.text, press, choose={field: answer}, tick=ticks(retry.text))
+        answered_page = followed(browser, send(browser, draft_id, chosen))
+        held = stored_answers(browser, draft_id)
+        saved_title, words = "", list[str]()
+        if press == "save":
+            row, _, words = essay_row(browser)
+            saved_title = row.title
+
+    assert conflict.status_code == 422
+    assert says(conflict.text, imports.PRESS_SAID["sent_twice"])
+    assert retry.status_code == 422
+    assert says(retry.text, imports.PRESS_SAID["unanswered_twice"])
+    assert unwritten[0] == (0, 0, 0)
+    assert [kind for kind, _ in unwritten[1] if kind == "joined"] == []
+    for refused in (conflict, retry):
+        form = html.unescape(review_form(refused.text))
+        assert unresolved_tick(form, field)
+        assert form.count(screenshot_page.SAID["joined_sent_twice"]) == 1
+        assert 'value="Short essay outline"' in form
+    assert "unresolved:" not in answered_page
+    if press == "save":
+        assert says(answered_page, imports.counted(1, 0, 0, 0))
+        assert saved_title == "Short essay outline"
+        assert words == ([ESSAY_NOTE] if answer == "1" else [])
+    else:
+        kept = [value for (kind, _), value in held.items() if kind == "joined"]
+        assert kept == (["1"] if answer == "1" else [])
+        assert JOINED_TICK.findall(review_form(answered_page)) == [
+            " checked" if answer == "1" else ""
+        ]
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["as-read-first", "as-read-last"])
+def test_a_date_box_s_read_mark_sent_twice_with_different_values_gives_the_box_back(
+    reverse: bool,
+) -> None:
+    """A date box posted as its value with no correction, beside its unsigned mark sent twice,
+    once naming that value and once another, in either order: neither mark is taken by the
+    order it came in, so the box is given back as typed."""
+    box = json.dumps(["date:Short essay", "due"])
+    marks = (read_digest("2026-10-09"), "0" * 16)
+    items = [
+        (f"correct:{box}", "2026-10-09"),
+        *(
+            (f"{screenshot_posts.READ_PREFIX}{box}", mark)
+            for mark in (marks[::-1] if reverse else marks)
+        ),
+    ]
+
+    assert screenshot_posts.typed_for(items) == (("date:Short essay", "due", "2026-10-09"),)
