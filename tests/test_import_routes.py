@@ -28,6 +28,7 @@ import time
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
+from html.parser import HTMLParser
 from types import SimpleNamespace
 from typing import Any, Final, NamedTuple, cast
 from urllib.parse import urlencode
@@ -42784,22 +42785,21 @@ def test_a_joined_notes_tick_posted_twice_with_one_answer_is_that_answer(
         assert JOINED_TICK.findall(review_form(text)) == [" checked"]
 
 
-def test_one_group_ticked_twice_is_refused_as_a_post_that_doesn_t_match(
+def test_one_groups_tick_sent_twice_is_one_tick(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Save with the one group's tick posted twice: the group ticks are a field of several
-    values, one per group, and the same group twice is refused as a post that doesn't match
-    its page, so nothing is saved."""
+    """Save with the one group's tick sent twice: the group ticks are a family answer of several
+    values, one per group, and the same group twice is one tick, so the group saves once."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
         page = answered(browser, draft_id, page)
         [unit] = units_on(page)
-        refused = send(browser, draft_id, page_post(page, "save", tick=[unit, unit]))
+        saved = send(browser, draft_id, page_post(page, "save", tick=[unit, unit]))
         counts = essay_counts(browser)
-        text = followed(browser, refused)
+        text = followed(browser, saved)
 
-    assert counts == (0, 0, 0)
-    assert says(text, imports.PRESS_SAID["save_invalid"])
+    assert counts[0] == 1
+    assert says(text, imports.counted(1, 0, 0, 0))
 
 
 def unresolved_tick(form: str, field: str) -> bool:
@@ -43241,3 +43241,400 @@ def test_a_field_sent_twice_stays_unanswered_until_the_family_answers_it(
     elif family == "assigned":
         assert date(2026, 10, 5) in {row[3] for row in new_rows}
         assert not {date(2026, 10, 12), date(2026, 10, 13)} & {row[3] for row in new_rows}
+
+
+# ------------------------------------------------------------------ the review form's own fields
+
+
+class ReviewControls(HTMLParser):
+    """The controls of the screenshot review's own form, each by its name and how the page renders
+    it: ``visible`` for a control the family sets, ``hidden`` for a hidden field and ``press`` for
+    a submit button that names one. A button that submits another form by its ``form`` attribute,
+    and every other form's fields, are outside it."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.found: list[tuple[str, str]] = []
+        self.inside = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        named = dict(attrs)
+        if tag == "form":
+            self.inside = named.get("id") == "review-form"
+            return
+        owner = named.get("form")
+        name = named.get("name")
+        if name is None or not (owner == "review-form" or (self.inside and owner is None)):
+            return
+        if tag == "button" or named.get("type") == "submit":
+            self.found.append((name, screenshot_posts.PRESS))
+        elif tag == "input" and named.get("type") == "hidden":
+            self.found.append((name, screenshot_posts.HIDDEN))
+        elif tag in ("input", "textarea", "select"):
+            self.found.append((name, screenshot_posts.VISIBLE))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form":
+            self.inside = False
+
+
+def review_controls(page: str) -> list[tuple[str, str]]:
+    """Each control of the page's review form, by name and rendering, in page order."""
+    parser = ReviewControls()
+    parser.feed(page)
+    parser.close()
+    return parser.found
+
+
+def signed_asks_of(page: str) -> dict[str, frozenset[str]]:
+    """What the page's review form signed as asked, by field."""
+    found = re.search(r'name="asked" value="([^"]*)"', review_form(page))
+    assert found is not None
+    return screenshot_page.asks_read(html.unescape(found.group(1)))[0]
+
+
+ShapeBuilder = Callable[[TestClient, pytest.MonkeyPatch], str]
+"""What builds one review page shape: the browser and the monkeypatch in, the page out."""
+
+
+def shape_read(
+    answer: Callable[[], dict[str, object]], *, name_answered: bool = True
+) -> ShapeBuilder:
+    """A review of one image read as this answer, her name answered unless told not to."""
+
+    def build(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer()))
+        return answered(browser, draft_id, page) if name_answered else page
+
+    return build
+
+
+def shape_asked(kind: str) -> ShapeBuilder:
+    """A review asking an answer of this kind with two options or more."""
+
+    def build(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+        return asked_with_two_options(browser, monkeypatch, kind)[1]
+
+    return build
+
+
+def shape_kept(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The page Keep these answers comes back to, every group ticked."""
+    draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+    page = answered(browser, draft_id, page)
+    return followed(browser, send(browser, draft_id, page_post(page, "keep", tick=units_on(page))))
+
+
+def shape_open(family: str) -> ShapeBuilder:
+    """The page a field of this family sent twice with different values comes back to: marked,
+    with its explicit choice where it has one."""
+
+    def build(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+        draft_id, page, name, values = open_field(browser, monkeypatch, family)
+        fields = page_post(page, "save", tick=units_on(page))
+        refused = send(browser, draft_id, posted_twice(fields, name, values, False))
+        assert refused.status_code == 422
+        return refused.text
+
+    return build
+
+
+def shape_joined_twice(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The page a joined note's tick sent twice with different values comes back to."""
+    draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+    page = answered(browser, draft_id, page)
+    fields = page_post(page, "save", tick=units_on(page))
+    refused = send(browser, draft_id, posted_twice(fields, joined_field(page), ("1", "0"), False))
+    assert refused.status_code == 422
+    return refused.text
+
+
+def shape_carried(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The page a date typed past its limit comes back to, the typed date carried beside its
+    box."""
+    draft_id, page, boxes = unsure_review(browser, monkeypatch, "footer")
+    typed = "the Thursday after next, " + "e" * 180
+    refused = send(browser, draft_id, page_post(page, "later", typed={boxes["due"]: typed}))
+    assert refused.status_code == 422
+    return refused.text
+
+
+def shape_none_given(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A review whose card offers "No assigned date was given" under a day heading the reader
+    wasn't sure of."""
+    card = homework_card(footer="Due (10/8/2026)")
+    answer = homework_answer(
+        headings=[{"text": "Monday", "y": 150, "uncertain": "faint"}], cards=[card]
+    )
+    draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+    return her_name_answered(browser, draft_id, page)
+
+
+def shape_instructions(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
+    """A review asking which instructions apply, a question of several answers."""
+    texts = ("Study list one.", "Study list two.")
+    return two_names_with_instructions(browser, monkeypatch, *texts)[1]
+
+
+REVIEW_SHAPES: Final = {
+    "first view": shape_read(homework_answer, name_answered=False),
+    "her name answered": shape_read(homework_answer),
+    "answers kept": shape_kept,
+    "a joined note": shape_read(essay_answer),
+    "a note alone": shape_read(lambda: note_under("Monday 11/9/2026", NOTE_WORDS)),
+    "a destination asked": shape_asked("destination"),
+    "a type asked": shape_asked("kind"),
+    "a due date asked": shape_asked("due"),
+    "an assigned date asked": shape_asked("assigned"),
+    "different assigned days": shape_asked("split"),
+    "a due line asked": shape_asked("due_read"),
+    "a title sent twice": shape_open("title"),
+    "a note's due date sent twice": shape_open("note-due"),
+    "an assigned date sent twice": shape_open("assigned"),
+    "a destination sent twice": shape_open("destination"),
+    "a joined tick sent twice": shape_joined_twice,
+    "a refused date carried": shape_carried,
+    "no assigned date given": shape_none_given,
+    "which instructions apply": shape_instructions,
+}
+"""The screenshot review page shapes these tests build, by name: the first view, her name
+answered, after Keep these answers, a card with its joined note, a note alone, each answer asked
+with two options or more, the page a field sent twice comes back to, a typed date refused and
+carried, "No assigned date was given", and the question of several answers."""
+
+
+@pytest.mark.parametrize("shape", list(REVIEW_SHAPES))
+def test_every_field_of_every_review_shape_is_in_the_review_forms_table(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    """Each field the screenshot review's own form posts, on every page shape these tests build,
+    has its entry in ``REVIEW_FIELDS`` by its exact grammar and rendering; a visible control is a
+    family answer and a submit button a press; and the class the server takes for it from the
+    page's signed list is that entry's class."""
+    with here(open_settings(tmp_path)) as browser:
+        page = REVIEW_SHAPES[shape](browser, monkeypatch)
+    controls = review_controls(page)
+    offered = signed_asks_of(page)
+    entries = {control: screenshot_posts.review_field(*control) for control in controls}
+
+    assert controls
+    assert sorted({c for c, entry in entries.items() if entry is None}) == []
+    for (name, rendering), entry in entries.items():
+        assert entry is not None
+        if rendering == screenshot_posts.VISIBLE:
+            assert entry.role == screenshot_posts.ANSWER, name
+        assert (rendering == screenshot_posts.PRESS) == (entry.role == screenshot_posts.PRESS)
+        assert screenshot_posts.field_role(name, offered) == entry.role, name
+
+
+def test_the_review_shapes_render_every_family_of_the_table(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every entry of ``REVIEW_FIELDS`` is rendered by one page shape or more, so the table holds
+    no family the review form never posts."""
+    used: set[screenshot_posts.ReviewField] = set()
+    for number, build in enumerate(REVIEW_SHAPES.values()):
+        place = tmp_path / str(number)
+        place.mkdir()
+        with here(open_settings(place)) as browser:
+            page = build(browser, monkeypatch)
+        found = (screenshot_posts.review_field(*c) for c in review_controls(page))
+        used |= {entry for entry in found if entry is not None}
+
+    assert set(screenshot_posts.REVIEW_FIELDS) - used == set()
+
+
+SUBJECT: Final = json.dumps(["k1", "title"], separators=(",", ":"))
+
+
+@pytest.mark.parametrize(
+    ("name", "rendering"),
+    [
+        ("answer:destination", "visible"),
+        ("answer:bogus:x", "visible"),
+        ("answer:destination:x", "hidden"),
+        (f"correct:{SUBJECT}", "hidden"),
+        (f"correct:{SUBJECT}x", "visible"),
+        (f"xcorrect:{SUBJECT}", "visible"),
+        ("correct:", "visible"),
+        ("read:", "hidden"),
+        (f"read:{SUBJECT}", "visible"),
+        (f"read:{SUBJECT}]", "hidden"),
+        ("unresolved:", "hidden"),
+        (f"unresolved:read:{SUBJECT}", "hidden"),
+        (f"unresolved:correct:{SUBJECT}", "visible"),
+        ("empty:", "visible"),
+        (f"empty:{SUBJECT}", "hidden"),
+        (f"none:{SUBJECT}", "hidden"),
+        (f"refused:{SUBJECT}", "visible"),
+        ("digest:", "hidden"),
+        ("unit", "hidden"),
+        ("units", "visible"),
+        ("press", "visible"),
+        ("pressed", "press"),
+        ("Version", "hidden"),
+        ("check", "visible"),
+    ],
+)
+def test_a_name_outside_the_grammar_or_rendered_otherwise_has_no_entry(
+    name: str, rendering: str
+) -> None:
+    """A near miss of a family's grammar, or a family rendered as no page renders it, has no
+    entry: no prefix of a name matches."""
+    assert screenshot_posts.review_field(name, rendering) is None
+
+
+def test_a_fields_class_comes_from_the_signed_list_and_never_from_its_name() -> None:
+    """A box, a box's explicit choice or an answer is a family answer only where the page signed
+    it as asked; a ``read:`` or ``unresolved:`` mark is a page field only beside a field the page
+    signed; a name the page didn't sign has no class."""
+    box = f"correct:{SUBJECT}"
+    answer = "answer:destination:piece"
+    offered = {box: frozenset(), answer: frozenset({"x"})}
+
+    assert screenshot_posts.field_role(box, offered) == screenshot_posts.ANSWER
+    assert screenshot_posts.field_role(answer, offered) == screenshot_posts.ANSWER
+    assert screenshot_posts.field_role(f"refused:{SUBJECT}", offered) == screenshot_posts.ANSWER
+    assert screenshot_posts.field_role(f"read:{SUBJECT}", offered) == screenshot_posts.PAGE
+    assert screenshot_posts.field_role(f"unresolved:{box}", offered) == screenshot_posts.PAGE
+    assert screenshot_posts.field_role(f"unresolved:{answer}", offered) == screenshot_posts.PAGE
+    assert screenshot_posts.field_role("asked", offered) == screenshot_posts.PAGE
+    assert screenshot_posts.field_role("press", offered) == screenshot_posts.PRESS
+    assert screenshot_posts.field_role("unit", offered) == screenshot_posts.ANSWER
+    for unsigned in (
+        f"correct:{json.dumps(['k2', 'title'], separators=(',', ':'))}",
+        "answer:destination:other",
+        f"empty:{SUBJECT}",
+        f"none:{SUBJECT}",
+        "read:" + json.dumps(["k2", "title"], separators=(",", ":")),
+        "unresolved:answer:destination:other",
+    ):
+        assert screenshot_posts.field_role(unsigned, offered) is None, unsigned
+
+
+# ------------------------------------------------------------------ a page field sent twice
+
+READ_MARKS: Final = ["course", "title", "instruction:0", "due", "assigned", "note-due"]
+"""The ``read:`` marks of a formal card's boxes, by field, and of a note piece's due date box."""
+
+
+def read_mark_review(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, family: str
+) -> tuple[str, str, str]:
+    """A review with her name answered and the ``read:`` mark of this family's box: its draft,
+    its page and the mark's name."""
+    answer = note_under("Monday 11/9/2026", NOTE_WORDS) if family == "note-due" else None
+    draft_id, page = read_review(browser, monkeypatch, (RED, answer or homework_answer()))
+    page = answered(browser, draft_id, page)
+    field = "due" if family == "note-due" else family
+    return draft_id, page, f"read:{box_subject(page, field)}"
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["as-shown-first", "as-shown-last"])
+@pytest.mark.parametrize("family", READ_MARKS)
+def test_a_read_mark_sent_twice_with_different_values_refuses_the_whole_form(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, family: str, reverse: bool
+) -> None:
+    """Save with every group ticked and one box's ``read:`` mark sent twice, once as the page
+    wrote it and once with another value, as an injected duplicate submission, in either order:
+    a page field, so the whole form is refused as a post that doesn't match its page, nothing is
+    kept or saved, and no field is named."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, name = read_mark_review(browser, monkeypatch, family)
+        fields = page_post(page, "save", tick=units_on(page))
+        shown = next(value for field, value in fields if field == name)
+        values = (shown, "0000000000000000")
+        before = stored_answers(browser, draft_id)
+        rows_before = saved_rows(browser)
+        refused = send(browser, draft_id, posted_twice(fields, name, values, reverse))
+        after = stored_answers(browser, draft_id)
+        rows = saved_rows(browser)
+        text = followed(browser, refused)
+
+    assert refused.status_code == 303
+    assert says(text, imports.PRESS_SAID["save_invalid"])
+    assert after == before
+    assert rows == rows_before
+    assert "sent twice" not in html.unescape(text)
+
+
+@pytest.mark.parametrize("family", ["course", "note-due"])
+def test_a_read_mark_sent_twice_with_the_same_value_saves_as_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, family: str
+) -> None:
+    """Save with one box's ``read:`` mark sent twice as the page wrote it: one value, so the
+    groups save as when it is sent once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, name = read_mark_review(browser, monkeypatch, family)
+        fields = page_post(page, "save", tick=units_on(page))
+        shown = next(value for field, value in fields if field == name)
+        saved = followed(browser, send(browser, draft_id, [*fields, (name, shown)]))
+
+    expected = imports.counted(1, 0, 0, 0) if family == "note-due" else imports.counted(2, 0, 0, 0)
+    assert says(saved, expected)
+
+
+def marked_review(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, family: str
+) -> tuple[str, list[tuple[str, str]], str]:
+    """The page a title box or a joined note's tick sent twice comes back to, answered
+    explicitly as a family would answer it: its draft, the fields of that answer's Save and the
+    name of the field's ``unresolved:`` mark."""
+    if family == "title":
+        draft_id, page, name, values = open_field(browser, monkeypatch, "title")
+        answer: dict[str, str] = {}
+        typed = {name: "Typed answer"}
+    else:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        name, values = joined_field(page), ("1", "0")
+        answer, typed = {name: "1"}, {}
+    fields = page_post(page, "save", tick=units_on(page))
+    refused = send(browser, draft_id, posted_twice(fields, name, values, False))
+    assert refused.status_code == 422
+    again = page_post(refused.text, "save", choose=answer, typed=typed, tick=units_on(page))
+    mark = f"unresolved:{name}"
+    assert any(field == mark for field, _ in again)
+    return draft_id, again, mark
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["as-shown-first", "as-shown-last"])
+@pytest.mark.parametrize("family", ["title", "joined"])
+def test_an_unresolved_mark_sent_twice_with_different_values_refuses_the_whole_form(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, family: str, reverse: bool
+) -> None:
+    """The explicit answer to a box or a joined note's tick sent twice, Saved with the field's
+    ``unresolved:`` mark sent twice with different values, as an injected duplicate submission,
+    in either order: a page field, so the whole form is refused as a post that doesn't match its
+    page, nothing is kept or saved, and no field is named."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, fields, mark = marked_review(browser, monkeypatch, family)
+        shown = next(value for field, value in fields if field == mark)
+        values = (shown, json.dumps(["Other"]))
+        before = stored_answers(browser, draft_id)
+        rows_before = saved_rows(browser)
+        refused = send(browser, draft_id, posted_twice(fields, mark, values, reverse))
+        after = stored_answers(browser, draft_id)
+        rows = saved_rows(browser)
+        text = followed(browser, refused)
+
+    assert refused.status_code == 303
+    assert says(text, imports.PRESS_SAID["save_invalid"])
+    assert after == before
+    assert rows == rows_before
+    assert "sent twice" not in html.unescape(text)
+
+
+def test_two_groups_ticks_each_sent_twice_are_two_ticks(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Save with each of two groups' ticks sent twice: several values, one per group, each group
+    once, so both groups save once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = answered(browser, draft_id, page)
+        units = units_on(page)
+        saved = followed(browser, send(browser, draft_id, page_post(page, "save", tick=units * 2)))
+
+    assert len(units) == 2
+    assert says(saved, imports.counted(2, 0, 0, 0))

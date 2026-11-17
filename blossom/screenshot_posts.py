@@ -191,6 +191,116 @@ def _one_value(name: str) -> bool:
     )
 
 
+# ------------------------------------------------------------------ the review form's own fields
+
+ANSWER: Final = "answer"
+"""A family answer: a control the family sets, or such an answer the page carries hidden."""
+PAGE: Final = "page"
+"""A page field: a signed field, or a mark the page writes beside a box or an answer."""
+PRESS: Final = "press"
+"""A press: the name of a submit button."""
+VISIBLE: Final = "visible"
+HIDDEN: Final = "hidden"
+ONE: Final = "one"
+"""A field that carries one value: sent twice, it is one value or two."""
+SEVERAL: Final = "several"
+"""A field that carries several values, each once: the group ticks, and an instruction question's
+choices."""
+
+_TEXT: Final = r'"(?:[^"\\\x00-\x1f]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"'
+"""One JSON string as ``json.dumps`` writes it."""
+_PLACE: Final = "(?:0|[1-9][0-9]{0,3})"
+BOX_SUBJECT: Final = (
+    rf'\[{_TEXT},"(?:course|title|due|assigned|instruction:{_PLACE}'
+    rf'|instruction:[0-9a-f]{{64}}:{_PLACE})"\]'
+)
+"""A box's subject: its row key or its piece's dates key, and its field, as one JSON list."""
+_NAMED: Final = r"[!-~]+"
+"""A piece's or a row's name, or the student-name question's subject, as the page writes it:
+printable ASCII with no space."""
+_PAIR: Final = rf"\[{_TEXT},{_TEXT}\]"
+_TEXTS: Final = rf"\[(?:{_TEXT}(?:,{_TEXT})*)?\]"
+ONE_ANSWER: Final = (
+    rf"answer:(?:(?:destination|split|due|assigned|due_read|kind|name):{_NAMED}"
+    rf"|(?:confirm|joined):{_PAIR})"
+)
+"""The grammar of an answer of one value: the kind, then its subject as the page writes it."""
+INSTRUCTIONS_ANSWER: Final = rf"answer:instructions:\[{_TEXTS},{_TEXTS},(?:0|[1-9][0-9]{{0,11}})\]"
+"""The grammar of an instruction question: its destination, its pieces and the revision shown."""
+
+
+@dataclasses.dataclass(frozen=True)
+class ReviewField:
+    """One family of the fields the screenshot review's own form posts (``read_review``): the
+    exact grammar of its names, how the page renders it (``visible``, ``hidden``, or ``press`` for
+    a submit button), its class (``answer``, ``page`` or ``press``) and its shape (``one`` or
+    ``several`` values). The forms beside it, an offer and a row found under another name
+    (``read_change``), Leave, Find under another name, Remove, Finish without the rest, Discard
+    the review, Not hers and Set aside, are outside it."""
+
+    grammar: str
+    rendering: str
+    role: str
+    shape: str = ONE
+
+
+REVIEW_FIELDS: Final = (
+    ReviewField("version|progress_revision|acceptance|asked|defaults|identity", HIDDEN, PAGE),
+    ReviewField(rf"digest:{_NAMED}", HIDDEN, PAGE),
+    ReviewField("check", HIDDEN, PAGE),
+    ReviewField(rf"read:{BOX_SUBJECT}", HIDDEN, PAGE),
+    ReviewField(rf"unresolved:(?:correct:{BOX_SUBJECT}|{ONE_ANSWER})", HIDDEN, PAGE),
+    ReviewField(rf"correct:{BOX_SUBJECT}", VISIBLE, ANSWER),
+    ReviewField(rf"refused:{BOX_SUBJECT}", HIDDEN, ANSWER),
+    ReviewField(rf"(?:none|empty):{BOX_SUBJECT}", VISIBLE, ANSWER),
+    ReviewField(ONE_ANSWER, VISIBLE, ANSWER),
+    ReviewField(INSTRUCTIONS_ANSWER, VISIBLE, ANSWER, SEVERAL),
+    ReviewField("unit", VISIBLE, ANSWER, SEVERAL),
+    ReviewField("press", PRESS, PRESS),
+)
+"""Every field of the screenshot review's own form, each family once per rendering: the signed
+fields, each group's digest and the signature; the mark beside each box of the value it shows,
+and the mark of a box or an answer sent twice; the boxes, a date Blossom couldn't read carried
+beside its box (an answer the page carries hidden), "No assigned date was given" and a box's
+explicit empty choice; each answer of one value, an instruction question's several, the group
+ticks; and the press."""
+
+
+def review_field(name: str, rendering: str) -> ReviewField | None:
+    """The entry of ``REVIEW_FIELDS`` whose grammar matches the whole of ``name`` as rendered so,
+    or ``None``: no prefix of a name matches."""
+    return next(
+        (
+            entry
+            for entry in REVIEW_FIELDS
+            if entry.rendering == rendering and re.fullmatch(entry.grammar, name)
+        ),
+        None,
+    )
+
+
+def field_role(name: str, offered: Mapping[str, Collection[str]]) -> str | None:
+    """A posted field's class, taken from what its page signed: the signed fields and the marks
+    beside a box or an answer the signed list holds are page fields; a box, an answer or a box's
+    explicit choice the signed list holds, a date carried beside a box it holds, and a group tick
+    (checked against the signed digests) are family answers; the press is a press. A name its page
+    didn't sign, or carries beside nothing it signed, has none (``None``): its name alone never
+    gives it one."""
+    if name in SIGNED or name == "check" or name.startswith("digest:"):
+        return PAGE
+    if name == "press":
+        return PRESS
+    if name == "unit":
+        return ANSWER
+    if name.startswith(("read:", "refused:")):
+        if "correct:" + name.split(":", 1)[1] not in offered:
+            return None
+        return PAGE if name.startswith("read:") else ANSWER
+    if name.startswith(UNRESOLVED):
+        return PAGE if name.removeprefix(UNRESOLVED) in offered else None
+    return ANSWER if name in offered else None
+
+
 def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:
     """The row key an answer's corrections belong to."""
     if kind == "name":
@@ -391,7 +501,11 @@ def read_review(
     (``EMPTY``, "No assigned date was given" for an assigned date) with the box left empty, which
     is what the box left empty means; an answer its page marks so, by one of its options. A
     marked box left empty with that choice unchosen, or typed beside it, and a marked answer left
-    unchosen, are named in ``left_open`` and the press is refused."""
+    unchosen, are named in ``left_open`` and the press is refused. Each field's class is taken
+    from what the page signed (``field_role``): a page field, a ``read:`` mark or an
+    ``UNRESOLVED`` mark among them, sent twice with different values refuses the whole post,
+    naming no field, and sent twice with one value it is that one value. The group ticks are a
+    family answer of several values: each group sent twice is one tick."""
     hidden = _signed_fields(items, page_key)
     offered, older = _signed_asks(hidden)
     try:
@@ -407,8 +521,17 @@ def read_review(
     presses = [v for n, v in rest if n == "press"]
     if len(presses) != 1 or presses[0] not in PRESSES:
         raise PostRefused
-    units = tuple(v for n, v in rest if n == "unit")
-    if len(set(units)) != len(units) or any(u not in digests for u in units):
+    units = tuple(dict.fromkeys(v for n, v in rest if n == "unit"))
+    if any(u not in digests for u in units):
+        raise PostRefused
+    sent_as: dict[str, set[str]] = {}
+    for name, value in rest:
+        sent_as.setdefault(name, set()).add(value)
+    if any(
+        len(values) > 1 and field_role(name, offered) not in (ANSWER, PRESS)
+        for name, values in sent_as.items()
+    ):
+        # A page field sent twice with different values: the whole post, naming no field.
         raise PostRefused
     boxes: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
