@@ -189,9 +189,9 @@ class ReviewPost:
     shown_chosen: Mapping[str, str] = dataclasses.field(default_factory=dict)
     """The destination its page signed as shown chosen, by piece name."""
     held_back: frozenset[str] = frozenset()
-    """The cards, by piece name, of each group this Save selected and did not write, and of each
-    group a destination was chosen for on this Save with its tick left off: nothing is written or
-    stored for them, and the page it returns shows them for Review changes."""
+    """The cards, by piece name, of each group this Save selected and did not write, and each card
+    a destination was chosen for on this Save: nothing is written or stored for them, and the page
+    it returns shows them for Review changes."""
     held_asking: frozenset[str] = frozenset()
     """The cards in ``held_back`` of each group its page showed ready with a question open and
     this Save left unanswered: the question is all that stops it, so the page it returns keeps
@@ -204,8 +204,8 @@ class ReviewPost:
     the read its post was checked against; None for a post read without one."""
     selection: frozenset[str] | None = None
     """The rows an offer or a found row gives saved progress: the selection its page showed and
-    the rows of the cards it chose. None for a press that posts its ticks, and for a form that
-    carried no selection."""
+    the rows of the cards it chose; for a Save that left rows open, the rows it selected. None for
+    any other press that posts its ticks, and for a form that carried no selection."""
 
     @property
     def refused(self) -> bool:

@@ -884,32 +884,92 @@ def typed_titles(members: Iterable[Piece]) -> tuple[str, ...]:
     )
 
 
+def title_key(course: str, title: str) -> tuple[str, str]:
+    """A class and title as the title questions alone compare them: as the record matches names
+    (``intake.pair``), the title's case set aside. Matching itself keeps the case."""
+    named, words = intake.pair(course, title)
+    return named, words.casefold()
+
+
+def title_holder(
+    members: Sequence[Piece], row: SavedRow | None, rows: Mapping[str, SavedRow]
+) -> SavedRow | None:
+    """The different saved assignment of its class that holds the one title typed on the cards
+    going to the saved assignment ``row``, whatever its dates and the title's case. None where
+    the typed title is ``row``'s own, in its case or another."""
+    typed = typed_titles(members)
+    if row is None or len(typed) != 1:
+        return None
+    named = title_key(row.course, typed[0])
+    if named == title_key(row.course, row.title):
+        return None
+    return next(
+        (
+            other
+            for _, other in sorted(rows.items(), key=lambda item: item[0])
+            if other.assignment_id != row.assignment_id
+            and title_key(other.course, other.title) == named
+        ),
+        None,
+    )
+
+
 def title_taken(
     members: Sequence[Piece], row: SavedRow | None, rows: Mapping[str, SavedRow]
 ) -> bool:
-    """Whether the one title typed on the cards going to the saved assignment ``row`` exactly
-    names a different saved assignment of its class."""
-    typed = typed_titles(members)
-    if row is None or len(typed) != 1:
-        return False
-    named = intake.pair(row.course, typed[0])
-    return named != row.pair and any(
-        other.pair == named and other.assignment_id != row.assignment_id for other in rows.values()
-    )
+    """Whether a different saved assignment of its class holds the title typed for ``row``
+    (``title_holder``)."""
+    return title_holder(members, row, rows) is not None
 
 
 def titles_given_twice(
     destinations: Iterable[tuple[tuple[str, ...], Sequence[Piece]]], rows: Mapping[str, SavedRow]
 ) -> frozenset[str]:
     """The saved assignments, by id, that share a class and are each given the same one typed title
-    by the cards going to them: saving both would leave two assignments under that title."""
+    by the cards going to them, the title's case set aside: saving both would leave two
+    assignments under that title."""
     named: dict[tuple[str, str], set[str]] = {}
     for dest, members in destinations:
         row = rows.get(dest[1]) if dest[0] != "new" else None
         typed = typed_titles(members)
         if row is not None and len(typed) == 1:
-            named.setdefault(intake.pair(row.course, typed[0]), set()).add(row.assignment_id)
+            named.setdefault(title_key(row.course, typed[0]), set()).add(row.assignment_id)
     return frozenset(found for ids in named.values() if len(ids) > 1 for found in ids)
+
+
+def renames_beside_new(
+    destinations: Iterable[tuple[tuple[str, ...], Sequence[Piece]]],
+    rows: Mapping[str, SavedRow],
+    answers: Mapping[tuple[str, str], Any],
+) -> frozenset[str]:
+    """The saved assignments, by id, that the one title typed for them would leave with the class,
+    title, due date and assigned date of a new assignment among these destinations, the title's
+    case set aside. A typed title that is the saved one in another case makes no such pair: the
+    two would match with or without it."""
+    given = list(destinations)
+
+    def left(
+        dest: tuple[str, ...], members: Sequence[Piece], row: SavedRow | None, title: str
+    ) -> tuple[str, str, date | None, date | None]:
+        asked = date_questions(dest, members, row)
+        due, assigned, _ = written_dates(members, row, asked, answers)
+        return (*title_key(members[0].course if row is None else row.course, title), due, assigned)
+
+    new = {
+        left(dest, members, None, members[0].title) for dest, members in given if dest[0] == "new"
+    }
+    found: set[str] = set()
+    for dest, members in given:
+        row = rows.get(dest[1]) if dest[0] != "new" else None
+        typed = typed_titles(members)
+        if (
+            row is not None
+            and len(typed) == 1
+            and title_key(row.course, typed[0]) != title_key(row.course, row.title)
+            and left(dest, members, row, typed[0]) in new
+        ):
+            found.add(row.assignment_id)
+    return frozenset(found)
 
 
 def proposed_title(
@@ -940,7 +1000,8 @@ def titles_asked(
 ) -> bool:
     """Whether the title of the saved assignment ``row`` is asked, with nothing written: the cards
     going there carry two different typed titles, one that another saved assignment holds, or one
-    the same post gives another saved assignment of its class (``titles_given_twice``)."""
+    ``twice`` names: the same post gives it another saved assignment of its class
+    (``titles_given_twice``) or a new assignment of its dates (``renames_beside_new``)."""
     return row is not None and (
         len(typed_titles(members)) > 1
         or title_taken(members, row, rows)
@@ -1116,9 +1177,8 @@ def validate(
     dests: dict[tuple[str, ...], list[str]] = {}
     for name, value in sorted(live.items()):
         dests.setdefault(dest_key(by_name[name], value), []).append(name)
-    twice = titles_given_twice(
-        ((dest, [by_name[n] for n in names]) for dest, names in dests.items()), rows
-    )
+    given = [(dest, [by_name[n] for n in names]) for dest, names in dests.items()]
+    twice = titles_given_twice(given, rows) | renames_beside_new(given, rows, answers)
     results = []
     for unit in units(open_pieces, live):
         refusals: list[Refusal] = []
@@ -1309,6 +1369,9 @@ class PreviewEntry:
     new_title: str | None = None
     """The title saving gives the saved assignment (``proposed_title``); None where it keeps its
     own."""
+    beside_new: bool = False
+    """Whether its typed title is asked because a new assignment of this review would share it
+    (``renames_beside_new``)."""
 
 
 def digest_of(fields: Mapping[str, Any]) -> str:
@@ -1343,10 +1406,9 @@ def preview(
     kinds = dict(kinds or {})
     by_name = {p.name: p for p in pieces}
     defaulted = set(defaulted)
-    twice = titles_given_twice(
-        ((dest, [by_name[n] for n in names]) for dest, names in validation.destinations.items()),
-        rows,
-    )
+    given = [(dest, [by_name[n] for n in names]) for dest, names in validation.destinations.items()]
+    beside_new = renames_beside_new(given, rows, answers)
+    twice = titles_given_twice(given, rows) | beside_new
     out = []
     for dest, names in sorted(validation.destinations.items()):
         members = [by_name[n] for n in names]
@@ -1430,6 +1492,7 @@ def preview(
                 written_kind,
                 None if row is None else row.kind,
                 new_title,
+                row is not None and row.assignment_id in beside_new,
             )
         )
     return out

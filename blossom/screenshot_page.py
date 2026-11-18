@@ -51,7 +51,7 @@ from blossom.screenshot_review import (
     reference,
     settles_due,
     subject_for,
-    title_taken,
+    title_holder,
     typed_day,
     typed_titles,
     unit_name,
@@ -157,6 +157,8 @@ SAID: Final = {
     "assignment or change the title.",
     "title_twice": "The title “{title}” was typed for two saved assignments of this "
     "class. Change the title on one of them.",
+    "title_beside_new": "A new assignment in this review would have the same class, dates and "
+    "title “{title}”. Change this title or where that card goes.",
     "no_assigned_line": "No assigned date.",
     "no_due_line": "No due date",
     "choose_first": "Choose where it goes first.",
@@ -1468,8 +1470,11 @@ def _effect_lines(
     lines = []
     if "title" in entry.open_questions:
         titles = typed_titles(members)
-        if title_taken(members, row, state.rows):
-            lines.append(SAID["title_taken"].format(title=titles[0]))
+        holder = title_holder(members, row, state.rows)
+        if holder is not None:
+            lines.append(SAID["title_taken"].format(title=holder.title))
+        elif entry.beside_new:
+            lines.append(SAID["title_beside_new"].format(title=titles[0]))
         elif len(titles) == 1:
             lines.append(SAID["title_twice"].format(title=titles[0]))
         else:
@@ -2073,7 +2078,7 @@ def rows_shown(
         note = _note_standing(held)
         unit_keys = {state.by_name[name].key for name in unit.unit}
         # Selected: apart from readiness, so an open question never takes a selection away. A
-        # destination chosen on a press that stores nothing selects its group, unless the same
+        # destination chosen on a press whose choices come back selects its group, unless the same
         # press unticked it. A plain load with no saved progress selects a group only on the
         # page's own default: an answer restored from what is stored selects nothing.
         chose_it = bool(chosen_here & set(unit.unit)) and not left_off & set(unit.unit)

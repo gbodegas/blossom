@@ -181,6 +181,15 @@ class SavePress:
     """The review's progress revision the page's post was typed against; a save compares it with
     the stored one."""
     role: str = "parent"
+    screenshot_answers: Mapping[tuple[str, str], tuple[str, str]] = dataclasses.field(
+        default_factory=dict
+    )
+    """The press's name and split answers, (kind, subject) to (value, digest). They describe the
+    screenshots, none is stored before the transaction, and the transaction stores them only
+    beside homework it adds or updates (``_answers_kept``)."""
+    screenshot_answers_withdrawn: frozenset[tuple[str, str]] = frozenset()
+    """The name and split answers the press left blank, by kind and subject, taken back on the same
+    terms."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -209,6 +218,11 @@ class Saved:
     consumed: frozenset[tuple[str, str]] = frozenset()
     """The answers, by kind and subject, this save's own transaction took off the review with the
     pieces it saved: none of them stays stored."""
+    screenshot_answers_kept: frozenset[tuple[str, str]] = frozenset()
+    """The name and split answers, by kind and subject, this save's own transaction stored: each
+    one that differed from the answer the review held."""
+    screenshot_answers_withdrawn: frozenset[tuple[str, str]] = frozenset()
+    """The name and split answers, by kind and subject, this save's own transaction took back."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -797,6 +811,23 @@ def review_state(
     return again if unanswered <= again.proven else first
 
 
+def _answers_for_pieces(
+    values: Mapping[tuple[str, str], str],
+) -> tuple[dict[str, Any], dict[str, str], set[tuple[str, str]]]:
+    """The answers a review's pieces are worked out from: each split, each due date read and each
+    joined note ticked."""
+    split = {
+        subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
+    }
+    due_read = {subject: value for (kind, subject), value in values.items() if kind == "due_read"}
+    joined = {
+        found
+        for (kind, subject), value in values.items()
+        if kind == "joined" and value == JOINED and (found := joined_of(subject)) is not None
+    }
+    return split, due_read, joined
+
+
 def _review_state(
     record: ProjectStateStore,
     tables: DraftForSave,
@@ -813,15 +844,7 @@ def _review_state(
     values = answer_values(tables.answers)
     for name, tag in ticked:
         values.setdefault(("joined", joined_subject(name, tag)), JOINED)
-    split = {
-        subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
-    }
-    due_read = {subject: value for (kind, subject), value in values.items() if kind == "due_read"}
-    joined = {
-        found
-        for (kind, subject), value in values.items()
-        if kind == "joined" and value == JOINED and (found := joined_of(subject)) is not None
-    }
+    split, due_read, joined = _answers_for_pieces(values)
     pieces, asking, every_row = pieces_from(
         tables.readings, split, tables.discards, now, corrections, due_read, joined
     )
@@ -1233,7 +1256,7 @@ def _homework_transaction(
         ready.append(unit.unit)
     if still_open:
         return NotSaved("open", tuple(still_open), tuple(already))
-    identity = _identity(state, ready, press.names, tables.answers)
+    identity = _identity(state, ready, press.names, _names_held(tables.answers, press))
     if isinstance(identity, NotSaved):
         return identity
     if not ready:
@@ -1295,7 +1318,15 @@ def _homework_transaction(
         return bool(about) and set(about) <= done
 
     consumed = [(kind, subject) for kind, subject in tables.answers if saved_with(kind, subject)]
-    left = _open_units(state, saved_now, tables.readings, tables.discards)
+    kept, withdrawn = _answers_kept(
+        press, tables.answers, _names_read(state, ready, press.names), bool(added or updated)
+    )
+    left = _open_units(
+        _with_splits_kept(state, tables, kept, now, press.corrections),
+        saved_now,
+        tables.readings,
+        tables.discards,
+    )
     corrected, confirmed = _correction_counts(
         state, written, tables.answers, press.corrections, tables.readings
     )
@@ -1326,6 +1357,7 @@ def _homework_transaction(
     if not record.transaction_open():
         raise GradeTransactionLost(TRANSACTION_ENDED)
     record.raise_progress_revision(press.draft_id)
+    record.keep_screenshot_answers(press.draft_id, kept, withdrawn)
     record.drop_saved_answers(press.draft_id, consumed)
     return Saved(
         press.acceptance_id,
@@ -1337,7 +1369,65 @@ def _homework_transaction(
         counts=(added, updated, unchanged, left),
         stored=stored_corrections(record, state, pairs, press.corrections, as_read=True),
         consumed=frozenset(consumed),
+        screenshot_answers_kept=frozenset(kept),
+        screenshot_answers_withdrawn=withdrawn,
     )
+
+
+def _names_held(
+    answers: Mapping[tuple[str, str], tuple[str, str]], press: SavePress
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """The stored answers with the press's name answers held over them, in memory, for the check of
+    whose screenshots these are. A posted split isn't held: the page signed its groups with no
+    posted split applied."""
+    posted = {key: got for key, got in press.screenshot_answers.items() if key[0] == "name"}
+    left = {
+        key: got
+        for key, got in answers.items()
+        if key not in press.screenshot_answers_withdrawn or key in posted
+    }
+    return {**left, **posted}
+
+
+def _answers_kept(
+    press: SavePress,
+    answers: Mapping[tuple[str, str], tuple[str, str]],
+    names_read: Collection[tuple[str, str]],
+    homework_written: bool,
+) -> tuple[dict[tuple[str, str], tuple[str, str]], frozenset[tuple[str, str]]]:
+    """The name and split answers this transaction stores, each one that differs from the answer
+    stored, and those it takes back. Where it adds or updates an assignment (``homework_written``),
+    that is every one the press posted. Otherwise it is only the name answers the groups it accepts
+    read (``names_read``), which are those groups' own."""
+    kept = {
+        key: got
+        for key, got in press.screenshot_answers.items()
+        if (homework_written or key in names_read) and answers.get(key) != got
+    }
+    withdrawn = frozenset(
+        key
+        for key in press.screenshot_answers_withdrawn
+        if homework_written and key in answers and key not in press.screenshot_answers
+    )
+    return kept, withdrawn
+
+
+def _with_splits_kept(
+    state: ReviewState,
+    tables: DraftForSave,
+    kept: Mapping[tuple[str, str], tuple[str, str]],
+    now: datetime,
+    corrections: Corrections,
+) -> ReviewState:
+    """The review's pieces and rows waiting on a split, as they stand once these answers are
+    stored: ``state`` itself where none of them is a split."""
+    if not any(kind == "split" for kind, _ in kept):
+        return state
+    split, due_read, joined = _answers_for_pieces(answer_values({**tables.answers, **kept}))
+    pieces, asking, _ = pieces_from(
+        tables.readings, split, tables.discards, now, corrections, due_read, joined
+    )
+    return dataclasses.replace(state, pieces=tuple(pieces), asking=tuple(asking))
 
 
 def values_on_record(
@@ -1596,6 +1686,30 @@ def _unconfirmed(
     )
 
 
+def _screenshots_of(state: ReviewState, ready: Sequence[tuple[str, ...]]) -> dict[str, set[str]]:
+    """Each screenshot the units came from, by its SHA-256, with the units that drew on it."""
+    images: dict[str, set[str]] = {}
+    for unit in ready:
+        for name in unit:
+            piece = state.by_name[name]
+            for card in (*piece.cards, *piece.noted_cards):
+                images.setdefault(card.sha256, set()).add(unit_name(unit))
+    return images
+
+
+def _names_read(
+    state: ReviewState,
+    ready: Sequence[tuple[str, ...]],
+    names: Mapping[str, tuple[str, str | None]],
+) -> frozenset[tuple[str, str]]:
+    """The name answers, by kind and subject, ``_identity`` reads for these units: the one for each
+    unconfirmed name on their screenshots, and the one for a screenshot showing no name."""
+    seen = [names.get(sha, ("unknown", None)) for sha in _screenshots_of(state, ready)]
+    forms = {("name", str(form)) for status, form in seen if status in UNCONFIRMED}
+    missing = {("name", "missing")} if any(status == "missing" for status, _ in seen) else set()
+    return frozenset(forms | missing)
+
+
 def _identity(
     state: ReviewState,
     ready: Sequence[tuple[str, ...]],
@@ -1610,12 +1724,7 @@ def _identity(
     one unconfirmed name and screenshots with no name needs both answers, and carries the
     name's status, answer and form; a unit of unnamed screenshots alone, pressed beside it,
     is still refused."""
-    images: dict[str, set[str]] = {}
-    for unit in ready:
-        for name in unit:
-            piece = state.by_name[name]
-            for card in (*piece.cards, *piece.noted_cards):
-                images.setdefault(card.sha256, set()).add(unit_name(unit))
+    images = _screenshots_of(state, ready)
     seen = {sha: names.get(sha, ("unknown", None)) for sha in images}
 
     def units_where(test: Callable[[tuple[str, str | None]], bool]) -> set[str]:
