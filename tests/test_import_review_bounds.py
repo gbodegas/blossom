@@ -38,7 +38,7 @@ from blossom.school_instructions import to_wire
 from blossom.screenshot_review import field_most
 from blossom.screenshot_save import ReviewState
 from blossom.stores.drafts import StoreBusy
-from tests import full_scale_import_review
+from tests import full_scale_import_review, import_review_cases
 from tests.import_review_cases import (
     ACCEPTANCE,
     FORM,
@@ -59,7 +59,9 @@ from tests.import_review_cases import (
     as_a_browser_sends,
     body_with_a_paste,
     box_named,
+    closed_cards,
     every_box_at_its_limit,
+    every_card_open,
     every_choice,
     every_press_answered,
     every_row,
@@ -76,7 +78,9 @@ from tests.import_review_cases import (
     largest_a_page_makes,
     list_of_stream,
     new_rows,
+    no_date_subjects,
     on_record,
+    open_cards,
     open_settings,
     options_of,
     padded_to,
@@ -93,6 +97,7 @@ from tests.import_review_cases import (
     stream_of,
     the_worst_page,
     units_on,
+    unoffered,
     unpacked,
     unpacked_bytes,
     with_a_kept_question,
@@ -206,8 +211,17 @@ def a_small_page(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> Made:
     return draft_id, page
 
 
+def opened_for_typing(browser: TestClient, draft_id: str, page: str, typed: dict[str, str]) -> str:
+    """The review after the family presses "Correct what was read" on each closed card that
+    ``typed`` types into, in turn (``open_cards``): the page the typing is then made on."""
+    cards = import_review_cases.closed_cards(import_review_cases.review_form(page), typed, ())
+    return import_review_cases.open_cards(browser, draft_id, page, cards)
+
+
 def padded_fields(fields: Fields, total: int) -> list[tuple[str, str]]:
-    """This post with fields nothing reads, up to this many fields."""
+    """This post with fields nothing reads, up to this many fields. A helper's post is checked to
+    carry what its test typed and chose first (``carried``)."""
+    import_review_cases.carried(fields)
     assert total >= len(fields)
     return [*fields, *[("read:zz", "1")] * (total - len(fields))]
 
@@ -287,8 +301,9 @@ def test_the_worst_page_counts_each_kind_of_field(
 ) -> None:
     """A record of what a card carries, which holds no limit. Four cards on saved rows with every
     question and box, each date typed as text no date reads as, ticking everything: every kind of
-    field a page makes, so a new one breaks this. A card sends 28, and the rest are the six signed
-    fields, the check, the press and one name question."""
+    field a page makes, so a new one breaks this. A card sends 30, its open mark and its group's
+    tick among them, and the rest are the six signed fields, the check, the press and one name
+    question."""
     with here(open_settings(tmp_path)) as browser:
         _, fields = the_worst_page(browser, monkeypatch, 1, 4)
 
@@ -318,8 +333,123 @@ def test_the_worst_page_counts_each_kind_of_field(
         "answer:due": 4,
         "answer:assigned": 4,
         "answer:instructions": 12,
+        "open": 4,
+        "unit": 4,
     }
-    assert len(fields) == 28 * 4 + 9
+    assert len(fields) == 30 * 4 + 9
+
+
+def test_typing_or_a_choice_that_does_not_reach_its_post_fails_the_test_as_it_is_sent(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A helper's post whose typing or choice isn't in the submission it sends fails the test as
+    it is sent, naming the field and the page: typing in a closed card no step of the test opened,
+    typing in a box the page does not offer, and "No assigned date was given" chosen in a closed
+    card. A helper opens no card on its own; typing in a card the test opens by its own press
+    (``open_cards``, one "Correct what was read" press each) is sent as typed."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        box = box_named(page, "title")
+        [subject, *_] = no_date_subjects(page)
+        closed_typing = page_post(page, "keep", typed={box: TYPED})
+        closed_choice = page_post(page, "keep", choose={f"none:{subject}": "1"})
+        card = import_review_cases.closed_cards(
+            import_review_cases.review_form(page), {box: TYPED}, ()
+        )
+        opened_page = import_review_cases.open_cards(browser, draft_id, page, card)
+        opened = page_post(opened_page, "keep", typed={box: TYPED})
+    unoffered = 'correct:["no-such-row","title"]'
+    not_offered = page_post(page, "keep", typed={unoffered: TYPED})
+
+    assert len(card) == 1
+    assert (box, TYPED) not in closed_typing
+    assert (box, TYPED) in opened
+    assert TYPED.replace(" ", "+").encode() in as_a_browser_sends(opened)
+    with pytest.raises(pytest.fail.Exception, match="a closed card the test did not open") as one:
+        as_a_browser_sends(closed_typing)
+    with pytest.raises(pytest.fail.Exception, match="a box the page does not offer") as two:
+        as_a_browser_sends(not_offered)
+    with pytest.raises(pytest.fail.Exception, match="a closed card the test did not open") as three:
+        as_a_browser_sends(closed_choice)
+    for failed, name in ((one, box), (two, unoffered), (three, f"none:{subject}")):
+        assert repr(name) in str(failed.value)
+        assert f"/parent/imports/{draft_id}/review" in str(failed.value)
+        assert "Blossom - Homework screenshots" in str(failed.value)
+
+
+def every_post_recorded(monkeypatch: pytest.MonkeyPatch) -> list[list[tuple[str, str]]]:
+    """Each post the helpers send to a review from here on, as sent, in order."""
+    sent: list[list[tuple[str, str]]] = []
+    original = import_review_cases.posted
+
+    def recorded(browser: TestClient, draft_id: str, fields: Fields) -> Any:  # noqa: ANN401
+        sent.append(list(fields))
+        return original(browser, draft_id, fields)
+
+    monkeypatch.setattr(import_review_cases, "posted", recorded)
+    return sent
+
+
+def groups_ticked(markup: str) -> list[str]:
+    """Each group box this markup shows ticked, in order."""
+    found = re.findall(r'name="unit" value="([^"]+)" checked', markup)
+    return [html.unescape(unit) for unit in found]
+
+
+def test_correct_what_was_read_goes_with_the_form_as_the_page_stands(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The "Correct what was read" press a test makes by its own call (``open_cards``) carries the
+    form as the page stands, as a browser sends it with that button: every group box the page
+    shows ticked and every other checked control, beside the hidden fields and the boxes. The page
+    that press returns shows those groups ticked."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        box = box_named(page, "title")
+        cards = import_review_cases.closed_cards(
+            import_review_cases.review_form(page), {box: TYPED}, ()
+        )
+        sent = every_post_recorded(monkeypatch)
+        opened = import_review_cases.open_cards(browser, draft_id, page, cards)
+
+    form = import_review_cases.review_form(page)
+    ticked = groups_ticked(form)
+    checked = [
+        (html.unescape(name), html.unescape(value))
+        for name, value in re.findall(
+            r'<input type="[a-z]+" name="([^"]*)" value="([^"]*)" checked', form
+        )
+    ]
+    assert len(cards) == 1
+    assert ticked
+    [press] = sent
+    assert [value for name, value in press if name == "unit"] == ticked
+    assert all(field in press for field in checked)
+    assert press[-1] == ("press", cards[0])
+    assert groups_ticked(opened) == ticked
+
+
+def test_a_save_after_a_refused_review_changes_fails_the_test_naming_the_card_and_the_refusal(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where the Review changes the family presses before a Save is refused (a card's due date box
+    emptied: "A due date is needed."), the page it returns offers no Save, so the helper that makes
+    a Save carrying corrections (``saved_with_corrections``) fails the test there, naming the card
+    left open and the refusal line, and sends no Save: the one post it sends is Review changes."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        due = box_named(page, "due")
+        opened = opened_for_typing(browser, draft_id, page, {due: ""})
+        fields = page_post(opened, "save", typed={due: ""}, tick=groups_ticked(opened))
+        sent = every_post_recorded(monkeypatch)
+        with pytest.raises(pytest.fail.Exception) as failed:
+            import_review_cases.saved_with_corrections(browser, draft_id, fields)
+
+    said = str(failed.value)
+    assert [value for post in sent for name, value in post if name == "press"] == ["review"]
+    assert "Review changes was refused (422)" in said
+    assert "A due date is needed." in said
+    assert "Set 0-0 (screenshot 1, card 1)" in said
 
 
 def test_the_limits_are_these_numbers() -> None:
@@ -499,6 +629,7 @@ def test_a_post_at_the_field_limit_is_read_and_one_past_it_is_not(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         fields = page_post(page, "keep", typed={box: TYPED})
         at = send(browser, draft_id, padded_fields(fields, MOST_FIELDS))
         before = every_row(browser)
@@ -526,6 +657,7 @@ def test_a_paste_comes_back_whole_in_its_box(
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
         value = as_a_field_of(box, size)
+        page = opened_for_typing(browser, draft_id, page, {box: value})
         fields = page_post(page, "keep", typed={box: value})
         before = every_row(browser)
         answer = send(browser, draft_id, fields)
@@ -543,6 +675,9 @@ def test_a_field_past_the_byte_limit_is_not_read(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
+        page = opened_for_typing(
+            browser, draft_id, page, {box: as_a_field_of(box, MOST_IN_A_FIELD + 1)}
+        )
         fields = page_post(page, "keep", typed={box: as_a_field_of(box, MOST_IN_A_FIELD + 1)})
         before = every_row(browser)
         answer = send(browser, draft_id, fields)
@@ -560,6 +695,7 @@ def test_a_body_at_the_byte_limit_is_read_and_one_past_it_is_not(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         body = as_a_browser_sends(page_post(page, "keep", typed={box: TYPED}))
         address = f"/parent/imports/{draft_id}/review"
         at_limit = b"".join(padded_to(body, MOST_BYTES))
@@ -629,6 +765,7 @@ def test_a_body_at_the_byte_limit_and_one_past_it_over_a_socket(
     with here(open_settings(tmp_path)) as browser, serving(browser) as port:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         body = as_a_browser_sends(page_post(page, "keep", typed={box: TYPED}))
         at = press_over_socket(
             port,
@@ -658,6 +795,7 @@ def test_a_post_at_the_field_limit_and_one_past_it_over_a_socket(
     with here(open_settings(tmp_path)) as browser, serving(browser) as port:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         fields = page_post(page, "keep", typed={box: TYPED})
         at = as_a_browser_sends(padded_fields(fields, MOST_FIELDS))
         past = as_a_browser_sends(padded_fields(fields, MOST_FIELDS + 1))
@@ -701,6 +839,7 @@ def test_small_writes_keep_the_typing_exact(
     with here(open_settings(tmp_path)) as browser, serving(browser) as port:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
+        page = opened_for_typing(browser, draft_id, page, {box: words})
         body = as_a_browser_sends(page_post(page, "keep", typed={box: words}))
         answer = press_over_socket(
             port, draft_id, in_writes(body, size), length=len(body) if declared else None
@@ -721,6 +860,7 @@ def test_the_longest_name_a_tick_carries(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, question = all_found_onto_one_row(browser, monkeypatch, 1, 60)
         box = box_named(page, "title")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         fields = every_choice(page, "keep", {box: TYPED})
         answer = send(browser, draft_id, fields)
         stored = instructions_answered(browser, draft_id)
@@ -798,6 +938,7 @@ def test_every_way_in_reads_within_the_bounds(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         fields = padded_fields(
             page_post(page, press, typed={box: TYPED}, tick=units_on(page)), PARSERS_FIELDS + 1
         )
@@ -839,6 +980,7 @@ def test_a_press_too_long_for_its_box_past_a_thousand_fields(
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
         words = "x" * (field_most("title") + 1)
+        page = opened_for_typing(browser, draft_id, page, {box: words})
         fields = padded_fields(page_post(page, "keep", typed={box: words}), PARSERS_FIELDS + 1)
         first_reads.clear()
         answer = send(browser, draft_id, fields)
@@ -854,6 +996,7 @@ def test_a_page_out_of_date_past_a_thousand_fields(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         first = send(browser, draft_id, every_choice(page, "keep"))
         fields = padded_fields(page_post(page, "keep", typed={box: TYPED}), PARSERS_FIELDS + 1)
         first_reads.clear()
@@ -978,6 +1121,7 @@ def test_a_long_paste_in_an_instructions_box_comes_back_whole(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _ = with_a_kept_question(browser, monkeypatch)
         box = box_named(page, "instruction")
+        page = opened_for_typing(browser, draft_id, page, {box: paste})
         fields = every_choice(page, "keep", {box: paste})
         before = every_row(browser)
         answer = send(browser, draft_id, fields)
@@ -996,6 +1140,7 @@ def test_a_paste_never_becomes_an_option(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, question = with_a_kept_question(browser, monkeypatch)
         box = box_named(page, "instruction")
+        page = opened_for_typing(browser, draft_id, page, {box: paste})
         answer = send(browser, draft_id, every_choice(page, "keep", {box: paste}))
 
     assert answer.status_code == 422
@@ -1078,7 +1223,9 @@ def test_each_distinct_list_once() -> None:
 
 
 def ticks_of(fields: Fields, question: str, ticks: Sequence[str]) -> list[tuple[str, str]]:
-    """This post with these ticks on this question, and nothing else ticked on it."""
+    """This post with these ticks on this question, and nothing else ticked on it. A helper's post
+    is checked to carry what its test typed and chose first (``carried``)."""
+    import_review_cases.carried(fields)
     return [*(field for field in fields if field[0] != question), *((question, t) for t in ticks)]
 
 
@@ -1100,6 +1247,7 @@ def test_a_row_that_cant_be_resolved_is_said(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, question = with_a_kept_question(browser, monkeypatch)
         box = box_named(page, "instruction")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
         posted = page_post(page, press, typed={box: TYPED}, tick=units_on(page))
         delete_row(browser, rows[0])
@@ -1153,13 +1301,14 @@ def a_row_to_lose_beside_words(
     student = state_of(browser).project_state.student_id()
     drafts = state_of(browser).import_drafts
     now = drafts.snapshot(student, draft_id)
+    opened = every_card_open(browser, draft_id, page)
     tick = next(
         name
-        for name in fields_of(page, "none:")
+        for name in fields_of(opened, "none:")
         if json.loads(name.removeprefix("none:"))[0].removeprefix("date:") not in question
     )
     box = f"correct:{tick.removeprefix('none:')}"
-    as_read = in_its_box(page, box)
+    as_read = in_its_box(opened, box)
     assert as_read not in (None, "", ANOTHER_DATE)
     kept = json.loads(now.progress or '{"v":4,"corrected":{},"selected":[]}')
     piece = json.loads(tick.removeprefix("none:"))[0]
@@ -1288,7 +1437,8 @@ def test_a_row_that_cant_be_resolved_with_nothing_set_aside_behind_draws_no_form
     with here(open_settings(tmp_path)) as browser:
         gone = a_row_to_lose_beside_words(browser, monkeypatch, words=words)
         typed = {box_named(gone.page, "title"): "Typed Words "} if stray_space else {}
-        posted = page_post(gone.page, press, typed=typed)
+        page = opened_for_typing(browser, gone.draft_id, gone.page, typed)
+        posted = page_post(page, press, typed=typed)
         delete_row(browser, gone.rows[0])
         row = json.loads(gone.tick.removeprefix("none:"))[0].removeprefix("date:")
         a_tab_saves_a_class(browser, gone.draft_id, row)
@@ -1329,7 +1479,11 @@ def test_another_row_s_stray_space_stays_in_its_box_beside_a_row_lost(
         )
         drawn = in_its_box(gone.page, title)
         typed = {gone.box: sent, title: f"{drawn} "}
-        posted = page_post(gone.page, press, choose={gone.tick: "none"}, typed=typed)
+        form = import_review_cases.review_form(gone.page)
+        opened = open_cards(
+            browser, gone.draft_id, gone.page, closed_cards(form, typed, (gone.tick,))
+        )
+        posted = page_post(opened, press, choose={gone.tick: "none"}, typed=typed)
         delete_row(browser, gone.rows[0])
         answer = send(browser, gone.draft_id, ticks_of(posted, gone.question, gone.rows))
 
@@ -1460,13 +1614,26 @@ def test_a_row_that_resolves_says_nothing_of_it(
         rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
         words = kept_words_on_record(browser)
         posted = page_post(page, press, tick=units_on(page))
+        accepted = len(every_row(browser)["grade_acceptances"])
         answer = send(browser, draft_id, ticks_of(posted, question, rows))
         said = page_text(followed(browser, answer))
         stored = instructions_answered(browser, draft_id)
+        record = every_row(browser)
 
     assert answer.status_code == ANSWERS[press]
     assert NOT_CARRIED not in said
-    assert stored == [sorted(words[int(row[1:])] for row in rows)]
+    answered = sorted(words[int(row[1:])] for row in rows)
+    if press == "save":
+        # The group ticked and its question answered on the page: Save writes it once with that
+        # answer, so the record holds exactly those instructions as current and no draft answer
+        # is left for the saved group.
+        assert len(record["grade_acceptances"]) == accepted + 1
+        assert sorted(row[2] for row in record["school_instructions"] if row[9] == "current") == (
+            answered
+        )
+        assert stored == []
+    else:
+        assert stored == [answered]
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
@@ -1526,6 +1693,7 @@ def test_a_store_that_refuses_the_kept_read_gives_the_typing_back(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, question = with_a_kept_question(browser, monkeypatch)
         box = box_named(page, "instruction")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
         posted = page_post(page, press, typed={box: TYPED}, tick=units_on(page))
         before = every_row(browser)
@@ -1844,6 +2012,7 @@ def test_a_list_at_the_ceiling_is_read_and_one_byte_past_it_is_not(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         ticks = units_on(page)[1:2] if press == "save" else []
         posted = page_post(page, press, typed={box: TYPED}, tick=ticks)
         body = unpacked_bytes(dict(posted)["asked"])
@@ -2003,8 +2172,10 @@ def test_a_save_that_committed_resent_past_the_ceiling_shows_its_saved_result(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title", 1)
-        posted = page_post(
-            page, "save", tick=units_on(page)[:1], typed={box: TYPED} if typed else {}
+        typing = {box: TYPED} if typed else {}
+        page = opened_for_typing(browser, draft_id, page, typing)
+        posted = import_review_cases.reviewed(
+            browser, draft_id, page_post(page, "save", tick=units_on(page)[:1], typed=typing)
         )
         first = send(browser, draft_id, posted)
         monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
@@ -2081,6 +2252,7 @@ def test_a_save_on_a_review_closed_as_its_list_is_refused_says_it_closed(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         posted = page_post(page, "save", typed={box: TYPED}, tick=units_on(page)[1:2])
         drafts = state_of(browser).import_drafts
         real = drafts.snapshot
@@ -2437,6 +2609,7 @@ def test_a_field_too_deep_to_name_a_correction_is_passed_over(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_small_page(browser, monkeypatch)
         box = box_named(page, "title")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         typed = page_post(page, press, typed={box: TYPED})
         deep = (f"{prefix}{DEEP}", "other words")
         fields = [deep, *typed] if placed == "before the typing" else [*typed, deep]
@@ -2521,8 +2694,14 @@ def test_a_row_gone_gives_back_typing_with_no_box_on_the_page_it_comes_back_to(
             name for name in fields_of(page, "answer:instructions:") if unit not in name
         )
         rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
-        posted = ticks_of(page_post(page, "keep", typed={box: TYPED}), question, rows)
-        saved = send(browser, draft_id, page_post(page, "save", tick=[unit]))
+        mine = opened_for_typing(browser, draft_id, page, {box: TYPED})
+        posted = ticks_of(page_post(mine, "keep", typed={box: TYPED}), question, rows)
+        # Another tab answers that group's own question with its kept rows and saves it, in one
+        # press, as the family does.
+        own = next(name for name in fields_of(page, "answer:instructions:") if unit in name)
+        own_rows = [value for value, _ in options_of(page, own) if value.startswith("k")]
+        answered = ticks_of(page_post(page, "save", tick=[unit]), own, own_rows)
+        saved = send(browser, draft_id, answered)
         delete_row(browser, rows[0])
         answer = send(browser, draft_id, posted)
         shown = in_its_box(answer.text, box)
@@ -2536,17 +2715,28 @@ def test_a_row_gone_gives_back_typing_with_no_box_on_the_page_it_comes_back_to(
 # ------------------------------------------------------------------ a page of the older form
 
 
-def older_page(
+def opened_as_the_older_form(
+    browser: TestClient, draft_id: str, page: str, field: str
+) -> tuple[str, str, str]:
+    """The card of the first box of this field opened by its "Correct what was read" press, then
+    that page written in the older form: the review's id, the page and the box's field."""
+    box = box_named(page, field)
+    cards = closed_cards(import_review_cases.review_form(page), {box: TYPED}, ())
+    opened = open_cards(browser, draft_id, page, cards)
+    return draft_id, written_as_the_older_form(browser, draft_id, opened), field
+
+
+def older_page_opened_at_its_box(
     browser: TestClient, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> tuple[str, str, str]:
-    """A page of this class in the older form, with the box to type in: its review's id, the page
-    and the box."""
+    """A page of this class in the older form, the card of the box to type in opened first: its
+    review's id, the page and the box's field."""
     if kind == "small":
         draft_id, page = new_rows(browser, monkeypatch, 1, 9, plain)
-        return draft_id, written_as_the_older_form(browser, draft_id, page), "title"
+        return opened_as_the_older_form(browser, draft_id, page, "title")
     if kind == "90 plain":
         draft_id, page = new_rows(browser, monkeypatch, 10, 9, plain)
-        return draft_id, written_as_the_older_form(browser, draft_id, page), "title"
+        return opened_as_the_older_form(browser, draft_id, page, "title")
     words: dict[str, Callable[[str, int], str]] = {
         "a kept question": lambda _, k: f"Short kept words {k}.",
         "2 kept of 40,000": lambda _, k: f"{k} " + "\u00e9" * 39_990,
@@ -2559,7 +2749,7 @@ def older_page(
         words=words[kind],
         again=read_again_unsure,
     )
-    return draft_id, written_as_the_older_form(browser, draft_id, page), "instruction"
+    return opened_as_the_older_form(browser, draft_id, page, "instruction")
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
@@ -2586,11 +2776,13 @@ def test_a_page_made_before_the_compact_list(
     holds the words it was shown, its typing survives, and the page it comes back with is the
     compact form and can be pressed."""
     with here(open_settings(tmp_path)) as browser:
-        draft_id, page, box_field = older_page(browser, monkeypatch, kind)
+        draft_id, page, box_field = older_page_opened_at_its_box(browser, monkeypatch, kind)
         box = box_named(page, box_field)
         fields = every_choice(page, press, {box: TYPED})
+        assert (box, TYPED) in fields
         words = kept_words_on_record(browser)
-        answer = send(browser, draft_id, fields)
+        # A Save from this page, its card open, is one the page does not offer: sent as a raw POST.
+        answer = send(browser, draft_id, unoffered(fields) if press == "save" else fields)
         shown = followed(browser, answer)
         record = on_record(browser, draft_id)
         stored = instructions_answered(browser, draft_id)
@@ -2875,21 +3067,25 @@ def test_an_answer_cleared_with_its_question_still_asked_says_nothing(
     assert not any(ticked for _, ticked in options_of(answer.text, first))
 
 
-def test_an_answer_cleared_with_its_question_gone_is_said(
+def test_an_answer_cleared_beside_typed_words_stays_unanswered_at_its_question(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The same, with words typed that take the cleared answer's question off the page, while the
-    record still holds the answer."""
+    """The same, with words typed on the card. Review changes asks the question again, the typed
+    words among its choices, so the cleared answer comes back unanswered at that question, and no
+    line says a choice can't be shown."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, other, box = two_kept_questions(browser, monkeypatch)
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
+        # Review changes shows what the typing does to the card; the press after it is made there.
+        page = send(browser, draft_id, page_post(page, "review", typed={box: TYPED})).text
         row = next(value for value, _ in options_of(page, other) if value.startswith("k"))
-        typed = page_post(page, "keep", typed={box: TYPED})
-        posted = ticks_of(ticks_of(typed, first, []), other, [row, ""])
+        posted = ticks_of(ticks_of(page_post(page, "keep"), first, []), other, [row, ""])
         answer = send(browser, draft_id, posted)
 
     assert answer.status_code == 422
-    assert first not in fields_of(answer.text, "answer:instructions:")
-    assert page_text(answer.text).count(NOT_CARRIED) == 1
+    assert first in fields_of(answer.text, "answer:instructions:")
+    assert not any(ticked for _, ticked in options_of(answer.text, first))
+    assert NOT_CARRIED not in page_text(answer.text)
     assert in_its_box(answer.text, box) == TYPED
 
 
@@ -2904,6 +3100,7 @@ def test_a_row_that_cant_be_resolved_draws_no_form_only_when_behind(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, question = with_a_kept_question(browser, monkeypatch)
         box = box_named(page, "instruction")
+        page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         rows = [value for value, _ in options_of(page, question) if value.startswith("k")]
         posted = page_post(page, press, typed={box: TYPED}, tick=units_on(page))
         delete_row(browser, rows[0])

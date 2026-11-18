@@ -615,8 +615,9 @@ def test_a_full_save_writes_exactly_the_named_statements(house: House, shape: st
     assert seen == set(expected)
 
 
-WRITER_STATEMENTS: Final = 82
-"""The statements a committed save of the two-row review runs in its writer transaction."""
+WRITER_STATEMENTS: Final = 121
+"""The statements a committed save of the two-row review runs in its writer transaction. Beside
+its writes, the record is read for each working out of the review, the date claims among it."""
 
 
 def test_a_committed_save_reads_nothing_more_to_raise_the_revision(house: House) -> None:

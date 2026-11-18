@@ -95,6 +95,7 @@ ALLOWED_IMPORTS: dict[str, str] = {
     ),
     "io": "standard library; in-memory byte buffers an image is read from and encoded into",
     "ipaddress": "standard library; reads an address named in a Host or Origin header, no network",
+    "itertools": "standard library; each combination of the answers a review's questions offer",
     "logging": "standard library; reports failures to the process log only, never to a page",
     "msvcrt": "standard library; the Windows lock behind one process per household",
     "operator": "standard library; the reducer on a graph state key",

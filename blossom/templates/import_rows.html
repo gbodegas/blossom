@@ -53,17 +53,33 @@
   {% if box.refused %}<p class="note">{{ box.refused }}</p>{% endif %}
   {% if box.mark %}<p class="note">{{ box.mark }}</p>{% endif %}
 {% endmacro %}
+{% macro carried_box(box) %}
+  <input type="hidden" name="read:{{ box.subject }}" value="{{ box.read }}">
+  <input type="hidden" name="{{ box.name }}" value="{{ box.value }}">
+  {% if box.none and box.none[1] %}<input type="hidden" name="{{ box.none[0] }}" value="none">{% endif %}
+  {% if box.carried %}<input type="hidden" name="{{ box.carried[0] }}" value="{{ box.carried[1] }}">{% endif %}
+{% endmacro %}
 {% macro card_of(card) %}
   <p class="source">{% for where, href, shot in card.sources %}{% if not loop.first %}; {% endif %}{{ where }}{% if loop.last and card.read_as %}, {{ card.read_as }}{% endif %}{% if href %} · <a href="{{ href }}">{{ words.view }}<span class="visually-hidden"> {{ shot }} for {{ card.about }}</span></a>{% endif %}{% endfor %}</p>
   {% for question in card.checks %}{{ asked(question) }}{% endfor %}
   {#
-    A question's link to the fold lands on its summary, which stays in the Tab order with the
-    fold's fields after it. Its tabindex makes it a place a page fetched again lands on.
+    An open card's boxes sit under "Correct what was read", whose summary a question's link
+    lands on, with the mark that keeps the card open on the page a press returns. A closed card
+    shows as text each value that differs from the one read and each value the press stored
+    nothing for (a box put back to its read value included), with "Not saved yet." beside the
+    latter, carries every box's value hidden, and offers Correct what was read, which opens its
+    boxes and writes nothing.
   #}
-  <details class="steps"{% if card.fold_open %} open{% endif %}>
+  {% if card.open %}
+  <details class="steps" open>
     <summary id="{{ card.fold }}" tabindex="0">{{ words.fold }}<span class="visually-hidden"> for {{ card.about }}</span></summary>
+    <input type="hidden" name="open:{{ card.name }}" value="open">
     {% for box in card.boxes %}{{ box_of(box, card.about) }}{% endfor %}
   </details>
+  {% else %}
+  {% for box in card.boxes %}{% if box.changed or box.mark %}<p class="source">{{ box.label }}: <span class="authored-text">{{ box.said }}</span></p>{% endif %}{% if box.mark %}<p class="note">{{ box.mark }}</p>{% endif %}{{ carried_box(box) }}{% endfor %}
+  <div class="actions"><button type="submit" class="secondary" id="{{ card.fold }}" name="press" value="correct:{{ card.name }}" formnovalidate aria-describedby="review-status">{{ words.fold }}<span class="visually-hidden"> for {{ card.about }}</span></button></div>
+  {% endif %}
   <details class="steps">
     <summary>{{ words.said_fold }}<span class="visually-hidden"> for {{ card.about }}</span></summary>
     {% for line in card.said %}<p class="note">{{ line }}</p>{% endfor %}
@@ -84,6 +100,8 @@
 {% endmacro %}
 <form method="post" action="/parent/imports/{{ draft_id }}/review" class="review-form" id="review-form">
   {% for name, value in rows.hidden %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  {#- While a card's boxes are open, or a card weighs saved homework against new with none chosen, the form's first submit button, so Enter shows the review again with what was typed and chosen: Review changes, out of the tab order and hidden from assistive technology, which reach the visible one. #}
+  {% if rows.review_first %}<button type="submit" class="visually-hidden" name="press" value="review" formnovalidate tabindex="-1" aria-hidden="true">Review changes</button>{% endif %}
   {% if rows.names %}
     <section class="panel" aria-labelledby="name-heading">
       <h2 id="name-heading">Student name</h2>
@@ -185,13 +203,14 @@
     <p class="note" id="review-status">{{ rows.status }}</p>
     <p class="helper" id="typing-lost">{{ words.typing_lost }}</p>
     <div class="actions">
-      <button type="submit" class="primary" name="press" value="save" aria-describedby="review-status">Save selected homework</button>
+      {% if rows.review_first %}<button type="submit" class="primary" name="press" value="review" formnovalidate aria-describedby="review-status">Review changes</button>
+      {% else %}<button type="submit" class="primary" name="press" value="save" aria-describedby="review-status">Save selected homework</button>{% endif %}
     </div>
     <details class="steps">
       <summary>Other choices</summary>
       <div class="actions">
-        <button type="submit" class="secondary" name="press" value="keep" aria-describedby="review-status">Keep these answers</button>
-        <button type="submit" class="secondary" name="press" value="later" aria-describedby="review-status">Save review for later</button>
+        <button type="submit" class="secondary" name="press" value="keep" formnovalidate aria-describedby="review-status">Keep these answers</button>
+        <button type="submit" class="secondary" name="press" value="later" formnovalidate aria-describedby="review-status">Save review for later</button>
         <button type="submit" class="secondary" form="finish" aria-describedby="typing-lost">Finish without the rest</button>
         <button type="submit" class="secondary" form="discard">Discard the review</button>
       </div>

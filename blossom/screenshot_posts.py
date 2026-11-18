@@ -19,13 +19,19 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
 from blossom.screenshot_page import (
+    CORRECT_PRESS,
     EMPTY,
     INSTRUCTIONS_ASKED,
+    OPEN_MARK,
+    SHOWN,
     UNRESOLVED,
     PostRefused,
+    answer_field,
     asks_read,
+    carried_digest,
     page_check,
     same_signature,
+    shown_digest,
     signed_option,
 )
 from blossom.screenshot_review import (
@@ -64,7 +70,9 @@ from blossom.screenshot_save import (
 )
 from blossom.stores.import_drafts import AnswerToKeep
 
-PRESSES: Final = frozenset({"keep", "save", "later"})
+PRESSES: Final = frozenset({"keep", "save", "later", "review"})
+"""The review form's presses by value, besides each card's Correct what was read
+(``CORRECT_PRESS`` and the card's piece name)."""
 ANSWER_KINDS: Final = frozenset(
     {
         "destination",
@@ -148,6 +156,16 @@ class ReviewPost:
     (``UNRESOLVED``) and this press left unanswered, with the values the mark holds: a box left
     empty with its explicit choice unchosen, or typed beside that choice, and an answer left
     unchosen. The press is refused whole, the box isn't taken, and the page names it again."""
+    opened: tuple[str, ...] = ()
+    """The cards, by piece name, whose boxes the page showed open (``OPEN_MARK``), and the card
+    a Correct what was read press opens."""
+    carried: Mapping[tuple[str, str], str] = dataclasses.field(default_factory=dict)
+    """Each date Blossom couldn't read carried back beside its box, by key and field, as sent,
+    where its page didn't sign those words as shown: a family answer the page carries hidden,
+    checked by a Save against the saved progress before any store."""
+    unshown: Mapping[tuple[str, str], str | None] = dataclasses.field(default_factory=dict)
+    """Each correction, by key and field, as posted, where its page didn't sign it as shown on
+    the card: checked by a Save against the saved progress before any store, on any group."""
 
     @property
     def refused(self) -> bool:
@@ -261,7 +279,9 @@ REVIEW_FIELDS: Final = (
     ReviewField("check", HIDDEN, PAGE),
     ReviewField(rf"read:{BOX_SUBJECT}", HIDDEN, PAGE),
     ReviewField(rf"unresolved:(?:correct:{BOX_SUBJECT}|{ONE_ANSWER})", HIDDEN, PAGE),
+    ReviewField(rf"{OPEN_MARK}{_PIECE}", HIDDEN, PAGE),
     ReviewField(rf"correct:{BOX_SUBJECT}", VISIBLE, ANSWER),
+    ReviewField(rf"(?:correct|none):{BOX_SUBJECT}", HIDDEN, ANSWER),
     ReviewField(rf"refused:{BOX_SUBJECT}", HIDDEN, ANSWER),
     ReviewField(rf"(?:none|empty):{BOX_SUBJECT}", VISIBLE, ANSWER),
     ReviewField(ONE_ANSWER, VISIBLE, ANSWER),
@@ -271,10 +291,11 @@ REVIEW_FIELDS: Final = (
 )
 """Every field of the screenshot review's own form, each family once per rendering: the signed
 fields, each group's digest and the signature; the mark beside each box of the value it shows,
-and the mark of a box or an answer sent twice; the boxes, a date Blossom couldn't read carried
-beside its box (an answer the page carries hidden), "No assigned date was given" and a box's
-explicit empty choice; each answer of one value, an instruction question's several, the group
-ticks; and the press."""
+the mark of a box or an answer sent twice, and the mark of a card shown with its boxes open; the
+boxes, a closed card's reviewed values and its "No assigned date was given" (answers the page
+carries hidden), a date Blossom couldn't read carried beside its box (one more), "No assigned
+date was given" and a box's explicit empty choice; each answer of one value, an instruction
+question's several, the group ticks; and the press."""
 
 
 def review_field(name: str, rendering: str) -> ReviewField | None:
@@ -303,6 +324,8 @@ def field_role(name: str, offered: Mapping[str, Collection[str]]) -> str | None:
         return PRESS
     if name == "unit":
         return ANSWER
+    if name.startswith(OPEN_MARK):
+        return PAGE if _shown_card(name.removeprefix(OPEN_MARK), offered) else None
     if name.startswith(("read:", "refused:")):
         if "correct:" + name.split(":", 1)[1] not in offered:
             return None
@@ -310,6 +333,21 @@ def field_role(name: str, offered: Mapping[str, Collection[str]]) -> str | None:
     if name.startswith(UNRESOLVED):
         return PAGE if name.removeprefix(UNRESOLVED) in offered else None
     return ANSWER if name in offered else None
+
+
+def _shown_card(piece: str, offered: Mapping[str, Collection[str]]) -> bool:
+    """Whether the page showed this card: its destination question is among those it signed."""
+    return answer_field("destination", piece) in offered
+
+
+def _a_press(value: str, offered: Mapping[str, Collection[str]]) -> bool:
+    """Whether a press's value is one of the review form's: a press of ``PRESSES``, or Correct
+    what was read on a card the page showed."""
+    if value in PRESSES:
+        return True
+    return value.startswith(CORRECT_PRESS) and _shown_card(
+        value.removeprefix(CORRECT_PRESS), offered
+    )
 
 
 def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:
@@ -532,8 +570,13 @@ def read_review(
     }
     rest = [(n, v) for n, v in items if n not in hidden and n != "check"]
     presses = [v for n, v in rest if n == "press"]
-    if len(presses) != 1 or presses[0] not in PRESSES:
+    if len(presses) != 1 or not _a_press(presses[0], offered):
         raise PostRefused
+    marked_cards = [n.removeprefix(OPEN_MARK) for n, _ in rest if n.startswith(OPEN_MARK)]
+    if any(not _shown_card(piece, offered) for piece in marked_cards):
+        raise PostRefused
+    pressed = presses[0].removeprefix(CORRECT_PRESS) if presses[0] not in PRESSES else None
+    opened = tuple(sorted({*marked_cards, *([pressed] if pressed else [])}))
     units = tuple(dict.fromkeys(v for n, v in rest if n == "unit"))
     if any(u not in digests for u in units):
         raise PostRefused
@@ -587,7 +630,9 @@ def read_review(
     twice = {name: tuple(sent) for name, sent in one_sent.items() if len(sent) > 1}
     read_once: set[tuple[str, str]] = set()
     for name, value in rest:
-        if name in ("press", "unit") or name.startswith((READ_PREFIX, UNRESOLVED, EMPTY)):
+        if name in ("press", "unit") or name.startswith(
+            (READ_PREFIX, UNRESOLVED, EMPTY, OPEN_MARK)
+        ):
             continue
         if name in sent_twice:
             continue
@@ -721,7 +766,7 @@ def read_review(
         both=folded.both,
         conflicted=conflicted,
         choices={
-            **_posted_choices(offered, chosen, rest),
+            **_beside_placed_cards(_posted_choices(offered, chosen, rest), chosen, state),
             **{name: () for name in (*twice, *left_open) if name.startswith("answer:")},
         },
         unresolved=tuple(unresolved),
@@ -731,6 +776,20 @@ def read_review(
         open_choices=open_choices,
         twice=twice,
         left_open=left_open,
+        opened=opened,
+        carried={
+            (key, field): words
+            for (key, field), words in carried.items()
+            if carried_digest(words)
+            not in offered.get("refused:" + json.dumps([key, field], separators=(",", ":")), ())
+        },
+        unshown={
+            (key, field): value
+            for key, fields in corrections.items()
+            for field, value in fields.items()
+            if shown_digest(value)
+            not in offered.get(SHOWN + json.dumps([key, field], separators=(",", ":")), ())
+        },
     )
 
 
@@ -784,6 +843,30 @@ def _posted_choices(
             if name.startswith("none:")
         },
     }
+
+
+def _beside_placed_cards(
+    choices: Mapping[str, tuple[str, ...]],
+    chosen: Mapping[str, Sequence[str]],
+    state: ReviewState,
+) -> dict[str, tuple[str, ...]]:
+    """The posted choices without each joined note's tick left blank beside a card its page gave
+    no destination, where no answer is kept for that tick: that blank says nothing of the note,
+    so the page that returns shows the note as the destination chosen with it finds it. A tick
+    kept and then left blank is the family's answer, given back as posted."""
+
+    def said_nothing(name: str) -> bool:
+        if not name.startswith(JOINED_PREFIX) or name in chosen:
+            return False
+        subject = name.removeprefix(JOINED_PREFIX)
+        found = joined_of(subject)
+        return (
+            found is not None
+            and found[0] not in state.mapping
+            and ("joined", subject) not in state.held
+        )
+
+    return {name: values for name, values in choices.items() if not said_nothing(name)}
 
 
 BOX_PREFIXES: Final = ("correct:", "refused:", "none:")

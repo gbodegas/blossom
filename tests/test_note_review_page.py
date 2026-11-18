@@ -2158,6 +2158,34 @@ def test_corrections_stand_after_the_same_text_is_pasted_again(tmp_path: pathlib
     assert left_out <= numbers(again, r'<input type="hidden" name="offered-(\d+)" value="1">')
 
 
+def test_a_notes_corrected_title_pasted_again_is_already_saved_and_saves_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note's title corrected with Edit details, reviewed and saved: the same text pasted
+    again shows that note already saved under its corrected title, and Save as the page stands
+    writes nothing and adds no row."""
+    with client_in(tmp_path) as client:
+        page = details_opened(client, homework_selected(client, FIELDS), "Map project")
+        mapped = key_of(page, "Map project")
+        form = ticked_form(page) | {f"title-{mapped}": "Map of the river", "recheck": "1"}
+        reviewed = client.post("/parent/inbox/find", data=form)
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        first = sorted((row.title, row.due_date) for row in store_of(client).all_assignments())
+        again = client.post("/parent/inbox/read", data={"text": FIELDS}).text
+        resaved = client.post("/parent/inbox/keep", data=ticked_form(again))
+        last = sorted((row.title, row.due_date) for row in store_of(client).all_assignments())
+
+    assert kept.status_code == 303
+    assert ("Map of the river", datetime.date(2026, 11, 4)) in first
+    assert '<span class="pill">Already saved</span>' in card(again, "Map project")
+    assert 'saved here as <span class="authored-text">Map of the river</span>' in card(
+        again, "Map project"
+    )
+    assert resaved.status_code == 303
+    assert resaved.headers["location"].endswith("added=0&updated=0&unchanged=3")
+    assert last == first
+
+
 def test_a_folded_note_carries_its_edits_to_the_save(tmp_path: pathlib.Path) -> None:
     """With both notes selected by Review changes, a later note of the same work given
     another date, then answered as the same assignment with its date changed, is folded into

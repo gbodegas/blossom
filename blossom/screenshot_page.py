@@ -49,10 +49,12 @@ from blossom.screenshot_review import (
     kind_question,
     offers,
     reference,
+    saved_under_another_title,
     settles_due,
     subject_for,
     typed_day,
     unit_name,
+    unsure,
     value_json,
     value_of,
     wordless_field,
@@ -198,6 +200,10 @@ TYPE_LINE: Final = {
     "chosen_for": "Saving now: {kind}, chosen for {card}.",
 }
 """The line under a row's Type, by where the kind Save writes comes from."""
+
+ANOTHER_TITLE: Final = "Saved under another title; this card reads {title}"
+"""The fact beside a saved assignment listed because it may be the card's under the title the
+family gave it (``saved_under_another_title``): the title as read, beside the saved one."""
 
 KIND_LINE: Final = {
     "suggested": "Saved as {kind}, as suggested.",
@@ -504,10 +510,46 @@ class Box:
         """Its key and field, as its name and the signed list name it."""
         return self.name.removeprefix("correct:")
 
+    @property
+    def changed(self) -> bool:
+        """Whether it holds a value other than the one read, which a closed card shows as text."""
+        return read_digest(self.value) != self.read
+
+    @property
+    def said(self) -> str:
+        """Its value as a closed card says it: a date as the review's rows say a day ("Fri
+        10/9"), anything else, or a date Blossom can't read, as the box holds it. An empty box
+        says what it left empty means, in the words the page offers for that choice (``empty``),
+        or "none" where it means nothing more."""
+        if not self.value:
+            return self.empty or SAID["nothing"]
+        if self.kind != "date":
+            return self.value
+        try:
+            return day_text(date.fromisoformat(self.value))
+        except ValueError:
+            return self.value
+
 
 def box_name(key: str, field: str) -> str:
     """The posted name of a box."""
     return "correct:" + json.dumps([key, field], separators=(",", ":"))
+
+
+def carried_digest(words: str) -> str:
+    """The digest a page signs of the words Blossom couldn't read that it carries beside a date
+    box, exactly as carried: one SHA-256 whatever their length."""
+    return hashlib.sha256(words.encode()).hexdigest()
+
+
+SHOWN: Final = "shown:"
+"""The signed list's name, before a box's key and field, of the correction its page shows for it."""
+
+
+def shown_digest(value: str | None) -> str:
+    """The digest a page signs of a correction it shows on a card, as a press posts it: one
+    SHA-256 of the correction as JSON, whatever its length."""
+    return hashlib.sha256(json.dumps(value).encode()).hexdigest()
 
 
 def _text_box(
@@ -580,7 +622,9 @@ def _date_box(
     hint = None
     if field == "due" and not piece.due_resolved:
         hint = SAID["due_hint"]
-    elif field == "assigned":
+    elif field == "assigned" and carried is None:
+        # Beside text it carries back as typed, the box left empty answers nothing (the text
+        # comes back with it), so it doesn't say that empty keeps the date as read.
         hint = SAID["assigned_hint"]
     none = None
     if field == "assigned":
@@ -814,6 +858,16 @@ class PieceControl:
     marks: tuple[tuple[str, str], ...] = ()
     """Hidden fields it carries, by name and value: a destination sent twice with different
     answers carries the values sent (``UNRESOLVED``) until it is answered."""
+    weighs_saved: bool = False
+    """Whether its choices weigh saved homework against new homework: a saved assignment among
+    them, or a card the evidence can't tell from saved homework (``unsure``). While none of them
+    is chosen, Review changes is the form's action, so the chosen one's effect is shown before
+    Save."""
+
+    @property
+    def asks(self) -> bool:
+        """Whether it weighs saved homework against new and none of its choices is chosen."""
+        return self.weighs_saved and not any(choice.checked for choice in self.choices)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -854,6 +908,15 @@ class Question:
 UNRESOLVED: Final = "unresolved:"
 """The prefix of the unsigned field a returned review carries for a joined note's tick sent
 twice with different answers, holding the values sent, until the family answers it."""
+CORRECT_PRESS: Final = "correct:"
+"""What starts the value of a card's Correct what was read press, before its piece name."""
+OPEN_MARK: Final = "open:"
+"""The prefix of the hidden field a card shown with its boxes open carries, before its piece
+name, so the page a press returns shows it open too."""
+ONE_PRESS_QUESTIONS: Final = frozenset({"due", "assigned", "kind", "instructions"})
+"""The open questions a group's tick is offered beside where it is ready whichever is answered:
+each answer's effect is in the digests its page signs, so the answer and the tick save in one
+press."""
 
 
 def _unresolved_ticks(
@@ -944,6 +1007,10 @@ class CardShown:
     said: tuple[str, ...]
     control: PieceControl
     type: Question | None = None
+    open: bool = False
+    """Whether its boxes are shown to type in: after its Correct what was read press, while the
+    page it came from showed them, or where a box is refused or marked; a closed card shows its
+    corrected values as text and carries every box hidden."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1044,6 +1111,22 @@ class RowsShown:
     unselected: tuple[str, ...] = dataclasses.field(default=(), kw_only=True)
     """For each destination posted beside them (``destinations``) that no control shows selected,
     the line naming its card, and the destination's label where the page establishes one."""
+
+    @property
+    def editing(self) -> bool:
+        """Whether any card's boxes are open: Review changes is then the form's action, and Save
+        isn't offered."""
+        return any(
+            card.open for unit in self.units for block in unit.blocks for card in block.cards
+        )
+
+    @property
+    def review_first(self) -> bool:
+        """Whether Review changes is the form's action and Save isn't offered: a card's boxes
+        are open (``editing``), or a card weighs saved homework against new with none chosen
+        (``PieceControl.asks``)."""
+        cards = (card for unit in self.units for block in unit.blocks for card in block.cards)
+        return self.editing or any(card.control.asks for card in cards)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1197,6 +1280,8 @@ def _choices(
             fact_text(f.kind, f.entry_date, f.piece_date, labels.get(str(f.about), ""))
             for f in facts(piece, row, state.rows, state.picks)
         )
+        if entry.kind == "listed" and saved_under_another_title(piece, row):
+            shown = (ANOTHER_TITLE.format(title=piece.title), *shown)
         out.append(Choice(entry.value, label, shown, entry.value == picked))
     for refusal in state.validation.of(piece.name).refusals:
         holder = refusal.named[1] if refusal.kind == "copy" else None
@@ -1647,6 +1732,8 @@ def rows_shown(
     sent_twice: frozenset[str] = frozenset(),
     unresolved: Mapping[str, tuple[str, ...]] | None = None,
     twice: Mapping[str, tuple[str, ...]] | None = None,
+    opened: frozenset[str] = frozenset(),
+    signed_digests: Mapping[str, tuple[str, ...]] | None = None,
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
@@ -1658,7 +1745,10 @@ def rows_shown(
     the values sent) is offered as the actual choice, neither side chosen, both signed. A box or
     answer of one value a refused press sent twice with different values (``twice``, by field,
     with the values sent) names both at that field, the box's fold open, none of the answer's
-    options chosen."""
+    options chosen. The cards named in ``opened``, and any with a box refused or marked, show
+    their boxes open. A page that shows no review of its typing (Correct what was read, or a
+    Save refused for corrections no review showed) signs each group's digests as its post
+    carried them (``signed_digests``), so a Save from it with that typing is refused again."""
     values = dict(state.values)
     image_ids = image_ids or {}
     reworked: dict[tuple[str, ...], list[tuple[Offer, Sequence[PreviewEntry]]]] = {}
@@ -1779,14 +1869,17 @@ def rows_shown(
         ):
             named = title if folded(course) == folded(head.course) else f"{course}: {title}"
             read_as = SAID["read_as"].format(title=named)
+        piece_choices = _choices(state, piece, piece.name in state.defaulted, labels)
         control = PieceControl(
             piece.name,
-            _choices(state, piece, piece.name in state.defaulted, labels),
+            piece_choices,
             finds[piece.name],
             piece.name in state.defaults and piece.name not in state.stored,
             piece.name in state.validation.of(piece.name).stale,
             SAID["lost_correction"] if piece.name in state.lost else None,
             choices_at[piece.name],
+            weighs_saved=any(dest_kind(value_of(choice.value)) != "new" for choice in piece_choices)
+            or unsure(piece, state.rows.values()),
         )
         kind = None
         if own:
@@ -1815,6 +1908,7 @@ def rows_shown(
             dates_said(piece, places),
             control,
             kind,
+            piece.name in opened or any(box.refused or box.marks for box in boxes),
         )
 
     ordered = sorted(
@@ -1828,6 +1922,7 @@ def rows_shown(
         placed: set[str] = set()
         saved_already: set[str] = set()
         still_any = False
+        still_names: set[str] = set()
         for dest, names_there in state.validation.destinations.items():
             if not set(names_there) <= set(unit.unit) or dest not in previews:
                 continue
@@ -1837,6 +1932,7 @@ def rows_shown(
             members = sorted((state.by_name[n] for n in entry.pieces), key=first_card)
             still = _still_open(entry, members, values, waiting, corrections)
             still_any = still_any or bool(still)
+            still_names.update(still)
             said_open = (
                 None
                 if not still
@@ -1875,7 +1971,14 @@ def rows_shown(
         leave = [("version", str(version)), ("keys", keys)]
         leave.append(("check", page_check(page_key, leave)))
         forms.append(OutsideForm(f"leave-{number}", "set-aside", tuple(leave)))
-        tickable = unit.ready and not still_any and unit_name(unit.unit) in digests
+        # A group whose only open questions ask which due or assigned date applies, whether it is
+        # homework or a task, or which instructions apply, ready whichever is answered, offers its
+        # tick beside them, as the post sent it: each answer's effect is shown and signed
+        # (``unit_digests``), so the answer and the tick save in one press.
+        tickable = unit_name(unit.unit) in digests and (
+            (unit.ready and not still_any)
+            or (unit_name(unit.unit) in state.ready_answered and still_names <= ONE_PRESS_QUESTIONS)
+        )
         held = sorted((state.by_name[n] for n in unit.unit), key=first_card)
         chosen_blocks = sum(1 for _, block in blocks if block.chosen)
         note = _note_standing(held)
@@ -1931,6 +2034,19 @@ def rows_shown(
                     signed_marks += question.marks
                 for box in card.boxes:
                     asked_fields.append((box.name, ()))
+                    if box.carried is not None and signed_digests is None:
+                        # The words this page shows beside the box, signed as shown; a page that
+                        # signs its post's digests in place of its own signs none, so a Save from
+                        # it is checked against the saved progress alone.
+                        asked_fields.append((box.carried[0], (carried_digest(box.carried[1]),)))
+                    box_key, box_field = json.loads(box.subject)
+                    box_shown = corrections.get(box_key, {})
+                    if signed_digests is None and box_field in box_shown:
+                        # The correction this page shows on the card, signed as shown, so a Save
+                        # carrying one no review showed is told from it on any group, whether or
+                        # not the group has digests; signed only where the page signs its own.
+                        as_shown = (shown_digest(box_shown[box_field]),)
+                        asked_fields.append((SHOWN + box.subject, as_shown))
                     signed_marks += box.marks
                     if box.none is not None:
                         asked_fields.append((box.none[0], ("none",)))
@@ -1961,7 +2077,8 @@ def rows_shown(
         ),
         ("identity", json.dumps(sorted({i.status for i in images}), separators=(",", ":"))),
     ]
-    hidden += [(f"digest:{u}", ",".join(d)) for u, d in sorted(digests.items())]
+    shown_digests = digests if signed_digests is None else {**digests, **signed_digests}
+    hidden += [(f"digest:{u}", ",".join(shown_digests[u])) for u in sorted(digests)]
     hidden.append(("check", page_check(page_key, hidden)))
     unread_groups, unread_forms = unread_shown(unread, places, open_keys, page_key, version)
     for index, row in enumerate(state.asking, 1):

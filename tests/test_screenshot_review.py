@@ -193,7 +193,7 @@ def test_also_saved_in_names_only_the_pieces_list() -> None:
     about = {f.about for f in review.facts(p, dest, rows, picks) if f.kind == "also_saved_in"}
     assert about == {near.assignment_id, other.assignment_id}
     alone = {f.about for f in review.facts(p, dest, rows) if f.kind == "also_saved_in"}
-    assert alone == {near.assignment_id}
+    assert alone == {near.assignment_id, other.assignment_id}
 
 
 # ------------------------------------------------------------------ defaults
@@ -233,6 +233,122 @@ def test_a_lone_piece_with_nothing_offered_starts_on_a_new_slot() -> None:
     linked = rows_of(row("t", WED, title=T))
     picks = [EarlierPick(C, Q, "t", 1)]
     assert review.defaults([p], groups_of(p), linked, picks, {}, nothing_writes) == {}
+
+
+def test_a_row_under_another_title_is_asked_by_words_or_school_dates_never_dates_alone() -> None:
+    """A saved row of the piece's class under another title, with the piece's dates: for a
+    wordless piece it is no candidate while only the family's claim names the due date, and,
+    the evidence too thin to tell the piece from it, the lone piece starts on no choice; with the
+    school's claim of that date it is listed and never preselected, and the lone piece starts on
+    no choice. A row holding the piece's words is a candidate whatever its claims."""
+    school = frozenset({(SourceChannel.LMS, TUE.isoformat(), "the assignment's own line")})
+    family = frozenset({(SourceChannel.PARENT_ENTRY, TUE.isoformat(), None)})
+    dated = dataclasses.replace(row("t", TUE, assigned=MON, title=T), claims=family)
+    claimed = dataclasses.replace(dated, claims=school)
+    wordless, worded = piece("p", TUE, assigned=MON), piece("p", TUE, [W1], MON)
+    held = dataclasses.replace(dated, words=frozenset({W1}))
+
+    assert not review.saved_under_another_title(wordless, dated)
+    assert review.listed(wordless, [dated]) == []
+    assert (
+        review.defaults([wordless], groups_of(wordless), rows_of(dated), [], {}, nothing_writes)
+        == {}
+    )
+    assert review.saved_under_another_title(wordless, claimed)
+    assert review.listed(wordless, [claimed]) == [claimed]
+    assert review.offerable(wordless, {"existing": "t"}, rows_of(claimed), [])
+    assert (
+        review.defaults([wordless], groups_of(wordless), rows_of(claimed), [], {}, nothing_writes)
+        == {}
+    )
+    assert review.saved_under_another_title(worded, held)
+    assert review.defaults([worded], groups_of(worded), rows_of(held), [], {}, nothing_writes) == {}
+
+
+def test_shared_words_suggest_a_row_under_another_title_only_within_seven_days() -> None:
+    """A row of the piece's class under another title holding the piece's words is suggested
+    only when its due date, or a due date the school gave it that the record keeps, is within
+    seven days of the piece's due date as read. One outside is not listed, and the lone piece
+    starts on no choice: outside the window never establishes new homework. A row the school's
+    claim keeps beside a far family date is suggested."""
+    worded = piece("p", TUE, [W1], MON)
+    inside = row("near", date(2026, 10, 20), [W1], MON, title=T)
+    outside = row("far", date(2026, 10, 21), [W1], MON, title=T)
+    school = frozenset({(SourceChannel.LMS, WED.isoformat(), "the assignment's own line")})
+    kept = dataclasses.replace(outside, assignment_id="kept", claims=school)
+
+    def starts(*rows: SavedRow) -> dict[str, dict[str, object]]:
+        return review.defaults([worded], groups_of(worded), rows_of(*rows), [], {}, nothing_writes)
+
+    assert review.listed(worded, [inside]) == [inside]
+    assert starts(inside) == {}
+    assert review.listed(worded, [outside]) == []
+    assert not review.offerable(worded, {"existing": "far"}, rows_of(outside), [])
+    assert starts(outside) == {}
+    assert review.listed(worded, [kept]) == [kept]
+
+
+def test_a_wordless_card_starts_on_no_choice_only_on_a_due_date_another_title_has() -> None:
+    """A wordless card piece starts on no choice, listing nothing new, when a row of its class
+    under another title has the piece's due date as read: as the row's current due date, or in a
+    claim from the school's channels kept under it. A row due on another date, however near, a
+    school claim of another date, a date only the family claimed, a row of another class or no
+    row leaves it on a new slot."""
+    wordless = piece("p", TUE, assigned=MON)
+    same = row("same", TUE, assigned=FRI, title=T)
+    near = row("near", WED, assigned=FRI, title=T)
+    far = row("far", date(2026, 10, 21), title=T)
+
+    def claiming(channel: SourceChannel, day: date) -> SavedRow:
+        claims = frozenset({(channel, day.isoformat(), None)})
+        return dataclasses.replace(far, assignment_id="claimed", claims=claims)
+
+    other_class = dataclasses.replace(same, assignment_id="other", course="Math 7")
+
+    def starts(*rows: SavedRow) -> dict[str, dict[str, object]]:
+        return review.defaults(
+            [wordless], groups_of(wordless), rows_of(*rows), [], {}, nothing_writes
+        )
+
+    lms, email = claiming(SourceChannel.LMS, TUE), claiming(SourceChannel.EMAIL, TUE)
+    assert review.listed(wordless, [same, lms, email]) == []
+    assert starts(same) == {}
+    assert starts(lms) == {}
+    assert starts(email) == {}
+    assert starts(near) == {"p": {"new": 1}}
+    assert starts(far) == {"p": {"new": 1}}
+    assert starts(claiming(SourceChannel.LMS, WED)) == {"p": {"new": 1}}
+    assert starts(claiming(SourceChannel.PARENT_ENTRY, TUE)) == {"p": {"new": 1}}
+    assert starts(other_class) == {"p": {"new": 1}}
+    assert starts() == {"p": {"new": 1}}
+
+
+def test_a_wordless_card_is_compared_by_its_due_date_as_read() -> None:
+    """A wordless card piece whose due box holds another date is compared by the due date it was
+    read with: a row due on the date as read keeps it on no choice, and a row due only on the
+    date in the box leaves it on a new slot."""
+    read = review.AsRead(C, Q, (), TUE, MON)
+    boxed = dataclasses.replace(piece("p", THU, assigned=MON), as_read=read)
+
+    def starts(*rows: SavedRow) -> dict[str, dict[str, object]]:
+        return review.defaults([boxed], groups_of(boxed), rows_of(*rows), [], {}, nothing_writes)
+
+    assert starts(row("as-read", TUE, assigned=FRI, title=T)) == {}
+    assert starts(row("in-the-box", THU, assigned=FRI, title=T)) == {"p": {"new": 1}}
+
+
+def test_two_missing_due_dates_are_no_match_for_a_wordless_card() -> None:
+    """A wordless card piece read with no due date starts on a new slot beside a row of its class
+    under another title with no due date, or with one: a missing date matches nothing."""
+    undated = piece("p", None, assigned=MON)
+
+    def starts(*rows: SavedRow) -> dict[str, dict[str, object]]:
+        return review.defaults(
+            [undated], groups_of(undated), rows_of(*rows), [], {}, nothing_writes
+        )
+
+    assert starts(row("none", None, assigned=FRI, title=T)) == {"p": {"new": 1}}
+    assert starts(row("dated", TUE, assigned=FRI, title=T)) == {"p": {"new": 1}}
 
 
 # ------------------------------------------------------------------ units

@@ -24,7 +24,7 @@ from typing import Any, Final, NamedTuple
 import blossom.intake as intake
 from blossom.grades.draft import folded
 from blossom.intake import Reading
-from blossom.reconciliation import SourceChannel
+from blossom.reconciliation import SCHOOL_CHANNELS, SourceChannel
 from blossom.school_instructions import InstructionSeen, instruction_words
 from blossom.screenshots import (
     INSTRUCTION_MOST,
@@ -319,10 +319,105 @@ def same_name_in_window(piece: Piece, row: SavedRow) -> bool:
     return note_of(piece) is None and row.pair == piece.pair and in_window(piece.due, row.due)
 
 
+def school_dated(piece: Piece, row: SavedRow) -> bool:
+    """Whether a saved assignment keeps the piece's dates as read as the school gave them: a
+    claim from the school's channels kept under it names the piece's due date as read, and its
+    assigned date is the piece's as read. The record keeps no claim for an assigned date, so
+    the row's own assigned date is the one compared."""
+    read = piece.as_read
+    due, assigned = (piece.due, piece.assigned) if read is None else (read.due, read.assigned)
+    if due is None:
+        return False
+    return row.assigned == assigned and any(
+        channel in SCHOOL_CHANNELS and asserted == due.isoformat()
+        for channel, asserted, _ in row.claims
+    )
+
+
+def _due_days(row: SavedRow) -> set[date | None]:
+    """A saved assignment's due date and each due date a claim from the school's channels kept
+    under it names."""
+    days: set[date | None] = {row.due}
+    for channel, asserted, _ in row.claims:
+        if channel in SCHOOL_CHANNELS:
+            try:
+                days.add(date.fromisoformat(asserted))
+            except ValueError:
+                continue
+    return days
+
+
+def near_as_read(piece: Piece, row: SavedRow) -> bool:
+    """Whether one of a saved assignment's dates, its due date or a due date a claim from the
+    school's channels kept under it names, is within the window of the piece's due date as read
+    (``in_window``), so a date the family changed never hides the school's."""
+    read = piece.as_read
+    due = piece.due if read is None else read.due
+    return any(in_window(due, day) for day in _due_days(row))
+
+
+def due_matches_as_read(piece: Piece, row: SavedRow) -> bool:
+    """Whether the piece's due date as read is a saved assignment's due date or a due date a claim
+    from the school's channels kept under it names. Two missing dates are no match: a piece read
+    with no due date matches no row."""
+    read = piece.as_read
+    due = piece.due if read is None else read.due
+    return due is not None and due in _due_days(row)
+
+
+def _another_card_title(piece: Piece, row: SavedRow) -> bool:
+    """Whether a row is of a card piece's class under another title, the piece's class and
+    title as read and the piece not read from a teacher's note."""
+    read = piece.as_read
+    if read is not None and intake.pair(read.course, read.title) != piece.pair:
+        return False
+    return note_of(piece) is None and row.pair[0] == piece.pair[0] and row.pair != piece.pair
+
+
+def saved_under_another_title(piece: Piece, row: SavedRow) -> bool:
+    """Whether a saved assignment of a card piece's class, under a title other than the one
+    read, may be the piece's: it holds the piece's words, where the piece has any, and one of
+    its dates is near the piece's due date as read (``near_as_read``), or it keeps the piece's
+    dates as read as the school gave them (``school_dated``), whatever the window. Such a row is
+    a candidate to ask about, never a match: it is listed and offered, never preselected. Only
+    for a card piece whose class and title are as read, so a title the family types on this
+    review is matched by name alone; never for a piece read from a teacher's note, which only
+    its words and school day recognize (``holds_note``)."""
+    if not _another_card_title(piece, row):
+        return False
+    held = bool(piece.words and holds_words(piece.words, row.words))
+    return (held and near_as_read(piece, row)) or school_dated(piece, row)
+
+
+def unsure(piece: Piece, rows: Iterable[SavedRow]) -> bool:
+    """Whether the evidence the record keeps is too thin to tell a card piece from saved
+    homework of its class under another title: a row holding the piece's non-empty words with
+    no date near the piece's due date as read (``near_as_read``), or, for a piece read with no
+    words, a row with that very due date (``due_matches_as_read``). Such a piece lists no row it
+    doesn't otherwise list and never starts on a new slot: the family chooses."""
+    for row in rows:
+        if not _another_card_title(piece, row):
+            continue
+        if piece.words:
+            if holds_words(piece.words, row.words) and not near_as_read(piece, row):
+                return True
+        elif due_matches_as_read(piece, row):
+            return True
+    return False
+
+
 def listed(piece: Piece, rows: Iterable[SavedRow]) -> list[SavedRow]:
-    """The saved assignments of the piece's class and title in its window, or for a piece
-    read from a teacher's note those holding its words and school day, in a fixed order."""
-    found = [r for r in rows if same_name_in_window(piece, r) or holds_note(piece, r)]
+    """The saved assignments of the piece's class and title in its window, those of its class
+    saved under another title that may be its own (``saved_under_another_title``), or for a
+    piece read from a teacher's note those holding its words and school day, in a fixed
+    order."""
+    found = [
+        r
+        for r in rows
+        if same_name_in_window(piece, r)
+        or holds_note(piece, r)
+        or saved_under_another_title(piece, r)
+    ]
     return sorted(
         found,
         key=lambda r: (
@@ -416,7 +511,11 @@ def offerable(
         return False
     if kind == "existing":
         row = rows[target]
-        return same_name_in_window(piece, row) or holds_note(piece, row)
+        return (
+            same_name_in_window(piece, row)
+            or holds_note(piece, row)
+            or saved_under_another_title(piece, row)
+        )
     if kind == "linked":
         return any(r.assignment_id == target for r in linked(piece, picks, rows))
     return True
@@ -490,7 +589,10 @@ def defaults(
     slot 1. Two pieces never start on one assignment. A piece read from a teacher's note is
     preselected "Already saved" only on the one assignment holding its words and school day;
     with none it is never preselected "Already saved": its class, title, due date and words
-    don't tell one week's note from another's."""
+    don't tell one week's note from another's. An assignment listed only as saved under another
+    title (``saved_under_another_title``) is never preselected, and a lone piece with one
+    listed starts on no choice: the family answers same or new. A lone piece the evidence can't
+    tell from saved homework (``unsure``) starts on no choice too."""
     picks = list(picks)
     candidates: dict[str, str] = {}
     for piece in pieces:
@@ -501,7 +603,9 @@ def defaults(
             if len(noted) == 1 and writes_nothing(piece, noted[0]):
                 candidates[piece.name] = noted[0]
             continue
-        options = listed(piece, rows.values()) + linked(piece, picks, rows)
+        options = [
+            r for r in listed(piece, rows.values()) if not saved_under_another_title(piece, r)
+        ] + linked(piece, picks, rows)
         exact = sorted(
             {
                 r.assignment_id
@@ -530,7 +634,11 @@ def defaults(
         [piece] = group
         if piece.name in stored or piece.name in out:
             continue
-        if not listed(piece, rows.values()) and not linked(piece, picks, rows):
+        if (
+            not listed(piece, rows.values())
+            and not linked(piece, picks, rows)
+            and not unsure(piece, rows.values())
+        ):
             out[piece.name] = {"new": 1}
     return out
 
