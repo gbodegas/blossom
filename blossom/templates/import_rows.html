@@ -100,8 +100,8 @@
 {% endmacro %}
 <form method="post" action="/parent/imports/{{ draft_id }}/review" class="review-form" id="review-form">
   {% for name, value in rows.hidden %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
-  {#- While a card's boxes are open, or a card has no destination chosen, the form's first submit button, so Enter shows the review again with what was typed and chosen: Review changes, out of the tab order and hidden from assistive technology, which reach the visible one. #}
-  {% if rows.review_first %}<button type="submit" class="visually-hidden" name="press" value="review" formnovalidate tabindex="-1" aria-hidden="true">Review changes</button>{% endif %}
+  {#- On every page that shows a card, the form's first submit button, so Enter shows the review again with what was typed and chosen: Review changes, out of the tab order and hidden from assistive technology, which reach the visible one. #}
+  {% if rows.offers_review %}<button type="submit" class="visually-hidden" name="press" value="review" formnovalidate tabindex="-1" aria-hidden="true">Review changes</button>{% endif %}
   {% if rows.names %}
     <section class="panel" aria-labelledby="name-heading">
       <h2 id="name-heading">Student name</h2>
@@ -203,8 +203,8 @@
     <p class="note" id="review-status">{{ rows.status }}</p>
     <p class="helper" id="typing-lost">{{ words.typing_lost }}</p>
     <div class="actions">
-      {% if rows.review_first %}<button type="submit" class="primary" name="press" value="review" formnovalidate aria-describedby="review-status">Review changes</button>
-      {% else %}<button type="submit" class="primary" name="press" value="save" aria-describedby="review-status">Save selected homework</button>{% endif %}
+      {% if rows.offers_save %}<button type="submit" class="primary" name="press" value="save" aria-describedby="review-status">Save selected homework</button>{% endif %}
+      {% if rows.offers_review %}<button type="submit" class="{% if rows.offers_save %}secondary{% else %}primary{% endif %}" name="press" value="review" formnovalidate aria-describedby="review-status">Review changes</button>{% endif %}
     </div>
     <details class="steps">
       <summary>Other choices</summary>

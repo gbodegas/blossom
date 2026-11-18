@@ -24,6 +24,8 @@ from blossom.screenshot_page import (
     EMPTY,
     INSTRUCTIONS_ASKED,
     OPEN_MARK,
+    READY_SHOWN,
+    SELECTION_SHOWN,
     SHOWN,
     TICKED_SHOWN,
     UNRESOLVED,
@@ -181,6 +183,24 @@ class ReviewPost:
     left_off: frozenset[str] = frozenset()
     """The cards, by piece name, of each group its page signed as shown ticked and this press did
     not tick: the family's untick, which a destination chosen on the same press never overrides."""
+    ready_shown: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    """Each group its page signed as ready for Save, by name, with whether a question was open on
+    it (``READY_WHOLE`` or ``READY_ASKING``)."""
+    shown_chosen: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    """The destination its page signed as shown chosen, by piece name."""
+    held_back: frozenset[str] = frozenset()
+    """The cards, by piece name, of each group this Save selected and did not write: nothing is
+    written or stored for them, and the page it returns shows them for Review changes."""
+    selection_shown: str | None = None
+    """The signed selection a form that posts no ticks carried from its page (an offer or a found
+    row, ``SELECTION_SHOWN``); None where its form carried none."""
+    load_ticks: frozenset[str] | None = None
+    """The rows a plain load of the review ticks before this press stores anything, worked out from
+    the read its post was checked against; None for a post read without one."""
+    selection: frozenset[str] | None = None
+    """The rows an offer or a found row gives saved progress: the selection its page showed and
+    the rows of the cards it chose. None for a press that posts its ticks, and for a form that
+    carried no selection."""
 
     @property
     def refused(self) -> bool:
@@ -441,6 +461,7 @@ def read_change(
     if fields.pop("press", "") != "keep":
         raise PostRefused
     version = _number(fields.pop("version", ""))
+    selection_shown = fields.pop(SELECTION_SHOWN, None)
     answers = []
     for name, value in sorted(fields.items()):
         kind, subject = _field(name)
@@ -450,7 +471,20 @@ def read_change(
     if not answers:
         raise PostRefused
     typed = {key: dict(fields) for key, fields in corrections.items()}
-    return ReviewPost("keep", version, "", 0, tuple(answers), typed, (), {}, {}, ticked=False)
+    return ReviewPost(
+        "keep",
+        version,
+        "",
+        0,
+        tuple(answers),
+        typed,
+        (),
+        {},
+        {},
+        ticked=False,
+        chosen_here=frozenset(answer.subject for answer in answers),
+        selection_shown=selection_shown,
+    )
 
 
 def _number(text: str) -> int:
@@ -783,7 +817,7 @@ def read_review(
         both=folded.both,
         conflicted=conflicted,
         choices={
-            **_beside_placed_cards(_posted_choices(offered, chosen, rest), chosen, state),
+            **_posted_choices(offered, chosen, rest),
             **{name: () for name in (*twice, *left_open) if name.startswith("answer:")},
         },
         unresolved=tuple(unresolved),
@@ -826,6 +860,16 @@ def read_review(
             if name.startswith(TICKED_SHOWN) and name.removeprefix(TICKED_SHOWN) not in units
             for piece in name.removeprefix(TICKED_SHOWN).split("+")
         ),
+        ready_shown={
+            name.removeprefix(READY_SHOWN): min(values)
+            for name, values in offered.items()
+            if name.startswith(READY_SHOWN) and values
+        },
+        shown_chosen={
+            name.removeprefix(CHOSEN_SHOWN): min(values)
+            for name, values in offered.items()
+            if name.startswith(CHOSEN_SHOWN) and values
+        },
     )
 
 
@@ -879,30 +923,6 @@ def _posted_choices(
             if name.startswith("none:")
         },
     }
-
-
-def _beside_placed_cards(
-    choices: Mapping[str, tuple[str, ...]],
-    chosen: Mapping[str, Sequence[str]],
-    state: ReviewState,
-) -> dict[str, tuple[str, ...]]:
-    """The posted choices without each joined note's tick left blank beside a card its page gave
-    no destination, where no answer is kept for that tick: that blank says nothing of the note,
-    so the page that returns shows the note as the destination chosen with it finds it. A tick
-    kept and then left blank is the family's answer, given back as posted."""
-
-    def said_nothing(name: str) -> bool:
-        if not name.startswith(JOINED_PREFIX) or name in chosen:
-            return False
-        subject = name.removeprefix(JOINED_PREFIX)
-        found = joined_of(subject)
-        return (
-            found is not None
-            and found[0] not in state.mapping
-            and ("joined", subject) not in state.held
-        )
-
-    return {name: values for name, values in choices.items() if not said_nothing(name)}
 
 
 BOX_PREFIXES: Final = ("correct:", "refused:", "none:")
@@ -1260,6 +1280,35 @@ def progress_text(corrected: Corrections, selected: Iterable[str]) -> str:
         },
         separators=(",", ":"),
     )
+
+
+def answer_pieces(kind: str, subject: str, pieces: Iterable[str]) -> frozenset[str]:
+    """The pieces among ``pieces`` an answer is about, read from its kind and subject."""
+    if kind == "confirm":
+        owner = str(json.loads(subject)[0])
+        return frozenset(p for p in pieces if owner in (p, p.split("|")[0]))
+    if kind == "split" or (kind == "kind" and not subject.startswith("[")):
+        return frozenset(p for p in pieces if p.split("|")[0] == subject)
+    return frozenset(answer_names(kind, subject))
+
+
+def rows_of_units(units: Iterable[str]) -> frozenset[str]:
+    """The row keys of the groups named, read from their piece names, as saved progress keeps a
+    selection."""
+    return frozenset(name.split("|")[0] for unit in units for name in unit.split("+"))
+
+
+def selection_text(progress: str | None, selected: Iterable[str]) -> str | None:
+    """Saved progress with this selection, its corrections and shape left as they stand: new
+    progress where none is stored, and None where nothing is to be written, because it already
+    holds this selection or can't be read."""
+    chosen = sorted(set(selected))
+    if progress is None:
+        return progress_text({}, chosen)
+    read = progress_read(progress)
+    if read is None or read.selected == frozenset(chosen):
+        return None
+    return json.dumps({**json.loads(progress), "selected": chosen}, separators=(",", ":"))
 
 
 def _kept(shape: int, key: str, field: str, value: object) -> bool:

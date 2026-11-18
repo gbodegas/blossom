@@ -317,6 +317,9 @@ class AnswersKept(NamedTuple):
     dropped: int
     withdrawn: int = 0
     dropped_keys: frozenset[tuple[str, str]] | None = None
+    progress_revision: int | None = None
+    """The review's progress revision after the press wrote its selection into saved progress;
+    None where the press wrote none."""
 
 
 class SavedForLater(NamedTuple):
@@ -982,16 +985,72 @@ class ImportDraftsStore:
         version: int,
         answers: Sequence[AnswerToKeep],
         withdrawn: Sequence[tuple[str, str]] = (),
+        selection: Callable[[str | None], str | None] | None = None,
+        progress_revision: int | None = None,
         wait: float = STORE_WAIT_SECONDS,
     ) -> AnswersKept:
         """Keep a press's answers at the page's version, all or none, in one writer transaction:
         an answer for pieces another save accepted is dropped, an answer equal to the one kept
         writes nothing, each answer the page asked for and the press left blank (``withdrawn``,
         by kind and subject) is deleted, and the version is raised once when any answer
-        changed."""
+        changed. With ``selection``, the same transaction also gives the saved progress the
+        groups the press selected: ``selection`` turns the stored progress into the text to keep,
+        or None where it already holds that selection, which writes nothing. A page behind the
+        stored ``progress_revision`` keeps its answers and stores no selection."""
         with self._writing(wait) as now:
             draft = self._at_version(student_id, draft_id, version, now)
-            return self._keep_answers_locked(draft, answers, withdrawn)
+            kept = self._keep_answers_locked(draft, answers, withdrawn)
+            revision = int(draft["progress_revision"])
+            if selection is None or revision != progress_revision:
+                return kept
+            return kept._replace(
+                progress_revision=self._selection_locked(draft_id, revision, selection, now)
+            )
+
+    def keep_selection(
+        self,
+        student_id: str,
+        draft_id: str,
+        *,
+        progress_revision: int,
+        selection: Callable[[str | None], str | None],
+        wait: float = STORE_WAIT_SECONDS,
+    ) -> int | None:
+        """Give the saved progress the groups a save that committed left selected, compared
+        against the revision that save raised the review to; the revision after, or None where
+        nothing was written: the progress holds that selection, or the review has moved on."""
+        with self._writing(wait) as now:
+            draft = self._open_draft(student_id, draft_id, now)
+            if int(draft["progress_revision"]) != progress_revision:
+                return None
+            return self._selection_locked(draft_id, progress_revision, selection, now)
+
+    def _selection_locked(
+        self,
+        draft_id: str,
+        revision: int,
+        selection: Callable[[str | None], str | None],
+        now: datetime,
+    ) -> int | None:
+        """Inside a write: the stored progress as ``selection`` turns it, with one raise of the
+        progress revision; the revision after, or None where ``selection`` leaves it as it is."""
+        found = self._connection.execute(
+            "SELECT progress FROM import_draft_progress WHERE draft_id = ?", (draft_id,)
+        ).fetchone()
+        progress = selection(None if found is None else str(found[0]))
+        if progress is None:
+            return None
+        self._connection.execute(
+            "INSERT INTO import_draft_progress (draft_id, progress, saved_at) "
+            "VALUES (?, ?, ?) ON CONFLICT (draft_id) DO UPDATE SET "
+            "progress = excluded.progress, saved_at = excluded.saved_at",
+            (draft_id, progress, instant(now)),
+        )
+        self._connection.execute(
+            "UPDATE import_drafts SET progress_revision = progress_revision + 1 WHERE draft_id = ?",
+            (draft_id,),
+        )
+        return revision + 1
 
     def save_for_later(
         self,

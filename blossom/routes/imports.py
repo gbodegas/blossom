@@ -44,6 +44,10 @@ from blossom.routes.store_refusals import busy_file as busy_file
 from blossom.screenshot_page import (
     CORRECT_PRESS,
     NEEDED,
+    READY_ASKING,
+    READY_WHOLE,
+    SELECTION_CHECK,
+    SELECTION_SHOWN,
     Box,
     ImageName,
     ListTooLarge,
@@ -58,17 +62,22 @@ from blossom.screenshot_page import (
     piece_text,
     rows_shown,
     same_signature,
+    selected_on_load,
+    selection_read,
     signed_action,
 )
 from blossom.screenshot_page import SAID as PAGE_SAID
 from blossom.screenshot_posts import (
     PROGRESS_SHAPE,
     ReviewPost,
+    answer_pieces,
     kept_assignments,
     progress_read,
     progress_text,
     read_change,
     read_review,
+    rows_of_units,
+    selection_text,
     shape_four,
     typed_as_sent,
     typed_beside_words,
@@ -77,10 +86,12 @@ from blossom.screenshot_posts import (
 )
 from blossom.screenshot_reading import ReadOutcome, read_screenshots
 from blossom.screenshot_review import (
+    UNJOINED,
     Corrections,
     change_told,
     dates_key,
     offered_as_it_stands,
+    unit_name,
     value_json,
     value_of,
 )
@@ -116,6 +127,7 @@ from blossom.stores.import_drafts import (
     TOKEN_SHAPE,
     Added,
     AnswersKept,
+    AnswerToKeep,
     AttemptUnderWay,
     Closing,
     DraftClosed,
@@ -1743,6 +1755,9 @@ def as_kept(tables: DraftForSave, post: ReviewPost) -> DraftForSave:
     for key in post.withdrawn:
         if key not in posted:
             answers.pop(key, None)
+            if key[0] == "joined":
+                # A joined note's tick left blank stands on a page that stores nothing.
+                answers[key] = (UNJOINED, "")
     return tables._replace(answers={**answers, **posted})
 
 
@@ -1807,6 +1822,7 @@ async def rows_of(
     retaken: frozenset[str] = frozenset(),
     chosen_here: frozenset[str] = frozenset(),
     left_off: frozenset[str] = frozenset(),
+    held_back: frozenset[str] = frozenset(),
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
@@ -1831,7 +1847,8 @@ async def rows_of(
     unchosen on a page that asked (``unchosen``) and those its typing took back (``retaken``)
     never start on a new slot, and the latter say why they ask again. A press that stores nothing
     selects the group of each card whose destination it chose (``chosen_here``), unless it
-    unticked that group (``left_off``)."""
+    unticked that group (``left_off``). The cards a Save held back (``held_back``) wait for Review
+    changes."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
     kept = await saved_corrections(state, snapshot)
@@ -1883,6 +1900,7 @@ async def rows_of(
         retaken=retaken,
         chosen_here=chosen_here,
         left_off=left_off,
+        held_back=held_back,
     )
 
 
@@ -2144,6 +2162,9 @@ NOTHING_BY_THIS_ATTEMPT: Final = "Nothing was kept or saved by this attempt."
 has ended, or sits beside an earlier save: nothing says why the post doesn't match."""
 NO_HOMEWORK: Final = "No homework was saved by this attempt."
 """What a press whose homework transaction didn't commit says of it where nothing else does."""
+HOMEWORK_CHANGES_NOT_SAVED: Final = "The homework changes weren't saved."
+"""What a Save says beside the answers it kept when the final check finds the homework changed
+since its page: the answers stay stored, and a later Save meets the same check."""
 PRESS_SAID: Final = {
     "answers_kept": "Your answers were kept by this attempt.",
     "some_kept": "Some of your answers were kept by this attempt.",
@@ -2198,11 +2219,19 @@ PRESS_SAID: Final = {
     "kept_before_ended": "Your answers were kept before this review ended.",
     "some_kept_before_ended": "Some of your answers were kept before this review ended.",
     "none_chosen": "Choose at least one assignment to save.",
+    "choices_not_saved": (
+        "Nothing was saved, and these choices are not kept yet. Use Save review for later to "
+        "keep them."
+    ),
+    "held_back": (
+        "Needs your attention: an assignment wasn't saved. Press Review changes to see what "
+        "saving it will do."
+    ),
     "already": "Already saved from this review.",
     "changed": (
         "Saving an assignment you ticked would now do this instead. Check it and save again."
     ),
-    "changed_beside_answers": f"{NO_HOMEWORK} Check the effects below, then save.",
+    "changed_beside_answers": f"{HOMEWORK_CHANGES_NOT_SAVED} Check the effects below, then save.",
     "busy": (
         "The homework wasn't saved because the household file was busy; nothing of it was "
         "written. Save again."
@@ -2238,7 +2267,7 @@ UNSHOWN_SAID: Final = {
     ),
     PRESS_SAID["unsaved_typing"]: (),
     PRESS_SAID["changed_beside_answers"]: (
-        f"{NO_HOMEWORK} Check the effects in the review, then save.",
+        f"{HOMEWORK_CHANGES_NOT_SAVED} Check the effects in the review, then save.",
     ),
 }
 """The press lines that point at the review's rows, as a page that can't show them says them."""
@@ -2270,8 +2299,10 @@ ENDED_SAID: Final = {
     PRESS_SAID["answers_kept"]: PRESS_SAID["kept_before_ended"],
     PRESS_SAID["some_kept"]: PRESS_SAID["some_kept_before_ended"],
     PRESS_SAID["keep_warning"]: "",
-    PRESS_SAID["changed_beside_answers"]: NO_HOMEWORK,
+    PRESS_SAID["changed_beside_answers"]: HOMEWORK_CHANGES_NOT_SAVED,
     PRESS_SAID["none_chosen"]: "",
+    PRESS_SAID["choices_not_saved"]: "",
+    PRESS_SAID["held_back"]: "",
     PRESS_SAID["busy"]: without(PRESS_SAID["busy"], "Save again."),
     PRESS_SAID["failed"]: without(PRESS_SAID["failed"], "Save again."),
     PRESS_SAID["keep_failed"]: without(PRESS_SAID["keep_failed"], "Try again."),
@@ -2590,20 +2621,43 @@ async def review_post(
     if review is None:
         return None, named
     places = {image.sha256: index + 1 for index, image in enumerate(found.images)}
+    load_ticks = selected_on_load(review, picked(found.progress))
     try:
         if any(name == "offer" for name, _ in items):
-            post = read_change(items, found.page_key, review, saved)
+            post = with_selection_shown(read_change(items, found.page_key, review, saved), found)
             request.state.typed_cards = cards_named(review, places)
-            return dataclasses.replace(post, held=review.held), "keep"
+            return dataclasses.replace(post, held=review.held, load_ticks=load_ticks), "keep"
         kept = await kept_words(state, kept_assignments(items, found.page_key))
         post = read_review(items, found.page_key, review, kept)
         request.state.typed_cards = cards_named(review, places)
         post = typing_asks_again(review, post)
-        return dataclasses.replace(post, held=review.held), named
+        return dataclasses.replace(post, held=review.held, load_ticks=load_ticks), named
     except ListTooLarge:
         raise
     except (PostRefused, RecursionError):
         return None, named
+
+
+def open_row_keys(found: DraftSnapshot) -> list[str]:
+    """The review's open rows, as a page counts them in the selection it signs."""
+    return [row.key for row in found.rows if row.state == "open"]
+
+
+def with_selection_shown(post: ReviewPost, found: DraftSnapshot) -> ReviewPost:
+    """An offer's or a found row's post with what it gives saved progress: the selection its page
+    showed and the rows of the cards it chose, compared against the revision that page showed. A
+    form that carried no selection, or one counted over other rows, gives it nothing."""
+    read = (
+        None
+        if post.selection_shown is None
+        else selection_read(post.selection_shown, open_row_keys(found))
+    )
+    if read is None:
+        return post
+    revision, shown = read
+    return dataclasses.replace(
+        post, progress_revision=revision, selection=shown | rows_of_units(post.chosen_here)
+    )
 
 
 def typing_asks_again(review: ReviewState, post: ReviewPost) -> ReviewPost:
@@ -2744,6 +2798,8 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
             version=post.version,
             answers=list(post.answers),
             withdrawn=list(post.withdrawn),
+            selection=selection_to_keep(post, found),
+            progress_revision=post.progress_revision,
         )
     except ReviewChanged:
         return await with_typing(request, state, draft_id, post, [OUT_OF_DATE], 409, found=found)
@@ -2802,6 +2858,65 @@ async def nothing_written(
     )
 
 
+def selection_of(post: ReviewPost) -> Callable[[str | None], str | None]:
+    """What a press that keeps the review gives saved progress: the groups it ticked, or the rows
+    an offer or a found row carries, in place of the selection stored (``selection_text``)."""
+    selected = selected_by(post)
+    return lambda progress: selection_text(progress, selected)
+
+
+def selected_by(post: ReviewPost) -> frozenset[str]:
+    """The rows a press that keeps the review selects: those of the groups it ticked, or those an
+    offer or a found row carries."""
+    return rows_of_units(post.units) if post.selection is None else post.selection
+
+
+def selection_settled(
+    post: ReviewPost,
+    found: DraftSnapshot,
+    stored: Iterable[AnswerToKeep],
+    closed: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether a press selects what a plain load shows once its answers (``stored``) are stored and
+    the rows in ``closed`` are saved: with no saved progress, a destination stored takes its row
+    off the default rule. An answer that can regroup the rows is never settled here, and the
+    selection is written."""
+    regroups = any(kind in ("destination", "joined") for kind, _ in post.withdrawn)
+    answers = list(stored)
+    if post.load_ticks is None or regroups or any(a.kind == "split" for a in answers):
+        return False
+    given = rows_of_units(a.subject for a in answers if a.kind == "destination")
+    shown = post.load_ticks if found.progress is not None else post.load_ticks - given
+    return shown - closed == selected_by(post) - closed
+
+
+def selection_to_keep(
+    post: ReviewPost, found: DraftSnapshot
+) -> Callable[[str | None], str | None] | None:
+    """What Keep these answers, an offer or a found row gives saved progress: nothing where it
+    selects what a plain load shows, so an ordinary press leaves every other open page current."""
+    if (not post.ticked and not post.selection) or selection_settled(post, found, post.answers):
+        return None
+    return selection_of(post)
+
+
+async def load_shows(
+    state: ApplicationState, student: str, draft_id: str, selected: frozenset[str]
+) -> bool:
+    """Whether a plain load of the review as it stands ticks exactly the rows of ``selected`` left
+    open, read after the press's own commit. A read refused here tells nothing: False."""
+    try:
+        snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+        review = await state_of_review(state, snapshot, await saved_corrections(state, snapshot))
+    except (*STORE_REFUSALS, sqlite3.Error) as error:
+        logger.warning("A selection couldn't be compared: %s", type(error).__name__)
+        return False
+    if review is None:
+        return False
+    shown = selected_on_load(review, picked(snapshot.progress))
+    return shown == selected & frozenset(open_row_keys(snapshot))
+
+
 def destinations_held(post: ReviewPost) -> ReviewPost:
     """The post with only its answers of where each card goes that its page chose by no default,
     for a page that stores nothing and gives every other choice back as posted in its own
@@ -2810,13 +2925,21 @@ def destinations_held(post: ReviewPost) -> ReviewPost:
     as that default again, or, where the post's corrections withdraw that default, as sent when
     it was sent unchanged (its ``defaults``: the page defaults sent unchanged), still a default;
     one changed from it is given back as posted, "Not saved yet." beside it, its effect shown by
-    Review changes."""
+    Review changes. A joined note's tick the post left blank is held as that answer, so the tick
+    stands as posted."""
     return dataclasses.replace(
         post,
-        answers=tuple(
-            answer
-            for answer in post.answers
-            if answer.kind == "destination" and answer.subject not in post.defaults
+        answers=(
+            *(
+                answer
+                for answer in post.answers
+                if answer.kind == "destination" and answer.subject not in post.defaults
+            ),
+            *(
+                AnswerToKeep(kind, subject, UNJOINED, "", ())
+                for kind, subject in post.withdrawn
+                if kind == "joined"
+            ),
         ),
         withdrawn=(),
         defaults={
@@ -2917,7 +3040,7 @@ async def unreviewed_effects(
     } | unplaced
     if not differ:
         return frozenset()
-    as_on_review = dataclasses.replace(post, press="review")
+    as_on_review = dataclasses.replace(post, press="review", answers=destinations_as_shown(post))
     held = await state_of_review(state, found, post.corrections, as_on_review)
     as_reviewed = {} if held is None else unit_digests(held)
     if unplaced:
@@ -2931,6 +3054,20 @@ async def unreviewed_effects(
         if post.digests[unit] != as_reviewed.get(unit)
         for name in unit.split("+")
     )
+
+
+def destinations_as_shown(post: ReviewPost) -> tuple[AnswerToKeep, ...]:
+    """The post's answers with each destination changed on this press put back to the one its page
+    showed, or left out where its page showed none: a typed edit is checked at the destination
+    its review showed, so a changed destination beside a reviewed correction is held, not
+    refused."""
+    answers = []
+    for answer in post.answers:
+        if answer.kind != "destination" or answer.subject not in post.chosen_here:
+            answers.append(answer)
+        elif answer.subject in post.shown_chosen:
+            answers.append(answer._replace(value=post.shown_chosen[answer.subject]))
+    return tuple(answers)
 
 
 async def unshown_unread(
@@ -3025,6 +3162,7 @@ async def with_typing(
     signed_digests: Mapping[str, tuple[str, ...]] | None = None,
     as_posted: bool = False,
     held_answers: ReviewPost | None = None,
+    left_answers: bool = False,
 ) -> Response:
     """A press that saved nothing, or a save that left the review open, answers with the review as
     it stands now, the corrections it typed and the groups it ticked in the form, and an answer just
@@ -3114,7 +3252,15 @@ async def with_typing(
     with no assigned date for it (``tick_beyond_progress``), and says it's out of date
     (``no_form_with_typing``), a Save with nothing saved as ``not_saved`` says it. Each page
     here that draws no form after this request's own save leaves out of its copies the class,
-    title and instructions boxes that save's evidence holds (``text_boxes``)."""
+    title and instructions boxes that save's evidence holds (``text_boxes``). A Save that committed
+    beside answers about groups it left open, none of them stored (``left_answers``), gives those
+    back as posted."""
+    if post.held_back or left_answers:
+        # A Save that held groups back gives them back as posted, whatever version its own write
+        # moved the review to; they are signed with no digests, so only Review changes leads on.
+        # Answers about a group left unticked come back the same way, its tick as posted.
+        as_posted = True
+        held_answers = held_answers or dataclasses.replace(post, press="review")
     saved_exactly = text_boxes(saved.stored) if saved else frozenset()
     stored = answers_said(own_write) if done and own_write is not None else []
     after = read or await snapshot_keeping_typing(
@@ -3131,7 +3277,9 @@ async def with_typing(
     )
     if isinstance(after, Response):
         return after
-    if found is not None and not post.ticked:
+    if own_write is not None and own_write.progress_revision is not None:
+        revision = own_write.progress_revision
+    elif found is not None and not post.ticked:
         revision = found.progress_revision
     elif saved is not None:
         revision = saved.progress_revision
@@ -3141,7 +3289,7 @@ async def with_typing(
     pressed = said
     lines = [*said, *notes]
     ticked = post.units if post.ticked else None
-    current = post.version == after.version
+    current = post.version == after.version or bool(post.held_back) or left_answers
     refused_with_choices = bool(post.conflicted or post.unresolved)
     with_choices = refused_with_choices or bool(post.both)
     carry = (
@@ -3179,8 +3327,13 @@ async def with_typing(
             posted=held_answers if current else None,
             unchosen=post.unchosen if current else frozenset(),
             retaken=post.retaken if current else frozenset(),
-            chosen_here=(post.chosen_here if current and held_answers is not None else frozenset()),
+            chosen_here=(
+                post.chosen_here
+                if not post.ticked or (current and held_answers is not None)
+                else frozenset()
+            ),
             left_off=post.left_off if current else frozenset(),
+            held_back=post.held_back,
         )
         said_lost = await choices_said_lost(
             state, draft_id, post, rows, own, current, behind, answers_read=answers_said_lost
@@ -3270,6 +3423,7 @@ async def with_typing(
                 lines.append(PAGE_SAID["not_carried"])
         elif said_lost or (
             current
+            and not left_answers
             and (
                 rows.not_carried
                 or (refused_with_choices and not ticks_shown.issuperset(post.units))
@@ -3437,9 +3591,12 @@ def post_off_record(
 ) -> bool:
     """Whether a resent press's choices aren't what the record holds: an answer it holds otherwise
     or not at all, or one it holds that the press left blank. A double press's are what its first
-    copy kept, whatever that did to the page. Its save's own rows go with that save."""
+    copy kept, whatever that did to the page. Its save's own rows go with that save, and a page's
+    default destination sent unchanged is no choice of hers, stored or not."""
     for answer in post.answers:
         if answer.names and own.issuperset(answer.names):
+            continue
+        if answer.kind == "destination" and post.defaults.get(answer.subject) == answer.value:
             continue
         if held.get((answer.kind, answer.subject)) != answer.value:
             return True
@@ -3782,7 +3939,10 @@ async def save_press(
         return await unknown_outcome(request, state, homework=none_written)
     if recorded is not None:
         own = frozenset(name for name, _ in recorded)
-        return await saved_page(request, state, draft_id, post.acceptance, [], post, own)
+        held = frozenset(name for unit in post.units for name in unit.split("+")) - own
+        said = [PRESS_SAID["held_back"]] if held else []
+        repeated = dataclasses.replace(post, held_back=held)
+        return await saved_page(request, state, draft_id, post.acceptance, said, repeated, own)
     try:
         unreviewed = await unreviewed_cards(state, found, post)
     except sqlite3.Error as error:
@@ -3803,14 +3963,63 @@ async def save_press(
             as_posted=True,
             held_answers=destinations_held(post),
         )
+    if not post.units:
+        # Nothing selected: nothing written and nothing stored, every choice given back as posted.
+        return await with_typing(
+            request,
+            state,
+            draft_id,
+            post,
+            [PRESS_SAID["none_chosen"], PRESS_SAID["choices_not_saved"]],
+            200,
+            homework=none_written,
+            as_posted=True,
+            held_answers=dataclasses.replace(destinations_held(post), press="review"),
+        )
+    try:
+        written = await units_written(state, found, post)
+    except sqlite3.Error as error:
+        noted(error)
+        return await unshown_unread(request, state, draft_id, error)
+    post = dataclasses.replace(
+        post,
+        held_back=frozenset(
+            name for unit in post.units if unit not in written for name in unit.split("+")
+        ),
+    )
+    if not written:
+        if post.version != found.version:
+            # Another page moved the review under this one: answered as a write refused at its
+            # page's version is, whatever a group here would have been held for.
+            return await replayed(request, state, draft_id) or await with_typing(
+                request,
+                state,
+                draft_id,
+                dataclasses.replace(post, held_back=frozenset()),
+                [OUT_OF_DATE],
+                409,
+            )
+        # Every selected group is held: nothing written and nothing stored.
+        return await with_typing(
+            request,
+            state,
+            draft_id,
+            post,
+            [PRESS_SAID["held_back"], PRESS_SAID["choices_not_saved"]],
+            200,
+            homework=none_written,
+        )
+    open_rows = {row.key for row in found.rows if row.state == "open"}
+    leaves_rows_open = bool(open_rows - rows_of_units(written))
+    answers, withdrawn = answers_of_written(post, written)
     try:
         kept = await asyncio.to_thread(
             state.import_drafts.keep_answers,
             student,
             draft_id,
             version=post.version,
-            answers=list(post.answers),
-            withdrawn=list(post.withdrawn),
+            answers=answers,
+            withdrawn=withdrawn,
         )
     except ReviewChanged:
         return await replayed(request, state, draft_id) or await with_typing(
@@ -3851,19 +4060,6 @@ async def save_press(
         ) or await press_refused(request, state, draft_id, post, error, "save_failed", unknown)
     answered = kept.stored > 0
     kept_said = answers_said(kept)
-    if not post.units:
-        said = [*kept_said, PRESS_SAID["none_chosen"]]
-        return await with_typing(
-            request,
-            state,
-            draft_id,
-            post,
-            said,
-            200,
-            answered=answered,
-            own_write=kept,
-            homework=none_written,
-        )
     try:
         named = await image_names(request, state, found)
     except TransactionLeftOpen:
@@ -3889,7 +4085,7 @@ async def save_press(
         draft_id,
         kept.version,
         post.acceptance,
-        post.units,
+        written,
         post.digests,
         post.defaults,
         post.corrections,
@@ -3910,6 +4106,13 @@ async def save_press(
     except Exception as error:
         logger.warning("A screenshot save failed: %s", type(error).__name__)
         outcome = NotSaved("failed")
+    if (
+        isinstance(outcome, Saved)
+        and leaves_rows_open
+        and not outcome.closed
+        and not selection_settled(post, found, answers, rows_of_units(written))
+    ):
+        outcome = await selection_kept(state, student, draft_id, post, outcome)
     homework: Sequence[str] = none_written
     if isinstance(outcome, NotSaved):
         open_now = await left_open(state)
@@ -3923,6 +4126,113 @@ async def save_press(
     return await outcome_page(
         request, state, draft_id, outcome, answered, post, own_write=kept, homework=homework
     )
+
+
+async def units_written(
+    state: ApplicationState, found: DraftSnapshot, post: ReviewPost
+) -> tuple[str, ...]:
+    """The ticked groups this Save writes, worked out before any store: those its page showed
+    ready, with no destination changed on this press, no Type answer moving the effect its page
+    signed, and, where a question was open on the page, with this press's answers leaving none
+    open. Every other ticked group is held. A page behind the review is left to its stale-record
+    refusal."""
+    unchanged = [unit for unit in post.units if not post.chosen_here & set(unit.split("+"))]
+    asking = [unit for unit in unchanged if post.ready_shown.get(unit) == READY_ASKING]
+    answered: set[str] = set()
+    if asking:
+        review = await state_of_review(
+            state, found, post.corrections, dataclasses.replace(post, press="review")
+        )
+        if review is not None:
+            answered = {unit_name(unit.unit) for unit in review.validation.units if unit.ready}
+    moved = await types_moved(
+        state, found, post, [unit for unit in unchanged if type_answered(post, unit)]
+    )
+    return tuple(
+        unit
+        for unit in unchanged
+        if unit not in moved
+        and (post.ready_shown.get(unit) == READY_WHOLE or (unit in asking and unit in answered))
+    )
+
+
+def type_answered(post: ReviewPost, unit: str) -> bool:
+    """Whether this press gives a card in the group a Type answer the record doesn't hold."""
+    names = unit.split("+")
+    held = post.held or {}
+    return any(
+        answer.kind == "kind"
+        and not answer.subject.startswith("[")
+        and held.get((answer.kind, answer.subject)) != answer.value
+        and answer_pieces(answer.kind, answer.subject, names)
+        for answer in post.answers
+    )
+
+
+async def types_moved(
+    state: ApplicationState, found: DraftSnapshot, post: ReviewPost, typed: Sequence[str]
+) -> frozenset[str]:
+    """The groups in ``typed`` whose digests, with this press's answers held, are none its page
+    signed: worked out with its page's default destinations left as defaults, as a loaded page
+    signs them, and then held as answers, as a page Review changes made signs them."""
+    if not typed or post.version != found.version:
+        return frozenset()
+    chosen = tuple(
+        answer
+        for answer in post.answers
+        if not (answer.kind == "destination" and post.defaults.get(answer.subject) == answer.value)
+    )
+    left = set(typed)
+    for answers in (chosen, post.answers):
+        held = dataclasses.replace(post, press="review", answers=answers)
+        review = await state_of_review(state, found, post.corrections, held)
+        if review is None:
+            return frozenset()
+        worked = unit_digests(review)
+        left = {
+            unit for unit in left if tuple(sorted(post.digests.get(unit, ()))) != worked.get(unit)
+        }
+        if not left:
+            break
+    return frozenset(left)
+
+
+def answers_of_written(
+    post: ReviewPost, written: Sequence[str]
+) -> tuple[list[AnswerToKeep], list[tuple[str, str]]]:
+    """What a Save stores: the answers and withdrawals about the groups it writes, and the name
+    and split answers those groups need. Nothing is stored for any other group."""
+    pieces = {name for unit in written for name in unit.split("+")}
+    every = {name for unit in post.digests for name in unit.split("+")}
+
+    def stored(kind: str, subject: str) -> bool:
+        about = answer_pieces(kind, subject, every)
+        return kind in ("name", "split") or not about or bool(about & pieces)
+
+    return (
+        [answer for answer in post.answers if stored(answer.kind, answer.subject)],
+        [(kind, subject) for kind, subject in post.withdrawn if stored(kind, subject)],
+    )
+
+
+async def selection_kept(
+    state: ApplicationState, student: str, draft_id: str, post: ReviewPost, outcome: Saved
+) -> Saved:
+    """A save that committed and left rows open, with the groups its press selected written into
+    saved progress and the revision that write raised the review to. The save stands whatever
+    this write does."""
+    try:
+        revision = await asyncio.to_thread(
+            state.import_drafts.keep_selection,
+            student,
+            draft_id,
+            progress_revision=outcome.progress_revision,
+            selection=selection_of(post),
+        )
+    except (*STORE_REFUSALS, sqlite3.Error) as error:
+        logger.warning("A save's selection couldn't be kept: %s", type(error).__name__)
+        return outcome
+    return outcome if revision is None else dataclasses.replace(outcome, progress_revision=revision)
 
 
 async def left_open(state: ApplicationState) -> bool | None:
@@ -4002,7 +4312,10 @@ async def outcome_page(
     done = [counted(*outcome.counts)]
     if outcome.already_units:
         done.append(PRESS_SAID["already"])
-    problems = [PRESS_SAID["changed"]] if outcome.changed_units else []
+    problems = [
+        *([PRESS_SAID["changed"]] if outcome.changed_units else []),
+        *([PRESS_SAID["held_back"]] if post.held_back else []),
+    ]
     try:
         return await committed_page(
             request, state, draft_id, post, outcome, answered, done, problems, own_write
@@ -4253,6 +4566,29 @@ async def partly_saved(
         notes=notes,
         counted=counted,
         own_write=own_write,
+        left_answers=saved is not None and answers_left_unstored(post),
+    )
+
+
+def answers_left_unstored(post: ReviewPost) -> bool:
+    """Whether a Save posted an answer about a group it left unticked that the record doesn't hold
+    (design 249-d5 P3: nothing is stored for a group it doesn't write). A page's default destination
+    sent unchanged is no choice of hers."""
+    ticked = {name for unit in post.units for name in unit.split("+")}
+    every = {name for unit in post.digests for name in unit.split("+")}
+    held = post.held or {}
+
+    def left_open(kind: str, subject: str) -> bool:
+        about = answer_pieces(kind, subject, every)
+        return kind not in ("name", "split") and bool(about) and not about & ticked
+
+    return any(
+        left_open(answer.kind, answer.subject)
+        and held.get((answer.kind, answer.subject)) != answer.value
+        and not (answer.kind == "destination" and post.defaults.get(answer.subject) == answer.value)
+        for answer in post.answers
+    ) or any(
+        left_open(kind, subject) and (kind, subject) in held for kind, subject in post.withdrawn
     )
 
 
@@ -4699,13 +5035,24 @@ async def find(request: Request, draft_id: str, state: State) -> Response:
     found = await snapshot_or_page(request, state, draft_id)
     if isinstance(found, Response):
         return found
+    carrying = frozenset({SELECTION_SHOWN, SELECTION_CHECK})
     posted, whole = await fields_of(
-        request, frozenset({"piece", "words"}), may_be_absent=frozenset({"words"})
+        request,
+        frozenset({"piece", "words"}) | carrying,
+        may_be_absent=frozenset({"words"}) | carrying,
     )
     if not whole:
         return said_page(request, marks_of(state), FIND_SAID["gone"], 400)
     piece_name = posted.get("piece", "")
     words = posted.get("words", "")[:MOST_WORDS]
+    shown = posted.get(SELECTION_SHOWN, "")
+    signed = [("piece", piece_name), (SELECTION_SHOWN, shown)]
+    carried = (
+        ((SELECTION_SHOWN, shown), (SELECTION_CHECK, posted[SELECTION_CHECK]))
+        if SELECTION_CHECK in posted
+        and same_signature(posted[SELECTION_CHECK], page_check(found.page_key, signed))
+        else ()
+    )
     try:
         review = await state_of_review(state, found, await saved_corrections(state, found))
     except sqlite3.Error as error:
@@ -4734,6 +5081,7 @@ async def find(request: Request, draft_id: str, state: State) -> Response:
             ("version", str(found.version)),
             ("press", "keep"),
             (answer_field("destination", piece.name), value_json({"found": row.assignment_id})),
+            *carried[:1],
         ]
         fields.append(("offer", page_check(found.page_key, fields)))
         results.append({"label": f"{row.course}: {labels[row.assignment_id]}", "fields": fields})
@@ -4747,6 +5095,7 @@ async def find(request: Request, draft_id: str, state: State) -> Response:
             "piece": piece.name,
             "card": piece_text(places, piece),
             "words": words,
+            "carried": carried,
             "results": results,
             "nothing": FIND_SAID["nothing"] if terms and not results else None,
         },
@@ -4790,10 +5139,14 @@ SMALL_FIELDS: Final = {
 
 async def small_form(
     request: Request, state: ApplicationState, found: DraftSnapshot, action: str
-) -> tuple[int, list[str]] | None:
-    """A small form's version and keys, when its fields are whole and signed with the review's
-    page key; None when they aren't."""
-    fields, whole = await fields_of(request, SMALL_FIELDS[action])
+) -> tuple[int, list[str], str | None] | None:
+    """A small form's version and keys, with the selection its page showed where Leave this group
+    unsaved carries one, when its fields are whole and signed with the review's page key; None
+    when they aren't."""
+    carrying = frozenset({SELECTION_SHOWN}) if action == "set-aside" else frozenset()
+    fields, whole = await fields_of(
+        request, SMALL_FIELDS[action] | carrying, may_be_absent=carrying
+    )
     if not whole or not fields.get("version", "").isdigit() or len(fields["version"]) > 12:
         return None
     signed = [("version", fields["version"])]
@@ -4801,6 +5154,8 @@ async def small_form(
         signed.append(("keys", fields["keys"]))
     if action != "set-aside":
         signed.append(("action", action))
+    if SELECTION_SHOWN in fields:
+        signed.append((SELECTION_SHOWN, fields[SELECTION_SHOWN]))
     if not same_signature(fields["check"], page_check(found.page_key, signed)):
         return None
     try:
@@ -4809,7 +5164,36 @@ async def small_form(
         return None
     if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
         return None
-    return int(fields["version"]), keys
+    return int(fields["version"]), keys, fields.get(SELECTION_SHOWN)
+
+
+async def selection_left(
+    state: ApplicationState,
+    student: str,
+    found: DraftSnapshot,
+    shown: str | None,
+    left: Collection[str],
+) -> None:
+    """Saved progress given the selection a page showed, less the rows Leave this group unsaved
+    set aside from it: an empty selection is never written, and nothing is written where the
+    review moved past that page or a plain load shows that selection. The rows stand set aside
+    whatever this write does."""
+    read = None if shown is None else selection_read(shown, open_row_keys(found))
+    if read is None or not read[1] - set(left):
+        return
+    revision, selected = read
+    if await load_shows(state, student, found.draft_id, selected - set(left)):
+        return
+    try:
+        await asyncio.to_thread(
+            state.import_drafts.keep_selection,
+            student,
+            found.draft_id,
+            progress_revision=revision,
+            selection=lambda progress: selection_text(progress, selected - set(left)),
+        )
+    except (*STORE_REFUSALS, sqlite3.Error) as error:
+        logger.warning("Leaving a group couldn't keep the selection: %s", type(error).__name__)
 
 
 def unchanged(
@@ -4848,7 +5232,7 @@ async def closing_press(
     posted = await small_form(request, state, found, action)
     if posted is None:
         return to_review(state, draft_id, [AFTER_SAID["unchecked"]])
-    version, keys = posted
+    version, keys, shown = posted
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
     except sqlite3.Error as error:
@@ -4877,6 +5261,7 @@ async def closing_press(
     if done.closed:
         lines = finished_said(done, *first)
         return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
+    await selection_left(state, student, found, shown, keys)
     return to_review(state, draft_id, first or [AFTER_SAID["set_aside"]])
 
 

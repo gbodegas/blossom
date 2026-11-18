@@ -17,7 +17,7 @@ import hashlib
 import hmac
 import json
 import zlib
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date
 from typing import Final
 
@@ -51,7 +51,9 @@ from blossom.screenshot_review import (
     reference,
     settles_due,
     subject_for,
+    title_taken,
     typed_day,
+    typed_titles,
     unit_name,
     value_json,
     value_of,
@@ -148,6 +150,11 @@ SAID: Final = {
     "new_assignment": "New assignment.",
     "already": "Already saved. Nothing new is written.",
     "updates": "Updates {title}.",
+    "new_title": "Its title becomes “{title}”.",
+    "titles_differ": "Different titles were typed for this assignment: {titles}. Type one title "
+    "on these cards.",
+    "title_taken": "Another saved assignment already has the title “{title}”. Choose that "
+    "assignment or change the title.",
     "no_assigned_line": "No assigned date.",
     "no_due_line": "No due date",
     "choose_first": "Choose where it goes first.",
@@ -232,6 +239,7 @@ OPEN_NAMES: Final = {
     "confirm": "a field the reader wasn't sure of",
     "name": "the student name",
     "due_read": "which due date Blossom uses",
+    "title": "which title to use",
 }
 """How the preview names each question still open."""
 
@@ -549,6 +557,40 @@ CHOSEN_SHOWN: Final = "chosen:"
 """The signed list's name, before a piece's name, of the destination its page shows chosen."""
 TICKED_SHOWN: Final = "ticked:"
 """The signed list's name, before a group's name, of a group its page shows ticked."""
+READY_SHOWN: Final = "ready:"
+"""The signed list's name, before a group's name, of a group its page shows ready for Save."""
+READY_WHOLE: Final = "whole"
+"""A group its page shows ready with no question open."""
+READY_ASKING: Final = "asking"
+"""A group its page shows ready whichever answer its open questions are given."""
+SELECTION_SHOWN: Final = "selection_shown"
+"""The signed field of a form that posts no ticks (a found row, an offer, Leave this group unsaved
+and the Find button leading to a found row): the selection its page showed."""
+SELECTION_CHECK: Final = "selection_check"
+"""The signature of the Find button's selection, which that form has no other signature for."""
+
+
+def selection_field(revision: int, open_keys: Iterable[str], selected: Collection[str]) -> str:
+    """The selection a page showed, as a form that posts no ticks carries it: the page's progress
+    revision, then one binary digit per open row in sorted order, packed as hexadecimal behind a
+    leading one, so the field grows by a quarter of a byte per open row."""
+    bits = "".join("1" if key in selected else "0" for key in sorted(open_keys))
+    return f"{revision}:{int('1' + bits, 2):x}"
+
+
+def selection_read(value: str, open_keys: Iterable[str]) -> tuple[int, frozenset[str]] | None:
+    """The progress revision and the rows selected of a signed ``selection_field``; None where the
+    review's open rows aren't the ones its page counted."""
+    revision, _, packed = value.partition(":")
+    keys = sorted(open_keys)
+    try:
+        bits = f"{int(packed, 16):b}"
+        shown = int(revision)
+    except ValueError:
+        return None
+    if len(bits) != len(keys) + 1:
+        return None
+    return shown, frozenset(key for key, bit in zip(keys, bits[1:], strict=True) if bit == "1")
 
 
 def shown_digest(value: str | None) -> str:
@@ -1036,10 +1078,11 @@ class UnitShown:
     blocks: tuple[BlockShown, ...]
     tick: bool
     ticked: bool
-    """Ticked on the page, for display only: with saved progress, when its selection names every
-    row of the group and the group is open and can be ticked; with none, every group that can be
-    ticked and holds no teacher's note, of any standing, that is not saved already with nothing
-    new to write."""
+    """Selected on the page: on a press, what its post ticked and each destination a press that
+    stores nothing chose, unless that post left the group's tick off; on a plain load, what saved
+    progress names, and with none, a group on the page's own default with no stored answer that
+    holds no teacher's note, of any standing, that is not saved already with nothing new to
+    write. Selection stands apart from ``ready``: an open question never takes it away."""
     waits: tuple[str, ...]
     refusals: tuple[str, ...]
     offers: tuple[OfferShown, ...]
@@ -1052,6 +1095,13 @@ class UnitShown:
     note: str = ""
     """``unclear`` or ``not_assignment`` for a group holding a teacher's note read as unclear
     or as no homework, which the page shows under its own heading; empty otherwise."""
+    ready: bool = False
+    """Whether Save can write it from this page: every card has a destination whose effect the
+    page shows, and any open question is one whose answer that effect already covers
+    (``ONE_PRESS_QUESTIONS``). A group a Save held back is not ready until Review changes shows
+    its effect."""
+    asking: bool = False
+    """Whether a question is open on it."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1115,18 +1165,22 @@ class RowsShown:
 
     @property
     def editing(self) -> bool:
-        """Whether any card's boxes are open: Review changes is then the form's action, and Save
-        isn't offered."""
+        """Whether any card's boxes are open: Save isn't offered then."""
         return any(
             card.open for unit in self.units for block in unit.blocks for card in block.cards
         )
 
     @property
-    def review_first(self) -> bool:
-        """Whether Review changes is the form's action and Save isn't offered: a card's boxes
-        are open (``editing``), or a card has no destination chosen (``PieceControl.asks``)."""
-        cards = (card for unit in self.units for block in unit.blocks for card in block.cards)
-        return self.editing or any(card.control.asks for card in cards)
+    def offers_save(self) -> bool:
+        """Whether Save is offered: at least one group is ready and no card's boxes are open.
+        Another card may be asking; it stays unresolved and nothing is written for it."""
+        return not self.editing and any(unit.ready for unit in self.units)
+
+    @property
+    def offers_review(self) -> bool:
+        """Whether Review changes is offered: on every page that shows a card, as the form's
+        first submit button."""
+        return any(block.cards for unit in self.units for block in unit.blocks)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1407,6 +1461,13 @@ def _effect_lines(
     row = state.rows.get(entry.stands_for) if entry.stands_for else None
     members = [state.by_name[n] for n in entry.pieces]
     lines = []
+    if "title" in entry.open_questions:
+        titles = typed_titles(members)
+        if title_taken(members, row, state.rows):
+            lines.append(SAID["title_taken"].format(title=titles[0]))
+        else:
+            typed = " and ".join(f"“{title}”" for title in titles)
+            lines.append(SAID["titles_differ"].format(titles=typed))
     asked = {
         q.kind: q
         for q in state.validation.of(entry.pieces[0]).questions
@@ -1476,6 +1537,8 @@ def _card_head(
         effect = SAID["already"]
     else:
         effect = SAID["new_assignment"] if row is None else SAID["updates"].format(title=row.title)
+        if entry.new_title is not None:
+            effect = f"{effect} {SAID['new_title'].format(title=entry.new_title)}"
         lead_in = "From the school:" if row is None else "Adds"
         words = tuple((lead_in, text) for text in entry.adds)
     kind = _kind_line(entry, row, lead)
@@ -1737,6 +1800,7 @@ def rows_shown(
     retaken: frozenset[str] = frozenset(),
     chosen_here: frozenset[str] = frozenset(),
     left_off: frozenset[str] = frozenset(),
+    held_back: frozenset[str] = frozenset(),
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
@@ -1757,7 +1821,9 @@ def rows_shown(
     its destination back (``retaken``) says why it asks again. A group holding a card whose
     destination the press chose (``chosen_here``) is shown ticked, unless it holds a card of a
     group that press unticked (``left_off``). The page signs the destinations and ticks it shows,
-    for the next press to tell a choice from an answer carried."""
+    for the next press to tell a choice from an answer carried, and which groups it shows ready.
+    A group holding a card a Save held back (``held_back``) shows its effect, is signed with no
+    digests and is not ready, so only Review changes leads to its Save."""
     values = dict(state.values)
     image_ids = image_ids or {}
     reworked: dict[tuple[str, ...], list[tuple[Offer, Sequence[PreviewEntry]]]] = {}
@@ -1924,19 +1990,17 @@ def rows_shown(
     forms = [OutsideForm(form_id, "find", (("piece", name),)) for name, form_id in finds.items()]
     shown_units = []
     kept_ticks: set[str] = set()
+    unsigned: set[str] = set()
     for number, unit in enumerate(ordered, 1):
         last_open = set(unit.unit) >= {p.name for p in open_pieces}
         blocks: list[tuple[int, BlockShown]] = []
         placed: set[str] = set()
-        saved_already: set[str] = set()
         still_any = False
         still_names: set[str] = set()
         for dest, names_there in state.validation.destinations.items():
             if not set(names_there) <= set(unit.unit) or dest not in previews:
                 continue
             entry = previews[dest]
-            if entry.nothing_new:
-                saved_already |= set(entry.pieces)
             members = sorted((state.by_name[n] for n in entry.pieces), key=first_card)
             still = _still_open(entry, members, values, waiting, corrections)
             still_any = still_any or bool(still)
@@ -1979,47 +2043,51 @@ def rows_shown(
         leave = [("version", str(version)), ("keys", keys)]
         leave.append(("check", page_check(page_key, leave)))
         forms.append(OutsideForm(f"leave-{number}", "set-aside", tuple(leave)))
-        # A group whose only open questions ask which due or assigned date applies, whether it is
-        # homework or a task, or which instructions apply, ready whichever is answered, offers its
-        # tick beside them, as the post sent it: each answer's effect is shown and signed
-        # (``unit_digests``), so the answer and the tick save in one press.
-        tickable = unit_name(unit.unit) in digests and (
-            (unit.ready and not still_any)
-            or (unit_name(unit.unit) in state.ready_answered and still_names <= ONE_PRESS_QUESTIONS)
+        # The one decision each group gets. Destination: asked until every card has one. Ready:
+        # a destination whose effect is shown and signed (``unit_digests``), with any open
+        # question one that effect already covers, so the answer and the tick save in one press.
+        destination_asked = bool(unit.unanswered or unit.stale)
+        kept_back = bool(held_back & set(unit.unit))
+        if kept_back:
+            unsigned.add(unit_name(unit.unit))
+        ready = (
+            not kept_back
+            and unit_name(unit.unit) in digests
+            and (
+                (unit.ready and not still_any)
+                or (
+                    unit_name(unit.unit) in state.ready_answered
+                    and still_names <= ONE_PRESS_QUESTIONS
+                )
+            )
         )
         held = sorted((state.by_name[n] for n in unit.unit), key=first_card)
         chosen_blocks = sum(1 for _, block in blocks if block.chosen)
         note = _note_standing(held)
         unit_keys = {state.by_name[name].key for name in unit.unit}
-        # A destination the family chose on this press selects its group, unless the same press
-        # unticked it.
+        # Selected: apart from readiness, so an open question never takes a selection away. A
+        # destination chosen on a press that stores nothing selects its group, unless the same
+        # press unticked it. A plain load with no saved progress selects a group only on the
+        # page's own default: an answer restored from what is stored selects nothing.
         chose_it = bool(chosen_here & set(unit.unit)) and not left_off & set(unit.unit)
-        # A group the family ticked that waits only for where its cards go keeps that tick: the
-        # destination is the one thing asked, and Review changes shows its effect before Save.
-        tick_kept = (
-            not tickable
-            and bool(unit.unanswered or unit.stale)
-            and (chose_it or (selected is not None and unit_keys <= selected))
+        if selected is not None:
+            is_selected = chose_it or unit_keys <= selected
+        else:
+            is_selected = chose_it or _selected_by_default(state, unit)
+        # A group with a destination always draws its tick. A selected group whose destination
+        # is asked keeps drawing it, signed with no digests, so it is never read as an untick.
+        has_destination = (
+            unit_name(unit.unit) in digests and not destination_asked and not unit.refusals
         )
+        tick_kept = destination_asked and is_selected
         if tick_kept:
             kept_ticks.add(unit_name(unit.unit))
         shown_units.append(
             UnitShown(
                 unit_name(unit.unit),
                 tuple(block for _, block in blocks),
-                tickable or tick_kept,
-                tick_kept
-                or (
-                    tickable
-                    and (
-                        chose_it
-                        or (
-                            not _new_note(held, saved_already)
-                            if selected is None
-                            else unit_keys <= selected
-                        )
-                    )
-                ),
+                has_destination or tick_kept,
+                is_selected and (has_destination or tick_kept),
                 _waits(unit),
                 refusals,
                 tuple(shown_offers),
@@ -2028,6 +2096,8 @@ def rows_shown(
                 "; ".join(piece_text(places, m) for m in held),
                 SAID["tick_one"] if chosen_blocks <= 1 else SAID["tick_many"],
                 note,
+                ready,
+                still_any,
             )
         )
     shown_units = _placed(names, splits, shown_units)
@@ -2053,6 +2123,9 @@ def rows_shown(
     for shown_unit in shown_units:
         if shown_unit.ticked:
             asked_fields.append((TICKED_SHOWN + shown_unit.unit, ("ticked",)))
+        if shown_unit.ready:
+            mark = READY_ASKING if shown_unit.asking else READY_WHOLE
+            asked_fields.append((READY_SHOWN + shown_unit.unit, (mark,)))
         for block in shown_unit.blocks:
             for card in block.cards:
                 destination = answer_field("destination", card.name)
@@ -2112,7 +2185,8 @@ def rows_shown(
     ]
     shown_digests = digests if signed_digests is None else {**digests, **signed_digests}
     hidden += [
-        (f"digest:{u}", ",".join(shown_digests.get(u, ()))) for u in sorted({*digests, *kept_ticks})
+        (f"digest:{u}", "" if u in unsigned else ",".join(shown_digests.get(u, ())))
+        for u in sorted({*digests, *kept_ticks})
     ]
     hidden.append(("check", page_check(page_key, hidden)))
     unread_groups, unread_forms = unread_shown(unread, places, open_keys, page_key, version)
@@ -2125,6 +2199,14 @@ def rows_shown(
         dataclasses.replace(question, leave=f"leave-split-{index}")
         for index, question in enumerate(splits, 1)
     )
+    ticked_rows = frozenset(
+        state.by_name[name].key
+        for shown_unit in shown_units
+        if shown_unit.ticked
+        for name in shown_unit.unit.split("+")
+    )
+    selection = selection_field(progress_revision, open_keys, ticked_rows)
+    forms = [_carrying_selection(form, selection, page_key) for form in forms]
     finishing = [
         ("version", str(version)),
         ("keys", json.dumps(sorted(open_keys), separators=(",", ":"))),
@@ -2158,6 +2240,51 @@ def rows_shown(
         progress={} if progress is None else progress,
         unselected=_unselected(state, places, labels, shown_units, destinations or {}),
     )
+
+
+def _selected_by_default(state: ReviewState, unit: UnitCheck) -> bool:
+    """Whether a plain load with no saved progress selects this group: its destination is the
+    page's own default with no answer stored for it, and it holds no teacher's note left to save."""
+    saved_already = {
+        name
+        for entry in state.preview
+        if entry.nothing_new and set(entry.pieces) <= set(unit.unit)
+        for name in entry.pieces
+    }
+    return (
+        not (unit.unanswered or unit.stale)
+        and not set(unit.unit) & set(state.stored)
+        and not _new_note((state.by_name[name] for name in unit.unit), saved_already)
+    )
+
+
+def selected_on_load(state: ReviewState, selected: frozenset[str] | None) -> frozenset[str]:
+    """The rows a plain load of the review ticks (``rows_shown``): those of each group saved
+    progress selects (``selected``), or with no saved progress, each group on its default."""
+    digests = unit_digests(state)
+    rows: set[str] = set()
+    for unit in state.validation.units:
+        keys = {state.by_name[name].key for name in unit.unit}
+        chosen = _selected_by_default(state, unit) if selected is None else keys <= selected
+        drawn = bool(unit.unanswered or unit.stale) or (
+            unit_name(unit.unit) in digests and not unit.refusals
+        )
+        if chosen and drawn:
+            rows |= keys
+    return frozenset(rows)
+
+
+def _carrying_selection(form: OutsideForm, selection: str, page_key: bytes) -> OutsideForm:
+    """A form that posts no ticks with the selection its page showed, signed with its other
+    fields; the Find button's form signs that selection alone, for the found row it leads to."""
+    if form.action == "find":
+        fields = (*form.fields, (SELECTION_SHOWN, selection))
+        return dataclasses.replace(
+            form, fields=(*fields, (SELECTION_CHECK, page_check(page_key, fields)))
+        )
+    signature, _ = form.fields[-1]
+    fields = (*form.fields[:-1], (SELECTION_SHOWN, selection))
+    return dataclasses.replace(form, fields=(*fields, (signature, page_check(page_key, fields))))
 
 
 def _destination_text(value: str) -> str:

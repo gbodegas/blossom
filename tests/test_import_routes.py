@@ -1074,7 +1074,8 @@ def test_the_rows_appear_once_read_each_lone_card_preselected_and_nothing_stored
     form = review_form(page)
     pieces = fields_named(form, "answer:destination:")
     assert answers == {}
-    assert checked_values(form) == [
+    # Design 249-d5 G2: "A group with a destination always draws its tick."
+    assert [pair for pair in checked_values(form) if pair[0] != "unit"] == [
         (f"answer:destination:{p}", "{&#34;new&#34;:1}") for p in pieces
     ]
     assert form.count(screenshot_page.SAID["preselected"]) == 2
@@ -1085,7 +1086,7 @@ def test_the_rows_appear_once_read_each_lone_card_preselected_and_nothing_stored
     assert form.count(screenshot_page.SAID["new_assignment"]) == 2
     assert says(page, "Screenshot 1 names Wren. Is this her name? Answer before saving its rows.")
     assert form.count("Still to answer: the student name.") == 2
-    assert 'name="unit"' not in form
+    assert actions_of(page) == ["review"]
     assert says(page, screenshot_page.SAID["status"])
     assert acceptance_of(page) != acceptance_of(again)
 
@@ -1406,6 +1407,19 @@ def digests_on(page: str) -> list[str]:
     ]
 
 
+def unit_titled(page: str, title: str) -> str:
+    """The tick of the one group whose assignment card is headed with this title."""
+    articles = re.findall(r'<article class="assignment".*?</article>', page, re.S)
+    units: list[str] = [
+        html.unescape(value)
+        for article in articles
+        if f">{title}<" in article
+        for value in re.findall(r'name="unit" value="([^"]+)"', article)
+    ]
+    [unit] = units
+    return unit
+
+
 def assignment_count(browser: TestClient) -> int:
     return len(state_of(browser).project_state.all_assignments())
 
@@ -1616,10 +1630,9 @@ def test_saving_one_group_leaves_the_rest_open_with_the_answers_kept(
     assert made - before == 1
 
 
-REFUSED_OPEN = (
-    "The homework wasn't saved: an assignment you ticked still has a question to answer. "
-    "Nothing of it was written."
-)
+REFUSED_OPEN = imports.PRESS_SAID["held_back"]
+"""What a Save says of a ticked group with a question open. Design 249-d5 P3: "Held means every
+selected group that is not written."; nothing is written or stored for it."""
 
 
 def test_a_save_is_refused_while_a_ticked_group_still_has_a_question(
@@ -1639,14 +1652,16 @@ def test_a_save_is_refused_while_a_ticked_group_still_has_a_question(
         )
         made = assignment_count(browser)
         [subject] = fields_named(review_form(page), "answer:confirm:")
+        # Design 249-d5 G3: a field the reader wasn't sure of needs Review changes before Save.
         confirmed = page_post(
-            page, "save", tick=units, choose={f"answer:confirm:{subject}": "as_read"}
+            page, "review", tick=units, choose={f"answer:confirm:{subject}": "as_read"}
         )
-        saved = send(browser, draft_id, confirmed)
+        reviewed_page = send(browser, draft_id, confirmed).text
+        saved = send(browser, draft_id, page_post(reviewed_page, "save", tick=units))
 
     assert units
-    assert units_on(page) == []
-    assert says(no_name, imports.PRESS_SAID["answers_kept"])
+    assert actions_of(page) == ["review"]
+    assert not says(no_name, imports.PRESS_SAID["answers_kept"])
     assert says(no_name, REFUSED_OPEN)
     assert says(unconfirmed, REFUSED_OPEN)
     assert made == before
@@ -1910,11 +1925,15 @@ def test_the_name_answered_in_the_same_press_is_kept_first_and_read_by_the_save(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, answer))
         [form] = fields_named(review_form(page), "answer:name:")
+        # Design 249-d5 G3: the student name needs Review changes before Save.
         fields = page_post(
-            page, "save", tick=digests_on(page), choose={f"answer:name:{form}": "hers"}
+            page, "review", tick=digests_on(page), choose={f"answer:name:{form}": "hers"}
         )
         before = assignment_count(browser)
-        saved = send(browser, draft_id, fields)
+        reviewed_page = send(browser, draft_id, fields).text
+        saved = send(
+            browser, draft_id, page_post(reviewed_page, "save", tick=units_ticked(reviewed_page))
+        )
         made = assignment_count(browser)
         row = (
             state_of(browser)
@@ -1953,9 +1972,11 @@ def test_a_group_another_tab_saved_is_refused_as_out_of_date_and_nothing_is_writ
     assert made == before
 
 
-def test_a_save_with_no_group_ticked_keeps_the_answers_and_saves_nothing(
+def test_a_save_with_no_group_ticked_keeps_no_answers_and_saves_nothing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Round 719: "Review changes and empty or refused saves must still write nothing." A Save
+    with no group ticked stores no answer and saves no homework, and says to choose one."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         before = assignment_count(browser)
@@ -1963,10 +1984,10 @@ def test_a_save_with_no_group_ticked_keeps_the_answers_and_saves_nothing(
         made = assignment_count(browser)
         answers = stored_answers(browser, draft_id)
 
-    assert says(after, imports.PRESS_SAID["answers_kept"])
+    assert not says(after, imports.PRESS_SAID["answers_kept"])
     assert says(after, imports.PRESS_SAID["none_chosen"])
     assert made == before
-    assert len(answers) == 2
+    assert len(answers) == 0
 
 
 def test_the_confirmable_fields_are_the_ones_the_page_names() -> None:
@@ -2049,7 +2070,8 @@ def test_a_save_deletes_its_rows_confirmations_and_keeps_the_open_rows(
     assert len(confirmations) == 2
     assert len([s for k, s in after if k == "confirm"]) == 1
     assert [k for k, _ in after if k == "name"] == ["name"]
-    assert len([k for k, _ in after if k == "destination"]) == 1
+    # Design 249-d5 P3: "the save and its answers cover only the written groups".
+    assert [k for k, _ in after if k == "destination"] == []
 
 
 def test_saved_progress_keeps_the_groups_ticked_and_ticks_only_those_still_open(
@@ -2079,9 +2101,11 @@ def test_saved_progress_keeps_the_groups_ticked_and_ticks_only_those_still_open(
     assert says(refused, imports.PRESS_SAID["later_invalid"])
 
 
-def test_with_no_saved_progress_the_ready_groups_are_ticked_and_an_unready_one_isnt(
+def test_with_no_saved_progress_every_group_on_its_default_is_ticked_an_open_question_or_not(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Round 718: "Selection stays independent of readiness." A plain load with no saved progress
+    selects each group on the page's own default, the one with a question open too."""
     answer = homework_answer(
         cards=[
             homework_card(uncertain=[{"field": "title", "reason": "a smudge over it"}]),
@@ -2100,7 +2124,7 @@ def test_with_no_saved_progress_the_ready_groups_are_ticked_and_an_unready_one_i
     ready = units_on(page)
     assert progress is None
     assert len(digests_on(page)) == 2
-    assert len(ready) == 1
+    assert len(ready) == 2
     assert units_ticked(page) == ready
     assert [kind for kind, _ in answers] == ["name"]
 
@@ -3202,6 +3226,9 @@ def test_every_repeated_control_of_the_screenshot_review_has_a_name_of_its_own(
     with here(open_settings(tmp_path)) as browser:
         page = make(browser, monkeypatch)
 
+    # The form's hidden first submit button is out of the tab order and hidden from assistive
+    # technology, so it is no control a name is read from.
+    page = re.sub(r'<button [^>]*aria-hidden="true"[^>]*>.*?</button>', "", page, flags=re.S)
     by_words: dict[str, list[str]] = {}
     for said, name in control_names(page):
         by_words.setdefault(said, []).append(name)
@@ -3271,7 +3298,8 @@ def test_a_partial_save_returns_the_rows_left_open_with_their_typing_marked_unsa
     ]
     a_resend_behind_its_save(again, imports.counted(1, 0, 0, 1), back)
     leaves_out_only_what_the_save_stored(fields, back, held)
-    assert progress is None
+    # Round 719: "a successful partial save" preserves "the selection when reopened".
+    assert json.loads(str(progress))["selected"] == [first_unit.split("|")[0]]
 
 
 def test_a_closed_card_s_reviewed_correction_a_save_stored_nothing_for_says_not_saved_yet(
@@ -3379,7 +3407,8 @@ def test_a_closed_card_s_emptied_box_says_what_empty_means_there(
     assert held_after == held
     assert answer.status_code == 200
     form = review_form(answer.text)
-    assert not import_review_cases.offers_review_changes(answer.text)
+    # Design 249-d5 G4: her name is still to answer here, so Review changes is the page's action.
+    assert import_review_cases.offers_review_changes(answer.text)
     assert '<span class="authored-text"></span>' not in form
     said = screenshot_page.SAID["empty_remove"]
     shown = f'<p class="source">Instructions: <span class="authored-text">{said}</span></p>'
@@ -3577,7 +3606,8 @@ def test_an_unticked_confirmation_is_withdrawn_so_a_save_writes_nothing_and_asks
     assert after == before
     assert ("confirm", subject) not in answers
     assert field not in checked_names(saved)
-    assert units_on(saved) == []
+    # Design 249-d5 G4: a group with this question open is not ready, so Save is not offered.
+    assert actions_of(saved) == ["review"]
     assert says(saved, screenshot_page.OPEN_NAMES["confirm"])
 
 
@@ -3662,7 +3692,8 @@ def test_an_unticked_these_are_her_homework_is_withdrawn(
     assert after == before
     assert ("name", "missing") not in answers
     assert field not in checked_names(saved)
-    assert units_on(saved) == []
+    # Design 249-d5 G4: a group with this question open is not ready, so Save is not offered.
+    assert actions_of(saved) == ["review"]
 
 
 # ------------------------------------------------------------------ counts, names and her note
@@ -3939,9 +3970,10 @@ def test_a_found_row_s_page_is_ticked_as_a_plain_load_would_tick_it(
         page = her_name_answered(browser, draft_id, page)
         pieces = fields_named(review_form(page), "answer:destination:")
         chains = next(p for p in pieces if f"answer:destination:{p}" in page)
-        finding = browser.post(
-            f"/parent/imports/{draft_id}/find", data={"piece": pieces[-1], "words": "grammar"}
-        ).text
+        # Design 249-d5 G2: the Find button's own form carries the selection its page showed.
+        action, carried = outside(page, f"find-{len(pieces)}")
+        assert dict(carried)["piece"] == pieces[-1]
+        finding = browser.post(action, data={**dict(carried), "words": "grammar"}).text
         choice = re.search(
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
         )
@@ -4107,7 +4139,8 @@ def test_a_due_card_whose_line_and_heading_disagree_shows_both_and_waits_for_a_c
     assert "Due Thu 10/8, as the due line says" in form
     assert "Due Mon 10/5, as the day heading says" in form
     assert not [n for n, _ in checked_values(review_form(page)) if n.startswith("answer:due_read:")]
-    assert units_on(page) == []
+    # Design 249-d5 G4: a group with this question open is not ready, so Save is not offered.
+    assert actions_of(page) == ["review"]
     assert "which due date Blossom uses" in form
     assert says(refused.text, REFUSED_OPEN)
     assert made == before
@@ -5197,7 +5230,8 @@ def test_an_unreadable_typed_date_leaves_the_field_open_and_a_save_writes_nothin
             ),
         )
         unwritten = assignment_count(browser)
-        assert units_on(kept) == []
+        # Design 249-d5 G4: a group with this question open is not ready, so Save is not offered.
+        assert actions_of(kept) == ["review"]
         assert says(kept, screenshot_page.OPEN_NAMES["confirm"])
         assert unwritten == before
         confirm = {f"answer:confirm:{subject}": "as_read"}
@@ -5213,7 +5247,8 @@ def test_an_unreadable_typed_date_leaves_the_field_open_and_a_save_writes_nothin
         )
         confirmed = assignment_count(browser)
 
-    assert units_on(forced) == []
+    # Design 249-d5 G4: a group with this question open is not ready, so Save is not offered.
+    assert actions_of(forced) == ["review"]
     assert says(forced, screenshot_page.OPEN_NAMES["confirm"])
     assert confirmed == before
 
@@ -5656,19 +5691,22 @@ def test_an_assigned_date_correction_leaves_the_due_date_question_and_its_choice
         )
         [unit] = digests_on(kept)
         before = assignment_count(browser)
-        followed(
-            browser,
-            saved_with_corrections(
-                browser, draft_id, page_post(kept, "save", tick=[unit], typed=typed)
-            ),
-        )
+        posted = page_post(kept, "save", tick=[unit], typed=typed)
+        if case == "assigned date typed":
+            # Design 249-d5 P1: the due date question is open, so the page offers no Save: the
+            # press is the raw post it is, and writes nothing.
+            raw = import_review_cases.Reviewed(import_review_cases.unoffered(posted))
+            sent = send(browser, draft_id, raw)
+        else:
+            sent = saved_with_corrections(browser, draft_id, posted)
+        followed(browser, sent)
         after = assignment_count(browser)
         dates = written(browser) if after > before else None
 
     assert ASKED in html.unescape(review_form(page))
     if case == "assigned date typed":
         assert ASKED in html.unescape(review_form(kept))
-        assert units_on(kept) == []
+        assert actions_of(kept) == ["review"]
         assert after == before
     elif case == "with the due date chosen":
         assert units_on(kept) == [unit]
@@ -5753,7 +5791,8 @@ def test_these_are_her_homework_is_a_checkbox_a_browser_can_untick(
     assert re.findall(rf'<input type="(\w+)" name="{field}"', page) == ["checkbox"]
     assert f'type="checkbox" name="{field}" value="confirmed" checked' in kept
     assert ("name", "missing") not in answers
-    assert units_on(saved) == []
+    # Design 249-d5 G4: a group with this question open is not ready, so Save is not offered.
+    assert actions_of(saved) == ["review"]
 
 
 # ------------------------------------------------------------------ school text wraps
@@ -6290,7 +6329,8 @@ def test_a_screenshot_with_no_name_added_after_the_confirmation_asks_for_it_agai
     assert says(read, ASK_NAME_AGAIN)
     assert says(read, "No student name was found on 2 screenshots.")
     assert field not in checked_names(read)
-    assert units_on(read) == []
+    # Design 249-d5 G4: a group with this question open is not ready, so Save is not offered.
+    assert actions_of(read) == ["review"]
     assert len(digests_on(read)) == 2
     assert field not in checked_names(forced)
     assert len(units_on(answered)) == 2
@@ -6355,7 +6395,8 @@ def test_a_screenshot_with_no_name_that_replaces_the_one_confirmed_asks_for_it_a
     assert says(read, ASK_NAME_AGAIN)
     assert says(read, "No student name was found on 1 screenshot.")
     assert field not in checked_names(read)
-    assert units_on(read) == []
+    # Design 249-d5 G4: a group with this question open is not ready, so Save is not offered.
+    assert actions_of(read) == ["review"]
 
 
 def test_a_screenshot_showing_a_name_added_later_asks_its_name_and_keeps_the_confirmation(
@@ -6389,7 +6430,8 @@ def test_a_screenshot_showing_a_name_added_later_asks_its_name_and_keeps_the_con
     assert not any(
         name.startswith("answer:name:") and name != field for name in checked_names(read)
     )
-    assert len(units_on(read)) == 1
+    # Design 249-d5 G2: "A group with a destination always draws its tick."
+    assert len(units_on(read)) == 2
 
 
 def test_a_save_from_the_page_before_the_screenshot_was_added_writes_nothing(
@@ -6831,14 +6873,17 @@ def test_a_merged_row_saves_with_both_confirmations_before_and_after_another_gro
             page = followed(
                 browser, send(browser, draft_id, page_post(page, "keep", choose=missing))
             )
-            [own] = units_on(page)
+            # Design 249-d5 G2: "A group with a destination always draws its tick", so the merged
+            # row's tick is on the page beside the unnamed screenshot's own card's.
+            merged_there = unit_titled(page, "Sentence Composing")
+            [own] = [unit for unit in units_on(page) if unit != merged_there]
             page = followed(browser, send(browser, draft_id, page_post(page, "save", tick=[own])))
             first, last = missing, hers
         else:
             first, last = hers, missing
         assert assignment_count(browser) == start + len(unnamed_cards)
         one = followed(browser, send(browser, draft_id, page_post(page, "keep", choose=first)))
-        [merged] = [unit for unit in digests_on(one) if unit not in units_on(one)]
+        merged = unit_titled(one, "Sentence Composing")
         forced = followed(browser, send(browser, draft_id, page_post(one, "save", tick=[merged])))
         waited = assignment_count(browser)
         both = followed(browser, send(browser, draft_id, page_post(forced, "keep", choose=last)))
@@ -7219,6 +7264,7 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
             (row, box, text) for row, boxes in kept.items() for box, text in boxes.items()
         ]
     else:
+        # Design 249-d5 revision 3: "nothing is written when the selection already matches".
         assert progress == stored_before[1] is None
     if press in ("keep", "later") and committed:
         assert says(answer, imports.PRESS_SAID["kept_before_ended"])
@@ -8235,13 +8281,24 @@ def test_words_for_an_unsure_card_go_to_its_own_piece_and_leave_the_other_piece_
     assert reopened.count(str(escape(screenshot_page.SAID["lost_correction"]))) == 1
 
 
+def ready_for_save(page: str) -> bool:
+    """Whether this page's group can be saved from it: Save is offered, or a card's boxes are open,
+    which keeps Save absent (M4), with no question left to answer. Design 249-d5 G2: "A group with
+    a destination always draws its tick", so a drawn tick says nothing of readiness."""
+    return "save" in actions_of(page) or (
+        bool(import_review_cases.still_open(page))
+        and "Still to answer" not in import_review_cases.page_text(page)
+    )
+
+
 def still_open_tick_and_save(
     browser: TestClient, draft_id: str, page: str
 ) -> tuple[bool, bool, str]:
-    """Whether the page names the unsure field still to answer, whether its group can be
-    ticked, and what Save of every group says."""
+    """Whether the page names the unsure field still to answer, whether Save is offered for its
+    group, and what Save of every group says. Design 249-d5 G2: "A group with a destination always
+    draws its tick", so readiness is read from the Save the page offers (G4, P1)."""
     unsure = says(page, f"Still to answer: {screenshot_page.OPEN_NAMES['confirm']}.")
-    tickable = bool(units_on(page))
+    tickable = ready_for_save(page)
     post = page_post(page, "save", tick=digests_on(page))
     answer = (
         send(browser, draft_id, import_review_cases.unoffered(post))
@@ -8413,8 +8470,9 @@ def test_a_correction_of_one_unsure_card_s_words_doesn_t_answer_another_s(
 
     unsure = f"Still to answer: {screenshot_page.OPEN_NAMES['confirm']}."
     assert box_of(review_form(page), second)[1] == "Bring the workbook."  # type: ignore[index]
-    assert (says(kept, unsure), bool(units_on(kept))) == (True, False)
-    assert (says(again, unsure), bool(units_on(again))) == (False, True)
+    # Design 249-d5 G2 and G4: the tick is always drawn; Save is offered once the group is ready.
+    assert (says(kept, unsure), ready_for_save(kept)) == (True, False)
+    assert (says(again, unsure), ready_for_save(again)) == (False, True)
 
 
 def test_one_text_read_by_two_unsure_cards_is_answered_by_its_one_box(
@@ -9244,7 +9302,8 @@ def test_a_kept_answer_stays_when_its_page_can_t_be_read_and_reopening_the_revie
 
 KEPT_CASES: Final = {
     "later behind": (409, ["answers_kept", "later_behind"]),
-    "nothing ticked": (200, ["answers_kept", "none_chosen"]),
+    # Round 719: "Review changes and empty or refused saves must still write nothing."
+    "nothing ticked": (200, ["none_chosen", "choices_not_saved"]),
     "not saved, busy": (503, ["answers_kept", "busy"]),
     "name check unreadable": (500, ["answers_kept", "no_name_check"]),
     "already saved": (200, ["answers_kept", "already"]),
@@ -9296,7 +9355,7 @@ def test_a_press_that_kept_answers_says_so_when_its_review_can_t_be_read(
         **imports.PRESS_SAID,
         "no_name_check": imports.SAID["no_name_check"],
         "changed_unshown_rest": (
-            "No homework was saved by this attempt. Check the effects in the review, then save."
+            "The homework changes weren't saved. Check the effects in the review, then save."
         ),
     }
     if case == "later behind":
@@ -9317,8 +9376,16 @@ def test_a_press_that_kept_answers_says_so_when_its_review_can_t_be_read(
         for kind, _, subject in [name.removeprefix("answer:").partition(":")]
     }
     assert set(posted_answers) - set(before)
+    # Design 249-d5 P3: "the save and its answers cover only the written groups", and an empty
+    # Save stores nothing (round 719).
+    written = {name for unit in units_on(page)[:1] for name in unit.split("+")}
     for answer_key, value in posted_answers.items():
-        assert after.get(answer_key) == value, answer_key
+        if case == "nothing ticked":
+            assert after.get(answer_key) == before.get(answer_key), answer_key
+        elif case == "later behind" or answer_key[0] == "name" or answer_key[1] in written:
+            assert after.get(answer_key) == value, answer_key
+        else:
+            assert answer_key not in after, answer_key
     kept_block = KEPT_BLOCK.search(answer.text)
     problem = PROBLEM_BLOCK.search(answer.text)
     assert problem is not None
@@ -9384,6 +9451,8 @@ def test_answers_that_couldn_t_be_kept_come_back_in_the_review_when_it_can_be_re
     and the review, the typed title still in its box."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
+        # Design 249-d5 P1: Save follows Review changes only once her name is answered.
+        page = her_name_answered(browser, draft_id, page)
         _, title = name_and_title(page)
         page = opened_for_typing(browser, draft_id, page, {title: "Chains Guide Six"})
         posted = page_post(page, press, typed={title: "Chains Guide Six"}, tick=units_on(page))
@@ -10099,7 +10168,9 @@ def test_a_save_that_would_now_do_something_else_says_to_check_it_in_the_review(
     assert after == before
 
 
-G6B: Final = "No homework was saved by this attempt."
+G6B: Final = "The homework changes weren't saved."
+"""Round 720: 'The page must distinguish "Your answers were kept" from "The homework changes
+weren't saved."'"""
 ENDED_LINES: Final = {
     "busy, ended": (
         "The homework wasn't saved because the household file was busy; nothing of it was written."
@@ -10111,7 +10182,8 @@ ENDED_CASES: Final = {
     "keep": (200, 2, ["kept_before_ended"], []),
     "later saved": (200, 2, ["kept_before_ended"], []),
     "later behind": (409, 2, ["kept_before_ended", "later_behind"], []),
-    "nothing ticked": (200, 2, ["kept_before_ended"], ["none_chosen"]),
+    # Round 719: "Review changes and empty or refused saves must still write nothing."
+    "nothing ticked": (200, 2, [], ["kept_before_ended", "none_chosen"]),
     "name check unreadable": (500, 2, ["kept_before_ended", "no_name_check"], []),
     "not saved, busy": (503, 2, ["kept_before_ended", "busy, ended"], ["busy"]),
     "changed by answers": (409, 2, ["kept_before_ended", "G6b"], ["changed_beside_answers"]),
@@ -10182,7 +10254,7 @@ def test_a_press_that_kept_answers_says_they_were_kept_before_the_review_ended(
         assert heading is not None
         assert html.unescape(heading.group(1)) == lines["counts"]
         assert lines_in(shown)[0] == lines["kept_before_ended"]
-    else:
+    elif keys:
         assert focused(answer.text) == ALERT
         first = re.search(
             r'<p class="problem" role="alert" tabindex="-1" autofocus>([^<]*)</p>', answer.text
@@ -11229,7 +11301,8 @@ def test_the_status_line_and_the_asked_again_line_are_the_design_s(
     assert status is not None
     assert html.unescape(status.group(1)) == screenshot_page.SAID["status"]
     presses = page.split('id="review-status"', 1)[1]
-    assert presses.index('value="save"') < presses.index("<summary>Other choices</summary>")
+    # Design 249-d5 P2: "Review changes is offered beside Save on every page that shows a card."
+    assert presses.index('value="review"') < presses.index("<summary>Other choices</summary>")
     fold = presses.split("<summary>Other choices</summary>", 1)[1].split("</details>", 1)[0]
     assert all(
         words in fold
@@ -11300,7 +11373,10 @@ def test_each_separate_form_says_typing_isn_t_kept(
     for page in pages:
         assert page.count(str(escape(said))) == 1
         status = page.index('id="review-status"')
-        assert status < page.index('id="typing-lost"') < page.index('value="save"', status)
+        # Design 249-d5 G4: a page with no ready group offers no Save, so the order is read
+        # against the fold every page draws after its presses.
+        others = page.index("<summary>Other choices</summary>", status)
+        assert status < page.index('id="typing-lost"') < others
         notes = {
             anchor: html.unescape(text)
             for anchor, text in re.findall(r'<p class="helper" id="([^"]+)">([^<]*)</p>', page)
@@ -16079,7 +16155,8 @@ CLOSED_EXITS: Final[dict[str, tuple[Ending, bool, int]]] = {
     "a, before the press": (ended_before_the_press, True, 200),
     "b, at the keep": (ended_at_the_keep, True, 409),
     "c, inside the save": (ended_inside_the_save, True, 409),
-    "d, after the keep": (ended_after_the_keep, False, 200),
+    # Round 719: an empty Save makes no write, so the keep this ending follows needs a group ticked.
+    "d, after the keep": (ended_after_the_keep, True, 409),
     "e, before the post is read": (
         ending_once_at("state_of_review", ended_before_the_press),
         True,
@@ -16824,7 +16901,8 @@ def test_a_transaction_left_open_during_a_save_press_leaves_only_its_own_save_un
     own_write_unresolved = window == "save_homework"
     homework = (UNKNOWN_HOMEWORK,) if own_write_unresolved else NO_HOMEWORK_PAIR
     says_it_can_t_tell(answer, owed_texts(posted), homework)
-    assert (KEPT_LINE in page_text(answer)) is kept
+    # Round 719: "Review changes and empty or refused saves must still write nothing."
+    assert (KEPT_LINE in page_text(answer)) is (kept and ticks)
     assert (held["english"], held["math"], held["acceptances"]) == (0, 0, 0)
 
 
@@ -17955,9 +18033,12 @@ def test_a_conflict_brings_back_every_choice_and_the_next_press_keeps_them(
         untouched = fieldset_of(answer.text, unchanged)
         assert untouched is not None
         assert NOT_SAVED_YET not in html.unescape(untouched)
-    assert "TASK" in kinds
-    assert confirms == []
-    assert instructions == ["[]"]
+    # Design 249-d5 P3: "nothing is stored for a held group": a Save holds the Type no page showed
+    # and, writing no group, keeps the confirmation it cleared as the record holds it.
+    assert ("TASK" in kinds) is (press != "save")
+    assert confirms == (["as_read"] if press == "save" else [])
+    # Design 249-d5 P3: "the save and its answers cover only the written groups."
+    assert instructions == ([] if press == "save" else ["[]"])
     assert held["acceptances"] == before["acceptances"]
 
 
@@ -18205,7 +18286,8 @@ def test_a_conflict_brings_back_a_cleared_name_confirmation(
     assert answer.status_code == 422, answer.text[:400]
     assert before == after
     assert options_of(answer.text, field) == [("confirmed", False)]
-    assert names == []
+    # Round 719: "Review changes and empty or refused saves must still write nothing."
+    assert names == (["confirmed"] if press == "save" else [])
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
@@ -18725,9 +18807,14 @@ def test_a_conflict_beside_a_receipt_doesn_t_get_past_another_tab_s_save_for_lat
             browser, monkeypatch, first_changes_an_answer=False
         )
         now = browser.get(f"/parent/imports/{review.draft_id}", headers=PAGE_HEADERS).text
-        ticked = next(unit for unit, shown in unit_ticks(now).items() if shown)
+        # Round 719: the groups the partial save left unticked reopen unticked.
+        ticked = [unit for unit, shown in unit_ticks(now).items() if shown]
         version, revision, _ = review_row(browser, review.draft_id)
-        send(browser, review.draft_id, shown_post(now, "later", drop=[("unit", ticked)]))
+        send(
+            browser,
+            review.draft_id,
+            shown_post(now, "later", drop=[("unit", unit) for unit in ticked]),
+        )
         moved = review_row(browser, review.draft_id)
         # The same form's acceptance sent again, the conflict injected: the raw POST it is.
         answer = send(browser, review.draft_id, posted)
@@ -18769,8 +18856,9 @@ def test_a_receipt_on_a_page_since_changed_says_its_choices_aren_t_shown(
 def test_after_a_conflict_a_changed_answer_on_the_only_ticked_group_isn_t_saved_unchecked(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The next Save keeps the answer and says what it changes, with nothing saved. The Save after
-    that saves what's shown."""
+    """Design 249-d5 P3 and round 692 item 1: the next Save holds the changed Type, with nothing
+    saved or stored for it and what needs attention said. Review changes shows its effect, and the
+    Save after that saves what's shown."""
     with here(open_settings(tmp_path)) as browser:
         review = three_groups(browser, monkeypatch)
         draft_id = review.draft_id
@@ -18798,11 +18886,15 @@ def test_after_a_conflict_a_changed_answer_on_the_only_ticked_group_isn_t_saved_
             browser, draft_id, conflict_corrected(answer.text, "save", review.question)
         )
         held = on_the_record(browser)
-        third = send(browser, draft_id, shown_post(following.text, "save"))
+        kinds_held = stored_kinds(browser, draft_id, "kind")
+        previewed = send(browser, draft_id, shown_post(following.text, "review"))
+        third = send(browser, draft_id, shown_post(previewed.text, "save"))
         held_after = on_the_record(browser)
 
     assert answer.status_code == 422, answer.text[:400]
-    assert all(line in page_text(following) for line in CHANGED_BESIDE_ANSWERS)
+    assert following.status_code == 200
+    assert imports.PRESS_SAID["held_back"] in page_text(following)
+    assert "TASK" not in kinds_held
     assert held["acceptances"] == before["acceptances"]
     assert "Saved:" in page_text(third)
     assert held_after["acceptances"] == cast(int, before["acceptances"]) + 1
@@ -18838,7 +18930,8 @@ def test_after_a_conflict_another_ticked_group_saves_and_the_changed_one_says_so
 
     text = page_text(following)
     assert "Saved:" in text
-    assert imports.PRESS_SAID["changed"] in text
+    # Design 249-d5 P3: "The page says separately what saved and what still needs attention."
+    assert imports.PRESS_SAID["held_back"] in text
 
 
 # ------------------------------------------------------------------ a confirmed receipt's counts
@@ -20718,7 +20811,7 @@ def test_an_identical_resend_at_one_version_marks_nothing(
     assert same
 
 
-def test_a_double_press_that_changes_a_type_says_nothing(
+def test_a_double_press_that_changes_a_type_says_one_choice_can_t_show(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Its first copy's keep moved the version, so its choices are what's stored; the page, behind
@@ -20728,10 +20821,12 @@ def test_a_double_press_that_changes_a_type_says_nothing(
         posted = page_post(page, "save", tick=[unit], choose={third_type: "TASK"})
         answer = pressed_twice(browser, review.draft_id, posted)
 
-    says_nothing_of_her_choices(answer)
+    # Design 249-d5 P3: nothing is stored for the group left open, and round 719: "Newer unsaved
+    # choices may be lost."
+    says_one_choice_can_t_show(answer)
 
 
-def test_a_double_press_that_clears_a_confirmation_says_nothing(
+def test_a_double_press_that_clears_a_confirmation_says_one_choice_can_t_show(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
@@ -20739,15 +20834,16 @@ def test_a_double_press_that_clears_a_confirmation_says_nothing(
         posted = import_review_cases.raw_post(
             page_post(page, "save", tick=[unit]), removed=[review.confirm]
         )
-        says_nothing_of_her_choices(pressed_twice(browser, review.draft_id, posted))
+        # Design 249-d5 P3: nothing is stored for the group left open.
+        says_one_choice_can_t_show(pressed_twice(browser, review.draft_id, posted))
 
 
 def test_a_double_press_with_a_title_on_a_card_on_file_repeats_its_receipt_and_writes_once(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The same reviewed Save sent twice. The second press answers with the first's receipt, behind
-    its own save: no form, the typing back to copy, nothing more written, and no line about a
-    choice, since the post repeats what its page showed."""
+    its own save: no form, the typing back to copy and nothing more written. The destination posted
+    for the group left open was never stored (design 249-d5 P3), so one line says it can't show."""
     with here(open_settings(tmp_path)) as browser:
         review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
         typed = {correct_box(review.card, "title"): "A New Title"}
@@ -20767,16 +20863,17 @@ def test_a_double_press_with_a_title_on_a_card_on_file_repeats_its_receipt_and_w
     assert answer.status_code == 200, text[:400]
     assert "Saved: 1 new assignment." in text
     assert after == (before[0] + 1, before[1] + 1)
-    assert NOT_CARRIED not in text
+    assert text.count(NOT_CARRIED) == 1
     assert imports.OUT_OF_DATE in text
     assert not recovery_of(answer).form
     assert "A New Title" in recovery_of(answer).copies
 
 
-def test_a_double_press_with_a_due_line_chosen_says_nothing(
+def test_a_double_press_with_a_due_line_chosen_on_a_group_left_open_says_one_choice_can_t_show(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Its answer changes the piece, so the destination on record asks again, unchecked."""
+    """The due line chosen on the group left unticked is never stored (design 249-d5 P3), so the
+    receipt's page says its one choice can't be shown."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, due_card_and_another()))
         page = her_name_answered(browser, draft_id, page)
@@ -20785,13 +20882,14 @@ def test_a_double_press_with_a_due_line_chosen_says_nothing(
         other = [unit for unit in unit_ticks(page) if not unit.startswith(pieces[0][:12])]
         chosen = options_of(page, field)[0][0]
         posted = page_post(page, "save", tick=other[:1], choose={field: chosen})
-        says_no_choice_is_lost(pressed_twice(browser, draft_id, posted))
+        says_one_choice_can_t_show(pressed_twice(browser, draft_id, posted))
 
 
-def test_a_double_press_that_joins_a_ticked_group_says_nothing(
+def test_a_double_press_that_joins_a_ticked_group_says_one_choice_can_t_show(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A keep joining two groups renames their tick, which is still shown."""
+    """A destination joining two groups changed on the press holds them back (design 249-d5 P3),
+    so the receipt's page says that choice can't be shown."""
     more = [
         homework_card(
             course="Art 8", title="Sketch", y_top=450, y_bottom=520, instruction="Part one."
@@ -20831,7 +20929,11 @@ def test_a_double_press_that_joins_a_ticked_group_says_nothing(
         posted = page_post(page, "save", tick=[ticked, *art_units], choose={arts[1]: '{"new":1}'})
         answer = pressed_twice(browser, review.draft_id, posted)
 
-    says_nothing_of_her_choices(answer)
+    text = page_text(answer)
+    assert "Saved:" in text
+    assert text.count(NOT_CARRIED) == 1
+    assert NOTHING_KEPT not in text
+    behind_its_own_save(answer)
 
 
 def test_a_double_press_that_blocks_a_ticked_group_says_nothing(
@@ -20925,7 +21027,7 @@ def test_a_double_press_with_her_name_says_nothing(
         says_nothing_of_her_choices(pressed_twice(browser, draft_id, posted))
 
 
-def test_a_double_press_of_a_saved_row_s_own_answers_says_nothing(
+def test_a_double_press_of_a_saved_row_s_own_answers_says_one_choice_can_t_show(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Its confirmation and Type posted, gone with it, and the version moved by another row's Type
@@ -20939,10 +21041,11 @@ def test_a_double_press_of_a_saved_row_s_own_answers_says_nothing(
         other_card = review.other_type.removeprefix("answer:kind:")
         math = next(unit for unit in unit_ticks(page) if unit.startswith(other_card[:12]))
         posted = page_post(page, "save", tick=[math], choose={third_type: "TASK"})
-        says_nothing_of_her_choices(pressed_twice(browser, review.draft_id, posted))
+        # Design 249-d5 P3: nothing is stored for the group left open.
+        says_one_choice_can_t_show(pressed_twice(browser, review.draft_id, posted))
 
 
-def test_a_double_press_of_a_new_slot_s_date_says_nothing(
+def test_a_double_press_of_a_new_slot_s_date_says_one_choice_can_t_show(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two new cards on one slot with two dates: a date question whose subject is the slot's."""
@@ -20979,7 +21082,8 @@ def test_a_double_press_of_a_new_slot_s_date_says_nothing(
             and not unit.startswith(other_card[:12])
         )
         posted = page_post(page, "save", tick=[ticked], choose={due: options_of(page, due)[0][0]})
-        says_nothing_of_her_choices(pressed_twice(browser, review.draft_id, posted))
+        # Design 249-d5 P3: nothing is stored for the group left open.
+        says_one_choice_can_t_show(pressed_twice(browser, review.draft_id, posted))
 
 
 def a_page_another_tab_keeps_from(
@@ -21076,11 +21180,12 @@ def test_a_choice_the_record_holds_with_its_option_gone_at_another_version_is_sa
     says_one_choice_can_t_show(answer)
 
 
-def test_a_choice_the_record_holds_with_its_question_gone_at_another_version_goes_unsaid(
+def test_a_date_the_record_holds_with_its_question_gone_adds_no_line_beside_a_choice_not_kept(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A narrow exception to saying what can't be shown: a whole question gone, whose posted choice
-    is demonstrably still on the record."""
+    """A whole question gone whose posted date is still on the record adds no line of its own. The
+    instruction answered on the group left open was never stored (design 249-d5 P3): that one
+    choice is said once."""
     with here(open_settings(tmp_path)) as browser:
         one, posted = answered_saved_and_then_another_review_moves_the_date(
             browser, monkeypatch, "Due (10/9/2026)", "2026-10-09"
@@ -21088,7 +21193,7 @@ def test_a_choice_the_record_holds_with_its_question_gone_at_another_version_goe
         held = stored_answers(browser, one.draft_id)
         answer = send(browser, one.draft_id, posted)
 
-    says_nothing_of_her_choices(answer)
+    says_one_choice_can_t_show(answer)
     assert one.due not in html.unescape(answer.text)
     assert ("due", one.due.removeprefix("answer:due:")) in held
 
@@ -21204,11 +21309,12 @@ def test_a_first_press_s_own_page_carries_nothing_and_says_nothing(
     says_nothing_of_her_choices(answer, behind=False)
 
 
-def test_a_double_press_whose_question_left_with_its_destination_goes_unsaid(
+def test_a_double_press_whose_destination_was_held_says_one_choice_can_t_show(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The exception with nobody else involved: the question answered and kept, the destination then
-    changed so its subject goes. Posted, on the record, and gone."""
+    """The question answered and kept, the destination then changed on the Save: the group is held
+    (design 249-d5 P3), so that destination is never stored and the receipt's page says it can't
+    be shown, with the kept answer still on the record."""
     with here(open_settings(tmp_path)) as browser:
         review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
         word = next(value for value, _ in options_of(page, review.question) if value)
@@ -21221,7 +21327,7 @@ def test_a_double_press_whose_question_left_with_its_destination_goes_unsaid(
         answer = pressed_twice(browser, review.draft_id, posted)
         held = stored_answers(browser, review.draft_id)
 
-    says_nothing_of_her_choices(answer)
+    says_one_choice_can_t_show(answer)
     assert review.question not in html.unescape(answer.text)
     assert ("instructions", review.question.split(":", 2)[2]) in held
 
@@ -28487,20 +28593,16 @@ def test_a_press_that_stored_nothing_makes_no_kept_claim_beside_its_counts_past_
 def a_save_storing_an_answer_beside_its_receipt(
     browser: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[str, list[tuple[str, str]], str, str]:
-    """A Save, ticking the group left, on a page one group was saved from, that changes an answer on
-    another row. Timing forced: its first look finds no receipt. The review, the post, that answer's
-    field and value."""
-    review, page, _, third, _ = back_on_a_page_saved_from(browser, monkeypatch)
-    other = next(
-        field
-        for field in fields_of(page, "answer:kind:")
-        if not third.startswith(field.removeprefix("answer:kind:")[:12])
-        and review.card[:12] not in field
-    )
-    value = next(value for value, shown in options_of(page, other) if not shown)
+    """A Save, ticking the group left, on a page one group was saved from, that changes that group's
+    own answer as the page suggests it: design 249-d5 P3 stores "nothing" for a group left open.
+    Timing forced: its first look finds no receipt. The review, the post, that answer's field and
+    value."""
+    review, page, _, third, third_type = back_on_a_page_saved_from(browser, monkeypatch)
     a_receipt_unseen_at_first(browser, monkeypatch)
-    posted = shown_post(page, "save", choose={other: value}, clear=["unit"], add=[("unit", third)])
-    return review.draft_id, posted, other, value
+    posted = shown_post(
+        page, "save", choose={third_type: "HOMEWORK"}, clear=["unit"], add=[("unit", third)]
+    )
+    return review.draft_id, posted, third_type, "HOMEWORK"
 
 
 @pytest.mark.parametrize("own", ["read as it is", "refused"])
@@ -28532,8 +28634,10 @@ def test_save_storing_answers_beside_its_receipt_with_no_homework_says_so_past_a
     text = page_text(answer)
     assert answer.status_code == 200
     assert "Saved: 1 new assignment." in text
-    assert text.count(imports.PRESS_SAID["some_kept_before_ended"]) == 1
-    assert text.count(imports.PRESS_SAID["not_kept_for_saved"]) == 1
+    # Design 249-d5 P3: "the save and its answers cover only the written groups", so nothing was
+    # dropped for the group already saved.
+    assert text.count(imports.PRESS_SAID["kept_before_ended"]) == 1
+    assert text.count(imports.PRESS_SAID["not_kept_for_saved"]) == 0
     assert "kept by this attempt" not in text
     assert holds_the_answer(after, field, value) is (read != "closed")
 
@@ -28560,8 +28664,10 @@ def test_save_storing_answers_beside_its_receipt_with_no_homework_says_so_past_r
     text = page_text(answer)
     assert answer.status_code == 200
     assert "Saved: 1 new assignment." in text
-    assert text.count(imports.PRESS_SAID["some_kept"]) == 1
-    assert text.count(imports.PRESS_SAID["not_kept_for_saved"]) == 1
+    # Design 249-d5 P3: "the save and its answers cover only the written groups", so nothing was
+    # dropped for the group already saved.
+    assert text.count(imports.PRESS_SAID["answers_kept"]) == 1
+    assert text.count(imports.PRESS_SAID["not_kept_for_saved"]) == 0
     assert "before this review ended" not in text
     assert holds_the_answer(after, field, value)
 
@@ -28592,9 +28698,9 @@ def test_save_storing_answers_finding_its_homework_closed_says_they_were_kept_be
         answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
-    kept = "some_kept_before_ended" if receipt else "kept_before_ended"
+    # Design 249-d5 P3: "the save and its answers cover only the written groups".
     assert imports.SAID["closed"] in page_text(answer)
-    assert page_text(answer).count(imports.PRESS_SAID[kept]) == 1
+    assert page_text(answer).count(imports.PRESS_SAID["kept_before_ended"]) == 1
     assert "kept by this attempt" not in page_text(answer)
 
 
@@ -28714,21 +28820,26 @@ def a_save_beside_a_save(
     browser: TestClient, monkeypatch: pytest.MonkeyPatch, *, stored: bool, ticked: bool = True
 ) -> tuple[str, list[tuple[str, str]]]:
     """A Save, ticking one group or none, on a fresh load of a review with a saved row, that clears
-    a kept answer and, when ``stored``, changes another on the rows it leaves open."""
-    review, _, _, third, _ = back_on_a_page_saved_from(browser, monkeypatch)
+    a kept answer and, when ``stored``, changes another: the ticked group's own, since design
+    249-d5 P3 stores "nothing" for a group left open, or with nothing ticked one on the rows it
+    leaves open, which round 719 writes nothing for."""
+    review, _, _, third, third_type = back_on_a_page_saved_from(browser, monkeypatch)
     page = browser.get(f"/parent/imports/{review.draft_id}").text
-    other = next(
-        field
-        for field in fields_of(page, "answer:kind:")
-        if not third.startswith(field.removeprefix("answer:kind:")[:12])
-        and review.card[:12] not in field
-    )
-    value = next(value for value, ticked in options_of(page, other) if not ticked)
+    other = third_type
+    value = "HOMEWORK"
+    if not ticked:
+        other = next(
+            field
+            for field in fields_of(page, "answer:kind:")
+            if not third.startswith(field.removeprefix("answer:kind:")[:12])
+            and review.card[:12] not in field
+        )
+        value = next(value for value, shown in options_of(page, other) if not shown)
     return review.draft_id, shown_post(
         page,
         "save",
         choose={other: value} if stored else {},
-        clear=["unit", review.confirm],
+        clear=["unit", review.confirm] if not stored or not ticked else ["unit"],
         add=[("unit", third)] if ticked else [],
     )
 
@@ -28747,7 +28858,10 @@ def test_save_withdrawing_an_answer_alone_has_no_line_on_any_page_with_no_rows(
         monkeypatch.undo()
 
     says_no_answers_were_kept(answer)
-    assert 'name="correct:' not in answer.text
+    # Round 719: a Save with nothing ticked makes no store call, so that close isn't reached and
+    # its page draws the review.
+    if ticked or page != "closed before its first read":
+        assert 'name="correct:' not in answer.text
 
 
 @pytest.mark.parametrize("stored", [False, True], ids=["a withdrawal alone", "with a store"])
@@ -28761,6 +28875,89 @@ def test_save_says_its_answers_were_kept_beneath_its_result_only_when_it_stored(
     assert answer.status_code == 200
     assert "Saved: 1 new assignment." in page_text(answer)
     assert (imports.PRESS_SAID["answers_kept"] in page_text(answer)) is stored
+
+
+def a_type_answered_on_a_ready_group(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> tuple[str, str, str, list[tuple[str, str]]]:
+    """A Save ticking one ready group going to new homework, on a fresh load of a review with a
+    saved row, with that group's Type answered ``kind``: the review, the group, its Type field and
+    the post."""
+    review, _, _, third, third_type = back_on_a_page_saved_from(browser, monkeypatch)
+    page = browser.get(f"/parent/imports/{review.draft_id}").text
+    posted = shown_post(
+        page, "save", choose={third_type: kind}, clear=["unit"], add=[("unit", third)]
+    )
+    return review.draft_id, third, third_type, posted
+
+
+def test_a_type_answered_as_the_kind_its_page_showed_saves_in_one_press(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round 702 item 2: "A choice whose effect was already shown must still save once." The card
+    reads as homework, so answering homework changes nothing saving does."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, _, posted = a_type_answered_on_a_ready_group(browser, monkeypatch, "HOMEWORK")
+        before = {row.assignment_id for row in saved_rows(browser)}
+        answer = send(browser, draft_id, posted)
+        added = [row for row in saved_rows(browser) if row.assignment_id not in before]
+
+    assert answer.status_code == 200
+    assert "Saved: 1 new assignment." in page_text(answer)
+    assert [row.kind.value for row in added] == ["HOMEWORK"]
+
+
+def test_a_type_that_changes_the_kind_its_page_showed_is_held_for_review_changes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Design 249-d5 P3 and round 692 item 1: a kind no page showed the effect of writes and
+    stores nothing. The group comes back ticked with the answer as posted, says what still needs
+    attention, and Review changes then one Save writes it with that kind."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, third, third_type, posted = a_type_answered_on_a_ready_group(
+            browser, monkeypatch, "TASK"
+        )
+        before = {row.assignment_id for row in saved_rows(browser)}
+        answers = stored_answers(browser, draft_id)
+        answer = send(browser, draft_id, posted)
+        rows_after_press = {row.assignment_id for row in saved_rows(browser)}
+        answers_after_press = stored_answers(browser, draft_id)
+        previewed = send(browser, draft_id, page_post(answer.text, "review", tick=[third]))
+        saved = send(browser, draft_id, page_post(previewed.text, "save", tick=[third]))
+        added = [row for row in saved_rows(browser) if row.assignment_id not in before]
+
+    assert answer.status_code == 200
+    assert rows_after_press == before
+    assert answers_after_press == answers
+    assert imports.PRESS_SAID["held_back"] in page_text(answer)
+    assert "answers were kept by this attempt" not in page_text(answer)
+    assert re.search(rf'<input [^>]*name="unit" value="{third}"[^>]* checked', answer.text)
+    assert ("TASK", True) in options_of(answer.text, third_type)
+    assert previewed.status_code == 200
+    assert re.search(rf'<input [^>]*name="unit" value="{third}"[^>]* checked', previewed.text)
+    assert saved.status_code == 200
+    assert "Saved: 1 new assignment." in page_text(saved)
+    assert [row.kind.value for row in added] == ["TASK"]
+
+
+def test_a_type_review_changes_showed_beside_a_default_destination_saves_in_one_press(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round 702 item 2: a kind whose effect Review changes showed saves once, on a group whose
+    destination is its page's default."""
+    with here(open_settings(tmp_path)) as browser:
+        review = three_groups(browser, monkeypatch)
+        card = review.other_type.removeprefix("answer:kind:")
+        unit = next(unit for unit in units_on(review.page) if unit.startswith(card[:12]))
+        before = {row.assignment_id for row in saved_rows(browser)}
+        shown = page_post(review.page, "review", choose={review.other_type: "TASK"}, tick=[unit])
+        previewed = send(browser, review.draft_id, shown)
+        saved = send(browser, review.draft_id, page_post(previewed.text, "save", tick=[unit]))
+        added = [row for row in saved_rows(browser) if row.assignment_id not in before]
+
+    assert saved.status_code == 200
+    assert "Saved: 1 new assignment." in page_text(saved)
+    assert [row.kind.value for row in added] == ["TASK"]
 
 
 @pytest.mark.parametrize(
@@ -28821,6 +29018,12 @@ def behind_or_nothing_ticked(
 PRESSES_WITH_NO_HOMEWORK: Final = ("Save for later, behind", "Save with nothing ticked")
 
 
+def press_stores(operation: str, stored: bool) -> bool:
+    """Whether this press with no homework stores what it carries. Round 719: "Review changes and
+    empty or refused saves must still write nothing": a Save with nothing ticked never does."""
+    return stored and operation != "Save with nothing ticked"
+
+
 @pytest.mark.parametrize("read", ["a refused file", "another refusal"])
 @pytest.mark.parametrize("stored", [True, False], ids=["its answers stored", "nothing stored"])
 @pytest.mark.parametrize("operation", PRESSES_WITH_NO_HOMEWORK)
@@ -28844,8 +29047,8 @@ def test_a_press_with_no_homework_past_a_refused_read_answers_as_keep_when_it_st
     held, carried = split_typing(posted, typing)
     assert copies_beside_words(copies_in_order(answer), posted, carried, held)
     assert 'name="correct:' not in answer.text
-    assert (after["answers"] != before["answers"]) is stored
-    if stored:
+    assert (after["answers"] != before["answers"]) is press_stores(operation, stored)
+    if press_stores(operation, stored):
         assert answer.status_code == 200
         says_this_keep_stored_its_answers(answer)
         assert focused(answer.text) == ['<div role="status" id="kept" tabindex="-1" autofocus>']
@@ -28882,7 +29085,7 @@ def test_a_press_with_no_homework_where_a_read_says_the_end_says_it_was_kept_whe
         monkeypatch.undo()
 
     says_the_review_ended(answer, status, imports.SAID[said], set(typing) | owed_texts(posted))
-    assert (KEPT_BEFORE_IT_ENDED in page_text(answer)) is stored
+    assert (KEPT_BEFORE_IT_ENDED in page_text(answer)) is press_stores(operation, stored)
     assert "answers were kept by this attempt" not in page_text(answer)
 
 
@@ -28955,9 +29158,9 @@ def test_save_with_nothing_ticked_finding_its_receipt_says_so_where_it_can_t_sho
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, stored: bool, next_read: str
 ) -> None:
     """Timing forced: the first look finds no receipt, its rows come back empty, the next read is
-    refused or finds the review open, and the page's own read is refused. Its line is its own
-    write's: with nothing stored, only that this attempt did not keep answers for homework already
-    saved."""
+    refused or finds the review open, and the page's own read is refused. Round 719: "Review
+    changes and empty or refused saves must still write nothing." Changed answer or not, it makes
+    no write, so it says nothing of answers kept or dropped."""
     refused = refusing_coded("SQLITE_IOERR")
     with here(open_settings(tmp_path)) as browser:
         review, page, _, _, field = back_on_a_page_saved_from(browser, monkeypatch)
@@ -28975,11 +29178,9 @@ def test_save_with_nothing_ticked_finding_its_receipt_says_so_where_it_can_t_sho
 
     the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
     assert imports.REVIEW_NOT_SHOWN in page_text(answer)
-    assert holds_the_answer(after, field, value) is stored
-    if stored:
-        says_this_keep_stored_its_answers(answer, SOME_KEPT_SHORT)
-    else:
-        says_no_answers_were_kept(answer, dropped=True)
+    # Round 719: "Review changes and empty or refused saves must still write nothing."
+    assert holds_the_answer(after, field, value) is False
+    says_no_answers_were_kept(answer)
 
 
 @pytest.mark.parametrize("stored", [True, False], ids=["its answers stored", "nothing stored"])
@@ -29336,14 +29537,11 @@ def test_save_with_nothing_ticked_keeps_its_line_when_a_later_look_finds_its_rec
     own: str,
     counts: str,
 ) -> None:
-    """Its kept line is its own write's, as kept before the review ended once a read saw the
-    ending, and not at all past an observed close with empty counts. Refused counts aren't empty
-    counts, and read nothing more. Each page says once that this attempt did not keep answers for
-    homework already saved. The earlier save's counts stay the heading, at 200, with no form;
-    where the page's own read says the review ended, what that save left is said as it stood at
-    the save; where that read is refused, the same beside a line saying its answers were kept
-    before the review ended, and otherwise as on a review still open."""
-    ended = "expired" in look or "removed" in look or (counts != "refused" and own != "refused")
+    """Round 719: "Review changes and empty or refused saves must still write nothing." Changed
+    answer or not, the press makes no write, so it says nothing of answers kept or dropped. The
+    earlier save's counts stay the heading, at 200, with no form; where the page's own read says
+    the review ended, what that save left is said as it stood at the save, and otherwise as on a
+    review still open."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, field, value = a_save_with_nothing_ticked_beside_its_receipt(
             browser, monkeypatch, stored=stored
@@ -29369,18 +29567,9 @@ def test_save_with_nothing_ticked_keeps_its_line_when_a_later_look_finds_its_rec
     if own == "closed":
         assert after["answers"] == []
     else:
-        assert holds_the_answer(after, field, value) is stored
-    if not stored or (own == "closed" and counts == "empty"):
-        says_no_answers_were_kept(answer, dropped=True)
-    elif ended:
-        assert text.count(SOME_KEPT_BEFORE_IT_ENDED) == 1
-        assert text.count(NOT_KEPT_FOR_SAVED) == 1
-        assert "answers were kept by this attempt" not in text
-    else:
-        assert text.count(SOME_KEPT_SHORT) == 1
-        assert text.count(NOT_KEPT_FOR_SAVED) == 1
-        assert "Your answers were kept" not in text
-        assert "before this review ended" not in text
+        assert holds_the_answer(after, field, value) is False
+    says_no_answers_were_kept(answer)
+    assert "before this review ended" not in text
 
 
 THE_LINE_BESIDE_ITS_ROWS: Final[dict[str, str]] = {
@@ -29431,8 +29620,8 @@ def test_save_with_nothing_ticked_says_its_line_beside_the_rows_a_later_look_fin
 ) -> None:
     """Its page's own read finds the review open, and its page, drawn before the earlier save,
     is behind that save's own raise of the revision: the counts, then the out-of-date notice, no
-    form, and this press's lines, its own write's, apart from them as notes: with nothing stored,
-    only that this attempt did not keep answers for homework already saved."""
+    form. Round 719: "Review changes and empty or refused saves must still write nothing." Changed
+    answer or not, it makes no write, so it says nothing of answers kept or dropped."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, _, _ = a_save_with_nothing_ticked_beside_its_receipt(
             browser, monkeypatch, stored=stored
@@ -29443,17 +29632,12 @@ def test_save_with_nothing_ticked_says_its_line_beside_the_rows_a_later_look_fin
         monkeypatch.undo()
 
     text = page_text(answer)
-    line = THE_LINE_BESIDE_ITS_ROWS[look]
     assert not asked
     assert answer.status_code == 200
     assert not recovery_of(answer).form
     assert "Saved: 1 new assignment." in the_outcome_heading(answer)
     assert text.index("Saved: 1 new assignment.") < text.index(imports.OUT_OF_DATE)
-    if stored:
-        says_its_line_once_as_a_note(answer, line)
-        says_its_line_once_as_a_note(answer, NOT_KEPT_FOR_SAVED)
-    else:
-        says_no_answers_were_kept(answer, dropped=True)
+    says_no_answers_were_kept(answer)
 
 
 def test_save_with_nothing_ticked_says_its_line_ahead_of_what_isn_t_saved_yet(
@@ -29461,7 +29645,9 @@ def test_save_with_nothing_ticked_says_its_line_ahead_of_what_isn_t_saved_yet(
 ) -> None:
     """Timing forced: a later look finds its receipt and its own read finds the review open. Its
     page is behind the earlier save, so with a title typed on a row still open, the page draws no
-    form: this press's line as a note, no "Not saved yet", and the title to copy."""
+    form. Round 719: "Review changes and empty or refused saves must still write nothing." It makes
+    no write, so it says nothing of answers kept or dropped, no "Not saved yet", and gives the
+    title to copy."""
     with here(open_settings(tmp_path)) as browser:
         review, page, _, _, field = back_on_a_page_saved_from(
             browser,
@@ -29483,8 +29669,7 @@ def test_save_with_nothing_ticked_says_its_line_ahead_of_what_isn_t_saved_yet(
         monkeypatch.undo()
 
     assert not recovery_of(answer).form
-    says_its_line_once_as_a_note(answer, SOME_KEPT_SHORT)
-    says_its_line_once_as_a_note(answer, NOT_KEPT_FOR_SAVED)
+    says_no_answers_were_kept(answer)
     assert imports.PRESS_SAID["unsaved_typing"] not in page_text(answer)
     assert "This Tab " in copied(answer)
 
@@ -29523,10 +29708,9 @@ def test_save_with_nothing_ticked_keeps_its_line_s_tense_and_place_when_its_rows
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, stored: bool, look: str, fault: str
 ) -> None:
     """Timing forced: a later look finds its receipt, its own read finds the review open, and the
-    page can't be drawn with rows. Only a read says the review ended, so the kept line stays as
-    its look gave it, by this attempt or before the review ended, and it goes beneath the earlier
-    save's counts, apart from the problem. With nothing stored the page says only, of its answers,
-    that this attempt did not keep answers for homework already saved."""
+    page can't be drawn with rows. Round 719: "Review changes and empty or refused saves must
+    still write nothing." Changed answer or not, it makes no write, so the page says nothing of
+    answers kept or dropped."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, _, _ = a_save_with_nothing_ticked_beside_its_receipt(
             browser, monkeypatch, stored=stored
@@ -29539,10 +29723,7 @@ def test_save_with_nothing_ticked_keeps_its_line_s_tense_and_place_when_its_rows
     assert answer.status_code == 200
     assert 'name="correct:' not in answer.text
     the_counts_beside_its_kept_line(answer)
-    if stored:
-        says_this_keep_stored_its_answers(answer, THE_LINE_BESIDE_ITS_ROWS[look])
-    else:
-        says_no_answers_were_kept(answer, dropped=True)
+    says_no_answers_were_kept(answer)
 
 
 @pytest.mark.parametrize("counts", ["shown", "empty"])
@@ -29563,14 +29744,10 @@ def test_save_with_nothing_ticked_reads_once_more_when_its_rows_come_back_empty(
     counts: str,
 ) -> None:
     """Timing forced: a later look finds its receipt, its own read finds the review open, and its
-    rows come back empty, which can't tell an ending from nothing open. So a press with a kept line
-    reads once more, and that read says whether its answers were kept by this attempt or before
-    the review ended; beside that second line the earlier save's counts say what was left as it
-    stood at the save. A read of a close beside empty counts leaves the kept line unsaid, the close
-    having removed its answers, and the page still says that this attempt did not keep answers for
-    homework already saved. A read that fails says nothing of an ending. A press with no kept
-    line reads nothing more, and says only that this attempt did not keep answers for homework
-    already saved."""
+    rows come back empty, which can't tell an ending from nothing open. Round 719: "Review changes
+    and empty or refused saves must still write nothing." Changed answer or not, the press makes
+    no write, reads nothing more, and says nothing of answers kept or dropped beside the earlier
+    save's counts."""
     real = imports.review_state_now
     reads: list[str] = []
 
@@ -29606,13 +29783,8 @@ def test_save_with_nothing_ticked_reads_once_more_when_its_rows_come_back_empty(
         the_counts_beside_its_kept_line(answer)
     else:
         says_the_save_with_its_counts_unread(answer)
-    if not stored or (read == "closed" and counts == "empty"):
-        says_no_answers_were_kept(answer, dropped=True)
-    elif read in ("busy", "open", "failing"):
-        says_this_keep_stored_its_answers(answer, THE_LINE_BESIDE_ITS_ROWS[look])
-    else:
-        says_this_keep_stored_its_answers(answer, SOME_KEPT_BEFORE_IT_ENDED)
-    assert reads == ([read] if stored else [])
+    says_no_answers_were_kept(answer)
+    assert reads == []
 
 
 READS_OF_THE_REVIEW_BY_A_TICKED_SAVE: Final = {
@@ -29658,14 +29830,22 @@ def test_save_with_a_group_ticked_reads_nothing_more_when_its_rows_come_back_emp
         the_counts_beside_its_kept_line(answer)
     else:
         says_the_save_with_its_counts_unread(answer)
-    says_this_keep_stored_its_answers(answer, THE_LINE_BESIDE_ITS_ROWS[look])
+    # Design 249-d5 P3: "the save and its answers cover only the written groups", so nothing was
+    # dropped for the group already saved.
+    whole = {
+        SOME_KEPT_SHORT: imports.PRESS_SAID["answers_kept"],
+        SOME_KEPT_BEFORE_IT_ENDED: imports.PRESS_SAID["kept_before_ended"],
+    }
+    says_this_keep_stored_its_answers(answer, whole[THE_LINE_BESIDE_ITS_ROWS[look]])
 
 
 def test_save_with_nothing_ticked_keeps_its_typing_when_its_one_more_read_fails(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Timing forced: its rows come back empty and the read after them fails unexpectedly. Its line
-    stays as its look gave it, beneath the counts, with its typing exactly as sent."""
+    """Timing forced: its rows come back empty and the read after them fails unexpectedly. Round
+    719: "Review changes and empty or refused saves must still write nothing." It makes no write,
+    says nothing of answers kept or dropped beneath the counts, and gives its typing back exactly
+    as sent."""
 
     async def the_read_fails(*_: object) -> None:
         raise RuntimeError
@@ -29695,7 +29875,7 @@ def test_save_with_nothing_ticked_keeps_its_typing_when_its_one_more_read_fails(
     assert answer.status_code == 200
     assert 'name="correct:' not in answer.text
     the_saved_heading(answer, "Saved: 1 new assignment. 3 still need checking.")
-    says_this_keep_stored_its_answers(answer, SOME_KEPT_SHORT)
+    says_no_answers_were_kept(answer)
     assert copied(answer) == owed_texts(posted, returned=boxes_returned(answer))
 
 
@@ -29720,10 +29900,11 @@ def no_post_to_read_after_the_first(
 def test_save_with_nothing_ticked_keeps_its_line_when_a_receipt_s_page_can_t_read_its_post(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, typed: bool
 ) -> None:
-    """Timing forced: a later look finds its receipt, and the list it posted is now past the ceiling
-    when its page reads it, so that page has no rows. Its line goes with the counts, as a note
-    outside the heading, with every Class, Title and Instructions box of the post to copy, and the
-    next load of the review says nothing of the press."""
+    """Timing forced: a later look finds its receipt, and the list it posted is past the ceiling
+    when its page reads it, so that page has no rows. Round 719: "Review changes and empty or
+    refused saves must still write nothing." It makes no write and says nothing of answers kept or
+    dropped, with every Class, Title and Instructions box of the post to copy, and the next load
+    of the review says nothing of the press."""
     with here(open_settings(tmp_path)) as browser:
         review, page, _, _, field = back_on_a_page_saved_from(
             browser,
@@ -29749,11 +29930,8 @@ def test_save_with_nothing_ticked_keeps_its_line_when_a_receipt_s_page_can_t_rea
 
     assert answer.status_code == 200
     assert "Saved: 1 new assignment." in shown
-    assert shown.count(SOME_KEPT_SHORT) == 1
-    assert f'<p class="note">{SOME_KEPT_SHORT}</p>' in answer.text
-    assert shown.count(NOT_KEPT_FOR_SAVED) == 1
+    says_no_answers_were_kept(answer)
     assert "Saved: 1 new assignment." in the_outcome_heading(answer)
-    assert SOME_KEPT_SHORT not in the_outcome_heading(answer)
     assert copied(answer) == owed_texts(posted)
     assert copies_in_order(answer) == [text for _, _, text in owed(posted)]
     leaves_out_only_what_the_save_stored(posted, copied(answer), held)
@@ -29831,6 +30009,15 @@ def test_a_page_with_no_post_says_a_press_kept_answers_only_when_its_own_write_s
 
     line = imports.PRESS_SAID["some_kept"]
     reads = html.unescape(shown)
+    if press == "save":
+        # Round 719: "Review changes and empty or refused saves must still write nothing." This
+        # Save has nothing ticked, so it has no write of its own to say anything of. Its
+        # "uncertain" case forces the look twice, finds no receipt and answers 503.
+        assert answer.status_code == (503 if write == "uncertain" else 200)
+        for words in KEPT_CLAIM_WORDS:
+            assert words not in reads, words
+        assert reads.count(NOT_KEPT_FOR_SAVED) == 0
+        return
     assert answer.status_code == 200
     assert 'name="correct:' not in answer.text
     assert copied(answer) == owed_texts(posted, returned=boxes_returned(answer))
@@ -29906,6 +30093,11 @@ def a_write_opened_and_typed_that_can_t_tell(
         press,
         choose={field: value},
         clear=["unit"] if press == "save" else [],
+        add=(
+            [("unit", next(u for u in units_on(page) if field.removeprefix("answer:kind:") in u))]
+            if press == "save"
+            else []
+        ),
         typed=typing,
     )
     # The presses the family makes before this one, made before the write is arranged.
@@ -30314,7 +30506,11 @@ def test_a_press_s_line_goes_beneath_an_earlier_save_s_counts_it_can_t_show(
     assert [text for _, _, text in owed(posted)] == EVERY_TEXT_BOX_BESIDE_THAT_SAVE
     says_the_counts_and_the_review_unshown(answer, draft_id, EVERY_TEXT_BOX_BESIDE_THAT_SAVE)
     leaves_out_only_what_the_save_stored(posted, EVERY_TEXT_BOX_BESIDE_THAT_SAVE, held)
-    says_its_line_once_as_a_note(answer, line)
+    if press == "save" and write == "its answers stored":
+        # Round 719: this Save has nothing ticked, so it writes nothing and says no line of a write.
+        says_no_answers_were_kept(answer)
+    else:
+        says_its_line_once_as_a_note(answer, line)
     assert imports.NO_HOMEWORK not in page_text(answer)
 
 
@@ -30356,14 +30552,18 @@ def test_a_save_that_saw_a_close_beside_empty_counts_makes_no_kept_claim_and_can
         answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
+    if stored:
+        # Round 719: this Save has nothing ticked, so it writes nothing and answers as a Save with
+        # nothing selected does.
+        assert answer.status_code == 200
+        assert says(answer.text, imports.PRESS_SAID["none_chosen"])
+        says_no_answers_were_kept(answer)
+        return
     assert not armed
     assert [text for _, _, text in owed(posted)] == EVERY_TEXT_BOX_BESIDE_THAT_SAVE
     says_the_counts_and_the_review_unshown(answer, draft_id, EVERY_TEXT_BOX_BESIDE_THAT_SAVE)
     leaves_out_only_what_the_save_stored(posted, EVERY_TEXT_BOX_BESIDE_THAT_SAVE, held)
-    if stored:
-        says_no_answers_were_kept(answer, dropped=True)
-    else:
-        says_its_line_once_as_a_note(answer, line)
+    says_its_line_once_as_a_note(answer, line)
 
 
 THE_PAGES_BESIDE_THAT_ONE: Final = (
@@ -30405,7 +30605,11 @@ def test_a_press_s_line_beside_an_earlier_save_on_the_pages_around_empty_counts_
         # The page was drawn before that save, whose own raise of the revision leaves it behind.
         assert imports.OUT_OF_DATE in page_text(answer)
     assert 'name="correct:' not in answer.text
-    says_its_line_once_as_a_note(answer, line)
+    if press == "save" and write == "its answers stored":
+        # Round 719: this Save has nothing ticked, so it writes nothing and says no line of a write.
+        says_no_answers_were_kept(answer)
+    else:
+        says_its_line_once_as_a_note(answer, line)
     assert copied(answer) == owed_texts(posted, returned=boxes_returned(answer))
     if finds == "its counts shown":
         assert "Saved: 1 new assignment." in the_outcome_heading(answer)
@@ -30417,7 +30621,9 @@ def test_a_press_s_line_beside_an_earlier_save_on_the_pages_around_empty_counts_
     else:
         behind = finds == "its post read" and press == "save"
         alone = imports.OUT_OF_DATE if behind else imports.REVIEW_NOT_SHOWN
-        lost = [NOT_CARRIED] if behind and write == "it can't tell, not committed" else []
+        # Round 719: "Newer unsaved choices may be lost": a Save storing nothing says so.
+        unstored = ("it can't tell, not committed", "its answers stored")
+        lost = [NOT_CARRIED] if behind and write in unstored else []
         [alert] = re.findall(r'role="alert" id="said"[^>]*>(.*?)</div>', answer.text, re.S)
         assert re.findall(r"<p>(.*?)</p>", alert) == [str(escape(said)) for said in [*lost, alone]]
         assert page_text(answer).count(alone) == 1
@@ -31085,11 +31291,17 @@ def test_a_save_whose_look_is_refused_says_its_answers_were_kept_once_a_read_saw
         monkeypatch.undo()
 
     text = page_text(answer)
+    if not ticked and end == "closed at its first page read":
+        # Round 719: a Save with nothing selected makes no store call, so this end is never met.
+        assert answer.status_code == 200
+        assert text.count(imports.PRESS_SAID["none_chosen"]) == 1
+        return
     assert answer.status_code == 503
     assert [text.count(line) for line in NO_HOMEWORK_PAIR] == [1, 1]
     assert imports.UNKNOWN_SAID["homework"] not in text
     assert 'name="correct:' not in answer.text
-    if stored:
+    # Round 719: "Review changes and empty or refused saves must still write nothing."
+    if stored and ticked:
         assert text.count(KEPT_BEFORE_IT_ENDED) == 1
         assert "answers were kept by this attempt" not in text
     else:
@@ -31115,7 +31327,8 @@ def test_a_save_whose_look_is_refused_with_no_end_seen_says_its_answers_were_kep
     assert answer.status_code == 503
     assert [text.count(line) for line in NO_HOMEWORK_PAIR] == [1, 1]
     assert imports.UNKNOWN_SAID["homework"] not in text
-    assert text.count(KEPT_SHORT) == 1
+    # Round 719: "Review changes and empty or refused saves must still write nothing."
+    assert text.count(KEPT_SHORT) == (1 if ticked else 0)
     assert "before this review ended" not in text
 
 
@@ -33108,7 +33321,9 @@ def test_a_press_behind_says_a_no_date_choice_it_can_t_carry_and_stores_nothing(
 
     held = before[1]
     if case.endswith("no saved progress"):
-        assert held is None
+        # Round 719: "a successful partial save" preserves the selection, written into saved
+        # progress with no corrections.
+        assert held == {}
     else:
         assert held is not None
         stored = {
@@ -34194,6 +34409,10 @@ def test_a_save_sent_again_compares_a_confirmation_with_the_latest_answers_read(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, piece, none = a_confirmation_beside_words(browser, monkeypatch)
         student, drafts = student_and_drafts(browser)
+        # Design 249-d5 P3: a Save stores nothing for a group it leaves open, so the other card's
+        # confirmation is kept by its own press first.
+        send(browser, draft_id, page_post(page, "keep", choose=no_date_tick(none)))
+        page = loaded(browser, draft_id)
         posted = page_post(page, "save", tick=units_on(page)[:1], choose=no_date_tick(none))
         send(browser, draft_id, posted)
         stored = confirmations_on_file(browser, draft_id)
@@ -35390,7 +35609,9 @@ def test_a_save_refused_as_stale_and_left_behind_says_the_refused_save_lines(
     assert answer.status_code == 409
     assert saved == []
     assert not page.form
-    assert page.kept == [imports.PRESS_SAID["answers_kept"]]
+    # Design 249-d5 P3: the typing is on the group left open, which stores nothing, and the group
+    # ticked holds its answers already, so this Save kept no answer to say.
+    assert page.kept == []
     assert page.said == [imports.NO_HOMEWORK, imports.OUT_OF_DATE]
     assert "another tab" not in page_text(answer)
     assert "Y Typed" in page.copies
@@ -35464,7 +35685,9 @@ def test_a_save_refused_as_stale_and_left_behind_with_rows_back_empty_says_the_r
     assert answer.status_code == 409
     assert saved == []
     assert not page.form
-    assert page.kept == [imports.PRESS_SAID["answers_kept"]]
+    # Design 249-d5 P3: the typing is on the group left open, which stores nothing, and the group
+    # ticked holds its answers already, so this Save kept no answer to say.
+    assert page.kept == []
     assert page.said == [imports.NO_HOMEWORK, imports.OUT_OF_DATE]
     assert "another tab" not in page_text(answer)
     assert "Y Typed" in page.copies
@@ -35514,7 +35737,8 @@ def test_a_save_behind_whose_review_ends_before_its_transaction_says_it_ended(
     if ending == "closed":
         assert imports.NO_HOMEWORK not in page_text(answer)
     else:
-        says_in_order(answer, imports.PRESS_SAID["kept_before_ended"], imports.NO_HOMEWORK)
+        # Design 249-d5 P3: this Save stored no answer of its own, so no kept line is said.
+        assert imports.PRESS_SAID["kept_before_ended"] not in page_text(answer)
     assert saved == []
 
 
@@ -36321,11 +36545,12 @@ SAVE_PAST_CARRIED_WORDS_READS: Final[dict[str, tuple[int, int]]] = {
     "an altered post, the review then busy": (2, 1),
     "an altered post, the review then frozen": (2, 1),
     "an altered post, the review then discarded": (3, 1),
-    "nothing ticked, every group left unsaved, read finished and open": (3, 1),
+    # Round 719: a Save with nothing ticked stores nothing, so no read follows a keep of its own.
+    "nothing ticked, every group left unsaved, read finished and open": (2, 1),
     "nothing ticked, the read after the keep expired": (2, 1),
     "nothing ticked, the read after the keep gone": (2, 1),
     "nothing ticked, the read after the keep busy": (2, 1),
-    "nothing ticked, discarded right after the keep": (3, 1),
+    "nothing ticked, discarded right after the keep": (2, 1),
     "nothing ticked, a transaction left open after the keep": (2, 1),
     "nothing ticked, the rows refused after the keep": (2, 1),
     "a transaction left open after the keep": (1, 1),
@@ -36371,7 +36596,12 @@ def test_a_save_gives_back_another_date_typed_beside_carried_words_with_today_s_
     answer, typed, reads = a_save_past_carried_words(tmp_path, monkeypatch, route, as_read=False)
 
     copies = copied(answer)
-    assert typed in copies, sorted(copies)
+    # Round 719: a Save with nothing ticked writes nothing and gives the typing back in its box.
+    if route.startswith("nothing ticked"):
+        assert typed not in copies, sorted(copies)
+        assert typed in answer.text
+    else:
+        assert typed in copies, sorted(copies)
     assert WORDS_BESIDE not in copies
     assert reads == SAVE_PAST_CARRIED_WORDS_READS[route]
 
@@ -36429,11 +36659,13 @@ def test_a_save_of_every_group_storing_the_date_typed_beside_carried_words_copie
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, units, piece, _ = two_cards_with_words(browser, monkeypatch)
         typed = the_date_as_read(browser, draft_id, piece)
-        answer = send(
+        # Design 249-d4 M4: a typed correction goes through Review changes before its Save.
+        posted = import_review_cases.reviewed(
             browser,
             draft_id,
             page_post(page, "save", tick=units, typed={correct_box(piece, "assigned"): typed}),
         )
+        answer = send(browser, draft_id, posted)
         stored = {
             work.title: work.assigned_on
             for work in state_of(browser).project_state.all_assignments()
@@ -36450,8 +36682,9 @@ def test_a_save_of_every_group_without_its_stored_evidence_gives_back_the_date_t
 ) -> None:
     """Injected error only (reading back what the save stored fails, which costs only that
     evidence); supported reachability is unestablished. A Save ticking both groups, with the date as
-    read typed beside the second card's carried words, stores that date and closes the review, but
-    with no evidence of its own for that card the date comes back to copy, and the words don't."""
+    read typed beside the second card's carried words and shown by Review changes, stores that date
+    and closes the review. The Save carries the card's own reading with no correction, so neither
+    the date nor the words come back to copy."""
 
     def unreadable(*_: object, **__: object) -> None:
         raise RuntimeError(INJECTED_ONLY)
@@ -36459,12 +36692,14 @@ def test_a_save_of_every_group_without_its_stored_evidence_gives_back_the_date_t
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, units, piece, _ = two_cards_with_words(browser, monkeypatch)
         typed = the_date_as_read(browser, draft_id, piece)
-        monkeypatch.setattr(screenshot_save, "values_on_record", unreadable)
-        answer = send(
+        # Design 249-d4 M4: a typed correction goes through Review changes before its Save.
+        posted = import_review_cases.reviewed(
             browser,
             draft_id,
             page_post(page, "save", tick=units, typed={correct_box(piece, "assigned"): typed}),
         )
+        monkeypatch.setattr(screenshot_save, "values_on_record", unreadable)
+        answer = send(browser, draft_id, posted)
         monkeypatch.undo()
         stored = {
             work.title: work.assigned_on
@@ -36473,7 +36708,9 @@ def test_a_save_of_every_group_without_its_stored_evidence_gives_back_the_date_t
 
     assert answer.status_code == 200
     assert str(stored["Set 3"]) == typed
-    assert typed in copied(answer)
+    # Design 249-d4 M4: the date as read reached this Save through Review changes, and a box holding
+    # exactly the value read is owed no copy (``typed_as_sent``).
+    assert typed not in copied(answer)
     assert WORDS_BESIDE not in copied(answer)
 
 
@@ -36616,6 +36853,15 @@ def two_groups(
         if name != title
     ]
     return draft_id, page, first, left, boxes, mine
+
+
+def ticks_kept_in_progress(browser: TestClient, draft_id: str, page: str) -> str:
+    """Saved progress given the ticks ``page`` shows, and the page loaded again. Another page's
+    Keep of those ticks then moves the version and writes no selection (design 249-d5 revision 3:
+    "nothing is written when the selection already matches")."""
+    rows = sorted(screenshot_posts.rows_of_units(units_ticked(page)))
+    saved_progress(browser, draft_id, {"v": 4, "corrected": {}, "selected": rows})
+    return loaded(browser, draft_id)
 
 
 def held_text(page: str, name: str) -> str | None:
@@ -36888,6 +37134,7 @@ def test_a_press_after_another_page_s_keep_keeps_its_ticks_and_says_a_choice_can
     name as stored, and says the not-carried line."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, left, _, _ = two_groups(browser, monkeypatch)
+        page = ticks_kept_in_progress(browser, draft_id, page)
         fresh = loaded(browser, draft_id)
         assert (
             send(browser, draft_id, page_post(fresh, "keep", tick=[first, left])).status_code == 200
@@ -37156,6 +37403,7 @@ def test_a_press_after_another_page_s_keep_draws_its_choices_as_stored(
     The 409 form draws the stored name, never the one posted, and keeps the ticks as posted."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, left, _, _ = two_groups(browser, monkeypatch)
+        page = ticks_kept_in_progress(browser, draft_id, page)
         fresh = loaded(browser, draft_id)
         assert (
             send(browser, draft_id, page_post(fresh, "keep", tick=[first, left])).status_code == 200
@@ -37289,6 +37537,7 @@ def test_a_press_after_another_page_s_keep_draws_spaced_boxes_exactly_and_copies
     and line breaks typed on one row. The 409 form draws each box as typed and copies none."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, left, boxes, _ = two_groups(browser, monkeypatch)
+        page = ticks_kept_in_progress(browser, draft_id, page)
         page = opened_for_typing(browser, draft_id, page, spaced(boxes))
         # The presses the family makes before this one, made before the other page's Keep.
         posted = reviewed(
@@ -37314,6 +37563,8 @@ def test_a_refused_form_resent_unchanged_signs_the_stored_version_and_posts_the_
     first): the refused form signs the stored version and revision and posts the typing again."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, left, boxes, _ = two_groups(browser, monkeypatch)
+        if refusal != "its write refused busy":
+            page = ticks_kept_in_progress(browser, draft_id, page)
         # The family opens the card, types and reviews before the refusal is arranged.
         typed = {boxes["title"]: "Set 3 typed"}
         page = opened_for_typing(browser, draft_id, page, typed)
@@ -37804,6 +38055,7 @@ def test_a_follow_up_keep_after_another_page_s_keep_stores_what_it_stores_today(
     the row it is kept again under this page's digest; a split adds the default destination."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, field = follow_up_review(browser, monkeypatch, case)
+        page = ticks_kept_in_progress(browser, draft_id, page)
         boxes = [
             "correct:" + subject
             for subject in fields_named(review_form(page), "correct:")
@@ -37934,6 +38186,7 @@ def test_a_follow_up_keep_adds_the_default_destination_a_plain_load_s_keep_adds(
             draft_id, page, field = follow_up_review(
                 browser, monkeypatch, "a card read under two days"
             )
+            page = ticks_kept_in_progress(browser, draft_id, page)
             fresh = loaded(browser, draft_id)
             value = unchecked_value(fresh, field)
             other = page_post(fresh, "keep", tick=ticked_on(fresh), choose={field: value})
@@ -38292,6 +38545,7 @@ def test_a_main_form_keep_past_another_page_s_keep_names_no_choice_as_unselected
     with here(open_settings(tmp_path)) as browser:
         state_of(browser).project_state.upsert_assignments([GRAMMAR_PRACTICE])
         draft_id, page, first, left, _, _ = two_groups(browser, monkeypatch)
+        page = ticks_kept_in_progress(browser, draft_id, page)
         piece, fields = found_row_post(browser, draft_id, page)
         assert send(browser, draft_id, fields).status_code == 200
         mine = loaded(browser, draft_id)
@@ -38602,6 +38856,7 @@ class ForcedKeep(NamedTuple):
     dropped: int
     withdrawn: int = 0
     dropped_keys: frozenset[tuple[str, str]] | None = None
+    progress_revision: int | None = None
 
 
 def a_lone_tick_opened_behind(
@@ -38746,15 +39001,17 @@ LONE_TICK_BEHIND: Final[dict[str, dict[str, tuple[int, int, int, int]]]] = {
         "later": (409, 3, 2, 1),
         "save": (409, 3, 2, 1),
     },
+    # Design 249-d5 P3: a held group is one "nothing written or stored for", so its Save makes no
+    # keep write of its own.
     "withdrawn before a later read": {
         "keep": (200, 4, 3, 2),
         "later": (409, 4, 4, 2),
-        "save": (200, 4, 3, 2),
+        "save": (200, 4, 3, 1),
     },
     "a later read finding no review": {
         "keep": (200, 3, 1, 1),
         "later": (409, 3, 2, 1),
-        "save": (200, 3, 1, 1),
+        "save": (200, 3, 1, 0),
     },
     "another page left it unticked": {
         "keep": (409, 3, 1, 0),
@@ -38784,7 +39041,7 @@ LONE_TICK_BEHIND: Final[dict[str, dict[str, tuple[int, int, int, int]]]] = {
     "a later read holding it": {
         "keep": (200, 3, 2, 1),
         "later": (409, 3, 3, 1),
-        "save": (200, 3, 2, 1),
+        "save": (200, 3, 2, 0),
     },
     "another page ticked it too": {
         "keep": (409, 3, 1, 0),
@@ -38874,7 +39131,9 @@ def test_a_lone_tick_withdrawn_by_a_later_read_is_said_as_not_shown(
     answer, measured = a_lone_tick_pressed(tmp_path, monkeypatch, press, case)
 
     assert measured == LONE_TICK_BEHIND[case][press]
-    assert page_text(answer).count(NOT_CARRIED) == 1
+    # Design 249-d5 P3: "The returned page carries the posted answers of every unwritten group",
+    # so a Save holding the group gives the tick back in its form and no line is owed.
+    assert page_text(answer).count(NOT_CARRIED) == (0 if press == "save" else 1)
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
@@ -39177,6 +39436,7 @@ def test_a_plain_keep_on_another_page_leaves_this_page_s_choices_unsaid(
         reading = homework_answer(cards=[homework_card(), homework_card(**A_SECOND_CARD)])
         draft_id, page = read_review(browser, monkeypatch, (RED, reading))
         page = her_name_answered(browser, draft_id, page)
+        page = ticks_kept_in_progress(browser, draft_id, page)
         units = units_on(page)
         send(browser, draft_id, page_post(loaded(browser, draft_id), "keep", tick=units))
         posted = page_post(page, press, tick=units[:1] if press == "save" else [])
@@ -39522,7 +39782,8 @@ def a_date_beside_words_pressed(
     left: bool = True,
 ) -> tuple[Answer, int, bool, str | None]:
     """A store call carries words beside the second card's date box; real presses: another page
-    leaves that group unsaved (or keeps both), then this page types in the box, the tick on or off.
+    leaves that group unsaved (or keeps its page), then this page types in the box, the tick on or
+    off.
     The answer, its reads, whether nothing was stored, and the box as the answer draws it."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, units, piece, none = two_cards_with_words(browser, monkeypatch)
@@ -39531,7 +39792,9 @@ def a_date_beside_words_pressed(
         if left:
             press_outside(browser, fresh, "leave-2")
         else:
-            send(browser, draft_id, page_post(fresh, "keep", tick=list(units)))
+            # Its ticks are what saved progress holds: design 249-d5 revision 3, "nothing is
+            # written when the selection already matches".
+            send(browser, draft_id, page_post(fresh, "keep", tick=units_ticked(fresh)))
         before = (row_states(browser, draft_id), held_corrections(browser, draft_id))
         reads = reads_of_the_review(browser, monkeypatch)
         posted = page_post(
@@ -39904,8 +40167,8 @@ def test_a_held_confirmation_left_ticked_on_a_row_another_page_left_unsaved_says
         draft_id, made = a_confirmation_on_a_row_another_page_left(
             browser, monkeypatch, press, cleared=False
         )
-        # This page, behind the other page's press, offers no Save: the raw POST it is.
-        posted = import_review_cases.unoffered(made) if press == "save" else made
+        # Design 249-d5 P1: this page offers Save for its ready group, so the press is a plain one.
+        posted = made
         answer, reads, states = pressed_with_its_reads(browser, monkeypatch, draft_id, posted)
 
     assert reads == LEFT_ROW_READS[press]
@@ -39949,11 +40212,11 @@ def test_a_confirmation_never_answered_left_unticked_on_a_row_another_page_left_
 
 # ------------------------------------------ a receipt at its page's version and revision
 
-RECEIPT_AT_ITS_PAGE_S_REVISION: Final = {"question stays": 0, "words typed beside it": 1}
+RECEIPT_AT_ITS_PAGE_S_REVISION: Final = {"question stays": 0, "words typed beside it": 0}
 """Per case: the lines a receipt's page says of an instructions answer its post cleared. With no
 words typed the question is drawn with nothing ticked, so the page shows the choice. With words
-typed on the card the receipt's page asks where the card goes again and draws no instructions
-question, so the cleared answer is a choice that page can't show."""
+typed on the card the group is held back and shown with its effect (design 249-d5 P3), its
+instructions question drawn with nothing ticked, so that page shows the choice too."""
 
 
 def a_receipt_at_its_page_s_revision(
@@ -40810,7 +41073,11 @@ def test_a_row_whose_screenshot_was_removed_gives_back_each_box_no_reading_is_in
         states = row_states(browser, draft_id)
 
     boxes = [json.loads(box) for box in fields_named(review_form(answer.text), "correct:")]
-    assert answer.status_code == 409
+    # Round 719: "Review changes and empty or refused saves must still write nothing." The "save"
+    # case ticks no group, so it says to choose one and draws the form; a Save of every group is
+    # refused as the page's version moved.
+    assert answer.status_code == (200 if press == "save" else 409)
+    assert (imports.PRESS_SAID["none_chosen"] in page_text(answer)) is (press == "save")
     assert row not in states
     assert [key for key, field in boxes if field == "title" and key == row] == []
     assert len([key for key, field in boxes if field == "title"]) == 1
@@ -41246,8 +41513,10 @@ def test_a_save_refused_at_its_page_s_own_version_copies_nothing_its_form_holds(
 ) -> None:
     """Real presses: a Save ticking a group whose title still has its question, an instruction's
     padding deleted, sent from a page loaded after Keep these answers, its card opened and Review
-    changes pressed there. Refused (409) at its page's own version with the form drawn again,
-    which holds every box as sent, so nothing is copied."""
+    changes pressed there. Design 249-d5 P3: "Held means every selected group that is not written":
+    the other ticked group is saved, and this one held at its page's own version with the form
+    drawn again, which holds every box as sent, so nothing is copied: the saved row's boxes are in
+    that save and the held row's in the form."""
     smudged = homework_card(
         **A_SECOND_CARD,
         instruction=PADDED_INSTRUCTION,
@@ -41258,6 +41527,7 @@ def test_a_save_refused_at_its_page_s_own_version_copies_nothing_its_form_holds(
             browser, monkeypatch, (RED, homework_answer(cards=[homework_card(), smudged]))
         )
         page = her_name_answered(browser, draft_id, page)
+        english = json.loads(box_subject(page, "instruction:0", 0))[0]
         key = json.loads(box_subject(page, "instruction:0", 1))[0]
         typed = {correct_box(key, "instruction:0"): PADDING_DELETED}
         page = opened_for_typing(browser, draft_id, page, typed)
@@ -41267,12 +41537,23 @@ def test_a_save_refused_at_its_page_s_own_version_copies_nothing_its_form_holds(
             browser, draft_id, page_post(page, "save", tick=digests_on(page), typed=typed)
         )
         answer = send(browser, draft_id, posted)
+        states = row_states(browser, draft_id)
+        on_record = [(row.course, row.title) for row in saved_rows(browser)]
+        kept_words = import_review_cases.kept_words_on_record(browser)
 
-    assert answer.status_code == 409
-    assert imports.wasnt_saved("open") in page_text(answer)
+    written = {
+        (english, "course", "English 8"),
+        (english, "title", "Sentence Composing"),
+        (english, "instruction:0", "Complete pages 12 to 14."),
+    }
+    assert answer.status_code == 200
+    assert imports.PRESS_SAID["held_back"] in page_text(answer)
     assert imports.OUT_OF_DATE not in page_text(answer)
     assert recovery_of(answer).form
-    assert owed(posted, returned=boxes_returned(answer)) == []
+    assert states == {english: "saved", key: "open"}
+    assert ("English 8", "Sentence Composing") in on_record
+    assert "Complete pages 12 to 14." in kept_words.values()
+    assert owed(posted, returned=boxes_returned(answer), saved=written) == []
     assert copies_with_labels(answer) == []
 
 
@@ -42120,12 +42401,14 @@ def test_the_sentences_said_of_one_attempt_are_spelled_as_approved() -> None:
         "another_attempt": "Blossom couldn't tell whether another attempt saved any homework.",
         "can_t_tell": "Blossom couldn't tell whether any homework was saved.",
     }
+    # Round 720: 'The page must distinguish "Your answers were kept" from "The homework changes
+    # weren't saved."'
     beside_answers = imports.PRESS_SAID["changed_beside_answers"]
     assert beside_answers == (
-        "No homework was saved by this attempt. Check the effects below, then save."
+        "The homework changes weren't saved. Check the effects below, then save."
     )
     assert imports.UNSHOWN_SAID[beside_answers] == (
-        "No homework was saved by this attempt. Check the effects in the review, then save.",
+        "The homework changes weren't saved. Check the effects in the review, then save.",
     )
     pair = (SAID_OF_ONE_ATTEMPT["no_homework"], SAID_OF_ONE_ATTEMPT["another_attempt"])
     assert pair == imports.NO_HOMEWORK_BY_THIS_ATTEMPT
@@ -42222,34 +42505,56 @@ def homework_outcomes_recorded(monkeypatch: pytest.MonkeyPatch) -> list[object]:
 def test_a_reviewed_save_against_a_row_another_tab_moved_writes_no_homework(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The race itself, with no stand-in. A Type chosen on one card and the group of another ticked,
-    that group landing on a saved assignment; before Save is pressed, another tab's own review
-    saves a new due date onto that assignment. The real homework save refuses the group as
-    changed: 409, the page says what saving would do instead beside the answers kept, the answers
-    are stored, and no homework and no receipt are written."""
+    """The race itself, with no stand-in. Round 720: "retain those answers while refusing the
+    homework write." A group landing on a saved assignment, ready with its instructions answered;
+    before Save is pressed with another answer to that question, another tab's own review saves a
+    new due date onto that assignment. The real homework save refuses the group as changed: 409,
+    the page says that the answers were kept and that the homework changes weren't saved as two
+    statements, the answer is stored, and no homework and no receipt are written. "Keeping answers
+    must not bypass the check against changed homework on a subsequent Save": a following Save of
+    that group writes nothing."""
     with here(open_settings(tmp_path)) as browser:
-        review, page, field, value, _, _ = an_answer_to_change(browser, monkeypatch)
+        review, page, _, _, _, _ = an_answer_to_change(browser, monkeypatch)
         landing = next(one for one in unit_ticks(page) if one.startswith(review.card[:12]))
+        [question] = fields_of(page, "answer:instructions:")
+        words = next(value for value, _ in options_of(page, question) if value)
+        kept_page = followed(
+            browser, send(browser, review.draft_id, shown_post(page, "keep", add=[(question, "")]))
+        )
         posted = shown_post(
-            page, "save", choose={field: value}, clear=["unit"], add=[("unit", landing)]
+            kept_page,
+            "save",
+            clear=["unit", question],
+            add=[("unit", landing), (question, words)],
         )
         another_review_moves_the_date(browser, monkeypatch, "Due (10/12/2026)", "2026-10-12")
-        before = assignment_count(browser)
+        before = saved_whole(browser, "English 8")
         accepted = acceptances_of(browser, review.draft_id)
         outcomes = homework_outcomes_recorded(monkeypatch)
         written = answers_written_by(browser, monkeypatch, "keep_answers")
         answer = send(browser, review.draft_id, posted)
         monkeypatch.undo()
-        after = assignment_count(browser)
+        after = saved_whole(browser, "English 8")
         accepted_after = acceptances_of(browser, review.draft_id)
+        stored = stored_answers(browser, review.draft_id)
+        following = send(browser, review.draft_id, page_post(answer.text, "save", tick=[landing]))
+        after_following = saved_whole(browser, "English 8")
+        accepted_following = acceptances_of(browser, review.draft_id)
 
     [kept] = written
+    said = page_text(answer)
+    subject = question.removeprefix("answer:instructions:")
     assert (kept.stored > 0, kept.dropped) == (True, 0)
     assert [getattr(outcome, "reason", None) for outcome in outcomes] == ["changed"]
     assert answer.status_code == 409
-    assert says(answer.text, imports.PRESS_SAID["changed_beside_answers"])
-    assert "Saved:" not in page_text(answer)
+    assert says_each(answer.text, CHANGED_BESIDE_ANSWERS)
+    assert "Your answers were kept" in said
+    assert "The homework changes weren't saved." in said
+    assert "Saved:" not in said
+    assert len(json.loads(stored[("instructions", subject)])) == 1
     assert (after, accepted_after) == (before, accepted)
+    assert "Saved:" not in page_text(following)
+    assert (after_following, accepted_following) == (before, accepted)
 
 
 def test_limitation_another_tab_saving_the_same_title_allows_a_second_row(
@@ -42272,8 +42577,7 @@ def test_limitation_another_tab_saving_the_same_title_allows_a_second_row(
         other_id, other = read_review(
             browser, monkeypatch, (BLUE, homework_answer(cards=[its_own]))
         )
-        if not units_on(other):
-            other = her_name_answered(browser, other_id, other)
+        other = answered(browser, other_id, other)
         theirs = send(browser, other_id, page_post(other, "save", tick=units_on(other)))
         answer = send(browser, draft_id, page_post(shown.text, "save", tick=units_on(shown.text)))
         rows = [
@@ -42525,11 +42829,11 @@ def test_a_save_of_one_group_says_its_answers_were_kept_and_names_no_rows(
 def test_a_press_with_no_homework_says_one_answers_line_on_both_of_its_routes(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, operation: str, route: str
 ) -> None:
-    """A Save for later behind another tab's save, and a Save with nothing ticked, each storing
-    answers: beside its rows and on its page past a refused read alike, that the answers were kept
-    by this attempt. Save for later then says its corrections weren't saved and its typing is
-    still here, with the typing given back, and never Keep's warning. Save with nothing ticked
-    says Keep's warning on its page with no rows only."""
+    """A Save for later behind another tab's save stores answers: beside its rows and on its page
+    past a refused read alike, that the answers were kept by this attempt, that its corrections
+    weren't saved and its typing is still here, with the typing given back, and never Keep's
+    warning. Round 719: "Review changes and empty or refused saves must still write nothing": a
+    Save with nothing ticked makes no write and says nothing of answers kept."""
     later = operation == "Save for later, behind"
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, _ = behind_or_nothing_ticked(
@@ -42542,19 +42846,21 @@ def test_a_press_with_no_homework_says_one_answers_line_on_both_of_its_routes(
         answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
-    [kept] = written
-    assert (kept.stored > 0, kept.dropped) == (True, 0)
     text = page_text(answer)
-    assert answer.status_code == (409 if later and route == "beside its rows" else 200)
-    assert (imports.REVIEW_NOT_SHOWN in text) is (route == "past a refused read")
+    refused_read = route == "past a refused read"
+    assert answer.status_code == (
+        (200 if refused_read else 409) if later else (503 if refused_read else 200)
+    )
+    assert (imports.REVIEW_NOT_SHOWN in text) is refused_read
     if later:
+        [kept] = written
+        assert (kept.stored > 0, kept.dropped) == (True, 0)
         assert "This Tab " in answer.text
         says_in_order(answer, SAID_OF_ONE_ATTEMPT["kept"], SAID_OF_ONE_ATTEMPT["later_behind"])
         assert "Save review for later to keep" not in text
     else:
-        says_in_order(answer, SAID_OF_ONE_ATTEMPT["kept"])
-        warned = text.count(SAID_OF_ONE_ATTEMPT["keep_warning"])
-        assert warned == (1 if route == "past a refused read" else 0)
+        assert written == []
+        says_no_answers_were_kept(answer)
 
 
 @pytest.mark.parametrize("stored", [False, True], ids=["nothing stored", "its answers stored"])
@@ -42689,10 +42995,12 @@ def test_a_save_refused_as_changed_that_stored_answers_gives_no_cause_for_the_ch
     kept = written[0]
     assert kept.stored > 0
     assert answer.status_code == 409
+    # Round 720: the page must distinguish "Your answers were kept" from "The homework changes
+    # weren't saved."
     says_in_order(
         answer,
         SAID_OF_ONE_ATTEMPT["kept"],
-        SAID_OF_ONE_ATTEMPT["no_homework"],
+        imports.HOMEWORK_CHANGES_NOT_SAVED,
         SAID_OF_ONE_ATTEMPT["check_below"],
     )
 
@@ -42717,10 +43025,12 @@ def test_a_save_refused_as_changed_whose_page_has_no_rows_points_at_the_review(
     [kept] = written
     assert kept.stored > 0
     assert answer.status_code == 409
+    # Round 720: the page must distinguish "Your answers were kept" from "The homework changes
+    # weren't saved."
     says_in_order(
         answer,
         SAID_OF_ONE_ATTEMPT["kept"],
-        SAID_OF_ONE_ATTEMPT["no_homework"],
+        imports.HOMEWORK_CHANGES_NOT_SAVED,
         SAID_OF_ONE_ATTEMPT["check_in_review"],
     )
     assert imports.REVIEW_NOT_SHOWN in page_text(answer)
@@ -42853,18 +43163,20 @@ def test_a_changed_save_past_an_expired_first_page_read_says_kept_before_the_rev
     [kept] = written
     assert (kept.stored > 0, kept.dropped) == (True, 0)
     assert answer.status_code == 409
+    # Round 720: the page must distinguish "Your answers were kept" from "The homework changes
+    # weren't saved."
     says_in_order(
-        answer, SAID_OF_ONE_ATTEMPT["kept_before_ended"], SAID_OF_ONE_ATTEMPT["no_homework"]
+        answer, SAID_OF_ONE_ATTEMPT["kept_before_ended"], imports.HOMEWORK_CHANGES_NOT_SAVED
     )
     assert SAID_OF_ONE_ATTEMPT["kept"] not in page_text(answer)
 
 
-def test_a_save_that_saved_homework_says_its_answers_were_kept_past_a_refused_rows_read(
+def test_a_save_that_saved_homework_past_a_refused_rows_read_says_no_answers_kept_for_another_group(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Save of one ready group with a Type chosen on another, storing answers and saving its
-    homework, the read of its page's rows refused: beneath its result, that the answers were kept
-    by this attempt."""
+    """Save of one ready group with a Type chosen on another, saving its homework, the read of its
+    page's rows refused. Design 249-d5 P3 stores "nothing" for the group left open, so its result
+    stands alone, with no line saying answers were kept."""
     with here(open_settings(tmp_path)) as browser:
         review, page, field, value, unit, title = an_answer_to_change_with_its_card_opened(
             browser, monkeypatch
@@ -42897,10 +43209,11 @@ def test_a_save_that_saved_homework_says_its_answers_were_kept_past_a_refused_ro
         monkeypatch.undo()
 
     [kept] = written
-    assert (kept.stored > 0, kept.dropped) == (True, 0)
+    assert (kept.stored > 0, kept.dropped) == (False, 0)
     assert answer.status_code == 200
     assert 'name="correct:' not in answer.text
-    says_in_order(answer, "Saved: 1 new assignment.", SAID_OF_ONE_ATTEMPT["kept"])
+    assert "Saved: 1 new assignment." in page_text(answer)
+    assert SAID_OF_ONE_ATTEMPT["kept"] not in page_text(answer)
 
 
 FIRST_PAGE_READS_REFUSED_ANOTHER_WAY: Final[dict[str, tuple[str, str, str]]] = {
@@ -43064,9 +43377,10 @@ def test_a_save_s_busy_write_is_said_beneath_the_result_of_an_earlier_save(
             False,
             read,
             receipt=True,
-            # The read of that save's rows: the fifth of this Save, past the read of its post and
-            # the three reads of the check before any store.
-            also=[("state_of_review", "draft_for_save", 5, FILE_REFUSED)] if rows_refused else [],
+            # The read of that save's rows: the sixth of this Save, past the read of its post, the
+            # three reads of the check before any store and the read comparing its Type answer
+            # with what its page signed.
+            also=[("state_of_review", "draft_for_save", 6, FILE_REFUSED)] if rows_refused else [],
             fails=THE_BUSY_REFUSALS["a busy store"],
         )
         for _ in range(unseen):
@@ -43319,10 +43633,10 @@ def test_a_save_refused_as_changed_says_it_saved_no_homework_past_a_refused_late
 def test_a_save_with_nothing_ticked_says_it_saved_no_homework_past_a_refused_later_look(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Save with nothing ticked whose write stores answers, so that it calls no homework save,
-    its rows empty and its next read and its look for a receipt both refused by the file: no
-    homework was saved by this attempt, Blossom couldn't tell whether another attempt saved any,
-    and then that the answers were kept by this attempt."""
+    """Round 719: "Review changes and empty or refused saves must still write nothing." Save with
+    nothing ticked calls no store and no homework save, its rows empty and its next read and its
+    look for a receipt both refused by the file: no homework was saved by this attempt and
+    Blossom couldn't tell whether another attempt saved any."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, _ = behind_or_nothing_ticked(
             browser, monkeypatch, "Save with nothing ticked", opened_and_typed=True
@@ -43336,11 +43650,9 @@ def test_a_save_with_nothing_ticked_says_it_saved_no_homework_past_a_refused_lat
         answer = saved_with_corrections(browser, draft_id, posted)
         monkeypatch.undo()
 
-    assert writes == ["keep"]
+    assert writes == []
     assert ("replayed", "homework_acceptance", 1) in calls.refused
-    says_no_homework_by_this_attempt_and_can_t_tell_of_another(
-        answer, then=[SAID_OF_ONE_ATTEMPT["kept"]]
-    )
+    says_no_homework_by_this_attempt_and_can_t_tell_of_another(answer, then=[])
 
 
 def test_a_save_whose_name_read_meets_an_open_transaction_says_it_saved_no_homework(
@@ -43634,25 +43946,25 @@ def test_a_save_that_dropped_answers_says_so_where_its_review_ended_under_its_ho
         answer = send(browser, review.draft_id, posted)
         monkeypatch.undo()
 
+    # Design 249-d5 P3: "the save and its answers cover only the written groups", so the saved
+    # group's answer never reaches the write and nothing is dropped.
     [kept] = written
-    assert ((kept.stored > 0), (kept.dropped > 0)) == (also_stores, True)
+    assert ((kept.stored > 0), (kept.dropped > 0)) == (also_stores, False)
     assert answer.status_code == 409
     assert 'name="correct:' not in answer.text
     text = page_text(answer)
+    assert SAID_OF_ONE_ATTEMPT["not_kept_for_saved"] not in text
     if also_stores:
         says_in_order(
             answer,
-            SAID_OF_ONE_ATTEMPT["some_kept_before_ended"],
-            SAID_OF_ONE_ATTEMPT["not_kept_for_saved"],
+            SAID_OF_ONE_ATTEMPT["kept_before_ended"],
             SAID_OF_ONE_ATTEMPT["no_homework"],
             imports.SAID[reason],
         )
     else:
-        says_in_order(answer, SAID_OF_ONE_ATTEMPT["not_kept_for_saved"], imports.SAID[reason])
+        says_in_order(answer, imports.SAID[reason])
         assert SAID_OF_ONE_ATTEMPT["no_homework"] not in text
-    assert "answers were kept" not in text.replace(
-        SAID_OF_ONE_ATTEMPT["some_kept_before_ended"], ""
-    )
+    assert "answers were kept" not in text.replace(SAID_OF_ONE_ATTEMPT["kept_before_ended"], "")
 
 
 def test_a_save_whose_check_for_an_open_transaction_is_refused_can_t_tell_past_a_refused_look(
@@ -43696,11 +44008,11 @@ def test_a_save_beside_empty_counts_whose_rows_stay_empty_says_its_lines_past_a_
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Timing forced: Save ticking a group from a page an earlier save took a group from, storing
-    one answer and dropping the saved group's, its homework not saved; its rows come back empty, a
-    look finds the earlier save with its counts empty, that save's page finds no rows either, and
-    another tab discards the review as they come back. The press reads nothing more, so no read
-    of its own says the review closed: the page says once that some answers were kept by this
-    attempt, and once that this attempt did not keep answers for homework already saved."""
+    that group's own answer, its homework not saved; its rows come back empty, a look finds the
+    earlier save with its counts empty, that save's page finds no rows either, and another tab
+    discards the review as they come back. The press reads nothing more, so no read of its own
+    says the review closed: the page says once that its answers were kept by this attempt. Design
+    249-d5 P3: the press stores nothing for the group already saved, so nothing is said dropped."""
     asked: list[bool] = []
     with here(open_settings(tmp_path)) as browser:
         draft_id, posted, _, _ = a_save_storing_an_answer_beside_its_receipt(browser, monkeypatch)
@@ -43719,15 +44031,14 @@ def test_a_save_beside_empty_counts_whose_rows_stay_empty_says_its_lines_past_a_
         monkeypatch.undo()
 
     [kept] = written
-    assert (kept.stored > 0, kept.dropped > 0) == (True, True)
+    assert (kept.stored > 0, kept.dropped) == (True, 0)
     assert len(asked) == 2
     assert read_more == []
     assert answer.status_code == 200
     assert 'name="correct:' not in answer.text
     assert imports.COUNTS_UNSHOWN in page_text(answer)
-    says_in_order(
-        answer, SAID_OF_ONE_ATTEMPT["some_kept"], SAID_OF_ONE_ATTEMPT["not_kept_for_saved"]
-    )
+    assert page_text(answer).count(SAID_OF_ONE_ATTEMPT["kept"]) == 1
+    assert SAID_OF_ONE_ATTEMPT["not_kept_for_saved"] not in page_text(answer)
     assert "before this review ended" not in page_text(answer)
 
 
@@ -47825,9 +48136,9 @@ def test_with_a_card_open_save_review_for_later_keeps_its_typing_and_keep_does_n
 def test_a_destination_alone_is_never_refused_as_an_unreviewed_correction(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With no box changed, another destination chosen on the page and Save is answered by the
-    check of the effects that destination changes, never as a correction no review showed; Save
-    from the page that returns writes once."""
+    """With no box changed, another destination chosen on the page and Save holds that group, never
+    refusing it as a correction no review showed (design 249-d5 P3: "a changed destination beside a
+    reviewed correction is held, not refused"); Review changes and then Save write once."""
     with here(open_settings(tmp_path)) as browser:
         import_review_cases.one_saved_row(browser, monkeypatch, BLUE)
         answer = homework_answer(
@@ -47851,14 +48162,16 @@ def test_a_destination_alone_is_never_refused_as_an_unreviewed_correction(
             browser, draft_id, page_post(page, "save", choose={field: other}, tick=units_on(page))
         )
         between = saved_rows(browser)
+        shown = send(
+            browser, draft_id, page_post(checked.text, "review", tick=units_ticked(checked.text))
+        ).text
         saved = followed(
-            browser,
-            send(browser, draft_id, page_post(checked.text, "save", tick=units_on(checked.text))),
+            browser, send(browser, draft_id, page_post(shown, "save", tick=units_ticked(shown)))
         )
         rows = saved_rows(browser)
 
-    assert checked.status_code == 409
-    assert says_each(checked.text, CHANGED_BESIDE_ANSWERS)
+    assert checked.status_code == 200
+    assert says(checked.text, imports.PRESS_SAID["held_back"])
     assert not says(checked.text, imports.PRESS_SAID["not_reviewed"])
     assert between == before
     assert not says(saved, imports.PRESS_SAID["not_reviewed"])
@@ -48166,7 +48479,8 @@ def test_an_essay_saved_with_its_note_under_a_corrected_title_read_again_asks_sa
     assert between == whole
     assert after_review == (whole, answers)
     assert actions_of(chosen) == ["save"]
-    assert JOINED_TICK.findall(review_form(chosen)) == [" checked"]
+    # Design 249-d5 P4: "On a press that stores nothing the posted joined-note tick stands."
+    assert JOINED_TICK.findall(review_form(chosen)) == [""]
     assert says(done, imports.counted(0, 0, 1, 0)), import_review_cases.page_text(done)
     assert after == before
     assert last_whole == whole
@@ -48605,7 +48919,8 @@ def test_a_ready_group_beside_a_card_that_asks_keeps_its_tick_through_review_cha
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A new group ticked beside a card that asks where it goes: Review changes with nothing
-    chosen stores nothing, keeps the tick and asks again, with no Save; with the saved assignment
+    chosen stores nothing, keeps the tick and asks again, Save offered for the ready group (round
+    718: "Those can save while another card remains unresolved."); with the saved assignment
     chosen, the tick is kept, both groups are offered and one Save writes the new group's row
     alone."""
     with here(open_settings(tmp_path)) as browser:
@@ -48634,8 +48949,8 @@ def test_a_ready_group_beside_a_card_that_asks_keeps_its_tick_through_review_cha
         last = saved_whole(browser, "English 8")
 
     assert len(ticked) == 1
-    assert actions_of(page) == ["review"]
-    assert actions_of(unchanged) == ["review"]
+    assert actions_of(page) == ["save"]
+    assert actions_of(unchanged) == ["save"]
     assert units_ticked(unchanged) == ticked
     assert after_unchanged == (whole, answers)
     assert actions_of(chosen) == ["save"]
@@ -48649,8 +48964,9 @@ def test_a_ready_group_beside_a_card_that_asks_keeps_its_tick_through_review_cha
 def test_a_card_that_asks_can_be_left_unsaved_and_the_ready_group_saved(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A page with a card that asks offers no Save until it is answered or left: "Leave this
-    group unsaved" on that card brings Save back, and Save writes the ready group's row alone."""
+    """Round 718: selected assignments already reviewed "can save while another card remains
+    unresolved." A page with a card that asks offers Save for the ready group; "Leave this group
+    unsaved" on that card keeps it offered, and Save writes the ready group's row alone."""
     with here(open_settings(tmp_path)) as browser:
         opened_typed_and_saved(
             browser,
@@ -48676,7 +48992,7 @@ def test_a_card_that_asks_can_be_left_unsaved_and_the_ready_group_saved(
         science = saved_whole(browser, "Science 8")
         last = saved_whole(browser, "English 8")
 
-    assert actions_of(page) == ["review"]
+    assert actions_of(page) == ["save"]
     assert actions_of(left) == ["save"]
     assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
     assert [row[0].title for row in science] == ["Chains Reading Guide 6"]
@@ -48824,7 +49140,9 @@ def test_a_title_typed_after_a_corrected_row_was_chosen_asks_again_before_one_sa
         assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
         assert [title for title, _ in rows] == ["Corrected One", "Third Title"]
     else:
-        assert [title for title, _ in rows] == ["Corrected One"]
+        # Round 718 item 1: "Apply the family's explicit title edit to the chosen saved
+        # assignment."
+        assert [title for title, _ in rows] == ["Third Title"]
         assert last[0][0].assignment_id == whole[0][0].assignment_id
 
 
@@ -48896,7 +49214,8 @@ def test_a_title_typed_on_a_reread_card_keeps_same_or_new_asked(
     assert actions_of(stood) == ["review"]
     assert rows_after_stood == [("Corrected One", date(2026, 10, 8))]
     assert not says(done, imports.PRESS_SAID["none_chosen"]), import_review_cases.page_text(done)
-    assert [title for title, _ in rows] == ["Corrected One"]
+    # Round 718 item 1: "Apply the family's explicit title edit to the chosen saved assignment."
+    assert [title for title, _ in rows] == ["Corrected One."]
 
 
 def test_words_typed_on_a_card_the_school_moved_keep_same_or_new_asked(
@@ -49023,8 +49342,9 @@ def test_the_essay_retitled_as_another_saved_row_lists_both_and_chooses_neither(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The essay retitled with the exact title of another saved row: that row is listed by its
-    name, the row chosen before stays listed, neither is chosen, and the saved row chosen again
-    goes Review changes, then one Save, with both saved rows as they were."""
+    name, the row chosen before stays listed and neither is chosen. The row chosen before keeps
+    the title asked, since another saved assignment holds it; the row holding that title, chosen
+    instead, goes Review changes, then one Save, and both saved rows stand under their titles."""
     report = homework_answer(
         cards=[
             homework_card(
@@ -49050,12 +49370,16 @@ def test_the_essay_retitled_as_another_saved_row_lists_both_and_chooses_neither(
         choose = {**destination_starting(page, "Short essay outline"), joined_field(page): "1"}
         chosen = reviewed_storing_nothing(browser, draft_id, page, choose)
         asked, tick = title_typed_with_the_tick_sent(browser, draft_id, chosen, "Book report")
-        reviewed = reviewed_storing_nothing(
+        taken = reviewed_storing_nothing(
             browser, draft_id, asked, destination_starting(asked, "Short essay outline,")
+        )
+        reviewed = reviewed_storing_nothing(
+            browser, draft_id, taken, destination_starting(taken, "Book report,")
         )
         done = saved_as_ticked(browser, draft_id, reviewed)
         last = saved_whole(browser, "Religion 8")
 
+    assert actions_of(taken) == ["review"]
     assert units_ticked(asked) == tick
     assert actions_of(asked) == ["review"]
     assert checked_destinations(asked) == []
@@ -49472,3 +49796,959 @@ def test_limitation_a_corrected_title_and_assigned_date_with_changed_words_propo
         ("Corrected One", date(2026, 10, 8)),
         ("Sentence Composing", date(2026, 10, 8)),
     ]
+
+
+# ------------------------------------------------------------------ one decision per group
+
+
+def presses_offered(page: str) -> list[str]:
+    """The press of each visible button of the review form that sends one of its main presses:
+    ``review`` for Review changes and ``save`` for Save selected homework, hidden first button
+    left out."""
+    found = re.findall(
+        r'<button type="submit" class="(?:primary|secondary)" name="press" value="(review|save)"',
+        review_form(page),
+    )
+    return sorted(found)
+
+
+def first_submit_press(page: str) -> str:
+    """The press of the review form's first submit button, which Enter in a box presses."""
+    found = re.search(r'<button type="submit"[^>]*name="press" value="([^"]+)"', review_form(page))
+    assert found is not None
+    return found.group(1)
+
+
+UNSURE_CARD: Final = {"field": "instruction", "reason": "a smudge over it"}
+
+
+@pytest.mark.parametrize(
+    ("words", "rows_after"), [("Corrected One", 1), ("A new Sentence Composing", 2)]
+)
+def test_a_chosen_destination_stays_selected_through_an_unsure_field_and_one_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, words: str, rows_after: int
+) -> None:
+    """A saved card read again with its instruction marked unsure: the destination chosen and
+    Review changes pressed shows the group ticked with the question open and Review changes as
+    the action. The field confirmed, Review changes keeps the tick and one Save finishes."""
+    first = homework_answer(cards=[homework_card()])
+    unsure = homework_answer(cards=[homework_card(uncertain=[UNSURE_CARD])])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, first, {"title": "Corrected One"})
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, unsure))
+        page = answered(browser, draft_id, page)
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, words)
+        )
+        [question] = fields_named(review_form(chosen), "answer:confirm:")
+        reviewed = reviewed_storing_nothing(
+            browser, draft_id, chosen, {f"answer:confirm:{question}": "as_read"}
+        )
+        done = saved_as_ticked(browser, draft_id, reviewed)
+        rows = english(browser)
+
+    assert units_ticked(chosen) == units_on(chosen) != []
+    assert actions_of(chosen) == ["review"]
+    assert units_ticked(reviewed) == units_on(reviewed) != []
+    assert actions_of(reviewed) == ["save"]
+    assert not says(done, imports.PRESS_SAID["none_chosen"]), import_review_cases.page_text(done)
+    assert len(rows) == rows_after
+
+
+def test_a_chosen_destination_stays_selected_through_the_student_name_question(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved card read again from a screenshot naming another student: a new assignment chosen
+    and Review changes pressed shows the group ticked; her name answered and Review changes
+    pressed keeps it ticked, and one Save writes one row."""
+    first = homework_answer(cards=[homework_card()])
+    named = homework_answer(
+        active_student={"name": "Ren", "uncertain": None}, cards=[homework_card()]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, first, {"title": "Corrected One"})
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, named))
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, "A new Sentence Composing")
+        )
+        [form] = fields_named(review_form(chosen), "answer:name:")
+        reviewed = reviewed_storing_nothing(
+            browser, draft_id, chosen, {f"answer:name:{form}": "hers"}
+        )
+        done = saved_as_ticked(browser, draft_id, reviewed)
+        rows = english(browser)
+
+    assert units_ticked(chosen) == units_on(chosen) != []
+    assert units_ticked(reviewed) == units_on(reviewed) != []
+    assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+    assert len(rows) == 2
+
+
+def test_a_row_found_under_another_name_selects_its_group_for_one_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card asked same or new, a saved row found under another name for it: the page that
+    returns shows its group ticked, and the one Save offered there finishes."""
+    first = homework_answer(cards=[homework_card()])
+    other = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, first, {"title": "Corrected One"})
+        state_of(browser).project_state.upsert_assignments([other])
+        draft_id, page = read_again(browser, monkeypatch, first)
+        [piece] = fields_named(review_form(page), "answer:destination:")
+        finding = browser.post(
+            f"/parent/imports/{draft_id}/find", data={"piece": piece, "words": "grammar"}
+        ).text
+        choice = re.search(
+            r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
+        )
+        assert choice is not None
+        fields = import_review_cases.small_form_fields(choice.group(0))
+        found_page = followed(browser, send(browser, draft_id, fields))
+        done = saved_as_ticked(browser, draft_id, found_page)
+        rows = english(browser)
+
+    assert units_ticked(found_page) == units_on(found_page) != []
+    assert not says(done, imports.PRESS_SAID["none_chosen"]), import_review_cases.page_text(done)
+    assert sorted(title for title, _ in rows) == ["Corrected One", "Grammar Practice"]
+
+
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_an_untick_stands_after_the_press_that_keeps_the_review_and_reopening(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """A new assignment chosen, shown ticked on Review changes, unticked, then Keep these answers
+    or Save review for later: the review reopened keeps the destination chosen and the group
+    unticked, and a Save as it stands writes nothing."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, answer, {"title": "Corrected One"})
+        whole = saved_whole(browser, "English 8")
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, "A new Sentence Composing")
+        )
+        unticked = send(browser, draft_id, page_post(chosen, "review")).text
+        followed(browser, send(browser, draft_id, page_post(unticked, press)))
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+        done = followed(browser, send(browser, draft_id, page_post(reopened, "save")))
+        last = saved_whole(browser, "English 8")
+
+    assert units_ticked(chosen) == units_on(chosen) != []
+    assert units_ticked(unticked) == []
+    assert [said[:5] for said in checked_destinations(reopened)] == ["A new"]
+    assert units_on(reopened) != []
+    assert units_ticked(reopened) == []
+    assert says(done, imports.PRESS_SAID["none_chosen"]), import_review_cases.page_text(done)
+    assert last == whole
+
+
+@pytest.mark.parametrize("words", ["Corrected One", "A new Sentence Composing"])
+def test_a_destination_chosen_with_keep_alone_selects_nothing_when_reopened(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, words: str
+) -> None:
+    """A destination chosen and held with Keep these answers, never ticked: its page and the
+    review reopened show it chosen with the group unticked."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, answer, {"title": "Corrected One"})
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        choose = destination_starting(page, words)
+        kept = send(browser, draft_id, page_post(page, "keep", choose=choose)).text
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert units_ticked(kept) == []
+    assert units_ticked(reopened) == []
+    assert [said[: len(words)] for said in checked_destinations(reopened)] == [words]
+
+
+def test_a_group_ticked_and_kept_comes_back_ticked_when_reopened(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep these answers with one of two ready groups ticked: the review reopened shows that
+    group ticked and the other unticked, and keeping the same ticks again writes no progress."""
+    lab = homework_card(
+        course="Science 8", title="Lab write-up", instruction="Finish it.", y_top=320, y_bottom=400
+    )
+    answer = homework_answer(cards=[homework_card(), lab])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, page)
+        first, second = units_on(page)
+        kept = send(browser, draft_id, page_post(page, "keep", tick=[first])).text
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+        before = import_review_cases.every_row(browser)
+        send(browser, draft_id, page_post(reopened, "keep", tick=[first]))
+        after = import_review_cases.every_row(browser)
+
+    assert units_ticked(kept) == [first]
+    assert units_ticked(reopened) == [first]
+    assert second in units_on(reopened)
+    assert after["import_draft_progress"] == before["import_draft_progress"]
+
+
+def test_a_joined_note_left_unticked_stays_unticked_on_review_changes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The essay saved with its joined note, read again and its saved row chosen with the note
+    left unticked: Review changes shows the note as the post sent it."""
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(
+            browser, monkeypatch, essay_answer(), {"title": "Short essay outline"}, note_ticked=True
+        )
+        draft_id, page = read_again(browser, monkeypatch, essay_answer())
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, "Short essay outline")
+        )
+
+    assert JOINED_TICK.findall(review_form(page)) == [""]
+    assert JOINED_TICK.findall(review_form(chosen)) == [""]
+
+
+def test_review_changes_is_offered_beside_save_on_a_page_with_every_group_unticked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Choose, Review changes, untick: the page offers Save and Review changes, and Review
+    changes is the form's first submit button."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, answer, {"title": "Corrected One"})
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, "A new Sentence Composing")
+        )
+        unticked = send(browser, draft_id, page_post(chosen, "review")).text
+
+    assert units_ticked(unticked) == []
+    assert presses_offered(unticked) == ["review", "save"]
+    assert first_submit_press(unticked) == "review"
+    assert presses_offered(page) == ["review"]
+
+
+def test_a_save_with_nothing_selected_stores_nothing_and_says_to_choose_one(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first read whose card starts on its default, unticked and Save pressed: every table
+    stays as it was, the page says to choose one, and the group stays unticked."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, page)
+        before = import_review_cases.every_row(browser)
+        done = followed(browser, send(browser, draft_id, page_post(page, "save")))
+        after = import_review_cases.every_row(browser)
+
+    assert after == before
+    assert says(done, imports.PRESS_SAID["none_chosen"]), import_review_cases.page_text(done)
+    assert units_ticked(done) == []
+
+
+def test_a_destination_chosen_and_saved_directly_with_nothing_selected_stores_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page with the group unticked, another destination chosen and Save pressed directly:
+    nothing is stored, the page says to choose one, and the group comes back ticked with the
+    choice shown, so one Save writes one row."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        unticked = send(browser, draft_id, page_post(page, "review")).text
+        before = import_review_cases.every_row(browser)
+        choose = destination_starting(unticked, "A new Sentence")
+        returned = followed(
+            browser, send(browser, draft_id, page_post(unticked, "save", choose=choose))
+        )
+        after = import_review_cases.every_row(browser)
+        done = saved_as_ticked(browser, draft_id, returned)
+        rows = english(browser)
+
+    assert after == before
+    assert says(returned, imports.PRESS_SAID["none_chosen"])
+    assert [said[:14] for said in checked_destinations(returned)] == ["A new Sentence"]
+    assert units_ticked(returned) == units_on(returned) != []
+    assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+    assert len(rows) == 2
+
+
+# ------------------------------------------------------------------ what reopening restores
+
+
+def two_ready_groups(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
+    """A first read of two ready groups, both starting ticked: the review's id and its page."""
+    lab = homework_card(
+        course="Science 8", title="Lab write-up", instruction="Finish it.", y_top=320, y_bottom=400
+    )
+    answer = homework_answer(cards=[homework_card(), lab])
+    draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+    return draft_id, answered(browser, draft_id, page)
+
+
+@pytest.mark.parametrize("press", ["keep", "later"])
+def test_every_group_unticked_and_kept_comes_back_unticked_when_reopened(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Keep these answers or Save review for later with every group unticked writes that empty
+    selection into saved progress: the review reopened shows every group unticked."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = two_ready_groups(browser, monkeypatch)
+        followed(browser, send(browser, draft_id, page_post(page, press)))
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert len(units_ticked(page)) == 2
+    assert len(units_on(reopened)) == 2
+    assert units_ticked(reopened) == []
+
+
+def test_a_partial_save_keeps_the_selection_when_reopened(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One of two ready groups ticked and saved: the review reopened shows the group left open
+    unticked, as the Save sent it."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = two_ready_groups(browser, monkeypatch)
+        first, _ = units_on(page)
+        done = followed(browser, send(browser, draft_id, page_post(page, "save", tick=[first])))
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert says(done, imports.counted(1, 0, 0, 1)), import_review_cases.page_text(done)
+    assert len(units_on(reopened)) == 1
+    assert units_ticked(reopened) == []
+
+
+def test_leaving_after_review_changes_reopens_on_the_last_saved_progress(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One group ticked and kept, then the other ticked in its place on Review changes, and the
+    review left: Review changes writes nothing, so reopening shows the selection last kept."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = two_ready_groups(browser, monkeypatch)
+        first, second = units_on(page)
+        kept = send(browser, draft_id, page_post(page, "keep", tick=[first])).text
+        before = import_review_cases.every_row(browser)
+        reviewed = send(browser, draft_id, page_post(kept, "review", tick=[second])).text
+        after = import_review_cases.every_row(browser)
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert units_ticked(reviewed) == [second]
+    assert after == before
+    assert units_ticked(reopened) == [first]
+
+
+def the_page_claims_no_saved_progress(page: str) -> None:
+    """The press's own lines claim nothing was kept, and the page names Save review for later as
+    the way to keep these choices."""
+    said = import_review_cases.page_text(page)
+    for claim in (
+        imports.PRESS_SAID["answers_kept"],
+        imports.PRESS_SAID["some_kept"],
+        imports.PRESS_SAID["later"],
+    ):
+        assert claim not in said, claim
+    assert "Save review for later keeps your choices" in said
+
+
+def test_review_changes_and_a_refused_or_empty_save_claim_no_saved_progress(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review changes, a Save with nothing selected and a Save refused for corrections no review
+    showed write nothing. None of their pages says progress was saved; each points to Save review
+    for later, and the empty Save says its choices are not saved yet."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = two_ready_groups(browser, monkeypatch)
+        before = import_review_cases.every_row(browser)
+        reviewed = send(browser, draft_id, page_post(page, "review")).text
+        empty = followed(browser, send(browser, draft_id, page_post(page, "save")))
+        box = f"correct:{box_subject(page, 'title')}"
+        opened = opened_for_typing(browser, draft_id, page, {box: "Typed Title"})
+        refused = import_review_cases.unoffered(
+            page_post(opened, "save", typed={box: "Typed Title"}, tick=units_ticked(page))
+        )
+        answer = send(browser, draft_id, refused).text
+        after = import_review_cases.every_row(browser)
+
+    assert after == before
+    for shown in (reviewed, empty, answer):
+        the_page_claims_no_saved_progress(shown)
+    assert units_ticked(reviewed) == []
+    assert units_ticked(empty) == []
+    assert says(empty, imports.PRESS_SAID["none_chosen"])
+    assert says(empty, imports.PRESS_SAID["choices_not_saved"])
+    assert says(answer, imports.PRESS_SAID["not_reviewed"])
+
+
+def test_a_save_the_homework_transaction_refuses_writes_no_selection(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One of two ready groups ticked and Save refused at the homework transaction: saved progress
+    and its revision stay as they were."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = two_ready_groups(browser, monkeypatch)
+        first, _ = units_on(page)
+        before = review_as_stored(browser, draft_id)["revision"]
+        monkeypatch.setattr(imports, "save_homework", lambda *_, **__: NotSaved("failed"))
+        answer = send(browser, draft_id, page_post(page, "save", tick=[first]))
+        monkeypatch.undo()
+        after = review_as_stored(browser, draft_id)["revision"]
+        progress = import_review_cases.every_row(browser)["import_draft_progress"]
+
+    assert answer.status_code == 503
+    assert after == before
+    assert progress == []
+
+
+# ------------------------------------------------------------------ written and held
+
+
+def lab_card() -> dict[str, object]:
+    """A second assignment, of another class, that is ready as soon as it is read."""
+    return homework_card(
+        course="Science 8", title="Lab write-up", instruction="Finish it.", y_top=320, y_bottom=400
+    )
+
+
+def science(browser: TestClient) -> list[str]:
+    """The titles saved under Science 8."""
+    rows = state_of(browser).project_state.all_assignments()
+    return sorted(a.title for a in rows if a.course == "Science 8")
+
+
+def test_a_ready_group_saves_while_another_card_still_asks(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ready group beside a card asked same or new: Save is offered, writes the ready group
+    alone, and the card comes back asked with nothing chosen and nothing stored for it."""
+    first = homework_answer(cards=[homework_card()])
+    both = homework_answer(cards=[homework_card(), lab_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, first, {"title": "Corrected One"})
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, both))
+        page = answered(browser, draft_id, page)
+        [ready] = units_on(page)
+        done = followed(browser, send(browser, draft_id, page_post(page, "save", tick=[ready])))
+        answers = stored_answers(browser, draft_id)
+        titles, english_rows = science(browser), english(browser)
+
+    assert actions_of(page) == ["save"]
+    assert says(done, imports.counted(1, 0, 0, 1)), import_review_cases.page_text(done)
+    assert titles == ["Lab write-up"]
+    assert [title for title, _ in english_rows] == ["Corrected One"]
+    assert checked_destinations(done) == []
+    assert actions_of(done) == ["review"]
+    assert [key for key in answers if key[0] == "destination"] == []
+
+
+def changed_beside_a_ready_group(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str, list[tuple[str, str]]]:
+    """A saved card read again on its own default beside a ready group, both ticked, with the
+    card's destination changed to a new assignment on the Save press: the review's id, the page
+    and the post."""
+    first = homework_answer(cards=[homework_card()])
+    both = homework_answer(cards=[homework_card(), lab_card()])
+    earlier, page = read_review(browser, monkeypatch, (RED, first))
+    page = answered(browser, earlier, page)
+    send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+    draft_id, page = read_review(browser, monkeypatch, (BLUE, both))
+    page = answered(browser, draft_id, page)
+    choose = destination_starting(page, "A new Sentence Composing")
+    return draft_id, page, page_post(page, "save", choose=choose, tick=units_ticked(page))
+
+
+def test_a_destination_changed_on_save_is_held_while_the_ready_group_is_written(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Save carrying a changed destination beside a ready group: the ready group is written,
+    nothing is written or stored for the changed one, which comes back selected with the choice
+    shown and goes through Review changes before the one Save that writes it. The page says what
+    saved and what needs attention apart."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, sent = changed_beside_a_ready_group(browser, monkeypatch)
+        done = followed(browser, send(browser, draft_id, sent))
+        answers = stored_answers(browser, draft_id)
+        rows_held = english(browser)
+        titles = science(browser)
+        reviewed = send(browser, draft_id, page_post(done, "review", tick=units_ticked(done))).text
+        last = saved_as_ticked(browser, draft_id, reviewed)
+        rows = english(browser)
+
+    assert len(units_ticked(page)) == 2
+    assert titles == ["Lab write-up"]
+    assert len(rows_held) == 1
+    assert [key for key in answers if key[0] == "destination"] == []
+    assert says(done, imports.counted(1, 0, 0, 1)), import_review_cases.page_text(done)
+    assert says(done, imports.PRESS_SAID["held_back"]), import_review_cases.page_text(done)
+    assert [said[:14] for said in checked_destinations(done)] == ["A new Sentence"]
+    assert units_ticked(done) == units_on(done) != []
+    assert actions_of(done) == ["review"]
+    assert actions_of(reviewed) == ["save"]
+    assert says(last, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(last)
+    assert len(rows) == 2
+
+
+def test_a_double_press_of_a_partial_save_writes_once_and_says_what_needs_attention(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same partial Save sent twice: one row is written and nothing is stored for the held
+    group. The second answer repeats that save's result and says what needs attention."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, sent = changed_beside_a_ready_group(browser, monkeypatch)
+        send(browser, draft_id, sent)
+        again = followed(browser, send(browser, draft_id, sent))
+        answers = stored_answers(browser, draft_id)
+        titles, rows = science(browser), english(browser)
+
+    assert titles == ["Lab write-up"]
+    assert len(rows) == 1
+    assert [key for key in answers if key[0] == "destination"] == []
+    assert says(again, imports.counted(1, 0, 0, 1)), import_review_cases.page_text(again)
+    assert says(again, imports.PRESS_SAID["held_back"]), import_review_cases.page_text(again)
+
+
+def test_a_partial_save_keeps_the_typing_of_the_card_that_still_asks_and_says_each_apart(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Words typed on a card asked same or new, Review changes pressed, then Save with the ready
+    group ticked: the ready group is written, nothing is written or stored for the card, its box
+    comes back holding the typing with its question open, and the page says what saved apart from
+    what still needs attention."""
+    first = homework_answer(cards=[homework_card()])
+    both = homework_answer(cards=[homework_card(), lab_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, first, {"title": "Corrected One"})
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, both))
+        page = answered(browser, draft_id, page)
+        [ready] = units_on(page)
+        box = f"correct:{box_subject(page, 'title', 0)}"
+        opened = opened_for_typing(browser, draft_id, page, {box: "Typed Words"})
+        sent = page_post(opened, "review", typed={box: "Typed Words"}, tick=units_ticked(opened))
+        typed = send(browser, draft_id, sent).text
+        done = followed(browser, send(browser, draft_id, page_post(typed, "save", tick=[ready])))
+        answers = stored_answers(browser, draft_id)
+        titles, english_rows = science(browser), english(browser)
+
+    said = import_review_cases.page_text(done)
+    assert actions_of(typed) == ["save"]
+    assert titles == ["Lab write-up"]
+    assert [title for title, _ in english_rows] == ["Corrected One"]
+    assert [key for key in answers if key[0] == "destination"] == []
+    assert 'value="Typed Words"' in review_form(done)
+    assert "Saved: 1 new assignment. 1 still needs checking." in said, said
+    assert screenshot_page.SAID["choose_each"] in said, said
+    assert checked_destinations(done) == []
+
+
+def test_a_save_holding_every_selected_group_writes_and_stores_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lone ticked group whose destination is changed on the Save press: every table stays as
+    it was, the group comes back selected with the choice shown, and Review changes then one Save
+    writes it once."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        before = import_review_cases.every_row(browser)
+        choose = destination_starting(page, "A new Sentence")
+        sent = page_post(page, "save", choose=choose, tick=units_ticked(page))
+        held = followed(browser, send(browser, draft_id, sent))
+        after = import_review_cases.every_row(browser)
+        reviewed = send(browser, draft_id, page_post(held, "review", tick=units_ticked(held))).text
+        done = saved_as_ticked(browser, draft_id, reviewed)
+        rows = english(browser)
+
+    assert after == before
+    assert says(held, imports.PRESS_SAID["held_back"]), import_review_cases.page_text(held)
+    assert units_ticked(held) == units_on(held) != []
+    assert actions_of(held) == ["review"]
+    assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+    assert len(rows) == 2
+
+
+# ------------------------------------------------------------------ a title typed for a saved row
+
+
+def title_typed_then_saved_row_chosen(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, title: str = "Final Title"
+) -> tuple[str, str]:
+    """A saved card read again, ``title`` typed on it and Review changes pressed, then the saved
+    assignment chosen on the page that returns and Review changes pressed: the review's id and the
+    page that shows the effect, every table of the record as it was."""
+    answer = homework_answer(cards=[homework_card()])
+    opened_typed_and_saved(browser, monkeypatch, answer, {"title": "Corrected One"})
+    draft_id, page = read_again(browser, monkeypatch, answer)
+    box = f"correct:{box_subject(page, 'title')}"
+    opened = opened_for_typing(browser, draft_id, page, {box: title})
+    sent = page_post(opened, "review", typed={box: title}, tick=units_ticked(opened))
+    typed = send(browser, draft_id, sent).text
+    choose = destination_starting(typed, "Corrected One")
+    return draft_id, reviewed_storing_nothing(browser, draft_id, typed, choose)
+
+
+def test_review_changes_names_the_saved_assignment_and_the_title_typed_for_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A title typed and a saved assignment chosen: Review changes says which saved assignment
+    changes and the title it takes, stores nothing, and offers the one Save."""
+    with here(open_settings(tmp_path)) as browser:
+        _, shown = title_typed_then_saved_row_chosen(browser, monkeypatch)
+        rows = english(browser)
+
+    said = import_review_cases.page_text(shown)
+    assert "Updates Corrected One" in said, said
+    assert "Its title becomes “Final Title”." in said, said
+    assert "Already saved" not in said, said
+    assert actions_of(shown) == ["save"]
+    assert [title for title, _ in rows] == ["Corrected One"]
+
+
+def test_one_save_applies_a_title_typed_for_a_saved_assignment_with_no_renamed_record(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one Save on that page gives the saved assignment the typed title, counted as one
+    updated, on the same row, with no "renamed" record; the same Save sent again writes nothing
+    more."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = title_typed_then_saved_row_chosen(browser, monkeypatch)
+        [(before, _, _)] = saved_whole(browser, "English 8")
+        sent = page_post(shown, "save", tick=units_ticked(shown))
+        done = followed(browser, send(browser, draft_id, sent))
+        once = saved_whole(browser, "English 8")
+        followed(browser, send(browser, draft_id, sent))
+        twice = saved_whole(browser, "English 8")
+        [(after, _, _)] = twice
+        renamed = renamed_for(browser, "English 8", "Final Title")
+
+    assert says(done, imports.counted(0, 1, 0, 0)), import_review_cases.page_text(done)
+    assert after.assignment_id == before.assignment_id
+    assert after.title == "Final Title"
+    assert after.due_date == before.due_date
+    assert renamed == []
+    assert twice == once
+
+
+def test_matching_a_card_with_no_title_typed_keeps_the_saved_title(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved assignment chosen for a card read under another title, with no title typed: the
+    page proposes no title and Save keeps the saved one."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, answer, {"title": "Corrected One"})
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        choose = destination_starting(page, "Corrected One")
+        shown = reviewed_storing_nothing(browser, draft_id, page, choose)
+        saved_as_ticked(browser, draft_id, shown)
+        rows = english(browser)
+
+    assert "Its title becomes" not in import_review_cases.page_text(shown)
+    assert [title for title, _ in rows] == ["Corrected One"]
+
+
+def test_two_different_titles_typed_for_one_saved_assignment_are_asked_and_never_written(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two cards found under one saved assignment, each with a different title typed: the page
+    names both titles and asks which to use, offers no Save, and a Save sent anyway on the raw
+    path writes neither."""
+    first = homework_answer(cards=[homework_card()])
+    two = homework_answer(
+        cards=[
+            homework_card(title="Part One", instruction="Read part one."),
+            homework_card(title="Part Two", instruction="Read part two.", y_top=320, y_bottom=400),
+        ]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, first, {"title": "Corrected One"})
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, two))
+        page = answered(browser, draft_id, page)
+        boxes = {
+            f"correct:{box_subject(page, 'title', 0)}": "Alpha",
+            f"correct:{box_subject(page, 'title', 1)}": "Beta",
+        }
+        opened = opened_for_typing(browser, draft_id, page, boxes)
+        send(browser, draft_id, page_post(opened, "later", typed=boxes))
+        kept = browser.get(f"/parent/imports/{draft_id}").text
+        choose = {
+            field: value
+            for field, value, _, said in destinations_drawn(kept)
+            if said.startswith("Corrected One")
+        }
+        assert len(choose) == 2
+        asked = reviewed_storing_nothing(browser, draft_id, kept, choose)
+        before = saved_whole(browser, "English 8")
+        sent = import_review_cases.unoffered(page_post(asked, "save", tick=units_on(asked)))
+        refused = followed(browser, send(browser, draft_id, sent))
+        after = saved_whole(browser, "English 8")
+
+    said = import_review_cases.page_text(asked)
+    assert "which title to use" in said, said
+    assert "“Alpha” and “Beta”" in said, said
+    assert actions_of(asked) == ["review"]
+    assert "Saved:" not in import_review_cases.page_text(refused)
+    assert after == before
+
+
+# ------------------------------------------------------------------ what a separate form carries
+
+
+def three_ready_groups(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
+    """A first read of three ready groups, all starting ticked: the review's id and its page."""
+    third = homework_card(
+        course="History 8", title="Map quiz", instruction="Study the map.", y_top=420, y_bottom=500
+    )
+    answer = homework_answer(cards=[homework_card(), lab_card(), third])
+    draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+    return draft_id, answered(browser, draft_id, page)
+
+
+def test_leaving_a_group_keeps_the_selection_its_page_showed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One group unticked on Review changes, then another left unsaved: the review reopened keeps
+    the untick the page showed and the ticks of the rest."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = three_ready_groups(browser, monkeypatch)
+        first, second, third = units_on(page)
+        shown = send(browser, draft_id, page_post(page, "review", tick=[first, third])).text
+        followed(browser, press_outside(browser, shown, "leave-3"))
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert units_ticked(shown) == [first, third]
+    assert units_on(reopened) == [first, second]
+    assert units_ticked(reopened) == [first]
+
+
+def test_leaving_the_only_ticked_group_writes_no_empty_selection(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every other group unticked on Review changes, then the one left ticked left unsaved: a form
+    that posts no ticks never writes an empty selection, so saved progress stays absent."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = three_ready_groups(browser, monkeypatch)
+        _, _, third = units_on(page)
+        shown = send(browser, draft_id, page_post(page, "review", tick=[third])).text
+        followed(browser, press_outside(browser, shown, "leave-3"))
+        progress = import_review_cases.every_row(browser)["import_draft_progress"]
+
+    assert progress == []
+
+
+def test_a_found_row_keeps_the_selection_its_page_showed_and_reopening_keeps_both(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ready group unticked on Review changes, then a saved row found for the card beside it,
+    the search repeated on the way: the page that returns and the review reopened show the found
+    card's group selected and the untick as the page showed it."""
+    first = homework_answer(cards=[homework_card()])
+    both = homework_answer(cards=[homework_card(), lab_card()])
+    other = Assignment(
+        assignment_id="assignment-grammar-practice-eeee4444",
+        course="English 8",
+        title="Grammar Practice",
+        due_date=date(2026, 10, 8),
+        dependencies=[],
+        reported_submission_status="not_reported",
+        assigned_on=None,
+        kind=AssignmentKind.HOMEWORK,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, first, {"title": "Corrected One"})
+        state_of(browser).project_state.upsert_assignments([other])
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, both))
+        page = answered(browser, draft_id, page)
+        [ready] = units_on(page)
+        shown = send(browser, draft_id, page_post(page, "review")).text
+        action, fields = outside(shown, "find-1")
+        opened = browser.post(action, data=dict(fields)).text
+        again = re.search(r'<form method="post" action="[^"]+/find">.*?</form>', opened, re.S)
+        assert again is not None
+        search = {**dict(import_review_cases.small_form_fields(again.group(0))), "words": "grammar"}
+        finding = browser.post(action, data=search).text
+        choice = re.search(
+            r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
+        )
+        assert choice is not None
+        sent = import_review_cases.small_form_fields(choice.group(0))
+        found_page = followed(browser, send(browser, draft_id, sent))
+        reopened = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert units_ticked(shown) == []
+    for page_after in (found_page, reopened):
+        ticked = units_ticked(page_after)
+        assert len(ticked) == 1, import_review_cases.page_text(page_after)
+        assert ticked != [ready]
+
+
+def test_an_offer_carries_the_selection_its_page_showed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The form of an offer posts no ticks, and carries the selection its page showed, signed with
+    its other fields."""
+    with here(open_settings(tmp_path)) as browser:
+        _, sent = import_review_cases.an_offer_s_post(browser, monkeypatch)
+
+    assert [name for name, _ in sent].count(screenshot_page.SELECTION_SHOWN) == 1
+
+
+# ------------------------------------------------------------------ a selection that differs
+
+
+def progress_standing(browser: TestClient, draft_id: str) -> tuple[int, str | None]:
+    """The review's progress revision and the saved progress it holds."""
+    student = state_of(browser).project_state.student_id()
+    snapshot = state_of(browser).import_drafts.snapshot(student, draft_id)
+    return snapshot.progress_revision, snapshot.progress
+
+
+def test_a_second_keep_with_the_ticks_a_plain_load_shows_leaves_another_open_page_current(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Design 249-d5 revision 3: "nothing is written when the selection already matches". The
+    first Keep stores the page's defaults as answers, and a plain load ticks no stored answer, so
+    it writes the selection and reopening keeps both ticks. A second Keep with those ticks writes
+    nothing, and a page loaded between the two stays current."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = two_ready_groups(browser, monkeypatch)
+        kept = send(browser, draft_id, page_post(page, "keep", tick=units_ticked(page))).text
+        other = loaded(browser, draft_id)
+        before = progress_standing(browser, draft_id)
+        send(browser, draft_id, page_post(kept, "keep", tick=units_ticked(kept)))
+        after = progress_standing(browser, draft_id)
+        answer = send(browser, draft_id, page_post(other, "keep", tick=units_ticked(other)))
+
+    assert units_ticked(other) == units_ticked(page)
+    assert before[1] is not None
+    assert after == before
+    assert answer.status_code == 200, import_review_cases.page_text(answer.text)
+    assert not says(answer.text, imports.OUT_OF_DATE)
+
+
+def test_keep_unticking_a_group_writes_the_selection_and_puts_another_open_page_behind(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A selection unlike what a plain load shows is a real difference: Keep writes it once, and
+    a page loaded before it is behind and says so."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = two_ready_groups(browser, monkeypatch)
+        other = loaded(browser, draft_id)
+        before, _ = progress_standing(browser, draft_id)
+        first, _ = units_on(page)
+        send(browser, draft_id, page_post(page, "keep", tick=[first]))
+        after, progress = progress_standing(browser, draft_id)
+        answer = send(browser, draft_id, page_post(other, "keep", tick=units_ticked(other)))
+
+    assert after == before + 1
+    assert progress is not None
+    assert answer.status_code == 409, import_review_cases.page_text(answer.text)
+    assert says(answer.text, imports.OUT_OF_DATE)
+
+
+def test_leaving_a_group_with_the_ticks_a_plain_load_shows_writes_no_selection(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leave this group unsaved on a page showing what a plain load shows: the rest of the page's
+    ticks are what the next load ticks, so no selection is written."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = three_ready_groups(browser, monkeypatch)
+        before = progress_standing(browser, draft_id)
+        followed(browser, press_outside(browser, page, "leave-3"))
+        after = progress_standing(browser, draft_id)
+        reopened = loaded(browser, draft_id)
+
+    assert after == before
+    assert after[1] is None
+    assert len(units_ticked(reopened)) == 2
+
+
+def test_a_partial_save_with_the_ticks_a_plain_load_shows_writes_no_selection(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ready group saved beside a card that asks, which a plain load leaves unticked: the
+    selection left open is what the next load shows, so no selection is written."""
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(
+            browser,
+            monkeypatch,
+            homework_answer(cards=[homework_card()]),
+            {"title": "Sentence Composing outline"},
+        )
+        draft_id, page = read_again(browser, monkeypatch, homework_answer())
+        done = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units_ticked(page)))
+        )
+        _, progress = progress_standing(browser, draft_id)
+        reopened = loaded(browser, draft_id)
+
+    assert says(done, imports.counted(1, 0, 0, 1)), import_review_cases.page_text(done)
+    assert progress is None
+    assert units_ticked(reopened) == []
+
+
+# ------------------------------------------------------------------ a title another row holds
+
+
+def test_a_title_naming_another_saved_assignment_stays_asked_and_writes_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A title typed that exactly names a different saved assignment of the class is not applied:
+    Review changes keeps the title question open, says another saved assignment has this title,
+    offers no Save for the group and writes nothing."""
+    report = homework_answer(
+        cards=[
+            homework_card(
+                course="Religion 8",
+                title="Book report",
+                instruction="Read chapter two.",
+                footer="Due (10/9/2026)",
+            )
+        ]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(
+            browser, monkeypatch, essay_answer(), {"title": "Short essay outline"}, note_ticked=True
+        )
+        earlier, page = read_review(browser, monkeypatch, (GREEN, report))
+        page = answered(browser, earlier, page)
+        new_report = reviewed_storing_nothing(
+            browser, earlier, page, destination_starting(page, "A new Book report")
+        )
+        send(browser, earlier, page_post(new_report, "save", tick=units_on(new_report)))
+        whole = saved_whole(browser, "Religion 8")
+        draft_id, page = read_again(browser, monkeypatch, essay_answer())
+        choose = {**destination_starting(page, "Short essay outline"), joined_field(page): "1"}
+        chosen = reviewed_storing_nothing(browser, draft_id, page, choose)
+        asked, _ = title_typed_with_the_tick_sent(browser, draft_id, chosen, "Book report")
+        shown = reviewed_storing_nothing(
+            browser, draft_id, asked, destination_starting(asked, "Short essay outline,")
+        )
+        last = saved_whole(browser, "Religion 8")
+
+    said = import_review_cases.page_text(shown)
+    assert "Another saved assignment already has the title “Book report”." in said, said
+    assert "Still to answer: which title to use." in said, said
+    assert "Its title becomes" not in said, said
+    assert actions_of(shown) == ["review"]
+    assert last == whole
+
+
+def test_a_group_held_back_is_said_without_claiming_the_family_changed_it() -> None:
+    """A group a Save held back may be one the family left as it was, so the line names no
+    change of theirs."""
+    assert imports.PRESS_SAID["held_back"] == (
+        "Needs your attention: an assignment wasn't saved. Press Review changes to see what "
+        "saving it will do."
+    )

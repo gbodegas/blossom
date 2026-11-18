@@ -870,6 +870,59 @@ def written_dates(
     return due, assigned, ready
 
 
+def typed_titles(members: Iterable[Piece]) -> tuple[str, ...]:
+    """Each different title the family typed on these pieces: a piece's title where it isn't the
+    title as read. A card matched with no title typed adds none."""
+    return tuple(
+        sorted(
+            {
+                piece.title
+                for piece in members
+                if piece.as_read is not None and piece.title != piece.as_read.title
+            }
+        )
+    )
+
+
+def title_taken(
+    members: Sequence[Piece], row: SavedRow | None, rows: Mapping[str, SavedRow]
+) -> bool:
+    """Whether the one title typed on the cards going to the saved assignment ``row`` exactly
+    names a different saved assignment of its class."""
+    typed = typed_titles(members)
+    if row is None or len(typed) != 1:
+        return False
+    named = intake.pair(row.course, typed[0])
+    return named != row.pair and any(
+        other.pair == named and other.assignment_id != row.assignment_id for other in rows.values()
+    )
+
+
+def proposed_title(
+    members: Sequence[Piece], row: SavedRow | None, rows: Mapping[str, SavedRow]
+) -> str | None:
+    """The title saving gives the saved assignment ``row``: the one title typed on the cards going
+    there, where it names something other than the saved title. None for a new assignment, with no
+    title typed, and for what is asked instead (``titles_asked``)."""
+    typed = typed_titles(members)
+    if (
+        row is None
+        or len(typed) != 1
+        or intake.pair(row.course, typed[0]) == row.pair
+        or title_taken(members, row, rows)
+    ):
+        return None
+    return typed[0]
+
+
+def titles_asked(
+    members: Sequence[Piece], row: SavedRow | None, rows: Mapping[str, SavedRow]
+) -> bool:
+    """Whether the title of the saved assignment ``row`` is asked, with nothing written: the cards
+    going there carry two different typed titles, or one that another saved assignment holds."""
+    return row is not None and (len(typed_titles(members)) > 1 or title_taken(members, row, rows))
+
+
 @dataclasses.dataclass(frozen=True)
 class KindQuestion:
     """ "Homework or task?" for one destination, with nothing preselected."""
@@ -907,6 +960,25 @@ def destination_kind(
         return (next(iter(chosen)) if chosen else None), True
     got = answers.get(("kind", question.subject))
     return (got if got in KINDS else None), got in KINDS
+
+
+def kind_left(
+    dest: tuple[str, ...],
+    members: Sequence[Piece],
+    row: SavedRow | None,
+    kinds: Mapping[str, str],
+    answers: Mapping[tuple[str, str], Any],
+) -> str | None:
+    """The kind the assignment has once saving there is done: the kind chosen, else the saved
+    assignment's own, else on a new assignment the kind its lead card's title reads as. None while
+    its kind question waits. An answer equal to the kind shown leaves it unchanged."""
+    written, answered = destination_kind(dest, members, row, kinds, answers)
+    if written is not None or not answered:
+        return written
+    if row is not None:
+        return row.kind
+    lead = min(members, key=lambda piece: piece.name)
+    return None if lead.reading is None else lead.reading.kind.value
 
 
 # ------------------------------------------------------------------ copies from another assignment
@@ -1045,6 +1117,7 @@ def validate(
                 kind_questions.append(kind_asked)
                 ready = ready and answers.get(("kind", kind_asked.subject)) in KINDS
             ready = ready and instruction_ready(dest, members)
+            ready = ready and not titles_asked(members, row, rows)
             if row is not None:
                 for member in sorted(members, key=lambda p: p.name):
                     if holds_words(member.words, row.words):
@@ -1205,6 +1278,9 @@ class PreviewEntry:
     digest: str
     written_kind: str | None = None
     kind_from: str | None = None
+    new_title: str | None = None
+    """The title saving gives the saved assignment (``proposed_title``); None where it keeps its
+    own."""
 
 
 def digest_of(fields: Mapping[str, Any]) -> str:
@@ -1229,10 +1305,12 @@ def preview(
     writes_nothing: Callable[[Piece, str], bool] = lambda p, t: True,
 ) -> list[PreviewEntry]:
     """One entry per chosen destination. "Nothing new" holds only when saving writes nothing at
-    all there: no words, no date moved or filled, no kind, no open question. Its digest holds
-    everything its lines read: the dates, words and kind it writes, and of the saved row it
-    lands on, the dates, words, kind, class and title its lines name, and whether saving writes
-    nothing there, so a saved row changed elsewhere since the page makes the save ask again."""
+    all there: no words, no date moved or filled, no kind, no title, no open question. Its digest
+    holds everything its lines read: the dates, words and proposed title it writes, the kind the
+    assignment is left with (``kind_left``), and of the saved row it lands on, the dates, words,
+    kind, class and title its lines name, and whether
+    saving writes nothing there, so a saved row changed elsewhere since the page makes the save
+    ask again."""
     picks = list(picks)
     kinds = dict(kinds or {})
     by_name = {p.name: p for p in pieces}
@@ -1254,12 +1332,16 @@ def preview(
         open_questions = tuple(q.kind for q in asked if not date_answered(q, answers))
         if kind_asked is not None and answers.get(("kind", kind_asked.subject)) not in KINDS:
             open_questions += ("kind",)
+        if titles_asked(members, row, rows):
+            open_questions += ("title",)
+        new_title = proposed_title(members, row, rows)
         nothing_new = (
             row is not None
             and not adds
             and due == row.due
             and assigned == row.assigned
             and not kind_change
+            and new_title is None
             and not open_questions
             and not (revision is not None and choice is None)
             and all(writes_nothing(m, row.assignment_id) for m in members)
@@ -1291,9 +1373,11 @@ def preview(
             "revision": revision,
             "choice": None if choice is None else sorted(choice),
             "defaulted": [[n, list(ids)] for n, ids in defaults_here],
-            "kind": written_kind,
+            "kind": kind_left(dest, members, row, kinds, answers),
             "kind_asked": kind_asked is not None,
         }
+        if new_title is not None:
+            fields["new_title"] = new_title
         out.append(
             PreviewEntry(
                 unit.unit,
@@ -1313,6 +1397,7 @@ def preview(
                 digest_of(fields),
                 written_kind,
                 None if row is None else row.kind,
+                new_title,
             )
         )
     return out

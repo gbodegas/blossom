@@ -71,6 +71,7 @@ from blossom.screenshot_review import (
     piece_as_read,
     pieces_from,
     preview,
+    proposed_title,
     saved_notes,
     saved_under_another_title,
     slot_id,
@@ -1655,11 +1656,12 @@ def _write(
     hooks: SaveHooks,
 ) -> str:
     """One destination's homework, through ``keep``: a new slot's row made under its id, or the
-    existing row updated, with the chosen dates, kind and instructions; then, for each class
-    and title of its cards that isn't the row's, the earlier-pick decision, unless one for that
-    name already lands there, the row holds the words and school day of the teacher's note
-    it was read from, or the row is one saved under another title that the review asked about
-    (``saved_under_another_title``)."""
+    existing row updated, with the chosen dates, kind and instructions, and the title the family
+    typed for it (``proposed_title``); then, for each class and title of its cards that isn't the
+    row's, the earlier-pick decision, unless one for that name already lands there, the row holds
+    the words and school day of the teacher's note it was read from, the row is one saved under
+    another title that the review asked about (``saved_under_another_title``), or the card's title
+    is the one this save gave the row."""
     by_name = state.by_name
     members = sorted((by_name[n] for n in names), key=lambda p: p.name)
     row = state.rows.get(dest[1]) if dest[0] != "new" else None
@@ -1704,12 +1706,16 @@ def _write(
     _keep(record, target, readings, choice, dates, kinds(len(readings)), now, today)
     if due is None and row is not None and row.due is not None:
         _cleared_due(record, target)
+    new_title = proposed_title(members, row, state.rows)
+    if new_title is not None:
+        _titled(record, target, new_title)
     hooks.after_keep(target)
     named = {p.pair: p for p in members if p.reading is not None}
     for pair, piece in sorted(named.items()):
         if (
             row is None
             or pair == row.pair
+            or piece.title == new_title
             or holds_note(piece, row)
             or saved_under_another_title(piece, row)
         ):
@@ -1736,6 +1742,12 @@ def _write(
         )
         hooks.after_renamed(target)
     return target
+
+
+def _titled(record: ProjectStateStore, target: str, title: str) -> None:
+    """The row ``target`` under the title the family typed for it, in the save's transaction."""
+    current = next(a for a in record.all_assignments() if a.assignment_id == target)
+    record.put_on_record([current.model_copy(update={"title": title})], {})
 
 
 def _cleared_due(record: ProjectStateStore, target: str) -> None:

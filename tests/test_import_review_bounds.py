@@ -1138,9 +1138,11 @@ def test_a_page_out_of_date_past_a_thousand_fields(
         first_reads.clear()
         answer = send(browser, draft_id, fields)
 
+    # Design 249-d5 revision 3: Keep writes the selection and raises the progress revision, so a
+    # page from before it is behind: no form, and its typing comes back to copy.
     assert first.status_code == 200
     assert answer.status_code == 409
-    assert in_its_box(answer.text, box) == TYPED
+    assert TYPED in html.unescape(answer.text)
     assert first_reads == [(MOST_FIELDS, MOST_IN_A_FIELD)]
 
 
@@ -3055,8 +3057,9 @@ def a_page_with_groups_left(browser: TestClient, monkeypatch: pytest.MonkeyPatch
 def test_a_resend_behind_its_save_says_its_counts_with_no_form(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A plain resend of a Save shows its counts with no form and no sentence about its choices,
-    and one with a kept row unticked says that choice can't be shown, writing nothing."""
+    """A plain resend of a Save shows its counts with no form, and says once that the choices its
+    post made on groups left open can't be shown; so does one with a kept row unticked, writing
+    nothing."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_page_with_groups_left(browser, monkeypatch)
         fields = every_choice(page, "save", ticks=units_on(page)[:1])
@@ -3070,8 +3073,12 @@ def test_a_resend_behind_its_save_says_its_counts_with_no_form(
         after = every_row(browser)
 
     assert first.status_code == 200
+    # Design 249-d5 revision 3, P3: "The returned page carries the posted answers of every unwritten
+    # group, ticked or not."
     assert all(ticked for value, ticked in options_of(first.text, question) if value)
-    for resent, lost in ((again, 0), (changed, 1)):
+    # Design 249-d5 P3: the post's answers about the groups left open were never stored, so a resend
+    # of it says those choices can't be shown, once.
+    for resent, lost in ((again, 1), (changed, 1)):
         assert resent.status_code == 200
         assert "1 updated." in page_text(resent.text)
         assert imports.OUT_OF_DATE in page_text(resent.text)
