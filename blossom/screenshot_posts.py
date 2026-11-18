@@ -189,8 +189,13 @@ class ReviewPost:
     shown_chosen: Mapping[str, str] = dataclasses.field(default_factory=dict)
     """The destination its page signed as shown chosen, by piece name."""
     held_back: frozenset[str] = frozenset()
-    """The cards, by piece name, of each group this Save selected and did not write: nothing is
-    written or stored for them, and the page it returns shows them for Review changes."""
+    """The cards, by piece name, of each group this Save selected and did not write, and of each
+    group a destination was chosen for on this Save with its tick left off: nothing is written or
+    stored for them, and the page it returns shows them for Review changes."""
+    held_asking: frozenset[str] = frozenset()
+    """The cards in ``held_back`` of each group its page showed ready with a question open and
+    this Save left unanswered: the question is all that stops it, so the page it returns keeps
+    the group ready for the answer and one Save."""
     selection_shown: str | None = None
     """The signed selection a form that posts no ticks carried from its page (an offer or a found
     row, ``SELECTION_SHOWN``); None where its form carried none."""

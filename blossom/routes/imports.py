@@ -2227,6 +2227,11 @@ PRESS_SAID: Final = {
         "Needs your attention: an assignment wasn't saved. Press Review changes to see what "
         "saving it will do."
     ),
+    "held_open": (
+        "Needs your attention: an assignment you ticked wasn't saved because a question on it "
+        "needs an answer."
+    ),
+    "answer_first": "Answer first: {questions}.",
     "already": "Already saved from this review.",
     "changed": (
         "Saving an assignment you ticked would now do this instead. Check it and save again."
@@ -2558,6 +2563,28 @@ def refused_said(post: ReviewPost) -> list[str]:
     if post.too_long:
         return [PRESS_SAID["too_long"], *dict.fromkeys(boxes)]
     return [*dict.fromkeys(boxes), PRESS_SAID["nothing_kept"]]
+
+
+def held_said(rows: RowsShown, post: ReviewPost, *, saved: bool) -> list[str]:
+    """What a Save says of the groups it held back, by what each is waiting on on the page it
+    returns. A group with a question left to answer, and no destination chosen on this press: that
+    a question needs an answer, naming each one, beside the homework this press saved (``saved``)
+    or as the reason none was saved. Any other held group: that Review changes shows what saving it
+    will do."""
+    held = [unit for unit in rows.units if post.held_back & set(unit.unit.split("+"))]
+    asking = [
+        unit
+        for unit in held
+        if unit.still_open and not post.chosen_here & set(unit.unit.split("+"))
+    ]
+    lines: list[str] = []
+    if asking:
+        questions = ", ".join(dict.fromkeys(name for unit in asking for name in unit.still_open))
+        lines.append(PRESS_SAID["held_open"] if saved else wasnt_saved("open"))
+        lines.append(PRESS_SAID["answer_first"].format(questions=questions))
+    if len(asking) < len(held) or not held:
+        lines.append(PRESS_SAID["held_back"])
+    return lines
 
 
 def not_saved(outcome: NotSaved, own_write: AnswersKept) -> list[str]:
@@ -3254,7 +3281,11 @@ async def with_typing(
     here that draws no form after this request's own save leaves out of its copies the class,
     title and instructions boxes that save's evidence holds (``text_boxes``). A Save that committed
     beside answers about groups it left open, none of them stored (``left_answers``), gives those
-    back as posted."""
+    back as posted. A save that committed says a choice can't be shown only where it is more than
+    that save took with the rows it wrote (``RowsShown.beyond_its_save``), and a Save's line about
+    the groups it held back is said by what each waits on (``held_said``). A destination chosen on
+    a Save selects nothing; Review changes, Correct what was read and a form that posts no ticks
+    select the group they chose for."""
     if post.held_back or left_answers:
         # A Save that held groups back gives them back as posted, whatever version its own write
         # moved the review to; they are signed with no digests, so only Review changes leads on.
@@ -3289,6 +3320,9 @@ async def with_typing(
     pressed = said
     lines = [*said, *notes]
     ticked = post.units if post.ticked else None
+    took = (
+        own if own is not None else frozenset(n for n, _ in saved.pairs) if saved else frozenset()
+    )
     current = post.version == after.version or bool(post.held_back) or left_answers
     refused_with_choices = bool(post.conflicted or post.unresolved)
     with_choices = refused_with_choices or bool(post.both)
@@ -3314,7 +3348,7 @@ async def with_typing(
             choices=post.choices if current and carry else None,
             conflicted=post.conflicted if current else None,
             revision=revision,
-            own=own or frozenset(),
+            own=took,
             answers_read=answers_read,
             destinations={a.subject: a.value for a in post.answers if a.kind == "destination"}
             if stale
@@ -3329,11 +3363,12 @@ async def with_typing(
             retaken=post.retaken if current else frozenset(),
             chosen_here=(
                 post.chosen_here
-                if not post.ticked or (current and held_answers is not None)
+                if post.press != "save"
+                and (not post.ticked or (current and held_answers is not None))
                 else frozenset()
             ),
             left_off=post.left_off if current else frozenset(),
-            held_back=post.held_back,
+            held_back=post.held_back - post.held_asking,
         )
         said_lost = await choices_said_lost(
             state, draft_id, post, rows, own, current, behind, answers_read=answers_said_lost
@@ -3423,9 +3458,8 @@ async def with_typing(
                 lines.append(PAGE_SAID["not_carried"])
         elif said_lost or (
             current
-            and not left_answers
             and (
-                rows.not_carried
+                (rows.beyond_its_save if saved is not None else rows.not_carried)
                 or (refused_with_choices and not ticks_shown.issuperset(post.units))
             )
         ):
@@ -3467,6 +3501,10 @@ async def with_typing(
         and choices_unlike(post, rows, no_date_read)
     ):
         lines += [] if PAGE_SAID["not_carried"] in lines else [PAGE_SAID["not_carried"]]
+    if rows is not None and PRESS_SAID["held_back"] in lines:
+        at = lines.index(PRESS_SAID["held_back"])
+        lines[at : at + 1] = held_said(rows, post, saved=bool(done))
+        lines = list(dict.fromkeys(lines))
     drawn = {} if rows is None else cards_drawn(rows)
     if not done:
         typed = await typing_by_press(
@@ -3941,7 +3979,7 @@ async def save_press(
         own = frozenset(name for name, _ in recorded)
         held = frozenset(name for unit in post.units for name in unit.split("+")) - own
         said = [PRESS_SAID["held_back"]] if held else []
-        repeated = dataclasses.replace(post, held_back=held)
+        repeated = dataclasses.replace(post, held_back=held | (post.chosen_here - own))
         return await saved_page(request, state, draft_id, post.acceptance, said, repeated, own)
     try:
         unreviewed = await unreviewed_cards(state, found, post)
@@ -3969,7 +4007,7 @@ async def save_press(
             request,
             state,
             draft_id,
-            post,
+            dataclasses.replace(post, held_back=post.chosen_here),
             [PRESS_SAID["none_chosen"], PRESS_SAID["choices_not_saved"]],
             200,
             homework=none_written,
@@ -3977,16 +4015,12 @@ async def save_press(
             held_answers=dataclasses.replace(destinations_held(post), press="review"),
         )
     try:
-        written = await units_written(state, found, post)
+        written, still_asked = await units_written(state, found, post)
     except sqlite3.Error as error:
         noted(error)
         return await unshown_unread(request, state, draft_id, error)
-    post = dataclasses.replace(
-        post,
-        held_back=frozenset(
-            name for unit in post.units if unit not in written for name in unit.split("+")
-        ),
-    )
+    held = frozenset(name for unit in post.units if unit not in written for name in unit.split("+"))
+    post = dataclasses.replace(post, held_back=held | post.chosen_here, held_asking=still_asked)
     if not written:
         if post.version != found.version:
             # Another page moved the review under this one: answered as a write refused at its
@@ -3995,7 +4029,7 @@ async def save_press(
                 request,
                 state,
                 draft_id,
-                dataclasses.replace(post, held_back=frozenset()),
+                dataclasses.replace(post, held_back=frozenset(), held_asking=frozenset()),
                 [OUT_OF_DATE],
                 409,
             )
@@ -4123,19 +4157,38 @@ async def save_press(
             return await unknown_outcome(request, state, kept_said)
         if open_now is None:
             homework = (UNKNOWN_SAID["homework"],)
+    own_write = answers_left_stored(kept, answers, post, outcome)
     return await outcome_page(
-        request, state, draft_id, outcome, answered, post, own_write=kept, homework=homework
+        request, state, draft_id, outcome, answered, post, own_write=own_write, homework=homework
     )
+
+
+def answers_left_stored(
+    kept: AnswersKept, answers: Sequence[AnswerToKeep], post: ReviewPost, outcome: SaveOutcome
+) -> AnswersKept:
+    """What a Save's own write left stored. Where its homework transaction committed, the answers
+    that transaction took off with the pieces it saved are not counted, nor one the record held
+    before this press or dropped as already saved: the answers lines say only what stays stored."""
+    if not isinstance(outcome, Saved):
+        return kept
+    held = post.held or {}
+    fresh = {
+        (answer.kind, answer.subject)
+        for answer in answers
+        if held.get((answer.kind, answer.subject)) != answer.value
+    }
+    return kept._replace(stored=len(fresh - outcome.consumed - (kept.dropped_keys or frozenset())))
 
 
 async def units_written(
     state: ApplicationState, found: DraftSnapshot, post: ReviewPost
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], frozenset[str]]:
     """The ticked groups this Save writes, worked out before any store: those its page showed
     ready, with no destination changed on this press, no Type answer moving the effect its page
     signed, and, where a question was open on the page, with this press's answers leaving none
-    open. Every other ticked group is held. A page behind the review is left to its stale-record
-    refusal."""
+    open. Every other ticked group is held. Beside them, the cards of each held group that only
+    an unanswered question stops (``ReviewPost.held_asking``). A page behind the review is left to
+    its stale-record refusal."""
     unchanged = [unit for unit in post.units if not post.chosen_here & set(unit.split("+"))]
     asking = [unit for unit in unchanged if post.ready_shown.get(unit) == READY_ASKING]
     answered: set[str] = set()
@@ -4148,12 +4201,19 @@ async def units_written(
     moved = await types_moved(
         state, found, post, [unit for unit in unchanged if type_answered(post, unit)]
     )
-    return tuple(
+    written = tuple(
         unit
         for unit in unchanged
         if unit not in moved
         and (post.ready_shown.get(unit) == READY_WHOLE or (unit in asking and unit in answered))
     )
+    still_asked = frozenset(
+        name
+        for unit in asking
+        if unit not in moved and unit not in answered
+        for name in unit.split("+")
+    )
+    return written, still_asked
 
 
 def type_answered(post: ReviewPost, unit: str) -> bool:
@@ -4200,19 +4260,23 @@ async def types_moved(
 def answers_of_written(
     post: ReviewPost, written: Sequence[str]
 ) -> tuple[list[AnswerToKeep], list[tuple[str, str]]]:
-    """What a Save stores: the answers and withdrawals about the groups it writes, and the name
-    and split answers those groups need. Nothing is stored for any other group."""
-    pieces = {name for unit in written for name in unit.split("+")}
-    every = {name for unit in post.digests for name in unit.split("+")}
-
-    def stored(kind: str, subject: str) -> bool:
-        about = answer_pieces(kind, subject, every)
-        return kind in ("name", "split") or not about or bool(about & pieces)
-
+    """What a Save stores: the answers and withdrawals about the cards it writes, the split answer
+    of a row it writes, and the name answers, which belong to a screenshot and no card. Nothing is
+    stored about a card it doesn't write."""
+    pieces = frozenset(name for unit in written for name in unit.split("+"))
     return (
-        [answer for answer in post.answers if stored(answer.kind, answer.subject)],
-        [(kind, subject) for kind, subject in post.withdrawn if stored(kind, subject)],
+        [answer for answer in post.answers if stored_by_save(answer.kind, answer.subject, pieces)],
+        [
+            (kind, subject)
+            for kind, subject in post.withdrawn
+            if stored_by_save(kind, subject, pieces)
+        ],
     )
+
+
+def stored_by_save(kind: str, subject: str, pieces: frozenset[str]) -> bool:
+    """Whether a Save that writes these cards stores this answer (design 249-d5 P3)."""
+    return kind == "name" or bool(answer_pieces(kind, subject, pieces) & pieces)
 
 
 async def selection_kept(
@@ -4293,12 +4357,14 @@ async def outcome_page(
             if recorded is not None:
                 return recorded
         status = 503 if outcome.reason in ("busy", "failed") else 409
+        beside_changed = post.held_back and outcome.reason == "changed"
+        held_line = [PRESS_SAID["held_back"]] if beside_changed else []
         return await with_typing(
             request,
             state,
             draft_id,
             post,
-            not_saved(outcome, own_write),
+            [*not_saved(outcome, own_write), *held_line],
             status,
             own_write=own_write,
             homework=homework,
@@ -4571,16 +4637,16 @@ async def partly_saved(
 
 
 def answers_left_unstored(post: ReviewPost) -> bool:
-    """Whether a Save posted an answer about a group it left unticked that the record doesn't hold
-    (design 249-d5 P3: nothing is stored for a group it doesn't write). A page's default destination
+    """Whether a Save posted an answer about a card it didn't write that the record doesn't hold
+    (design 249-d5 P3: nothing is stored for a card it doesn't write). A page's default destination
     sent unchanged is no choice of hers."""
-    ticked = {name for unit in post.units for name in unit.split("+")}
-    every = {name for unit in post.digests for name in unit.split("+")}
+    written = frozenset(
+        name for unit in post.units for name in unit.split("+") if name not in post.held_back
+    )
     held = post.held or {}
 
     def left_open(kind: str, subject: str) -> bool:
-        about = answer_pieces(kind, subject, every)
-        return kind not in ("name", "split") and bool(about) and not about & ticked
+        return not stored_by_save(kind, subject, written)
 
     return any(
         left_open(answer.kind, answer.subject)

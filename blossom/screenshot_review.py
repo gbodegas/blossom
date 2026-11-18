@@ -898,8 +898,25 @@ def title_taken(
     )
 
 
+def titles_given_twice(
+    destinations: Iterable[tuple[tuple[str, ...], Sequence[Piece]]], rows: Mapping[str, SavedRow]
+) -> frozenset[str]:
+    """The saved assignments, by id, that share a class and are each given the same one typed title
+    by the cards going to them: saving both would leave two assignments under that title."""
+    named: dict[tuple[str, str], set[str]] = {}
+    for dest, members in destinations:
+        row = rows.get(dest[1]) if dest[0] != "new" else None
+        typed = typed_titles(members)
+        if row is not None and len(typed) == 1:
+            named.setdefault(intake.pair(row.course, typed[0]), set()).add(row.assignment_id)
+    return frozenset(found for ids in named.values() if len(ids) > 1 for found in ids)
+
+
 def proposed_title(
-    members: Sequence[Piece], row: SavedRow | None, rows: Mapping[str, SavedRow]
+    members: Sequence[Piece],
+    row: SavedRow | None,
+    rows: Mapping[str, SavedRow],
+    twice: frozenset[str] = frozenset(),
 ) -> str | None:
     """The title saving gives the saved assignment ``row``: the one title typed on the cards going
     there, where it names something other than the saved title. None for a new assignment, with no
@@ -909,18 +926,26 @@ def proposed_title(
         row is None
         or len(typed) != 1
         or intake.pair(row.course, typed[0]) == row.pair
-        or title_taken(members, row, rows)
+        or titles_asked(members, row, rows, twice)
     ):
         return None
     return typed[0]
 
 
 def titles_asked(
-    members: Sequence[Piece], row: SavedRow | None, rows: Mapping[str, SavedRow]
+    members: Sequence[Piece],
+    row: SavedRow | None,
+    rows: Mapping[str, SavedRow],
+    twice: frozenset[str] = frozenset(),
 ) -> bool:
     """Whether the title of the saved assignment ``row`` is asked, with nothing written: the cards
-    going there carry two different typed titles, or one that another saved assignment holds."""
-    return row is not None and (len(typed_titles(members)) > 1 or title_taken(members, row, rows))
+    going there carry two different typed titles, one that another saved assignment holds, or one
+    the same post gives another saved assignment of its class (``titles_given_twice``)."""
+    return row is not None and (
+        len(typed_titles(members)) > 1
+        or title_taken(members, row, rows)
+        or row.assignment_id in twice
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1091,6 +1116,9 @@ def validate(
     dests: dict[tuple[str, ...], list[str]] = {}
     for name, value in sorted(live.items()):
         dests.setdefault(dest_key(by_name[name], value), []).append(name)
+    twice = titles_given_twice(
+        ((dest, [by_name[n] for n in names]) for dest, names in dests.items()), rows
+    )
     results = []
     for unit in units(open_pieces, live):
         refusals: list[Refusal] = []
@@ -1117,7 +1145,7 @@ def validate(
                 kind_questions.append(kind_asked)
                 ready = ready and answers.get(("kind", kind_asked.subject)) in KINDS
             ready = ready and instruction_ready(dest, members)
-            ready = ready and not titles_asked(members, row, rows)
+            ready = ready and not titles_asked(members, row, rows, twice)
             if row is not None:
                 for member in sorted(members, key=lambda p: p.name):
                     if holds_words(member.words, row.words):
@@ -1315,6 +1343,10 @@ def preview(
     kinds = dict(kinds or {})
     by_name = {p.name: p for p in pieces}
     defaulted = set(defaulted)
+    twice = titles_given_twice(
+        ((dest, [by_name[n] for n in names]) for dest, names in validation.destinations.items()),
+        rows,
+    )
     out = []
     for dest, names in sorted(validation.destinations.items()):
         members = [by_name[n] for n in names]
@@ -1332,9 +1364,9 @@ def preview(
         open_questions = tuple(q.kind for q in asked if not date_answered(q, answers))
         if kind_asked is not None and answers.get(("kind", kind_asked.subject)) not in KINDS:
             open_questions += ("kind",)
-        if titles_asked(members, row, rows):
+        if titles_asked(members, row, rows, twice):
             open_questions += ("title",)
-        new_title = proposed_title(members, row, rows)
+        new_title = proposed_title(members, row, rows, twice)
         nothing_new = (
             row is not None
             and not adds

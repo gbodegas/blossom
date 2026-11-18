@@ -206,6 +206,9 @@ class Saved:
     by its key, field and text (``stored_corrections``). ``pairs`` says where pieces landed, not
     what they kept: a choice among dates or instructions can leave what was typed off an
     assignment it names."""
+    consumed: frozenset[tuple[str, str]] = frozenset()
+    """The answers, by kind and subject, this save's own transaction took off the review with the
+    pieces it saved: none of them stays stored."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1333,6 +1336,7 @@ def _homework_transaction(
         already_units=tuple(already),
         counts=(added, updated, unchanged, left),
         stored=stored_corrections(record, state, pairs, press.corrections, as_read=True),
+        consumed=frozenset(consumed),
     )
 
 

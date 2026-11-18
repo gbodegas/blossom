@@ -155,6 +155,8 @@ SAID: Final = {
     "on these cards.",
     "title_taken": "Another saved assignment already has the title “{title}”. Choose that "
     "assignment or change the title.",
+    "title_twice": "The title “{title}” was typed for two saved assignments of this "
+    "class. Change the title on one of them.",
     "no_assigned_line": "No assigned date.",
     "no_due_line": "No due date",
     "choose_first": "Choose where it goes first.",
@@ -240,6 +242,7 @@ OPEN_NAMES: Final = {
     "name": "the student name",
     "due_read": "which due date Blossom uses",
     "title": "which title to use",
+    "destination": "where it goes",
 }
 """How the preview names each question still open."""
 
@@ -1102,6 +1105,8 @@ class UnitShown:
     its effect."""
     asking: bool = False
     """Whether a question is open on it."""
+    still_open: tuple[str, ...] = ()
+    """The questions left to answer on it, each as the preview names it, where it goes included."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1465,6 +1470,8 @@ def _effect_lines(
         titles = typed_titles(members)
         if title_taken(members, row, state.rows):
             lines.append(SAID["title_taken"].format(title=titles[0]))
+        elif len(titles) == 1:
+            lines.append(SAID["title_twice"].format(title=titles[0]))
         else:
             typed = " and ".join(f"“{title}”" for title in titles)
             lines.append(SAID["titles_differ"].format(titles=typed))
@@ -2098,6 +2105,12 @@ def rows_shown(
                 note,
                 ready,
                 still_any,
+                tuple(
+                    OPEN_NAMES[question]
+                    for question in sorted(
+                        {*still_names, *(("destination",) if destination_asked else ())}
+                    )
+                ),
             )
         )
     shown_units = _placed(names, splits, shown_units)
