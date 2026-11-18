@@ -76,7 +76,14 @@ from blossom.screenshot_posts import (
     words_box,
 )
 from blossom.screenshot_reading import ReadOutcome, read_screenshots
-from blossom.screenshot_review import Corrections, change_told, value_json
+from blossom.screenshot_review import (
+    Corrections,
+    change_told,
+    dates_key,
+    offered_as_it_stands,
+    value_json,
+    value_of,
+)
 from blossom.screenshot_save import (
     AlreadySaved,
     NotSaved,
@@ -1745,12 +1752,14 @@ async def state_of_review(
     corrections: Corrections,
     posted: ReviewPost | None = None,
     defaults_shown: Mapping[str, str] | None = None,
+    withheld: frozenset[str] = frozenset(),
 ) -> ReviewState | None:
     """The review's state as the save works it out, from its stored tables and the record now;
     None when there is no such homework review, or it has closed, as the tables say whatever an
     older read of them said. With ``posted``, that press's answers are held as keeping them
     would hold them, nothing stored (``as_kept``); with ``defaults_shown``, the page defaults it
-    sent unchanged are worked out as sent where its corrections withdraw them (``review_state``).
+    sent unchanged are worked out as sent where its corrections withdraw them (``review_state``);
+    the pieces in ``withheld`` never start on a new slot.
     Each read of the record is ``settled``: with a transaction left open it refuses
     (``TransactionLeftOpen``), so that isn't taken for an empty or closed review."""
     record = state.project_state
@@ -1770,6 +1779,7 @@ async def state_of_review(
         now=state.real_clock.now(),
         corrections=corrections,
         defaults_shown=defaults_shown,
+        withheld=withheld,
     )
 
 
@@ -1793,6 +1803,10 @@ async def rows_of(
     opened: frozenset[str] = frozenset(),
     signed_digests: Mapping[str, tuple[str, ...]] | None = None,
     posted: ReviewPost | None = None,
+    unchosen: frozenset[str] = frozenset(),
+    retaken: frozenset[str] = frozenset(),
+    chosen_here: frozenset[str] = frozenset(),
+    left_off: frozenset[str] = frozenset(),
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
@@ -1813,13 +1827,19 @@ async def rows_of(
     With ``posted`` (a page that stores nothing), the proposal is worked out with those answers
     held as keeping them would hold them, nothing stored, so every question they raise is shown;
     on a page other than Review changes, with the page defaults it sent unchanged worked out as
-    sent where its corrections withdraw them (``destinations_held``)."""
+    sent where its corrections withdraw them (``destinations_held``). The cards a press left
+    unchosen on a page that asked (``unchosen``) and those its typing took back (``retaken``)
+    never start on a new slot, and the latter say why they ask again. A press that stores nothing
+    selects the group of each card whose destination it chose (``chosen_here``), unless it
+    unticked that group (``left_off``)."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
     kept = await saved_corrections(state, snapshot)
     corrections = kept if typed is None else typed
     shown_defaults = None if posted is None or posted.press == "review" else posted.defaults
-    review = await state_of_review(state, snapshot, corrections, posted, shown_defaults)
+    review = await state_of_review(
+        state, snapshot, corrections, posted, shown_defaults, unchosen | retaken
+    )
     if answers_read is not None:
         answers_read.append(None if review is None else (review.held, kept))
     open_keys = [row.key for row in snapshot.rows if row.state == "open"]
@@ -1860,6 +1880,9 @@ async def rows_of(
         twice=twice,
         opened=opened,
         signed_digests=signed_digests,
+        retaken=retaken,
+        chosen_here=chosen_here,
+        left_off=left_off,
     )
 
 
@@ -2575,11 +2598,46 @@ async def review_post(
         kept = await kept_words(state, kept_assignments(items, found.page_key))
         post = read_review(items, found.page_key, review, kept)
         request.state.typed_cards = cards_named(review, places)
+        post = typing_asks_again(review, post)
         return dataclasses.replace(post, held=review.held), named
     except ListTooLarge:
         raise
     except (PostRefused, RecursionError):
         return None, named
+
+
+def typing_asks_again(review: ReviewState, post: ReviewPost) -> ReviewPost:
+    """The post with each destination its own typing made stale taken back before anything holds
+    or stores it: a saved assignment chosen on a card whose newly typed correction leaves that
+    assignment offered only through the card as read. The page asks again with nothing chosen,
+    and the same choice made on the page that shows the typing stands. Correct what was read
+    gives every choice back as posted. Worked out from the read the post was checked against,
+    with no further read of the record."""
+    if post.press.startswith(CORRECT_PRESS) or not post.unshown:
+        return post
+    typed = {key for key, _ in post.unshown}
+    pieces = {piece.name: piece for piece in review.pieces_with(post.corrections)}
+    retaken = frozenset(
+        answer.subject
+        for answer in post.answers
+        if answer.kind == "destination"
+        and (piece := pieces.get(answer.subject)) is not None
+        and typed & {piece.key, dates_key(piece.name)}
+        and not offered_as_it_stands(piece, value_of(answer.value), review.rows, review.picks)
+    )
+    if not retaken:
+        return post
+    return dataclasses.replace(
+        post,
+        answers=tuple(
+            answer
+            for answer in post.answers
+            if answer.kind != "destination" or answer.subject not in retaken
+        ),
+        choices={**post.choices, **{answer_field("destination", name): () for name in retaken}},
+        retaken=retaken,
+        chosen_here=post.chosen_here - retaken,
+    )
 
 
 async def save_pressed(request: Request) -> bool:
@@ -2835,10 +2893,11 @@ async def unreviewed_effects(
     """The cards of a Save at its page's version that carries corrections no review showed: each
     group's digests are worked out with the posted corrections against the stored answers, so a
     tick or a destination never counts as a correction, and compared with those its page signed;
-    a page Review changes made signs them with its post's answers held as kept (``as_kept``), so
-    a group matching those is reviewed too. Every card of a group that matches neither. Empty
-    where each group matches, where the post carries no correction, and where the review has
-    moved past the page, which its stale-record refusal answers."""
+    a page Review changes made signs them with every answer of its post held (``as_kept`` on a
+    Review changes press), an answer that replaces a kept one included, so a group matching those
+    is reviewed too. Every card of a group that matches neither. Empty where each group matches,
+    where the post carries no correction, and where the review has moved past the page, which its
+    stale-record refusal answers."""
     if not post.corrections or post.version != found.version:
         return frozenset()
     review = await state_of_review(state, found, post.corrections)
@@ -2858,10 +2917,12 @@ async def unreviewed_effects(
     } | unplaced
     if not differ:
         return frozenset()
-    held = await state_of_review(state, found, post.corrections, post)
+    as_on_review = dataclasses.replace(post, press="review")
+    held = await state_of_review(state, found, post.corrections, as_on_review)
     as_reviewed = {} if held is None else unit_digests(held)
     if unplaced:
-        plain = await state_of_review(state, found, await saved_corrections(state, found), post)
+        kept = await saved_corrections(state, found)
+        plain = await state_of_review(state, found, kept, as_on_review)
         as_kept_here = {} if plain is None else unit_digests(plain)
         differ -= {unit for unit in unplaced if as_kept_here.get(unit) == as_reviewed.get(unit)}
     return frozenset(
@@ -3043,7 +3104,8 @@ async def with_typing(
     its proposal out with the answers in ``held_answers`` held as keeping them would hold them,
     nothing stored: Review changes all its post's, and Correct what was read and each refusal that
     keeps the typing its post's destinations (``destinations_held``), so every question that
-    proposal raises is asked there. Where the review's stored revision is another, the page draws
+    proposal raises is asked there, and each destination it chose selects that card's group
+    (``ReviewPost.chosen_here``). Where the review's stored revision is another, the page draws
     no form, says its choices can't be shown where it posted
     any (words a tick set aside aren't one), or where its post's "No assigned date was given" on
     a row left open isn't what the saved progress its rows were drawn from holds
@@ -3115,6 +3177,10 @@ async def with_typing(
             opened=opened,
             signed_digests=signed_digests if current else None,
             posted=held_answers if current else None,
+            unchosen=post.unchosen if current else frozenset(),
+            retaken=post.retaken if current else frozenset(),
+            chosen_here=(post.chosen_here if current and held_answers is not None else frozenset()),
+            left_off=post.left_off if current else frozenset(),
         )
         said_lost = await choices_said_lost(
             state, draft_id, post, rows, own, current, behind, answers_read=answers_said_lost

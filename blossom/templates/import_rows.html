@@ -100,7 +100,7 @@
 {% endmacro %}
 <form method="post" action="/parent/imports/{{ draft_id }}/review" class="review-form" id="review-form">
   {% for name, value in rows.hidden %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
-  {#- While a card's boxes are open, or a card weighs saved homework against new with none chosen, the form's first submit button, so Enter shows the review again with what was typed and chosen: Review changes, out of the tab order and hidden from assistive technology, which reach the visible one. #}
+  {#- While a card's boxes are open, or a card has no destination chosen, the form's first submit button, so Enter shows the review again with what was typed and chosen: Review changes, out of the tab order and hidden from assistive technology, which reach the visible one. #}
   {% if rows.review_first %}<button type="submit" class="visually-hidden" name="press" value="review" formnovalidate tabindex="-1" aria-hidden="true">Review changes</button>{% endif %}
   {% if rows.names %}
     <section class="panel" aria-labelledby="name-heading">

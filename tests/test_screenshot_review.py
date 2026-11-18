@@ -1471,3 +1471,13 @@ def test_a_new_slot_s_answers_are_named_by_its_slot_and_old_subjects_read_alike(
     assert review.subject_now(old) == review.subject_for(dest, names)
     assert review.subject_now(saved) == saved
     assert review.subject_now("not json") == "not json"
+
+
+def test_one_option_left_unchosen_is_asked() -> None:
+    """A destination control with one option and nothing chosen asks; with it chosen it doesn't."""
+    option = screenshot_page.Choice('{"new":1}', "A new Essay (1)")
+    asked = screenshot_page.PieceControl("a", (option,), "find-1", False, False)
+    chosen = dataclasses.replace(asked, choices=(dataclasses.replace(option, checked=True),))
+
+    assert asked.asks
+    assert not chosen.asks

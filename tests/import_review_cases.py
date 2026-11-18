@@ -18,6 +18,7 @@ import pathlib
 import random
 import re
 import sqlite3
+import traceback
 import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -256,14 +257,56 @@ class Post(list[tuple[str, str]]):
         self.chosen = tuple(chosen)
 
 
+class RawPost(list[tuple[str, str]]):
+    """A submission no page offers, sent on purpose and exactly as it stands: ``raw_post`` makes
+    one from a helper's post, stating every change, and ``unoffered`` from a Save its page does
+    not offer."""
+
+
+class Reviewed(list[tuple[str, str]]):
+    """A post whose earlier presses were already made (``reviewed``), sent as given: a helper's
+    post or a raw post, checked as ``carried`` checks each. A plain list fails the test."""
+
+    def __init__(self, fields: Fields) -> None:
+        carried(fields)
+        super().__init__(fields)
+
+
+def the_call() -> str:
+    """The file, line and function of the test code a post came from, past this module and the
+    thin wrappers that pass a post on."""
+    passing_on = {"send", "posted", "as_a_browser_sends", "<lambda>"}
+    for frame in reversed(traceback.extract_stack()):
+        if pathlib.Path(frame.filename).name == pathlib.Path(__file__).name:
+            continue
+        if frame.name not in passing_on:
+            return f"{pathlib.Path(frame.filename).name}:{frame.lineno} in {frame.name}"
+    return "a call outside the tests"
+
+
 def carried(fields: Fields) -> None:
-    """Fails the test at once where a helper's post (``Post``) doesn't carry what its test typed
-    or chose, naming the field and the page the post was made from: typing in a box that page
-    offers only in a closed card the test did not open, typing in a box the page does not offer,
-    typing the post sends another value for, and "No assigned date was given" chosen in a closed
-    card. A list of fields that isn't a helper's post is a hand-made post, sent as given."""
-    if not isinstance(fields, Post):
+    """The one gate every test post passes, closed to all but three kinds: a helper's post
+    (``Post``) as it was made, a post already reviewed (``Reviewed``) and a raw post (``RawPost``).
+    Anything else, a plain list made from a post included, fails the test at once, naming the
+    call. A helper's post fails the same way where it was changed after it was made, and where it
+    doesn't carry what its test typed or chose, naming the field and the page the post was made
+    from: typing in a box that page offers only in a closed card the test did not open, typing in
+    a box the page does not offer, typing the post sends another value for, and "No assigned date
+    was given" chosen in a closed card."""
+    if isinstance(fields, Reviewed | RawPost):
         return
+    if not isinstance(fields, Post):
+        pytest.fail(
+            f"{the_call()} sends a plain list, not a post a helper made: send the helper's post "
+            "as made, or state each change with raw_post.",
+            pytrace=False,
+        )
+    if tuple(fields) != fields.made:
+        pytest.fail(
+            f"{the_call()} sends a helper's post changed after it was made: state each change "
+            "with raw_post.",
+            pytrace=False,
+        )
     form = review_form(fields.page)
     boxes: set[str] = set()
     hidden: dict[str, str] = {}
@@ -372,7 +415,7 @@ def open_cards(browser: TestClient, draft_id: str, page: str, cards: Sequence[st
             for tag in re.findall(r"<input [^>]*>", review_form(page))
             if attribute(tag, "name") == "unit" and " checked" in tag
         ]
-        answer = posted(browser, draft_id, page_fields(page, card, {}, ticked, {}))
+        answer = posted(browser, draft_id, page_post(page, card, tick=ticked))
         if answer.status_code != 200 or not has_review_form(answer.text):
             pytest.fail(
                 f"Correct what was read on {card!r} came back {answer.status_code} with no "
@@ -412,26 +455,35 @@ def page_fields(
 
 
 def every_choice(
-    page: str, press: str, typed: Mapping[str, str] | None = None, *, none_ticked: bool = False
+    page: str,
+    press: str,
+    typed: Mapping[str, str] | None = None,
+    *,
+    none_ticked: bool = False,
+    ticks: Sequence[str] | None = None,
 ) -> Post:
     """The most a browser sends from this page: the hidden fields, the boxes, every checkbox, one
-    radio of each group as shown, a Type of Task, every group's tick, the button. Without a conflict
-    unless asked for: "None of these apply" and "No assigned date was given" stay unticked. The
-    typing, or a "No assigned date was given" asked for, in a closed card isn't in it: a test
-    opens the card by its own press first (``open_cards``), and ``carried`` fails the test
-    otherwise."""
+    radio of each group as shown, a Type of Task, every group's tick (or only the groups of
+    ``ticks``), the button. Without a conflict unless asked for: "None of these apply" and "No
+    assigned date was given" stay unticked. The typing, or a "No assigned date was given" asked
+    for, in a closed card isn't in it: a test opens the card by its own press first
+    (``open_cards``), and ``carried`` fails the test otherwise."""
     typed = dict(typed or {})
 
     def remade(other: str) -> Post:
-        return every_choice(other, press, typed, none_ticked=none_ticked)
+        return every_choice(other, press, typed, none_ticked=none_ticked, ticks=ticks)
 
-    fields = every_field(page, press, typed, none_ticked)
+    fields = every_field(page, press, typed, none_ticked, ticks)
     nones = [f"none:{subject}" for subject in no_date_subjects(page)] if none_ticked else []
     return Post(fields, page, closed_cards(review_form(page), typed, nones), remade, typed, nones)
 
 
 def every_field(
-    page: str, press: str, typed: Mapping[str, str], none_ticked: bool
+    page: str,
+    press: str,
+    typed: Mapping[str, str],
+    none_ticked: bool,
+    ticks: Sequence[str] | None = None,
 ) -> list[tuple[str, str]]:
     """``every_choice``'s fields as this page gives them."""
     form = review_form(page)
@@ -447,7 +499,8 @@ def every_field(
             fields.append((name, typed.get(name, value)))
         elif kind == "checkbox":
             says_none = name.startswith("none:") or (is_instruction(name) and not value)
-            if none_ticked or not says_none:
+            chosen_group = ticks is None or name != "unit"
+            if chosen_group and (none_ticked or not says_none):
                 fields.append((name, value))
         elif kind == "radio" and (name not in radios or " checked" in tag):
             radios[name] = "TASK" if name.startswith("answer:kind:") else value
@@ -455,7 +508,7 @@ def every_field(
         name = attribute(tag, "name") or ""
         shown = html.unescape(content)
         fields.append((name, typed.get(name, shown[1:] if shown.startswith("\n") else shown)))
-    return [*fields, *radios.items(), ("press", press)]
+    return [*fields, *radios.items(), *(("unit", tick) for tick in ticks or ()), ("press", press)]
 
 
 def is_instruction(name: str) -> bool:
@@ -491,7 +544,7 @@ def every_card_open(browser: TestClient, draft_id: str, page: str) -> str:
             for tag in re.findall(r"<input [^>]*>", review_form(page))
             if attribute(tag, "name") == "unit" and " checked" in tag
         ]
-        answer = posted(browser, draft_id, page_fields(page, card, {}, ticked, {}))
+        answer = posted(browser, draft_id, page_post(page, card, tick=ticked))
         if answer.status_code != 200 or not has_review_form(answer.text):
             return page
         page = answer.text
@@ -521,14 +574,14 @@ def unoffered_save(
     answer come back for the test to assert."""
     if not offers_review_changes(page):
         pytest.fail("unoffered_save is for a page that offers no Save", pytrace=False)
-    payload = page_fields(page, "save", {}, units, {})
+    payload = page_post(page, "save", tick=units)
     assert [value for name, value in payload if name == "unit"] == list(units)
     assert [value for name, value in payload if name == "press"] == ["save"]
     assert payload[: -1 - len(units)] == page_fields(page, "save", {}, (), {})[:-1]
-    return payload, posted(browser, draft_id, payload)
+    return list(payload), posted(browser, draft_id, payload)
 
 
-def unoffered(post: Fields) -> list[tuple[str, str]]:
+def unoffered(post: Fields) -> RawPost:
     """A Save this post's page does not offer (a card's boxes open on it), sent on purpose as the
     raw POST it is: the post as made, every value it typed or chose in it. The test fails where
     the post isn't a helper's, its page offers a Save or the post presses anything else."""
@@ -538,20 +591,48 @@ def unoffered(post: Fields) -> list[tuple[str, str]]:
         pytest.fail("unoffered is for a post whose page offers no Save", pytrace=False)
     carried(post)
     assert [value for name, value in post if name == "press"] == ["save"]
-    return list(post)
+    return RawPost(post)
 
 
-def raw_post(fields: Fields, replaced: Mapping[str, str]) -> list[tuple[str, str]]:
-    """A hand-made post for a submission the page does not offer: these fields with these values
-    in place, as a plain list for ``send`` to send as given. The test fails where a named field
-    isn't among the fields, or the list doesn't carry the value."""
+def raw_post(
+    fields: Fields,
+    replaced: Mapping[str, str] | None = None,
+    *,
+    removed: Iterable[str | tuple[str, str]] = (),
+    added: Iterable[tuple[str, str]] = (),
+) -> RawPost:
+    """A submission the page does not offer, altered or injected on purpose: this post, checked as
+    ``carried`` checks it, with exactly the changes stated here and nothing else. ``replaced``
+    gives a named field's value in place, ``removed`` takes out a name's every field or one
+    (name, value) field, and ``added`` puts fields at the end. The test fails where a change names
+    a field the post doesn't hold or leaves the post as it was."""
+    carried(fields)
+    replacing, taken = dict(replaced or {}), list(removed)
+    extra = list(added)
     names = {name for name, _ in fields}
-    missing = [name for name in replaced if name not in names]
+    missing: list[str | tuple[str, str]] = [name for name in replacing if name not in names]
+    missing += [
+        item
+        for item in taken
+        if (item not in names if isinstance(item, str) else item not in fields)
+    ]
     if missing:
         pytest.fail(f"raw_post names fields the post doesn't hold: {missing}", pytrace=False)
-    raw = [(name, replaced.get(name, value)) for name, value in fields]
-    assert all((name, value) in raw for name, value in replaced.items())
-    return raw
+    same = [
+        name
+        for name, value in replacing.items()
+        if all(held == value for other, held in fields if other == name)
+    ]
+    if same or not (replacing or taken or extra):
+        pytest.fail(f"raw_post changes nothing in {same or 'the post'}", pytrace=False)
+    whole = {item for item in taken if isinstance(item, str)}
+    single = {item for item in taken if not isinstance(item, str)}
+    payload = [
+        (name, replacing.get(name, value))
+        for name, value in fields
+        if name not in whole and (name, value) not in single
+    ]
+    return RawPost([*payload, *extra])
 
 
 def carrying(post: Fields, typed: Mapping[str, str]) -> Fields:
@@ -583,10 +664,6 @@ def newly_typed(post: "Post") -> bool:
     """Whether a helper's post types into a box a value other than the one its page shows."""
     shown = dict(page_fields(post.page, "save", {}, (), {}))
     return any(name in shown and shown[name] != value for name, value in post.typed.items())
-
-
-class Reviewed(list[tuple[str, str]]):
-    """A post whose earlier presses were already made (``reviewed``): sent as given."""
 
 
 def offers_review_changes(page: str) -> bool:
@@ -634,18 +711,20 @@ def reviewed(browser: TestClient, draft_id: str, fields: Fields) -> Reviewed:
     "A due date is needed."), the test fails, naming the refusal the page shows and each card
     left open (the cards of the page the post was made from where no review form comes back): a
     test that means to observe that refusal presses Review changes itself (``send``) and asserts
-    it, and no Save is sent. Anything else, and a Save whose Review changes returns no review form
-    with 200, is the post as given."""
+    it, and no Save is sent. A raw post goes exactly as it stands, with no press before it, and
+    anything else, and a Save whose Review changes returns no review form with 200, is the post
+    as given."""
     if isinstance(fields, Reviewed):
         return fields
-    typing = newly_typed(fields) if isinstance(fields, Post) else True
     carried(fields)
+    if not isinstance(fields, Post):
+        return Reviewed(fields)
+    typing = newly_typed(fields)
     sent = list(fields)
-    offered = isinstance(fields, Post) and offers_review_changes(fields.page)
+    offered = offers_review_changes(fields.page)
     if ("press", "save") not in sent or not (offered or (typing and typed_beside_read(sent))):
-        return Reviewed(sent)
-    review = [(name, "review" if name == "press" else value) for name, value in sent]
-    answer = posted(browser, draft_id, review)
+        return Reviewed(fields)
+    answer = posted(browser, draft_id, raw_post(fields, {"press": "review"}))
     if answer.status_code >= 400:
         problem = re.search(r'<div class="problem"[^>]*>(.*?)</div>', answer.text, re.S)
         refusal = (
@@ -653,19 +732,14 @@ def reviewed(browser: TestClient, draft_id: str, fields: Fields) -> Reviewed:
             if problem
             else page_text(answer.text).strip()[:300]
         )
-        if has_review_form(answer.text):
-            cards = still_open(answer.text)
-        elif isinstance(fields, Post):
-            cards = still_open(fields.page)
-        else:
-            cards = ["a hand-made post, its cards not named"]
+        cards = still_open(answer.text if has_review_form(answer.text) else fields.page)
         pytest.fail(
             f"Review changes was refused ({answer.status_code}), so no Save is sent after it: "
             f"{refusal or 'no refusal line shown'}; " + "; ".join(cards),
             pytrace=False,
         )
     if answer.status_code != 200 or not has_review_form(answer.text):
-        return Reviewed(sent)
+        return Reviewed(fields)
     if offers_review_changes(answer.text):
         pytest.fail(
             "Review changes came back with no Save to press, a card still open: "
@@ -1052,11 +1126,13 @@ def all_found_onto_one_row(
     drafts.keep_answers(student, draft_id, version=version, answers=[answer])
     page = browser.get(f"/parent/imports/{draft_id}").text
     for _ in range(2):
-        fields = [
-            (name, chosen if name.startswith("answer:destination:") else value)
-            for name, value in every_choice(page, "keep")
-        ]
-        kept = send(browser, draft_id, fields)
+        post = every_choice(page, "keep")
+        found_row = {
+            name: chosen
+            for name, value in post
+            if name.startswith("answer:destination:") and value != chosen
+        }
+        kept = send(browser, draft_id, raw_post(post, found_row) if found_row else post)
         assert kept.status_code == 200, page_text(kept.text)[:300]
         page = followed(browser, kept)
     [question] = fields_of(page, "answer:instructions:")
@@ -1099,8 +1175,13 @@ def the_worst_page(
     as, so each carries that text beside its box: the review's id, and the post of every field that
     page can send."""
 
-    def not_dates(fields: Fields) -> list[tuple[str, str]]:
-        return [(name, "not a date" if is_date_box(name) else value) for name, value in fields]
+    def not_dates(fields: Fields) -> Fields:
+        typed = {
+            name: "not a date"
+            for name, value in fields
+            if is_date_box(name) and value != "not a date"
+        }
+        return raw_post(fields, typed) if typed else fields
 
     draft_id, page = saved_rows(browser, monkeypatch, shots, cards, read_again_unsure)
     for _ in range(2):
@@ -1122,17 +1203,16 @@ BEYOND_THE_PLANE: Final = "\U0001f600"
 """A character of four bytes in UTF-8, twelve as sent."""
 
 
-def at_their_limits(fields: Fields, *field_starts: str) -> list[tuple[str, str]]:
-    """This post with each box whose field starts with one of these filled to its field's limit."""
-    made = []
-    for name, value in fields:
+def at_their_limits(fields: Fields, *field_starts: str) -> RawPost:
+    """This post with each box whose field starts with one of these filled to its field's limit,
+    sent as the raw post it is."""
+    filled = {}
+    for name, _ in fields:
         if name.startswith("correct:"):
             field = str(json.loads(name.removeprefix("correct:"))[1])
             if field.startswith(field_starts):
-                made.append((name, BEYOND_THE_PLANE * field_most(field)))
-                continue
-        made.append((name, value))
-    return made
+                filled[name] = BEYOND_THE_PLANE * field_most(field)
+    return raw_post(fields, filled)
 
 
 def every_box_at_its_limit(
@@ -1195,11 +1275,12 @@ def every_box_at_its_limit(
     )
 
 
-def small_form_fields(form: str) -> list[tuple[str, str]]:
-    return [
+def small_form_fields(form: str) -> RawPost:
+    """A small form's own fields, as the page wrote them: sent exactly as they stand."""
+    return RawPost(
         (html.unescape(name), html.unescape(value))
         for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', form)
-    ]
+    )
 
 
 def an_offer_s_post(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, Fields]:
@@ -1473,8 +1554,7 @@ class Presses:
         return self.press("keep from the page later returned", every_choice(page, "keep"))
 
     def save(self, page: str, ticks: Iterable[str], label: str = "save") -> str:
-        fields = [field for field in every_choice(page, "save") if field[0] != "unit"]
-        return self.press(label, [*fields, *(("unit", tick) for tick in ticks)])
+        return self.press(label, every_choice(page, "save", ticks=list(ticks)))
 
     def keep_and_later_after(self, page: str) -> None:
         page = self.press("keep from the page save returned", every_choice(page, "keep"))
@@ -1612,11 +1692,9 @@ def a_list_of_exactly(asked: str, size: int) -> str:
     return list_of_stream(b"".join(parts))
 
 
-def signed_again(
-    browser: TestClient, draft_id: str, fields: Fields, asked: str
-) -> list[tuple[str, str]]:
+def signed_again(browser: TestClient, draft_id: str, fields: Fields, asked: str) -> RawPost:
     """This post with this signed list, signed with the review's own key: what only someone holding
-    that key can send."""
+    that key can send, sent as the raw post it is."""
     student = state_of(browser).project_state.student_id()
     key = state_of(browser).import_drafts.snapshot(student, draft_id).page_key
     changed = [(name, asked if name == "asked" else value) for name, value in fields]
@@ -1625,8 +1703,9 @@ def signed_again(
         for name, value in changed
         if name in screenshot_posts.SIGNED or name.startswith("digest:")
     ]
-    check = page_check(key, signed)
-    return [(name, check if name == "check" else value) for name, value in changed]
+    held = dict(fields)
+    made = {"asked": asked, "check": page_check(key, signed)}
+    return raw_post(fields, {name: value for name, value in made.items() if held[name] != value})
 
 
 def written_as_the_older_form(browser: TestClient, draft_id: str, page: str) -> str:
@@ -1711,7 +1790,7 @@ def body_of_fields(fields: Fields, count: int, total: int | None = None) -> byte
 def body_with_a_paste(fields: Fields, box: str, typed: str, total: int) -> tuple[bytes, str]:
     """This post with this box holding as much of this character as makes the body exactly this many
     bytes, plain characters making up what's left: the body, and what the box holds."""
-    others = as_a_browser_sends([field for field in fields if field[0] != box])
+    others = as_a_browser_sends(raw_post(fields, removed=[box]))
     name = urlencode([(box, "")]).encode()
     as_sent = urlencode([("", typed)]).encode().removeprefix(b"=")
     room = total - len(others) - 1 - len(name)

@@ -380,44 +380,74 @@ def saved_under_another_title(piece: Piece, row: SavedRow) -> bool:
     its dates is near the piece's due date as read (``near_as_read``), or it keeps the piece's
     dates as read as the school gave them (``school_dated``), whatever the window. Such a row is
     a candidate to ask about, never a match: it is listed and offered, never preselected. Only
-    for a card piece whose class and title are as read, so a title the family types on this
-    review is matched by name alone; never for a piece read from a teacher's note, which only
-    its words and school day recognize (``holds_note``)."""
+    for a card piece whose class and title are as read: a card the family retitled is asked
+    about such a row through the card as read (``piece_as_read``). Never for a piece read from a
+    teacher's note, which only its words and school day recognize (``holds_note``)."""
     if not _another_card_title(piece, row):
         return False
     held = bool(piece.words and holds_words(piece.words, row.words))
     return (held and near_as_read(piece, row)) or school_dated(piece, row)
 
 
+def piece_as_read(piece: Piece) -> Piece | None:
+    """The card as it was read, with no correction of its class, title, words or dates; ``None``
+    for a piece with no record of how it was read, or with none of those corrected."""
+    read = piece.as_read
+    if read is None:
+        return None
+    found = dataclasses.replace(
+        piece,
+        course=read.course,
+        title=read.title,
+        due=read.due,
+        assigned=read.assigned,
+        words=frozenset(read.texts),
+    )
+    same = (found.pair, found.due, found.assigned, found.words) == (
+        piece.pair,
+        piece.due,
+        piece.assigned,
+        piece.words,
+    )
+    return None if same else found
+
+
 def unsure(piece: Piece, rows: Iterable[SavedRow]) -> bool:
-    """Whether the evidence the record keeps is too thin to tell a card piece from saved
-    homework of its class under another title: a row holding the piece's non-empty words with
-    no date near the piece's due date as read (``near_as_read``), or, for a piece read with no
-    words, a row with that very due date (``due_matches_as_read``). Such a piece lists no row it
-    doesn't otherwise list and never starts on a new slot: the family chooses."""
-    for row in rows:
-        if not _another_card_title(piece, row):
-            continue
-        if piece.words:
-            if holds_words(piece.words, row.words) and not near_as_read(piece, row):
+    """Whether the evidence the record keeps is too thin to tell a card piece, as it stands or as
+    it was read, from saved homework of its class under another title: a row holding the piece's
+    non-empty words with no date near the piece's due date as read (``near_as_read``), or, for a
+    piece read with no words, a row with that very due date (``due_matches_as_read``). Such a
+    piece lists no row it doesn't otherwise list and never starts on a new slot: the family
+    chooses."""
+    found = list(rows)
+    read = piece_as_read(piece)
+    for card in (piece,) if read is None else (piece, read):
+        for row in found:
+            if not _another_card_title(card, row):
+                continue
+            if card.words:
+                if holds_words(card.words, row.words) and not near_as_read(card, row):
+                    return True
+            elif due_matches_as_read(card, row):
                 return True
-        elif due_matches_as_read(piece, row):
-            return True
     return False
 
 
+def lists_row(piece: Piece, row: SavedRow) -> bool:
+    """Whether a saved assignment is listed for the piece on its own fields: by class, title and
+    due date, by a teacher's note's words and school day, or as saved under another title."""
+    return (
+        same_name_in_window(piece, row)
+        or holds_note(piece, row)
+        or saved_under_another_title(piece, row)
+    )
+
+
 def listed(piece: Piece, rows: Iterable[SavedRow]) -> list[SavedRow]:
-    """The saved assignments of the piece's class and title in its window, those of its class
-    saved under another title that may be its own (``saved_under_another_title``), or for a
-    piece read from a teacher's note those holding its words and school day, in a fixed
-    order."""
-    found = [
-        r
-        for r in rows
-        if same_name_in_window(piece, r)
-        or holds_note(piece, r)
-        or saved_under_another_title(piece, r)
-    ]
+    """The saved assignments the piece lists as it stands or as it was read (``lists_row``), in a
+    fixed order: typing on a card never takes away a row listed for the card as read."""
+    read = piece_as_read(piece)
+    found = [r for r in rows if lists_row(piece, r) or (read is not None and lists_row(read, r))]
     return sorted(
         found,
         key=lambda r: (
@@ -430,10 +460,11 @@ def listed(piece: Piece, rows: Iterable[SavedRow]) -> list[SavedRow]:
     )
 
 
-def linked(
+def linked_by_name(
     piece: Piece, picks: Iterable[EarlierPick], rows: Mapping[str, SavedRow]
 ) -> list[SavedRow]:
-    """Each distinct row an earlier pick linked to the piece's name, newest decision first."""
+    """Each distinct row an earlier pick linked to the piece's own class and title, newest
+    decision first."""
     out: list[SavedRow] = []
     seen: set[str] = set()
     for pick in sorted(picks, key=lambda p: -p.sequence):
@@ -446,6 +477,24 @@ def linked(
             row = rows[pick.assignment_id]
             if row.pair != piece.pair:
                 out.append(row)
+    return out
+
+
+def linked(
+    piece: Piece, picks: Iterable[EarlierPick], rows: Mapping[str, SavedRow]
+) -> list[SavedRow]:
+    """Each distinct row an earlier pick linked to the piece's name as it stands, then to its name
+    as it was read, so typing on a card never takes away a link the card as read lists."""
+    picks = list(picks)
+    read = piece_as_read(piece)
+    out = linked_by_name(piece, picks, rows)
+    if read is not None:
+        seen = {row.assignment_id for row in out}
+        out += [
+            row
+            for row in linked_by_name(read, picks, rows)
+            if row.assignment_id not in seen and row.pair != piece.pair
+        ]
     return out
 
 
@@ -510,15 +559,27 @@ def offerable(
     if target not in rows:
         return False
     if kind == "existing":
-        row = rows[target]
-        return (
-            same_name_in_window(piece, row)
-            or holds_note(piece, row)
-            or saved_under_another_title(piece, row)
-        )
+        return any(r.assignment_id == target for r in listed(piece, [rows[target]]))
     if kind == "linked":
         return any(r.assignment_id == target for r in linked(piece, picks, rows))
     return True
+
+
+def offered_as_it_stands(
+    piece: Piece, value: Destination, rows: Mapping[str, SavedRow], picks: Iterable[EarlierPick]
+) -> bool:
+    """Whether a destination can be offered to the piece on its fields as they stand, leaving out
+    what only the card as read lists: a choice this holds for is unaffected by what was typed on
+    the card, and any other is asked again before it is held."""
+    kind = dest_kind(value)
+    if kind not in ("existing", "linked"):
+        return offerable(piece, value, rows, picks)
+    target = str(value[kind])
+    if target not in rows:
+        return False
+    if kind == "existing":
+        return lists_row(piece, rows[target])
+    return any(r.assignment_id == target for r in linked_by_name(piece, picks, rows))
 
 
 # ------------------------------------------------------------------ facts beside each entry
@@ -555,9 +616,11 @@ def in_list(
 def facts(
     piece: Piece, row: SavedRow, rows: Mapping[str, SavedRow], picks: Iterable[EarlierPick] = ()
 ) -> list[EntryFact]:
-    """The facts beside one entry. "Also saved in" names only assignments in the piece's list
-    due on another date."""
-    out = [EntryFact("has_words" if holds_words(piece.words, row.words) else "lacks_words")]
+    """The facts beside one entry: a card with no words says nothing of the entry's words. "Also
+    saved in" names only assignments in the piece's list due on another date."""
+    out: list[EntryFact] = []
+    if piece.words:
+        out.append(EntryFact("has_words" if holds_words(piece.words, row.words) else "lacks_words"))
     if row.due != piece.due:
         out.append(EntryFact("due_differs", row.due, piece.due))
     if row.assigned is not None and piece.assigned is not None and row.assigned != piece.assigned:
@@ -590,9 +653,10 @@ def defaults(
     preselected "Already saved" only on the one assignment holding its words and school day;
     with none it is never preselected "Already saved": its class, title, due date and words
     don't tell one week's note from another's. An assignment listed only as saved under another
-    title (``saved_under_another_title``) is never preselected, and a lone piece with one
-    listed starts on no choice: the family answers same or new. A lone piece the evidence can't
-    tell from saved homework (``unsure``) starts on no choice too."""
+    title (``saved_under_another_title``), or only for the card as it was read (``listed``), is
+    never preselected, and a lone piece with one listed starts on no choice: the family answers
+    same or new. A lone piece the evidence can't tell from saved homework (``unsure``) starts on
+    no choice too."""
     picks = list(picks)
     candidates: dict[str, str] = {}
     for piece in pieces:
@@ -604,8 +668,8 @@ def defaults(
                 candidates[piece.name] = noted[0]
             continue
         options = [
-            r for r in listed(piece, rows.values()) if not saved_under_another_title(piece, r)
-        ] + linked(piece, picks, rows)
+            r for r in rows.values() if same_name_in_window(piece, r) or holds_note(piece, r)
+        ] + linked_by_name(piece, picks, rows)
         exact = sorted(
             {
                 r.assignment_id

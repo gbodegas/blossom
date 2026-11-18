@@ -54,6 +54,7 @@ from tests.import_review_cases import (
     press_over_socket,
     press_through,
     random_cjk,
+    raw_post,
     read_again,
     read_again_unsure,
     saved_rows,
@@ -322,7 +323,7 @@ def test_a_conflict_on_199900_kept_rows_comes_back_as_posted(
         draft_id, page, question = with_a_kept_question(
             browser, monkeypatch, more=199_900, words=numbered
         )
-        fields = [*every_choice(page, "keep"), (question, "")]
+        fields = raw_post(every_choice(page, "keep"), added=[(question, "")])
         before = every_row(browser)
         answer = send(browser, draft_id, fields)
         after = every_row(browser)

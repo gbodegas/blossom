@@ -68,6 +68,7 @@ from blossom.screenshot_review import (
     instruction_index,
     joined_of,
     joined_subject,
+    piece_as_read,
     pieces_from,
     preview,
     saved_notes,
@@ -345,8 +346,11 @@ def rows_and_due_origins(
 
 
 def earlier_picks(record: ProjectStateStore, pieces: Sequence[Piece]) -> list[EarlierPick]:
-    """The record's ``renamed`` decisions for the pieces' names."""
-    decided = record.intake_decisions({p.pair for p in pieces})
+    """The record's ``renamed`` decisions for the pieces' names, as they stand and as read."""
+    as_read = (piece_as_read(p) for p in pieces)
+    decided = record.intake_decisions(
+        {p.pair for p in pieces} | {read.pair for read in as_read if read is not None}
+    )
     return [
         EarlierPick(item.course, item.title, item.lands_on, item.sequence)
         for answers in decided.values()
@@ -703,6 +707,11 @@ class ReviewState:
     ready_answered: frozenset[str] = frozenset()
     """The units of ``answered_ways`` ready to save whichever of those answers is given: the page
     offers each one's tick beside its questions."""
+    pieces_with: Callable[[Corrections], tuple[Piece, ...]] = dataclasses.field(
+        default=lambda _: (), compare=False
+    )
+    """These pieces worked out with other corrections, from the tables this state was read from,
+    with no further read of the record."""
 
     @property
     def by_name(self) -> dict[str, Piece]:
@@ -744,6 +753,7 @@ def review_state(
     corrections: Corrections,
     defaults_posted: Mapping[str, str] | None = None,
     defaults_shown: Mapping[str, str] | None = None,
+    withheld: frozenset[str] = frozenset(),
 ) -> ReviewState:
     """The review's pieces, destinations, checks and preview from its tables and the record.
     A default the press posted, and its answers kept, still counts as the default it was. A
@@ -754,7 +764,8 @@ def review_state(
     unticked. For a page that stores nothing, a destination its post sent as the page's default
     (``defaults_shown``, by piece) where the corrections withdraw that default is worked out as
     sent, and still a default: every question it raises is asked there, and it never becomes a
-    family answer."""
+    family answer. A piece in ``withheld``, whose page asked with nothing chosen, never starts on
+    a new slot; a title typed to name a saved assignment keeps that assignment's exact match."""
     first = _review_state(
         record,
         tables,
@@ -762,6 +773,7 @@ def review_state(
         corrections=corrections,
         defaults_posted=defaults_posted,
         defaults_shown=defaults_shown,
+        withheld=withheld,
     )
     unanswered = frozenset(
         found for found in first.proven if ("joined", joined_subject(*found)) not in first.values
@@ -776,6 +788,7 @@ def review_state(
         defaults_posted=defaults_posted,
         defaults_shown=defaults_shown,
         ticked=unanswered,
+        withheld=withheld,
     )
     return again if unanswered <= again.proven else first
 
@@ -789,6 +802,7 @@ def _review_state(
     defaults_posted: Mapping[str, str] | None = None,
     defaults_shown: Mapping[str, str] | None = None,
     ticked: frozenset[tuple[str, str]] = frozenset(),
+    withheld: frozenset[str] = frozenset(),
 ) -> ReviewState:
     """``review_state`` with each joined note in ``ticked``, by piece name and note tag, ticked
     where no answer is kept for it."""
@@ -835,10 +849,16 @@ def _review_state(
     chosen = {
         name: value
         for name, value in defaults(open_pieces, groups, rows, picks, stored, check).items()
-        if name not in asks
+        if name not in asks and not (name in withheld and "new" in value)
     }
     for name, value in (defaults_shown or {}).items():
-        if name in by_name and name not in saved and name not in asks and name not in stored:
+        if (
+            name in by_name
+            and name not in saved
+            and name not in asks
+            and name not in stored
+            and name not in withheld
+        ):
             with contextlib.suppress(ValueError):
                 chosen.setdefault(name, value_of(value))
     mapping: dict[str, Destination] = {**chosen, **stored}
@@ -1035,6 +1055,9 @@ def _review_state(
         due_origins,
         answered_ways,
         ready_answered,
+        lambda typed: tuple(
+            pieces_from(tables.readings, split, tables.discards, now, typed, due_read, joined)[0]
+        ),
     )
 
 

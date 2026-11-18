@@ -49,12 +49,10 @@ from blossom.screenshot_review import (
     kind_question,
     offers,
     reference,
-    saved_under_another_title,
     settles_due,
     subject_for,
     typed_day,
     unit_name,
-    unsure,
     value_json,
     value_of,
     wordless_field,
@@ -520,8 +518,11 @@ class Box:
         """Its value as a closed card says it: a date as the review's rows say a day ("Fri
         10/9"), anything else, or a date Blossom can't read, as the box holds it. An empty box
         says what it left empty means, in the words the page offers for that choice (``empty``),
-        or "none" where it means nothing more."""
+        or "none" where it means nothing more; with "No assigned date was given" ticked, those
+        words."""
         if not self.value:
+            if self.none is not None and self.none[1]:
+                return SAID["no_assigned_given"]
             return self.empty or SAID["nothing"]
         if self.kind != "date":
             return self.value
@@ -544,6 +545,10 @@ def carried_digest(words: str) -> str:
 
 SHOWN: Final = "shown:"
 """The signed list's name, before a box's key and field, of the correction its page shows for it."""
+CHOSEN_SHOWN: Final = "chosen:"
+"""The signed list's name, before a piece's name, of the destination its page shows chosen."""
+TICKED_SHOWN: Final = "ticked:"
+"""The signed list's name, before a group's name, of a group its page shows ticked."""
 
 
 def shown_digest(value: str | None) -> str:
@@ -858,16 +863,12 @@ class PieceControl:
     marks: tuple[tuple[str, str], ...] = ()
     """Hidden fields it carries, by name and value: a destination sent twice with different
     answers carries the values sent (``UNRESOLVED``) until it is answered."""
-    weighs_saved: bool = False
-    """Whether its choices weigh saved homework against new homework: a saved assignment among
-    them, or a card the evidence can't tell from saved homework (``unsure``). While none of them
-    is chosen, Review changes is the form's action, so the chosen one's effect is shown before
-    Save."""
 
     @property
     def asks(self) -> bool:
-        """Whether it weighs saved homework against new and none of its choices is chosen."""
-        return self.weighs_saved and not any(choice.checked for choice in self.choices)
+        """Whether none of its choices is chosen, one option left unchosen included: Review
+        changes is then the form's action, so the chosen one's effect is shown before Save."""
+        return not any(choice.checked for choice in self.choices)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1123,8 +1124,7 @@ class RowsShown:
     @property
     def review_first(self) -> bool:
         """Whether Review changes is the form's action and Save isn't offered: a card's boxes
-        are open (``editing``), or a card weighs saved homework against new with none chosen
-        (``PieceControl.asks``)."""
+        are open (``editing``), or a card has no destination chosen (``PieceControl.asks``)."""
         cards = (card for unit in self.units for block in unit.blocks for card in block.cards)
         return self.editing or any(card.control.asks for card in cards)
 
@@ -1280,7 +1280,7 @@ def _choices(
             fact_text(f.kind, f.entry_date, f.piece_date, labels.get(str(f.about), ""))
             for f in facts(piece, row, state.rows, state.picks)
         )
-        if entry.kind == "listed" and saved_under_another_title(piece, row):
+        if entry.kind == "listed" and row.pair != piece.pair and not _from_a_note(piece):
             shown = (ANOTHER_TITLE.format(title=piece.title), *shown)
         out.append(Choice(entry.value, label, shown, entry.value == picked))
     for refusal in state.validation.of(piece.name).refusals:
@@ -1734,6 +1734,9 @@ def rows_shown(
     twice: Mapping[str, tuple[str, ...]] | None = None,
     opened: frozenset[str] = frozenset(),
     signed_digests: Mapping[str, tuple[str, ...]] | None = None,
+    retaken: frozenset[str] = frozenset(),
+    chosen_here: frozenset[str] = frozenset(),
+    left_off: frozenset[str] = frozenset(),
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
@@ -1748,7 +1751,13 @@ def rows_shown(
     options chosen. The cards named in ``opened``, and any with a box refused or marked, show
     their boxes open. A page that shows no review of its typing (Correct what was read, or a
     Save refused for corrections no review showed) signs each group's digests as its post
-    carried them (``signed_digests``), so a Save from it with that typing is refused again."""
+    carried them (``signed_digests``), so a Save from it with that typing is refused again. A
+    group the family ticked (``selected``) that waits for its destination keeps its tick, signed
+    with no digests, so the destination is the only thing asked. A card whose press's typing took
+    its destination back (``retaken``) says why it asks again. A group holding a card whose
+    destination the press chose (``chosen_here``) is shown ticked, unless it holds a card of a
+    group that press unticked (``left_off``). The page signs the destinations and ticks it shows,
+    for the next press to tell a choice from an answer carried."""
     values = dict(state.values)
     image_ids = image_ids or {}
     reworked: dict[tuple[str, ...], list[tuple[Offer, Sequence[PreviewEntry]]]] = {}
@@ -1876,10 +1885,8 @@ def rows_shown(
             finds[piece.name],
             piece.name in state.defaults and piece.name not in state.stored,
             piece.name in state.validation.of(piece.name).stale,
-            SAID["lost_correction"] if piece.name in state.lost else None,
+            SAID["lost_correction"] if piece.name in state.lost | retaken else None,
             choices_at[piece.name],
-            weighs_saved=any(dest_kind(value_of(choice.value)) != "new" for choice in piece_choices)
-            or unsure(piece, state.rows.values()),
         )
         kind = None
         if own:
@@ -1916,6 +1923,7 @@ def rows_shown(
     )
     forms = [OutsideForm(form_id, "find", (("piece", name),)) for name, form_id in finds.items()]
     shown_units = []
+    kept_ticks: set[str] = set()
     for number, unit in enumerate(ordered, 1):
         last_open = set(unit.unit) >= {p.name for p in open_pieces}
         blocks: list[tuple[int, BlockShown]] = []
@@ -1982,16 +1990,35 @@ def rows_shown(
         held = sorted((state.by_name[n] for n in unit.unit), key=first_card)
         chosen_blocks = sum(1 for _, block in blocks if block.chosen)
         note = _note_standing(held)
+        unit_keys = {state.by_name[name].key for name in unit.unit}
+        # A destination the family chose on this press selects its group, unless the same press
+        # unticked it.
+        chose_it = bool(chosen_here & set(unit.unit)) and not left_off & set(unit.unit)
+        # A group the family ticked that waits only for where its cards go keeps that tick: the
+        # destination is the one thing asked, and Review changes shows its effect before Save.
+        tick_kept = (
+            not tickable
+            and bool(unit.unanswered or unit.stale)
+            and (chose_it or (selected is not None and unit_keys <= selected))
+        )
+        if tick_kept:
+            kept_ticks.add(unit_name(unit.unit))
         shown_units.append(
             UnitShown(
                 unit_name(unit.unit),
                 tuple(block for _, block in blocks),
-                tickable,
-                tickable
-                and (
-                    not _new_note(held, saved_already)
-                    if selected is None
-                    else {state.by_name[name].key for name in unit.unit} <= selected
+                tickable or tick_kept,
+                tick_kept
+                or (
+                    tickable
+                    and (
+                        chose_it
+                        or (
+                            not _new_note(held, saved_already)
+                            if selected is None
+                            else unit_keys <= selected
+                        )
+                    )
                 ),
                 _waits(unit),
                 refusals,
@@ -2009,6 +2036,10 @@ def rows_shown(
         dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(splits, len(names) + 1)
     )
     shown_units = _unresolved_ticks(shown_units, unresolved or {})
+    marks = own | {state.by_name[name].key for name in own if name in state.by_name}
+    names, splits, shown_units, not_carried, beyond_its_save = _carried(
+        names, splits, shown_units, choices or {}, conflicted or {}, marks
+    )
     asked_fields: list[tuple[str, Sequence[str]]] = [
         *((q.field, [o[0] for o in q.options]) for q in names),
         *((q.field, [o[0] for o in q.options]) for q in splits),
@@ -2020,14 +2051,16 @@ def rows_shown(
         *(mark for q in splits for mark in q.marks),
     ]
     for shown_unit in shown_units:
+        if shown_unit.ticked:
+            asked_fields.append((TICKED_SHOWN + shown_unit.unit, ("ticked",)))
         for block in shown_unit.blocks:
             for card in block.cards:
-                asked_fields.append(
-                    (
-                        answer_field("destination", card.name),
-                        [c.value for c in card.control.choices],
-                    )
-                )
+                destination = answer_field("destination", card.name)
+                asked_fields.append((destination, [c.value for c in card.control.choices]))
+                shows = [c.value for c in card.control.choices if c.checked]
+                if shows and destination not in (twice or {}):
+                    # An answer sent twice shows none of its options chosen (``_answers_twice``).
+                    asked_fields.append((CHOSEN_SHOWN + card.name, (_destination_text(shows[0]),)))
                 signed_marks += card.control.marks
                 for question in (*card.checks, *((card.type,) if card.type else ())):
                     asked_fields.append((question.field, [o[0] for o in question.options]))
@@ -2078,7 +2111,9 @@ def rows_shown(
         ("identity", json.dumps(sorted({i.status for i in images}), separators=(",", ":"))),
     ]
     shown_digests = digests if signed_digests is None else {**digests, **signed_digests}
-    hidden += [(f"digest:{u}", ",".join(shown_digests[u])) for u in sorted(digests)]
+    hidden += [
+        (f"digest:{u}", ",".join(shown_digests.get(u, ()))) for u in sorted({*digests, *kept_ticks})
+    ]
     hidden.append(("check", page_check(page_key, hidden)))
     unread_groups, unread_forms = unread_shown(unread, places, open_keys, page_key, version)
     for index, row in enumerate(state.asking, 1):
@@ -2097,10 +2132,6 @@ def rows_shown(
     finishing.append(("check", page_check(page_key, [*finishing, ("action", "finish")])))
     forms.append(OutsideForm("finish", "finish", tuple(finishing)))
     forms.append(signed_action("not-hers", page_key, version))
-    marks = own | {state.by_name[name].key for name in own if name in state.by_name}
-    names, splits, shown_units, not_carried, beyond_its_save = _carried(
-        names, splits, shown_units, choices or {}, conflicted or {}, marks
-    )
     if sent_twice or unresolved:
         shown_units = _marked_twice(shown_units, sent_twice | frozenset(unresolved or {}))
     if twice:
@@ -2336,8 +2367,8 @@ def _carried(
     whether a choice has no question or option here; and whether one of those is more than a
     confirmed save took with its own rows (``marks``, their pieces and row keys, which are in the
     fields that ask about them) or a name question. A value is never swapped for another. This only
-    marks what's shown, and runs after everything the page signs is worked out, so the next post
-    meets every check as it would. The groups' ticks come back as posted through ``selected``, with
+    marks what's shown and changes no field or option the page signs, so the next post meets every
+    check as it would. The groups' ticks come back as posted through ``selected``, with
     no such note: they aren't answers the record holds, and beside "Save this assignment" it would
     read as about the homework."""
     if not choices:

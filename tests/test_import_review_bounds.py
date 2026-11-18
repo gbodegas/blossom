@@ -219,11 +219,10 @@ def opened_for_typing(browser: TestClient, draft_id: str, page: str, typed: dict
 
 
 def padded_fields(fields: Fields, total: int) -> list[tuple[str, str]]:
-    """This post with fields nothing reads, up to this many fields. A helper's post is checked to
-    carry what its test typed and chose first (``carried``)."""
-    import_review_cases.carried(fields)
-    assert total >= len(fields)
-    return [*fields, *[("read:zz", "1")] * (total - len(fields))]
+    """This post with fields nothing reads, up to this many fields, as the raw post it is. A
+    helper's post is checked to carry what its test typed and chose first (``carried``)."""
+    assert total > len(fields)
+    return import_review_cases.raw_post(fields, added=[("read:zz", "1")] * (total - len(fields)))
 
 
 def is_not_read(answer: Any) -> bool:  # noqa: ANN401  (a response of either client)
@@ -375,6 +374,143 @@ def test_typing_or_a_choice_that_does_not_reach_its_post_fails_the_test_as_it_is
         assert repr(name) in str(failed.value)
         assert f"/parent/imports/{draft_id}/review" in str(failed.value)
         assert "Blossom - Homework screenshots" in str(failed.value)
+
+
+PLAIN_LISTS_OF_A_POST: Final[dict[str, Callable[[Fields], list[tuple[str, str]]]]] = {
+    "a comprehension": lambda post: [(name, value) for name, value in post],
+    "an unpacking": lambda post: [*post],
+    "a copy": list,
+}
+PATHS_OF_A_POST: Final[dict[str, Callable[[TestClient, str, Fields], object]]] = {
+    "send": lambda browser, draft_id, fields: import_review_cases.send(browser, draft_id, fields),
+    "posted": lambda browser, draft_id, fields: import_review_cases.posted(
+        browser, draft_id, fields
+    ),
+    "saved_with_corrections": lambda browser, draft_id, fields: (
+        import_review_cases.saved_with_corrections(browser, draft_id, fields)
+    ),
+    "reviewed": lambda browser, draft_id, fields: import_review_cases.reviewed(
+        browser, draft_id, fields
+    ),
+    "as_a_browser_sends": lambda _, __, fields: as_a_browser_sends(fields),
+}
+
+
+@pytest.mark.parametrize("path", PATHS_OF_A_POST)
+@pytest.mark.parametrize("made", PLAIN_LISTS_OF_A_POST)
+def test_a_plain_list_made_from_a_post_fails_on_every_path_naming_the_call(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, made: str, path: str
+) -> None:
+    """A plain list made from a helper's post goes nowhere: every path a test post is sent through
+    fails the test, naming the file, the line and the function of the call, and nothing is sent."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        box = box_named(page, "title")
+        opened = opened_for_typing(browser, draft_id, page, {box: TYPED})
+        plain_list = PLAIN_LISTS_OF_A_POST[made](page_post(opened, "keep", typed={box: TYPED}))
+        before = every_row(browser)
+        sent: list[object] = []
+        monkeypatch.setattr(browser, "post", lambda *args, **_: sent.append(args))
+
+        with pytest.raises(pytest.fail.Exception, match="a plain list") as failed:
+            PATHS_OF_A_POST[path](browser, draft_id, plain_list)
+
+        assert sent == []
+        assert every_row(browser) == before
+    said = str(failed.value)
+    assert "test_import_review_bounds.py:" in said
+    assert "raw_post" in said
+
+
+def test_a_post_changed_after_it_was_made_fails_as_it_is_sent(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A helper's post changed in place is not what its page and typing made: it fails the test as
+    it is sent, naming the call."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        post = page_post(page, "keep")
+        post.append(("extra", "1"))
+
+        with pytest.raises(pytest.fail.Exception, match="changed after it was made") as failed:
+            import_review_cases.send(browser, draft_id, post)
+
+    assert "test_a_post_changed_after_it_was_made_fails_as_it_is_sent" in str(failed.value)
+
+
+@pytest.mark.parametrize("made", PLAIN_LISTS_OF_A_POST)
+def test_a_plain_list_never_passes_as_a_post_already_reviewed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, made: str
+) -> None:
+    """``Reviewed`` holds a helper's post or a raw post: a plain list wrapped in it fails."""
+    with here(open_settings(tmp_path)) as browser:
+        _, page = a_small_page(browser, monkeypatch)
+        plain_list = PLAIN_LISTS_OF_A_POST[made](page_post(page, "save"))
+
+        with pytest.raises(pytest.fail.Exception, match="a plain list"):
+            import_review_cases.Reviewed(plain_list)
+
+
+def test_a_raw_post_sends_exactly_the_changes_it_states(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raw post is the post it starts from with exactly the changes its call states, and it is
+    sent as that payload, with no press added before it."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = a_small_page(browser, monkeypatch)
+        post = page_post(page, "save", tick=units_on(page)[:1])
+        raw = import_review_cases.raw_post(
+            post, {"version": "0"}, removed=["unit"], added=[("injected", "sent twice")]
+        )
+        kept = [field for field in post if field[0] != "unit"]
+        expected = [
+            *[("version", "0") if name == "version" else (name, value) for name, value in kept],
+            ("injected", "sent twice"),
+        ]
+        sent = every_post_recorded(monkeypatch)
+
+        import_review_cases.saved_with_corrections(browser, draft_id, raw)
+
+    assert list(raw) == expected
+    assert sent == [expected]
+
+
+@pytest.mark.parametrize(
+    ("changes", "says"),
+    [
+        ({"replaced": {"no-such-field": "1"}}, "no-such-field"),
+        ({"replaced": {"press": "save"}}, "changes nothing"),
+        ({"removed": ["no-such-field"]}, "no-such-field"),
+        ({"removed": [("press", "keep")]}, "('press', 'keep')"),
+    ],
+)
+def test_a_raw_post_whose_stated_change_is_not_made_fails(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changes: dict[str, Any],
+    says: str,
+) -> None:
+    """A raw post states what it changes: a change that names a field the post doesn't hold, or
+    that leaves the post as it was, fails the test as the post is made."""
+    with here(open_settings(tmp_path)) as browser:
+        _, page = a_small_page(browser, monkeypatch)
+        post = page_post(page, "save")
+
+        with pytest.raises(pytest.fail.Exception, match=re.escape(says)):
+            import_review_cases.raw_post(post, **changes)
+
+
+def test_a_raw_post_of_typing_a_closed_card_never_took_fails_as_it_is_made(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Altering a helper's post keeps its check: typing the post never carried fails the test as
+    the raw post is made, so a raw post can't stand in for typing that was never sent."""
+    with here(open_settings(tmp_path)) as browser:
+        _, page = a_small_page(browser, monkeypatch)
+        post = page_post(page, "save", typed={box_named(page, "title"): TYPED})
+
+        with pytest.raises(pytest.fail.Exception, match="a closed card the test did not open"):
+            import_review_cases.raw_post(post, {"version": "0"})
 
 
 def every_post_recorded(monkeypatch: pytest.MonkeyPatch) -> list[list[tuple[str, str]]]:
@@ -591,13 +727,13 @@ def test_a_new_word_tampered_with_is_refused(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, question = with_a_kept_question(browser, monkeypatch)
         before = every_row(browser)
-        fields = [field for field in page_post(page, "keep") if field[0] != question]
+        posted = page_post(page, "keep")
         new = next(value for value, _ in worded_options(page, question) if value.startswith('"'))
         kept_words = next(
             words for value, words in worded_options(page, question) if value.startswith("k")
         )
         tampered = [
-            send(browser, draft_id, [*fields, (question, other)])
+            send(browser, draft_id, ticks_of(posted, question, [other]))
             for other in (new[:-1] + 'x"', to_wire(kept_words), '"', "k")
         ]
         after = every_row(browser)
@@ -1082,12 +1218,13 @@ def test_an_offer_or_a_found_row_is_read_within_the_route_s_limits(
     page wrote it is kept."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, fields = make(browser, monkeypatch)
-        beyond_the_default = [
-            *fields,
-            *((f"read:{n}", "1") for n in range(PARSERS_FIELDS + 1 - len(fields))),
-        ]
-        wrong_signature = [(n, "0" * 64 if n == "offer" else v) for n, v in fields]
-        changed_answer = [(n, '{"new":7}' if n.startswith("answer:") else v) for n, v in fields]
+        beyond_the_default = import_review_cases.raw_post(
+            fields, added=[(f"read:{n}", "1") for n in range(PARSERS_FIELDS + 1 - len(fields))]
+        )
+        wrong_signature = import_review_cases.raw_post(fields, {"offer": "0" * 64})
+        changed_answer = import_review_cases.raw_post(
+            fields, {n: '{"new":7}' for n, _ in fields if n.startswith("answer:")}
+        )
         before = every_row(browser)
         first_reads.clear()
         refused = [
@@ -1222,11 +1359,13 @@ def test_each_distinct_list_once() -> None:
 # ------------------------------------------------------------------ a row that can't be resolved
 
 
-def ticks_of(fields: Fields, question: str, ticks: Sequence[str]) -> list[tuple[str, str]]:
-    """This post with these ticks on this question, and nothing else ticked on it. A helper's post
-    is checked to carry what its test typed and chose first (``carried``)."""
-    import_review_cases.carried(fields)
-    return [*(field for field in fields if field[0] != question), *((question, t) for t in ticks)]
+def ticks_of(fields: Fields, question: str, ticks: Sequence[str]) -> import_review_cases.RawPost:
+    """This post with these ticks on this question, and nothing else ticked on it, as the raw post
+    it is. A helper's post is checked to carry what its test typed and chose first (``carried``)."""
+    held = [question] if any(name == question for name, _ in fields) else []
+    return import_review_cases.raw_post(
+        fields, removed=held, added=[(question, tick) for tick in ticks]
+    )
 
 
 def delete_row(browser: TestClient, row: str) -> None:
@@ -1834,26 +1973,21 @@ def test_a_post_its_page_didnt_sign_looks_nothing_up(
     name. Its list isn't signed either."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _ = with_a_kept_question(browser, monkeypatch)
-        unsigned = [
-            *(field for field in page_post(page, "keep") if field[0] != "check"),
-            ("check", "0" * 64),
-        ]
-        its_own_list = [
-            (
-                field[0],
-                screenshot_page.asks_text([(name, ["k1"])]) if field[0] == "asked" else field[1],
-            )
-            for field in unsigned
-        ]
+        unsigned = import_review_cases.raw_post(page_post(page, "keep"), {"check": "0" * 64})
+        its_own_list = import_review_cases.raw_post(
+            unsigned, {"asked": screenshot_page.asks_text([(name, ["k1"])])}
+        )
+        named = import_review_cases.raw_post(unsigned, added=[(name, "k1")])
+        listed = import_review_cases.raw_post(its_own_list, added=[(name, "k1")])
         answers = []
         plain_post = kept_row_statements(
             browser, lambda: answers.append(send(browser, draft_id, unsigned))
         )
         named_post = kept_row_statements(
-            browser, lambda: answers.append(send(browser, draft_id, [*unsigned, (name, "k1")]))
+            browser, lambda: answers.append(send(browser, draft_id, named))
         )
         listed_post = kept_row_statements(
-            browser, lambda: answers.append(send(browser, draft_id, [*its_own_list, (name, "k1")]))
+            browser, lambda: answers.append(send(browser, draft_id, listed))
         )
 
     assert [answer.status_code for answer in answers] == [303, 303, 303]
@@ -1870,10 +2004,10 @@ def test_a_name_the_signed_list_doesnt_hold_looks_nothing_up(
     in the signed list before its name is read as a question."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _ = with_a_kept_question(browser, monkeypatch)
-        fields = page_post(page, "keep")
+        named = import_review_cases.raw_post(page_post(page, "keep"), added=[(name, "k1")])
         answers = []
         named_post = kept_row_statements(
-            browser, lambda: answers.append(send(browser, draft_id, [*fields, (name, "k1")]))
+            browser, lambda: answers.append(send(browser, draft_id, named))
         )
 
     assert [answer.status_code for answer in answers] == [303]
@@ -2227,10 +2361,9 @@ def test_an_acceptance_recorded_for_another_review_gets_this_review_s_own_answer
         assert send(browser, earlier, posted).status_code == 200
         acceptance = dict(posted)["acceptance"]
         draft_id, page = read_review(browser, monkeypatch, (images(2)[1], plain(1, 3)))
-        fields = [
-            (name, acceptance if name == "acceptance" else value)
-            for name, value in page_post(page, "save", tick=units_on(page)[:1])
-        ]
+        fields = import_review_cases.raw_post(
+            page_post(page, "save", tick=units_on(page)[:1]), {"acceptance": acceptance}
+        )
         signed = signed_again(browser, draft_id, fields, dict(fields)["asked"])
         monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
         before = every_row(browser)
@@ -2297,7 +2430,9 @@ def test_an_offer_or_a_found_row_doesn_t_meet_the_ceiling(
     with here(open_settings(tmp_path)) as browser:
         draft_id, fields = make(browser, monkeypatch)
         monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 1)
-        given_a_list = [*fields, ("asked", screenshot_page.asks_text([("answer:kind:x", ["a"])]))]
+        given_a_list = import_review_cases.raw_post(
+            fields, added=[("asked", screenshot_page.asks_text([("answer:kind:x", ["a"])]))]
+        )
         refused = send(browser, draft_id, given_a_list)
         refused_said = page_text(followed(browser, refused))
         kept = send(browser, draft_id, fields)
@@ -2334,12 +2469,11 @@ def test_a_list_its_page_didnt_sign_is_never_unpacked(
         ticks = units_on(page)[1:2] if press == "save" else []
         posted = page_post(page, press, tick=ticks)
         another = list_of_stream(zlib.compress(b" " * (1024 * 1024)))
-        without = [field for field in posted if field[0] != "check"]
         posts = [
-            without,
-            [*without, ("check", "0" * 64)],
-            [*without, ("check", "0")],
-            [(name, another if name == "asked" else value) for name, value in posted],
+            import_review_cases.raw_post(posted, removed=["check"]),
+            import_review_cases.raw_post(posted, {"check": "0" * 64}),
+            import_review_cases.raw_post(posted, {"check": "0"}),
+            import_review_cases.raw_post(posted, {"asked": another}),
         ]
         before = every_row(browser)
         monkeypatch.setattr(zlib, "decompressobj", no_unpacking)
@@ -2480,7 +2614,7 @@ def a_post_asking_too_deep(
     parser can read beside a list that reads."""
     fields = page_post(page, "keep")
     if form == "defaults":
-        changed = [(name, DEEP if name == "defaults" else value) for name, value in fields]
+        changed = import_review_cases.raw_post(fields, {"defaults": DEEP})
         return signed_again(browser, draft_id, changed, dict(changed)["asked"])
     if form == "an instruction option of an older list":
         older = page_post(written_as_the_older_form(browser, draft_id, page), "keep")
@@ -2496,11 +2630,13 @@ def a_post_asking_too_deep(
     if form == "a confirm question's subject":
         name = f"answer:confirm:{DEEP}"
         asked = screenshot_page.asks_text([*asks_now, (name, ["as_read"])])
-        return signed_again(browser, draft_id, [*fields, (name, "as_read")], asked)
+        added = import_review_cases.raw_post(fields, added=[(name, "as_read")])
+        return signed_again(browser, draft_id, added, asked)
     if form == "a box's name":
         name = f"correct:{DEEP}"
         asked = screenshot_page.asks_text([*asks_now, (name, [])])
-        return signed_again(browser, draft_id, [*fields, (name, "typed words")], asked)
+        added = import_review_cases.raw_post(fields, added=[(name, "typed words")])
+        return signed_again(browser, draft_id, added, asked)
     name = fields_of(page, "answer:destination:")[0]
     with_it = [(n, [*values, DEEP] if n == name else values) for n, values in asks_now]
     return signed_again(
@@ -2612,7 +2748,14 @@ def test_a_field_too_deep_to_name_a_correction_is_passed_over(
         page = opened_for_typing(browser, draft_id, page, {box: TYPED})
         typed = page_post(page, press, typed={box: TYPED})
         deep = (f"{prefix}{DEEP}", "other words")
-        fields = [deep, *typed] if placed == "before the typing" else [*typed, deep]
+        after_it = import_review_cases.raw_post(typed, added=[deep])
+        fields = (
+            import_review_cases.RawPost([deep, *typed])
+            if placed == "before the typing"
+            else after_it
+        )
+        assert sorted(fields) == sorted([*typed, deep])
+        assert (box, TYPED) in fields
         drafts = state_of(browser).import_drafts
         target = draft_id
         if way == "closed":
@@ -2645,10 +2788,9 @@ def test_a_row_of_another_assignment_is_no_row_of_this_question(
         draft_id, page, _ = with_a_kept_question(browser, monkeypatch, cards=2)
         first, second = fields_of(page, "answer:instructions:")
         theirs = next(value for value, _ in worded_options(page, second) if value.startswith("k"))
-        posted = [
-            *forged_offering(browser, draft_id, page, first, theirs),
-            (second, theirs),
-        ]
+        posted = import_review_cases.raw_post(
+            forged_offering(browser, draft_id, page, first, theirs), added=[(second, theirs)]
+        )
         before = every_row(browser)
         answer = send(browser, draft_id, posted)
         after = every_row(browser)
@@ -2917,14 +3059,14 @@ def test_a_resend_behind_its_save_says_its_counts_with_no_form(
     and one with a kept row unticked says that choice can't be shown, writing nothing."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_page_with_groups_left(browser, monkeypatch)
-        fields = [field for field in every_choice(page, "save") if field[0] != "unit"]
-        fields.append(("unit", units_on(page)[0]))
+        fields = every_choice(page, "save", ticks=units_on(page)[:1])
         first = send(browser, draft_id, fields)
         question = fields_of(first.text, "answer:instructions:")[0]
         row = next(value for value, _ in options_of(first.text, question) if value.startswith("k"))
         again = send(browser, draft_id, fields)
         before = every_row(browser)
-        changed = send(browser, draft_id, [f for f in fields if f != (question, row)])
+        unticked = import_review_cases.raw_post(fields, removed=[(question, row)])
+        changed = send(browser, draft_id, unticked)
         after = every_row(browser)
 
     assert first.status_code == 200
@@ -3157,18 +3299,19 @@ def held_on(browser: TestClient, draft_id: str, row: str) -> dict[str, str]:
     return {} if found is None else dict(json.loads(found[0])["corrected"].get(row, {}))
 
 
-def next_post(browser: TestClient, draft_id: str, page: str, press: str) -> list[tuple[str, str]]:
+def next_post(browser: TestClient, draft_id: str, page: str, press: str) -> Fields:
     """A press's post from this page where it draws a form, else from the review loaded again by
-    its "Back to the review" link, with no "No assigned date" tick or instruction answer."""
+    its "Back to the review" link, with no "No assigned date" tick or instruction answer: the raw
+    post it is where the page holds one to leave out."""
     if 'name="progress_revision"' not in page and (
         f'<a href="/parent/imports/{draft_id}">Back to the review</a>' in page
     ):
         page = browser.get(f"/parent/imports/{draft_id}").text
-    return [
-        field
-        for field in page_post(page, press)
-        if not field[0].startswith(("none:", "answer:instructions:"))
-    ]
+    post = page_post(page, press)
+    left_out = sorted(
+        {name for name, _ in post if name.startswith(("none:", "answer:instructions:"))}
+    )
+    return import_review_cases.raw_post(post, removed=left_out) if left_out else post
 
 
 @pytest.mark.parametrize("change", list(CHAINED_CHANGES))

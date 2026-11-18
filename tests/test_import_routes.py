@@ -1560,11 +1560,13 @@ def test_a_post_that_doesnt_match_its_page_keeps_nothing(
         draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
         fields = page_post(page, "keep")
         [piece, _] = fields_named(review_form(page), "answer:destination:")
-        offered_not = [
-            *[(n, v) for n, v in fields if n != f"answer:destination:{piece}"],
-            (f"answer:destination:{piece}", '{"existing":"assignment-elsewhere-00000000"}'),
-        ]
-        unsigned = [(n, "9" if n == "version" else v) for n, v in fields]
+        destination = f"answer:destination:{piece}"
+        offered_not = import_review_cases.raw_post(
+            fields,
+            removed=[destination] if any(n == destination for n, _ in fields) else [],
+            added=[(destination, '{"existing":"assignment-elsewhere-00000000"}')],
+        )
+        unsigned = import_review_cases.raw_post(fields, {"version": "9"})
         answers = [
             followed(browser, send(browser, draft_id, sent)) for sent in (offered_not, unsigned)
         ]
@@ -1789,10 +1791,7 @@ def test_an_offer_is_kept_whole_and_part_of_one_is_an_ordinary_answer(
         offered = re.findall(
             r'<form method="post" action="[^"]+/review" id="offer-[^"]+">.*?</form>', refused, re.S
         )
-        closure = [
-            (html.unescape(n), html.unescape(v))
-            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', offered[-1])
-        ]
+        closure = import_review_cases.small_form_fields(offered[-1])
         whole = followed(browser, send(browser, draft_id, closure))
         moved = stored_answers(browser, draft_id)
         part = page_post(
@@ -1800,7 +1799,9 @@ def test_an_offer_is_kept_whole_and_part_of_one_is_an_ordinary_answer(
         )
         followed(browser, send(browser, draft_id, part))
         partly = stored_answers(browser, draft_id)
-        forged = [(n, '{"new":7}' if n.startswith("answer:") else v) for n, v in closure]
+        forged = import_review_cases.raw_post(
+            closure, {n: '{"new":7}' for n, _ in closure if n.startswith("answer:")}
+        )
         refused_again = followed(browser, send(browser, draft_id, forged))
 
     assert says_each(whole, KEPT_THEN_WARNING)
@@ -1838,10 +1839,7 @@ def test_find_under_another_name_lists_saved_work_by_its_words_and_keeps_the_one
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', found.text, re.S
         )
         assert chosen is not None
-        fields = [
-            (html.unescape(n), html.unescape(v))
-            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', chosen.group(0))
-        ]
+        fields = import_review_cases.small_form_fields(chosen.group(0))
         after = followed(browser, send(browser, draft_id, fields))
         answers = stored_answers(browser, draft_id)
 
@@ -2067,8 +2065,10 @@ def test_saved_progress_keeps_the_groups_ticked_and_ticks_only_those_still_open(
         progress = state_of(browser).import_drafts.snapshot(student, draft_id).progress
         followed(browser, send(browser, draft_id, page_post(later, "save", tick=[first])))
         after_save = browser.get(f"/parent/imports/{draft_id}").text
-        stale = page_post(after_save, "later", tick=[second])
-        stale += [("unit", "a-unit-no-page-showed")]
+        stale = import_review_cases.raw_post(
+            page_post(after_save, "later", tick=[second]),
+            added=[("unit", "a-unit-no-page-showed")],
+        )
         refused = followed(browser, send(browser, draft_id, stale))
 
     assert unticked == [first, second]
@@ -2120,11 +2120,7 @@ def outside(page: str, form_id: str) -> tuple[str, list[tuple[str, str]]]:
         re.S,
     )
     assert found is not None, form_id
-    fields = [
-        (html.unescape(n), html.unescape(v))
-        for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', found.group(2))
-    ]
-    return found.group(1), fields
+    return found.group(1), import_review_cases.small_form_fields(found.group(2))
 
 
 def press_outside(browser: TestClient, page: str, form_id: str) -> Answer:
@@ -3568,7 +3564,9 @@ def test_an_unticked_confirmation_is_withdrawn_so_a_save_writes_nothing_and_asks
         )
         held = stored_answers(browser, draft_id)
         units = units_on(kept)
-        unticked = [f for f in page_post(kept, "save", tick=units) if f[0] != field]
+        unticked = import_review_cases.raw_post(
+            page_post(kept, "save", tick=units), removed=[field]
+        )
         before = assignment_count(browser)
         saved = followed(browser, send(browser, draft_id, unticked))
         after = assignment_count(browser)
@@ -3614,13 +3612,20 @@ def test_clearing_every_instruction_box_withdraws_the_instructions_chosen(
             send(
                 browser,
                 draft_id,
-                [*page_post(asked, "keep"), (field, option_for(asked, subject, "Study list one."))],
+                import_review_cases.raw_post(
+                    page_post(asked, "keep"),
+                    added=[(field, option_for(asked, subject, "Study list one."))],
+                ),
             ),
         )
         held = stored_answers(browser, draft_id)
         cleared = followed(
             browser,
-            send(browser, draft_id, [f for f in page_post(chosen, "keep") if f[0] != field]),
+            send(
+                browser,
+                draft_id,
+                import_review_cases.raw_post(page_post(chosen, "keep"), removed=[field]),
+            ),
         )
         answers = stored_answers(browser, draft_id)
 
@@ -3644,7 +3649,9 @@ def test_an_unticked_these_are_her_homework_is_withdrawn(
         )
         held = stored_answers(browser, draft_id)
         units = units_on(kept)
-        unticked = [f for f in page_post(kept, "save", tick=units) if f[0] != field]
+        unticked = import_review_cases.raw_post(
+            page_post(kept, "save", tick=units), removed=[field]
+        )
         before = assignment_count(browser)
         saved = followed(browser, send(browser, draft_id, unticked))
         after = assignment_count(browser)
@@ -3761,10 +3768,7 @@ def test_two_cards_of_other_names_found_onto_one_row_count_once_and_each_name_is
                 re.S,
             )
             assert choice is not None
-            fields = [
-                (html.unescape(n), html.unescape(v))
-                for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', choice.group(0))
-            ]
+            fields = import_review_cases.small_form_fields(choice.group(0))
             page = followed(browser, send(browser, draft_id, fields))
         [field] = fields_named(review_form(page), "answer:instructions:")
         name = f"answer:instructions:{field}"
@@ -3774,7 +3778,10 @@ def test_two_cards_of_other_names_found_onto_one_row_count_once_and_each_name_is
             send(
                 browser,
                 draft_id,
-                page_post(page, "keep") + [(name, option_for(page, field, t)) for t in texts],
+                import_review_cases.raw_post(
+                    page_post(page, "keep"),
+                    added=[(name, option_for(page, field, t)) for t in texts],
+                ),
             ),
         )
         saved = followed(
@@ -3829,10 +3836,7 @@ def two_names_found_onto_one_row(
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
         )
         assert choice is not None
-        fields = [
-            (html.unescape(n), html.unescape(v))
-            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', choice.group(0))
-        ]
+        fields = import_review_cases.small_form_fields(choice.group(0))
         page = followed(browser, send(browser, draft_id, fields))
     return draft_id, page
 
@@ -3857,10 +3861,10 @@ def test_the_instruction_question_of_one_destination_is_asked_once_and_saves_aft
             send(
                 browser,
                 draft_id,
-                [
-                    *page_post(page, "keep"),
-                    *((f"answer:instructions:{field}", text) for text in offered),
-                ],
+                import_review_cases.raw_post(
+                    page_post(page, "keep"),
+                    added=[(f"answer:instructions:{field}", text) for text in offered],
+                ),
             ),
         )
         posted = page_post(kept, "save", tick=units_on(kept))
@@ -3942,10 +3946,7 @@ def test_a_found_row_s_page_is_ticked_as_a_plain_load_would_tick_it(
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
         )
         assert choice is not None
-        fields = [
-            (html.unescape(n), html.unescape(v))
-            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', choice.group(0))
-        ]
+        fields = import_review_cases.small_form_fields(choice.group(0))
         found_page = followed(browser, send(browser, draft_id, fields))
         reloaded = browser.get(f"/parent/imports/{draft_id}").text
 
@@ -4043,10 +4044,7 @@ def test_a_found_row_or_an_offer_returns_the_page_with_the_corrections_saved_for
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
         )
         assert choice is not None
-        fields = [
-            (html.unescape(n), html.unescape(v))
-            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', choice.group(0))
-        ]
+        fields = import_review_cases.small_form_fields(choice.group(0))
         found_page = followed(browser, send(browser, draft_id, fields))
         found = json.dumps({"found": found_row.assignment_id}, separators=(",", ":"))
         assert_returned_with_saved_typing(found_page, found, box, moved)
@@ -4186,7 +4184,9 @@ def test_the_due_or_assigned_label_is_confirmed_never_typed(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, answer))
         [subject] = fields_named(review_form(page), "answer:confirm:")
-        forged = [*page_post(page, "keep"), (f"correct:{subject}", "DUE")]
+        forged = import_review_cases.raw_post(
+            page_post(page, "keep"), added=[(f"correct:{subject}", "DUE")]
+        )
         refused = followed(browser, send(browser, draft_id, forged))
 
     form = review_form(page)
@@ -5295,7 +5295,7 @@ def test_a_recorded_acceptance_answers_only_for_its_own_review(
         press_outside(browser, other, "discard")
         opened, _ = read_review(browser, monkeypatch, (BLUE, lab))
         before = assignment_count(browser)
-        resent = [("acceptance", acceptance), ("press", "save")]
+        resent = import_review_cases.RawPost([("acceptance", acceptance), ("press", "save")])
         absent = send(browser, "f" * 32, resent)
         to_closed = send(browser, closed, resent)
         to_open = followed(browser, send(browser, opened, resent))
@@ -5482,10 +5482,7 @@ def test_find_under_another_name_is_a_button_whose_search_posts_and_whose_choice
             re.S,
         )
         assert chosen is not None
-        fields = [
-            (html.unescape(n), html.unescape(v))
-            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', chosen.group(0))
-        ]
+        fields = import_review_cases.small_form_fields(chosen.group(0))
         after = followed(browser, send(browser, draft_id, fields))
 
     assert f'form="{form_id}" aria-describedby="typing-lost">Find under another name' in page
@@ -5747,7 +5744,9 @@ def test_these_are_her_homework_is_a_checkbox_a_browser_can_untick(
         kept = followed(
             browser, send(browser, draft_id, page_post(page, "keep", choose={field: "confirmed"}))
         )
-        unticked = [f for f in page_post(kept, "save", tick=units_on(kept)) if f[0] != field]
+        unticked = import_review_cases.raw_post(
+            page_post(kept, "save", tick=units_on(kept)), removed=[field]
+        )
         saved = followed(browser, send(browser, draft_id, unticked))
         answers = stored_answers(browser, draft_id)
 
@@ -5978,26 +5977,28 @@ def signed_answer(
         answer = browser.get(f"/parent/imports/{draft_id}", headers={b"Cookie": cookie})
         return answer.status_code, said_lines(answer.text)
     if site == "the review form":
-        fields = [(n, signature if n == "check" else v) for n, v in page_post(page, "keep")]
+        fields = import_review_cases.raw_post(page_post(page, "keep"), {"check": signature})
         path = f"/parent/imports/{draft_id}/review"
     elif site == "an offer":
         [piece] = fields_named(review_form(page), "answer:destination:")[:1]
         version = re.search(r'name="version" value="(\d+)"', page)
         assert version is not None
-        fields = [
-            ("version", version.group(1)),
-            ("press", "keep"),
-            (f"answer:destination:{piece}", '{"new":1}'),
-            ("offer", signature),
-        ]
+        fields = import_review_cases.RawPost(
+            [
+                ("version", version.group(1)),
+                ("press", "keep"),
+                (f"answer:destination:{piece}", '{"new":1}'),
+                ("offer", signature),
+            ]
+        )
         path = f"/parent/imports/{draft_id}/review"
     elif site == "Read":
         [image_id] = images_of(browser, draft_id)[:1]
-        fields = [("images", image_id), ("check", signature)]
+        fields = import_review_cases.RawPost([("images", image_id), ("check", signature)])
         path = f"/parent/imports/{draft_id}/read"
     else:
         path, found = outside(page, SMALL_FORMS[site])
-        fields = [(n, signature if n == "check" else v) for n, v in found]
+        fields = import_review_cases.raw_post(found, {"check": signature})
     answer = browser.post(path, content=as_a_browser_sends(fields), headers=form)
     shown = followed(browser, answer)
     return answer.status_code, said_lines(shown)
@@ -6107,10 +6108,7 @@ def two_names_with_instructions(
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
         )
         assert choice is not None
-        chosen = [
-            (html.unescape(n), html.unescape(v))
-            for n, v in re.findall(r'name="([^"]+)" value="([^"]*)"', choice.group(0))
-        ]
+        chosen = import_review_cases.small_form_fields(choice.group(0))
         page = followed(browser, send(browser, draft_id, chosen))
     [subject] = fields_named(review_form(page), "answer:instructions:")
     return draft_id, page, subject
@@ -6143,7 +6141,9 @@ def test_a_multiline_instruction_kept_and_saved_as_a_browser_posts_it(
             send(
                 browser,
                 draft_id,
-                [*page_post(page, "keep"), (field, option_for(page, subject, MULTILINE))],
+                import_review_cases.raw_post(
+                    page_post(page, "keep"), added=[(field, option_for(page, subject, MULTILINE))]
+                ),
             ),
         )
         held = stored_answers(browser, draft_id)
@@ -6165,7 +6165,8 @@ def test_two_instructions_differing_only_in_line_endings_are_told_apart(
         field = f"answer:instructions:{subject}"
         lf_value = option_for(page, subject, MULTILINE)
         crlf_value = option_for(page, subject, crlf)
-        followed(browser, send(browser, draft_id, [*page_post(page, "keep"), (field, lf_value)]))
+        ticked = import_review_cases.raw_post(page_post(page, "keep"), added=[(field, lf_value)])
+        followed(browser, send(browser, draft_id, ticked))
         held = stored_answers(browser, draft_id)
 
     assert lf_value != crlf_value
@@ -6217,7 +6218,9 @@ def test_an_instruction_longer_than_a_paste_is_offered_and_kept_whole(
             send(
                 browser,
                 draft_id,
-                [*page_post(asked, "keep"), (field, option_for(asked, subject, longest))],
+                import_review_cases.raw_post(
+                    page_post(asked, "keep"), added=[(field, option_for(asked, subject, longest))]
+                ),
             ),
         )
         held = stored_answers(browser, draft_id)
@@ -7154,9 +7157,13 @@ def test_a_press_on_a_review_that_expires_gives_back_what_was_typed(
         state = state_of(browser)
         student = state.project_state.student_id()
         expires = state.import_drafts.snapshot(student, draft_id).expires_at
-        posted = [(n, press if n == "press" else v) for n, v in keeping]
-        if press == "save":
-            posted = [*[f for f in posted if f[0] != "unit"], ("unit", ready)]
+        posted = (
+            keeping
+            if press == "keep"
+            else import_review_cases.raw_post(
+                keeping, {"press": press}, added=[("unit", ready)] if press == "save" else ()
+            )
+        )
         stored_before = stored_row(browser, draft_id)
         before = assignment_count(browser)
         past = expires + timedelta(minutes=1)
@@ -7245,10 +7252,7 @@ def test_a_hand_made_save_with_unreviewed_corrections_stops_before_any_store(
         state = state_of(browser)
         student = state.project_state.student_id()
         past = state.import_drafts.snapshot(student, draft_id).expires_at + timedelta(minutes=1)
-        posted = [
-            *[(n, "save" if n == "press" else v) for n, v in keeping if n != "unit"],
-            ("unit", ready),
-        ]
+        posted = import_review_cases.raw_post(keeping, {"press": "save"}, added=[("unit", ready)])
         stored_before = stored_row(browser, draft_id)
         before = assignment_count(browser)
         arrived: list[bool] = []
@@ -7365,6 +7369,53 @@ def test_a_reviewed_save_that_commits_and_then_expires_keeps_its_receipt_and_the
     assert (after_again, accepted_again) == (after, accepted)
 
 
+def test_a_reviewed_save_that_expires_while_it_waits_at_its_write_gives_the_typing_back(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The family's presses: a card opened, its words and due date typed, Review changes, Save.
+    The review expires while that Save waits for the writer. The response, the record and the
+    typing are read together: 409, no homework, receipt or kept words written, the page says the
+    review expired, and the words and the date typed come back to copy."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, keeping, _ = typed_review(
+            browser, monkeypatch, opened_and_typed=(TYPED_WORDS, REVIEWED_DATE)
+        )
+        typed = {n: v for n, v in keeping if v in (TYPED_WORDS, REVIEWED_DATE)}
+        checked = send(browser, draft_id, page_post(page, "review", typed=typed))
+        assert checked.status_code == 200
+        assert not import_review_cases.offers_review_changes(checked.text)
+        saving = import_review_cases.carrying(
+            page_post(checked.text, "save", tick=[units_on(checked.text)[0]]), typed
+        )
+        state = state_of(browser)
+        student = state.project_state.student_id()
+        past = state.import_drafts.snapshot(student, draft_id).expires_at + timedelta(minutes=1)
+        real = state.project_state.comparing_and_writing
+        waited: list[bool] = []
+
+        def waiting_past_the_expiry() -> object:
+            waited.append(True)
+            clock_moved_to(monkeypatch, browser, past)
+            return real()
+
+        monkeypatch.setattr(state.project_state, "comparing_and_writing", waiting_past_the_expiry)
+        before = assignment_count(browser)
+        kept_before = import_review_cases.kept_words_on_record(browser)
+        answer = send(browser, draft_id, saving)
+        monkeypatch.setattr(state.project_state, "comparing_and_writing", real)
+        after = assignment_count(browser)
+        accepted = acceptances_of(browser, draft_id)
+        kept_after = import_review_cases.kept_words_on_record(browser)
+
+    assert waited == [True]
+    assert answer.status_code == 409
+    assert says(answer.text, imports.SAID["expired"])
+    assert (after, accepted) == (before, 0)
+    assert kept_after == kept_before
+    assert TYPED_WORDS in copyable(answer.text)
+    assert REVIEWED_DATE in copyable(answer.text)
+
+
 @pytest.mark.parametrize("gone", ["expired", "removed"])
 @pytest.mark.parametrize("press", ["keep", "later", "save"])
 def test_a_press_on_an_expired_or_removed_review_lands_on_what_it_says(
@@ -7380,9 +7431,13 @@ def test_a_press_on_an_expired_or_removed_review_lands_on_what_it_says(
         state = state_of(browser)
         student = state.project_state.student_id()
         expires = state.import_drafts.snapshot(student, draft_id).expires_at
-        posted = [(n, press if n == "press" else v) for n, v in keeping]
-        if press == "save":
-            posted = [*[f for f in posted if f[0] != "unit"], ("unit", ready)]
+        posted = (
+            keeping
+            if press == "keep"
+            else import_review_cases.raw_post(
+                keeping, {"press": press}, added=[("unit", ready)] if press == "save" else ()
+            )
+        )
         before = assignment_count(browser)
         clock_moved_to(monkeypatch, browser, expires + timedelta(hours=2))
         if gone == "removed":
@@ -14389,10 +14444,10 @@ def test_a_due_date_retyped_after_review_changes_asked_is_not_saved(
         choice = {f"answer:due:{asking}": typed} if question == "answered" else {}
         answers = stored_answers(browser, again)
         before = saved_rows(browser)
-        fields = [
-            (name, retyped if name == f"correct:{due}" else value)
-            for name, value in page_post(asked, "save", choose=choice, tick=units_on(page))
-        ]
+        fields = import_review_cases.raw_post(
+            page_post(asked, "save", choose=choice, tick=units_on(page)),
+            {f"correct:{due}": retyped},
+        )
         refused = import_review_cases.posted(browser, again, fields)
         after = (saved_rows(browser), stored_answers(browser, again))
 
@@ -14427,9 +14482,11 @@ def test_a_question_review_changes_raised_stays_on_each_page_that_stores_nothing
         title = f"correct:{box_subject(asked, 'title')}"
         before = every_row(browser)
         if press == "correct":
-            fields = list(page_post(asked, correct_presses(asked)[0]))
+            fields = page_post(asked, correct_presses(asked)[0])
         else:
-            fields = [*page_post(asked, "keep"), (title, "Sent Twice Differently")]
+            fields = import_review_cases.raw_post(
+                page_post(asked, "keep"), added=[(title, "Sent Twice Differently")]
+            )
         returned = import_review_cases.posted(browser, again, fields)
         after = every_row(browser)
 
@@ -16208,10 +16265,11 @@ def test_a_post_with_nothing_to_read_it_against_asks_again_how_the_review_stands
     """The second read of the review itself refused, ended or gone: the typing either way."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, other = two_rows(browser, monkeypatch)
-        unmatched = [
-            (name, "0" if name == "version" else value)
-            for name, value in page_post(page, "save", tick=[first], typed=typed_on(other))
-        ]
+        page = opened_for_typing(browser, draft_id, page, typed_on(other))
+        unmatched = import_review_cases.raw_post(
+            page_post(page, "save", tick=[first], typed=typed_on(other)), {"version": "0"}
+        )
+        assert all(field in unmatched for field in typed_on(other).items())
         Refusing(monkeypatch, ("ended_under_press", "snapshot", 1, refusal))
         answer = send(browser, draft_id, unmatched)
         monkeypatch.undo()
@@ -16628,7 +16686,7 @@ def posted_at_site(
     typed = typed_at_site(first, other, site)
     posted = page_post(page, press, tick=[first] if press == "save" else [], typed=typed)
     if REPLAY_SITES[site][0] == "unmatched":
-        return [(name, "0" if name == "version" else value) for name, value in posted]
+        return import_review_cases.raw_post(posted, {"version": "0"})
     return posted
 
 
@@ -16655,7 +16713,7 @@ def test_a_save_press_whose_earlier_save_can_t_be_asked_says_its_homework_lines_
         # A title past its limit never reaches a Save the page offers: that post goes as the raw
         # POST it is. Any other Save goes as the family sends it, reviewed before the arrangement.
         too_long = REPLAY_SITES[site][0] == "too long"
-        sent = list(posted) if too_long else reviewed(browser, draft_id, posted)
+        sent = posted if too_long else reviewed(browser, draft_id, posted)
         arranged_at_site(browser, monkeypatch, draft_id, site)
         refusing_after(browser, monkeypatch, refusal, REPLAY_SITES[site][2])
         answer = send(browser, draft_id, sent)
@@ -16783,7 +16841,7 @@ def test_a_save_post_it_can_t_read_can_t_tell_either_in_that_state(
         page = import_review_cases.open_cards(browser, draft_id, page, cards)
         posted = page_post(page, "save", tick=[first], typed=typed)
         if post == "unmatched":
-            posted = [(name, "0" if name == "version" else value) for name, value in posted]
+            posted = import_review_cases.raw_post(posted, {"version": "0"})
         beginning(browser)
         answer = send(browser, draft_id, posted)
         ending_transaction(browser)
@@ -16909,7 +16967,7 @@ def test_the_review_shows_no_rows_from_a_transaction_left_open(
     assert 'value="save"' not in unsettled.text
     assert imports.SAID["closed"] not in text
     assert settled.status_code == 200
-    assert 'value="save"' in settled.text
+    assert 'name="press" value="review"' in settled.text
     assert same_post.status_code == 409
     assert "Saved:" not in page_text(same_post)
     assert STRAY_TITLE.strip() in html.unescape(same_post.text)
@@ -17366,9 +17424,9 @@ def both_ticked(
     checkboxes let it go: the fields, the question's field, and the instruction's value."""
     field, values = instruction_values(page)
     fields = page_post(page, press, typed=typed, tick=tick)
-    import_review_cases.carried(fields)
-    kept = [(name, value) for name, value in fields if name != field and name != "press"]
-    return [*kept, (field, values[0]), (field, ""), ("press", press)], field, values[0]
+    held = [name for name in (field, "press") if any(name == sent for sent, _ in fields)]
+    both = [(field, values[0]), (field, ""), ("press", press)]
+    return import_review_cases.raw_post(fields, removed=held, added=both), field, values[0]
 
 
 def fieldset_of(page: str, field: str) -> str | None:
@@ -17411,11 +17469,11 @@ def test_an_instruction_ticked_beside_none_of_these_apply_comes_back_to_correct(
         still_ticked = [unit for unit, shown in unit_ticks(answer.text).items() if shown]
         again = send(browser, draft_id, both_ticked(answer.text, press, tick=still_ticked)[0])
         after_again = on_the_record(browser)
-        corrected = [
-            (name, posted_value)
-            for name, posted_value in page_post(answer.text, press, tick=still_ticked)
-            if not (name == field and posted_value != "")
-        ]
+        shown_again = page_post(answer.text, press, tick=still_ticked)
+        unticked = [pair for pair in shown_again if pair[0] == field and pair[1] != ""]
+        corrected = (
+            import_review_cases.raw_post(shown_again, removed=unticked) if unticked else shown_again
+        )
         done = send(browser, draft_id, corrected)
         finally_held = on_the_record(browser)
         stored = stored_answers(browser, draft_id)
@@ -17601,12 +17659,13 @@ def test_a_conflict_on_a_press_already_recorded_keeps_its_counts(
         )
         ticks = units_on(page)[:1]
         field, _ = instruction_values(page)
-        first = [
-            (name, value)
-            for name, value in page_post(page, "save", tick=ticks)
-            if not (name == field and value != "")
-        ]
-        send(browser, draft_id, [*first[:-1], (field, ""), first[-1]])
+        made = page_post(page, "save", tick=ticks)
+        last = made[-1]
+        ticked = [pair for pair in made if pair[0] == field and pair[1] != ""]
+        first = import_review_cases.raw_post(
+            made, removed=[*ticked, last], added=[(field, ""), last]
+        )
+        send(browser, draft_id, first)
         posted, _, _ = both_ticked(page, "save", tick=ticks)
         # The same form's acceptance sent again, the conflict injected: the raw POST it is.
         answer = send(browser, draft_id, posted)
@@ -17934,10 +17993,7 @@ def test_each_page_that_stores_nothing_keeps_answers_as_posted_and_defaults_as_d
             add=the_conflict_on(review.page, review.question) if returned == "refused" else [],
         )
         if returned == "not reviewed":
-            posted = [
-                (name, "A Title No Review Showed" if name == title else value)
-                for name, value in posted
-            ]
+            posted = import_review_cases.raw_post(posted, {title: "A Title No Review Showed"})
         answers = stored_answers(browser, review.draft_id)
         before = on_the_record(browser)
         answer = import_review_cases.posted(browser, review.draft_id, posted)
@@ -18217,14 +18273,12 @@ def test_with_a_conflict_a_value_the_page_didn_t_offer_is_still_refused_whole(
     with here(open_settings(tmp_path)) as browser:
         review = a_review_of_choices(browser, monkeypatch)
         before = on_the_record(browser)
-        posted = [
-            (name, value)
-            for name, value in shown_post(
-                review.page, "keep", add=the_conflict_on(review.page, review.question)
-            )
-            if name != review.other_type
-        ]
-        forged = [*posted[:-1], (review.other_type, "NOT_OFFERED"), posted[-1]]
+        made = shown_post(review.page, "keep", add=the_conflict_on(review.page, review.question))
+        held = [review.other_type] if any(n == review.other_type for n, _ in made) else []
+        last = made[-1]
+        forged = import_review_cases.raw_post(
+            made, removed=[*held, last], added=[(review.other_type, "NOT_OFFERED"), last]
+        )
         answer = send(browser, review.draft_id, forged)
         after = on_the_record(browser)
 
@@ -19125,10 +19179,10 @@ def two_copies(
 ) -> TwoCopies:
     """Two cards on file, read again with other words, and one new, with her answers kept and no
     name to ask, so neither copy's keep moves the version. The press saves the new card, with
-    ``opened_and_typed`` typed on the second, its card opened ("Correct what was read") first, its
-    Review changes made, and Keep these answers pressed on the page that returns: a corrected card
-    goes by a new subject, and Review changes stores nothing, so that press keeps the corrected
-    card's destination before the press is returned."""
+    ``opened_and_typed`` typed on the second, its card opened ("Correct what was read") first, a
+    new assignment chosen for it, its Review changes made, and Keep these answers pressed on the
+    page that returns: a corrected card goes by a new subject, and Review changes stores nothing,
+    so that press keeps the corrected card's destination before the press is returned."""
     both = [homework_card(), homework_card(course="Math 8", title="Set 3", y_top=360, y_bottom=430)]
     earlier, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=both)))
     page = her_name_answered(browser, earlier, page)
@@ -19150,7 +19204,10 @@ def two_copies(
     typed = opened_and_typed(second.removeprefix("answer:destination:"))
     opened = import_review_cases.closed_cards(review_form(page), typed, ())
     page = import_review_cases.open_cards(browser, draft_id, page, opened)
-    review = send(browser, draft_id, page_post(page, "review", tick=[art], typed=typed))
+    new_card = {second: next(value for value, _ in options_of(page, second) if "new" in value)}
+    review = send(
+        browser, draft_id, page_post(page, "review", choose=new_card, tick=[art], typed=typed)
+    )
     assert review.status_code == 200, page_text(review)[:400]
     kept = send(browser, draft_id, page_post(review.text, "keep", tick=[art]))
     assert kept.status_code == 200, page_text(kept)[:400]
@@ -19909,10 +19966,13 @@ def test_counts_that_read_none_with_the_rows_refused_ask_for_the_receipt_once(
 def with_the_conflict(
     posted: list[tuple[str, str]], page: str, question: str
 ) -> list[tuple[str, str]]:
-    """The same post, an instruction ticked beside "None of these apply", its press still last. A
-    helper's post is checked to carry what its test typed and chose first (``carried``)."""
-    import_review_cases.carried(posted)
-    return [*posted[:-1], *the_conflict_on(page, question), posted[-1]]
+    """The same post, an instruction ticked beside "None of these apply", its press still last: the
+    raw post it is. A helper's post is checked to carry what its test typed and chose first
+    (``carried``)."""
+    press = posted[-1]
+    return import_review_cases.raw_post(
+        posted, removed=[press], added=[*the_conflict_on(page, question), press]
+    )
 
 
 def a_date_asked_beside_a_new_card(
@@ -20262,7 +20322,7 @@ def test_a_date_left_unanswered_beside_a_receipt_says_the_conflict_isn_t_carried
         send(browser, one.draft_id, one.posted)
         if date_moves:
             another_review_moves_the_date(browser, monkeypatch, "Due (10/12/2026)", "2026-10-12")
-        posted = [(name, value) for name, value in one.posted if name != one.due]
+        posted = import_review_cases.raw_post(one.posted, removed=[one.due])
         answer = send(browser, one.draft_id, with_the_conflict(posted, one.page, one.question))
 
     assert "Saved: 1 new assignment." in page_text(answer)
@@ -20676,11 +20736,9 @@ def test_a_double_press_that_clears_a_confirmation_says_nothing(
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
         review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
-        posted = [
-            (name, value)
-            for name, value in page_post(page, "save", tick=[unit])
-            if name != review.confirm
-        ]
+        posted = import_review_cases.raw_post(
+            page_post(page, "save", tick=[unit]), removed=[review.confirm]
+        )
         says_nothing_of_her_choices(pressed_twice(browser, review.draft_id, posted))
 
 
@@ -20694,8 +20752,12 @@ def test_a_double_press_with_a_title_on_a_card_on_file_repeats_its_receipt_and_w
         review, page, unit, *_ = a_page_of_groups(browser, monkeypatch)
         typed = {correct_box(review.card, "title"): "A New Title"}
         page = opened_for_typing(browser, review.draft_id, page, typed)
+        field = next(f for f in fields_of(page, "answer:destination:") if review.card in f)
+        new_card = {field: next(v for v, _ in options_of(page, field) if "new" in v)}
         posted = reviewed(
-            browser, review.draft_id, page_post(page, "save", tick=[unit], typed=typed)
+            browser,
+            review.draft_id,
+            page_post(page, "save", choose=new_card, tick=[unit], typed=typed),
         )
         before = receipts_and_homework(browser)
         answer = pressed_twice(browser, review.draft_id, posted)
@@ -21044,11 +21106,9 @@ def test_a_cleared_answer_the_record_still_holds_at_another_version_is_said(
         )
         send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
         a_page_another_tab_keeps_from(browser, review, {review.other_type: "TASK"})
-        posted = [
-            (name, value)
-            for name, value in page_post(page, "save", tick=[unit])
-            if name != review.question
-        ]
+        posted = import_review_cases.raw_post(
+            page_post(page, "save", tick=[unit]), removed=[review.question]
+        )
         answer = send(browser, review.draft_id, posted)
 
     says_one_choice_can_t_show(answer)
@@ -21066,15 +21126,18 @@ def test_a_cleared_answer_whose_question_her_typing_took_is_said_at_one_version(
         page = followed(
             browser, send(browser, review.draft_id, shown_post(page, "keep", choose=answers))
         )
-        send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
-        version = review_row(browser, review.draft_id)[0]
         box = correct_box(review.card, "instruction:0")
-        posted = [
-            (name, value)
-            for name, value in page_post(page, "save", tick=[unit], typed={box: "Read nine."})
-            if name != review.question
-        ]
-        answer = saved_with_corrections(browser, review.draft_id, posted)
+        typed = {box: "Read nine."}
+        opened = opened_for_typing(browser, review.draft_id, page, typed)
+        checked = send(
+            browser, review.draft_id, page_post(opened, "review", tick=[unit], typed=typed)
+        )
+        assert checked.status_code == 200, page_text(checked)[:300]
+        made = import_review_cases.carrying(page_post(checked.text, "save", tick=[unit]), typed)
+        send(browser, review.draft_id, made)
+        version = review_row(browser, review.draft_id)[0]
+        posted = import_review_cases.raw_post(made, removed=[review.question])
+        answer = send(browser, review.draft_id, posted)
         same = review_row(browser, review.draft_id)[0] == version
 
     says_one_choice_can_t_show(answer)
@@ -21093,11 +21156,11 @@ def test_a_cleared_answer_another_tab_s_save_took_says_nothing(
         send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
         now = browser.get(f"/parent/imports/{review.draft_id}", headers=PAGE_HEADERS).text
         send(browser, review.draft_id, page_post(now, "save", tick=[math]))
-        posted = [
-            (name, value)
-            for name, value in page_post(page, "save", tick=[unit])
-            if name not in (review.confirm, f"answer:destination:{math}", review.other_type)
-        ]
+        made = page_post(page, "save", tick=[unit])
+        cleared = (review.confirm, f"answer:destination:{math}", review.other_type)
+        posted = import_review_cases.raw_post(
+            made, removed=[name for name in cleared if any(name == n for n, _ in made)]
+        )
         answer = send(browser, review.draft_id, posted)
 
     says_nothing_of_her_choices(answer)
@@ -21191,15 +21254,18 @@ def test_a_cleared_answer_held_with_its_question_gone_at_another_version_is_said
         page = followed(
             browser, send(browser, review.draft_id, shown_post(page, "keep", choose=answers))
         )
-        send(browser, review.draft_id, page_post(page, "save", tick=[unit]))
-        a_page_another_tab_keeps_from(browser, review, {review.other_type: "TASK"})
         box = correct_box(review.card, "instruction:0")
-        posted = [
-            (name, value)
-            for name, value in page_post(page, "save", tick=[unit], typed={box: "Read nine."})
-            if name != review.question
-        ]
-        answer = saved_with_corrections(browser, review.draft_id, posted)
+        typed = {box: "Read nine."}
+        opened = opened_for_typing(browser, review.draft_id, page, typed)
+        checked = send(
+            browser, review.draft_id, page_post(opened, "review", tick=[unit], typed=typed)
+        )
+        assert checked.status_code == 200, page_text(checked)[:300]
+        made = import_review_cases.carrying(page_post(checked.text, "save", tick=[unit]), typed)
+        send(browser, review.draft_id, made)
+        a_page_another_tab_keeps_from(browser, review, {review.other_type: "TASK"})
+        posted = import_review_cases.raw_post(made, removed=[review.question])
+        answer = send(browser, review.draft_id, posted)
 
     says_one_choice_can_t_show(answer)
     assert fieldset_of(answer.text, review.question) is None
@@ -21258,7 +21324,7 @@ def test_a_conflict_with_no_receipt_leaves_a_cleared_answer_unanswered_at_its_qu
         shown = page_post(page, "review", tick=[one.art], typed={box: "Read nine."})
         page = send(browser, one.draft_id, shown).text
         made = page_post(page, press, tick=[one.art])
-        posted = [(name, value) for name, value in made if name != one.first]
+        posted = import_review_cases.raw_post(made, removed=[one.first])
         # An injected conflict, sent as the raw POST it is: the refusal is this press's own.
         answer = send(browser, one.draft_id, with_the_conflict(posted, page, one.other))
         held = on_the_record(browser), review_row(browser, one.draft_id)[:2]
@@ -21296,17 +21362,10 @@ def test_a_conflict_beside_a_receipt_says_a_cleared_answer_still_held(
     with here(open_settings(tmp_path)) as browser:
         one = two_instruction_questions(browser, monkeypatch, first_answered=True)
         send(browser, one.draft_id, page_post(one.page, "save", tick=[one.art]))
-        box = correct_box(one.card, "instruction:0")
-        posted = [
-            (name, value)
-            for name, value in page_post(
-                one.page, "save", tick=[one.art], typed={box: "Read nine."}
-            )
-            if name != one.first
-        ]
-        answer = saved_with_corrections(
-            browser, one.draft_id, with_the_conflict(posted, one.page, one.other)
+        posted = import_review_cases.raw_post(
+            page_post(one.page, "save", tick=[one.art]), removed=[one.first]
         )
+        answer = send(browser, one.draft_id, with_the_conflict(posted, one.page, one.other))
 
     says_one_choice_can_t_show(answer)
 
@@ -22114,10 +22173,10 @@ def test_no_date_gives_words_back_as_they_were_kept(
 
 def with_carried_text(posted: list[tuple[str, str]], text: str) -> list[tuple[str, str]]:
     """This post with this text in place of what the page carried beside its date box, as no page
-    sends it. A helper's post is checked to carry what its test typed and chose first
-    (``carried``)."""
-    import_review_cases.carried(posted)
-    return [(name, text if name.startswith("refused:") else value) for name, value in posted]
+    sends it, the raw post it is. A helper's post is checked to carry what its test typed and chose
+    first (``carried``)."""
+    replaced = {n: text for n, v in posted if n.startswith("refused:") and v != text}
+    return import_review_cases.raw_post(posted, replaced) if replaced else posted
 
 
 @pytest.mark.parametrize("carried", ["   ", "\u00a0"], ids=["only spaces", "a no-break space"])
@@ -22792,8 +22851,11 @@ def test_a_second_read_refused_on_a_post_that_doesn_t_match_answers_503(
     each has its own test."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, other = two_rows(browser, monkeypatch)
-        posted = page_post(page, press, typed=typed_on(other))
-        posted = [(name, "0" if name == "version" else value) for name, value in posted]
+        page = opened_for_typing(browser, draft_id, page, typed_on(other))
+        posted = import_review_cases.raw_post(
+            page_post(page, press, typed=typed_on(other)), {"version": "0"}
+        )
+        assert all(field in posted for field in typed_on(other).items())
         Refusing(monkeypatch, ("ended_under_press", "snapshot", 1, SECOND_READ_REFUSALS[refusal]))
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
@@ -23298,7 +23360,7 @@ def test_the_commit_s_page_draws_no_form_and_gives_every_box_back(
         posted = commit.posted
         if typing == "two lines":
             box = correct_box(commit.row, "instruction:0")
-            posted = [(name, TYPED_LINES if name == box else value) for name, value in posted]
+            posted = import_review_cases.raw_post(posted, {box: TYPED_LINES})
         if moved:
             another_tab_saves_right_after_its_commit(browser, monkeypatch, commit, "adds a class")
         calls = Refusing(monkeypatch)
@@ -23812,10 +23874,10 @@ def test_a_crafted_split_answer_for_a_row_with_open_cards_is_refused_before_any_
         keep(browser, draft_id, ("split", row, json.dumps("split")))
         page = browser.get(f"/parent/imports/{draft_id}").text
         before = revision_held(browser, draft_id)
-        posted = [
-            *page_post(page, "later"),
-            (f"answer:split:{row}", json.dumps(["one", "2026-10-05"])),
-        ]
+        posted = import_review_cases.raw_post(
+            page_post(page, "later"),
+            added=[(f"answer:split:{row}", json.dumps(["one", "2026-10-05"]))],
+        )
         send(browser, draft_id, posted)
         answers = stored_answers(browser, draft_id)
         held = held_corrections(browser, draft_id)
@@ -23836,7 +23898,9 @@ def test_a_crafted_box_for_a_row_still_asking_comes_back_when_the_first_read_is_
     gives back every Class, Title and Instructions box as sent, that box among them."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, asking, _ = a_row_asking_beside_a_padded_reading(browser, monkeypatch)
-        posted = [*page_post(page, "later"), (correct_box(asking, "title"), "Sentence Notes")]
+        posted = import_review_cases.raw_post(
+            page_post(page, "later"), added=[(correct_box(asking, "title"), "Sentence Notes")]
+        )
         Refusing(monkeypatch, ("review_press", "snapshot", 1, refusing_coded("SQLITE_BUSY")))
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
@@ -23977,8 +24041,13 @@ def conflict_fields(
     """An instruction ticked beside "None of these apply", with "No assigned date" ticked when
     named, and its press last: the fields, the question's field and the instruction's value."""
     posted, question, value = both_ticked(page, press, typed=typed)
-    tick = [(f"none:{none}", "none")] if none else []
-    return [*posted[:-1], *tick, posted[-1]], question, value
+    if not none:
+        return posted, question, value
+    last = posted[-1]
+    ticked = import_review_cases.raw_post(
+        posted, removed=[last], added=[(f"none:{none}", "none"), last]
+    )
+    return ticked, question, value
 
 
 @pytest.mark.parametrize("press", THE_TWO_PRESSES)
@@ -24831,11 +24900,11 @@ def test_an_open_review_asks_for_no_earlier_save_on_an_altered_post(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
-        draft_id, page, _, other = a_saved_row(browser, monkeypatch)
-        altered = [
-            (name, "0" if name == "version" else value)
-            for name, value in page_post(page, press, typed=typed_on(other))
-        ]
+        draft_id, page, _, other = a_saved_row(browser, monkeypatch, opened_and_typed=typed_on)
+        altered = import_review_cases.raw_post(
+            import_review_cases.carrying(page_post(page, press), typed_on(other)),
+            {"version": "0"},
+        )
         answer = send(browser, draft_id, altered)
 
     assert answer.status_code == 303
@@ -24935,20 +25004,24 @@ Alteration = Callable[[list[tuple[str, str]]], list[tuple[str, str]]]
 
 
 def field_changed(name: str, value: str) -> Alteration:
-    return lambda fields: [(n, value if n == name else v) for n, v in fields]
+    return lambda fields: import_review_cases.raw_post(fields, {name: value})
 
 
 def field_left_out(name: str) -> Alteration:
-    return lambda fields: [(n, v) for n, v in fields if n != name]
+    return lambda fields: import_review_cases.raw_post(fields, removed=[name])
 
 
 def field_sent_twice(name: str) -> Alteration:
-    return lambda fields: [*fields, *((n, v) for n, v in fields if n == name)]
+    return lambda fields: import_review_cases.raw_post(
+        fields, added=[(n, v) for n, v in fields if n == name]
+    )
 
 
 def with_a_none_of_another_value(fields: list[tuple[str, str]]) -> list[tuple[str, str]]:
     assigned = next(n for n, _ in fields if n.startswith("correct:") and '"assigned"' in n)
-    return [*fields, (assigned.replace("correct:", "none:"), "x")]
+    return import_review_cases.raw_post(
+        fields, added=[(assigned.replace("correct:", "none:"), "x")]
+    )
 
 
 ALTERATIONS: Final[dict[str, Alteration]] = {
@@ -24960,10 +25033,16 @@ ALTERATIONS: Final[dict[str, Alteration]] = {
     "the press left out": field_left_out("press"),
     "the press unknown": field_changed("press", "another"),
     "the press sent twice": field_sent_twice("press"),
-    "a tick the page didn't sign": lambda f: [*f, ("unit", "not-a-unit")],
-    "a box the page didn't sign": lambda f: [*f, ('correct:["not-a-key","title"]', "x")],
-    "a field no page writes": lambda f: [*f, ("extra", "1")],
-    "an answer the page didn't ask": lambda f: [*f, ("answer:name:missing", "x")],
+    "a tick the page didn't sign": lambda f: import_review_cases.raw_post(
+        f, added=[("unit", "not-a-unit")]
+    ),
+    "a box the page didn't sign": lambda f: import_review_cases.raw_post(
+        f, added=[('correct:["not-a-key","title"]', "x")]
+    ),
+    "a field no page writes": lambda f: import_review_cases.raw_post(f, added=[("extra", "1")]),
+    "an answer the page didn't ask": lambda f: import_review_cases.raw_post(
+        f, added=[("answer:name:missing", "x")]
+    ),
     "a none with another value": with_a_none_of_another_value,
 }
 PRESS_ALTERATIONS: Final = ("the press left out", "the press unknown", "the press sent twice")
@@ -24976,7 +25055,9 @@ def test_a_limit_an_altered_post_on_an_open_review_redirects_with_its_typing_los
 ) -> None:
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, _, other = two_rows(browser, monkeypatch)
+        page = opened_for_typing(browser, draft_id, page, typed_on(other))
         posted = ALTERATIONS[alteration](page_post(page, press, typed=typed_on(other)))
+        assert all(field in posted for field in typed_on(other).items())
         answer = send(browser, draft_id, posted)
         shown = followed(browser, answer)
         held = held_corrections(browser, draft_id)
@@ -25126,10 +25207,7 @@ def an_offer_post(
     offered = re.findall(
         r'<form method="post" action="[^"]+/review" id="offer-[^"]+">.*?</form>', refused, re.S
     )
-    return draft_id, [
-        (html.unescape(name), html.unescape(value))
-        for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', offered[-1])
-    ]
+    return draft_id, import_review_cases.small_form_fields(offered[-1])
 
 
 def a_found_row_review(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
@@ -25162,10 +25240,7 @@ def a_found_row_choice(
         r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', finding, re.S
     )
     assert choice is not None
-    return [
-        (html.unescape(name), html.unescape(value))
-        for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', choice.group(0))
-    ]
+    return import_review_cases.small_form_fields(choice.group(0))
 
 
 def removed_images(browser: TestClient, draft_id: str, *which: int) -> None:
@@ -26124,11 +26199,9 @@ def test_a_conflict_with_a_cleared_answer_and_its_read_refused_gives_back_what_w
             typing = {"Read nine. ", WORDS_BESIDE, *back}
         cards = import_review_cases.closed_cards(review_form(page), typed, tick)
         page = import_review_cases.open_cards(browser, one.draft_id, page, cards)
-        posted = [
-            (name, value)
-            for name, value in page_post(page, press, tick=ticks, typed=typed, choose=tick)
-            if name != one.first
-        ]
+        posted = import_review_cases.raw_post(
+            page_post(page, press, tick=ticks, typed=typed, choose=tick), removed=[one.first]
+        )
         Refusing(monkeypatch, ("answers_held", "draft_for_save", 1, refusing_coded("SQLITE_IOERR")))
         sent_fields = with_the_conflict(posted, page, one.other)
         answer = send(browser, one.draft_id, sent_fields)
@@ -26985,7 +27058,7 @@ def test_a_receipt_page_no_refused_later_reaches_says_nothing_of_one(
             )
             draft_id, posted = beside.draft_id, beside.posted
             if press == "a Save resend":
-                posted = [(n, "save" if n == "press" else v) for n, v in posted]
+                posted = import_review_cases.raw_post(posted, {"press": "save"})
             else:
                 monkeypatch.setattr(
                     state_of(browser).import_drafts, "save_for_later", refusing(StoreBusy)
@@ -27342,7 +27415,7 @@ def a_keep_that_stores_nothing(
         posted = page_post(browser.get(f"/parent/imports/{draft_id}").text, "keep")
     if how == "a box too long":
         title = correct_box(row, "title")
-        posted = [(name, "x" * 400 if name == title else value) for name, value in posted]
+        posted = import_review_cases.raw_post(posted, {title: "x" * 400})
     return draft_id, posted
 
 
@@ -29138,8 +29211,12 @@ def test_save_for_later_with_words_set_aside_says_its_answers_were_kept_past_a_r
         page = browser.get(f"/parent/imports/{beside.draft_id}").text
         field = next(field for field in fields_of(page, "answer:kind:") if beside.row in field)
         value = next(value for value, shown in options_of(page, field) if not shown)
-        posted = [(n, v) for n, v in beside.posted if not (stored and n == field)]
-        posted += [(field, value)] if stored else []
+        held = [field] if any(n == field for n, _ in beside.posted) else []
+        posted = (
+            import_review_cases.raw_post(beside.posted, removed=held, added=[(field, value)])
+            if stored
+            else beside.posted
+        )
         if read == "closed":
             ending_once_at("ended_under_press", ended_before_the_press)(
                 browser, monkeypatch, beside.draft_id
@@ -30124,8 +30201,10 @@ def a_press_with_a_line_finding_an_earlier_save(
         draft_id, posted, _, _ = a_keep_opened_and_typed_storing_an_answer_beside_a_save(
             browser, monkeypatch, "This Tab ", typed_and_reviewed=rows_page
         )
-        posted = [(n, v) for n, v in posted if n != "press" and (not rows_page or n != "unit")]
-        posted.append(("press", press))
+        ticks = ["unit"] if rows_page and any(n == "unit" for n, _ in posted) else []
+        posted = import_review_cases.raw_post(
+            posted, removed=["press", *ticks], added=[("press", press)]
+        )
         if press == "later":
             saved_elsewhere(browser, draft_id)
         if not rows_page:
@@ -31181,7 +31260,9 @@ def refused_after_another_tab_saved(
 
 
 def with_the_no_date_tick_off(fields: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    return [field for field in fields if not field[0].startswith("none:")]
+    """This post with no "No assigned date was given" tick: the raw post it is where it held one."""
+    ticks = sorted({name for name, _ in fields if name.startswith("none:")})
+    return import_review_cases.raw_post(fields, removed=ticks) if ticks else fields
 
 
 def next_save_for_later_is_refused(
@@ -31288,7 +31369,7 @@ def earlier_save_past_its_post(
         return posted
     caller = "review_press" if route == "doesn't match, first read refused" else "ended_under_press"
     Refusing(monkeypatch, (caller, "snapshot", 1, refused))
-    return [(name, "0" if name == "version" else value) for name, value in posted]
+    return import_review_cases.raw_post(posted, {"version": "0"})
 
 
 NO_POST_TO_READ: Final = (
@@ -31652,7 +31733,7 @@ def a_refused_post(
     if refusal == "past its ceiling":
         monkeypatch.setattr(screenshot_page, "ASKS_MOST_BYTES", 100)
         return draft_id, posted
-    return draft_id, [(name, "0" if name == "version" else value) for name, value in posted]
+    return draft_id, import_review_cases.raw_post(posted, {"version": "0"})
 
 
 def ended_once_the_first_read_returns(
@@ -32895,7 +32976,7 @@ def test_a_resend_says_a_no_date_choice_it_can_t_carry_and_stores_nothing(
         else:
             posted = page_post(page, "save", tick=[first])
             if case == "the stored tick taken off":
-                posted = [(name, value) for name, value in posted if name != f"none:{tick}"]
+                posted = import_review_cases.raw_post(posted, removed=[f"none:{tick}"])
         # The Save as the family sends it, reviewed first; the resend is that same submission.
         sent = reviewed(browser, draft_id, posted)
         assert "Saved: 1 new assignment." in page_text(
@@ -35239,17 +35320,15 @@ def test_another_page_s_class_stands_through_a_save_of_one_group_and_back_to_the
         saved = send(
             browser,
             draft_id,
-            [
-                field
-                for field in import_review_cases.unoffered(page_post(shown, "save", tick=units[:1]))
-                if not field[0].startswith("none:")
-            ],
+            with_the_no_date_tick_off(
+                import_review_cases.unoffered(page_post(shown, "save", tick=units[:1]))
+            ),
         )
         shown = what_the_commit_s_page_leads_to(browser, draft_id, saved)
         send(
             browser,
             draft_id,
-            [field for field in page_post(shown, "later") if not field[0].startswith("none:")],
+            with_the_no_date_tick_off(page_post(shown, "later")),
         )
         held = held_corrections(browser, draft_id)
 
@@ -35558,12 +35637,11 @@ def chain_post(
     typed: Mapping[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """A press's post from the page it comes from (``pressed_from``), without the fields named by
-    the prefixes ``dropped``: by default its "No assigned date was given" ticks."""
-    return [
-        field
-        for field in page_post(pressed_from(browser, draft_id, page), press, tick=tick, typed=typed)
-        if not field[0].startswith(dropped)
-    ]
+    the prefixes ``dropped``: by default its "No assigned date was given" ticks. The raw post it
+    is where the page holds such a field."""
+    post = page_post(pressed_from(browser, draft_id, page), press, tick=tick, typed=typed)
+    left_out = sorted({name for name, _ in post if name.startswith(dropped)})
+    return import_review_cases.raw_post(post, removed=left_out) if left_out else post
 
 
 def the_change_stands(browser: TestClient, draft_id: str, row: str, change: str) -> bool:
@@ -36081,9 +36159,7 @@ def a_save_past_carried_words_arranged(
         monkeypatch.setattr(drafts, "snapshot", reading)
     elif route.startswith("an altered post, the review then "):
         # The reviewed Save altered: its earlier presses made, it goes as altered.
-        posted = import_review_cases.Reviewed(
-            (name, "0" if name == "version" else value) for name, value in posted
-        )
+        posted = import_review_cases.raw_post(posted, {"version": "0"})
         reads: list[bool] = []
         ending = route.removeprefix("an altered post, the review then ")
 
@@ -36160,9 +36236,7 @@ def a_save_past_carried_words_arranged(
         elif route == "sent again, the review's read busy":
             monkeypatch.setattr(drafts, "snapshot", busy_store(StoreBusy))
         elif route == "sent again, the post unmatched":
-            posted = import_review_cases.Reviewed(
-                (name, "0" if name == "version" else value) for name, value in posted
-            )
+            posted = import_review_cases.raw_post(posted, {"version": "0"})
         elif route == "sent again, the counts refused":
             monkeypatch.setattr(record, "homework_counts", refusing_coded("SQLITE_IOERR"))
         elif route == "sent again after a Discard, no counts":
@@ -37016,10 +37090,7 @@ def test_a_stale_found_row_names_the_choice_the_page_doesn_t_select(
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', found.text, re.S
         )
         assert chosen is not None
-        fields = [
-            (html.unescape(name), html.unescape(value))
-            for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', chosen.group(0))
-        ]
+        fields = import_review_cases.small_form_fields(chosen.group(0))
         fresh = loaded(browser, draft_id)
         assert (
             send(browser, draft_id, page_post(fresh, "keep", tick=[first, left])).status_code == 200
@@ -37158,10 +37229,7 @@ def test_a_stale_offer_names_the_choice_the_page_doesn_t_select(
         offered = re.findall(
             r'<form method="post" action="[^"]+/review" id="offer-[^"]+">.*?</form>', refused, re.S
         )
-        offer = [
-            (html.unescape(name), html.unescape(value))
-            for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', offered[-1])
-        ]
+        offer = import_review_cases.small_form_fields(offered[-1])
         [form] = fields_named(review_form(refused), "answer:name:")
         keep(browser, draft_id, ("name", form, "hers"))
         reads = reads_of_the_review(browser, monkeypatch)
@@ -37350,12 +37418,12 @@ A_SAVED_SET_3: Final = Assignment(
 
 
 @pytest.mark.parametrize("press", ["keep", "later", "save"])
-def test_a_choice_its_own_typing_takes_off_the_page_is_said_as_not_shown(
+def test_a_choice_its_own_typing_makes_stale_is_asked_again_on_the_refused_page(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
     """Real presses: the second card offered as the saved "Set 3" and chosen so, its title typed
-    "Quiz 9", the first title past its limit. The 422 form, drawn with that typing, doesn't offer
-    the saved row, so the not-carried line is said."""
+    "Quiz 9", the first title past its limit. The 422 form, drawn with that typing, keeps the
+    saved row listed for the card as read, chooses nothing and says why it asks again."""
     with here(open_settings(tmp_path)) as browser:
         state_of(browser).project_state.upsert_assignments([A_SAVED_SET_3])
         reading = homework_answer(cards=[homework_card(), homework_card(**A_SECOND_CARD)])
@@ -37384,8 +37452,10 @@ def test_a_choice_its_own_typing_takes_off_the_page_is_said_as_not_shown(
 
     assert len(reads) == CHANGED_PAGE_READS[f"refused at the page's version, {press}"]
     assert answer.status_code == 422
-    assert offered not in values_in(review_form(answer.text))
-    assert screenshot_page.SAID["not_carried"] in page_text(answer)
+    drawn = [one for one in destinations_drawn(answer.text) if one[0].endswith(piece)]
+    assert offered in [value for _, value, _, _ in drawn]
+    assert not [said for _, _, checked, said in drawn if checked]
+    assert says(answer.text, screenshot_page.SAID["lost_correction"])
 
 
 def test_a_save_past_a_discard_gives_back_whitespace_only_text_exactly(
@@ -37605,19 +37675,25 @@ def test_an_altered_post_is_refused_and_its_typing_given_back_nowhere(
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, first, left, boxes, _ = two_groups(browser, monkeypatch)
         typed = {boxes["title"]: "  Typed title 0  "}
-        posted = page_post(page, press, tick=[first, left], typed=typed)
+        page = opened_for_typing(browser, draft_id, page, typed)
+        made = page_post(page, press, tick=[first, left], typed=typed)
         key = json.loads(boxes["title"].removeprefix("correct:"))[0]
+        last = made[-1]
         if altered == "the version":
-            posted = [(name, "0" if name == "version" else value) for name, value in posted]
+            posted = import_review_cases.raw_post(made, {"version": "0"})
         elif altered == "an unoffered group":
-            posted = [*posted[:-1], ("unit", "0" * 64), posted[-1]]
+            posted = import_review_cases.raw_post(
+                made, removed=[last], added=[("unit", "0" * 64), last]
+            )
         elif altered == "an unoffered box":
-            posted = [*posted[:-1], (correct_box(key, "not_a_field"), "x"), posted[-1]]
+            posted = import_review_cases.raw_post(
+                made, removed=[last], added=[(correct_box(key, "not_a_field"), "x"), last]
+            )
         else:
-            posted = [
-                (name, '{"new":7}' if name.startswith("answer:destination:") else value)
-                for name, value in posted
-            ]
+            posted = import_review_cases.raw_post(
+                made, {n: '{"new":7}' for n, _ in made if n.startswith("answer:destination:")}
+            )
+        assert (boxes["title"], "  Typed title 0  ") in posted
         answer = send(browser, draft_id, posted)
         shown = followed(browser, answer)
 
@@ -37798,10 +37874,7 @@ def test_a_stale_found_row_whose_saved_row_left_the_record_names_its_card_withou
             r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', found.text, re.S
         )
         assert chosen is not None
-        fields = [
-            (html.unescape(name), html.unescape(value))
-            for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', chosen.group(0))
-        ]
+        fields = import_review_cases.small_form_fields(chosen.group(0))
         fresh = loaded(browser, draft_id)
         other = send(browser, draft_id, page_post(fresh, "keep", tick=[first, left]))
         assert other.status_code == 200
@@ -38164,11 +38237,7 @@ def found_row_post(
         r'<form method="post" action="[^"]+/review" class="choice">.*?</form>', found.text, re.S
     )
     assert chosen is not None
-    fields = [
-        (html.unescape(name), html.unescape(value))
-        for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', chosen.group(0))
-    ]
-    return piece, fields
+    return piece, import_review_cases.small_form_fields(chosen.group(0))
 
 
 def test_a_found_row_refused_busy_at_its_page_s_version_names_no_choice_as_unselected(
@@ -39143,7 +39212,7 @@ def an_instructions_answer_on_a_row_another_page_left(
     press_outside(browser, fresh, leave_form_holding(fresh, key))
     posted = page_post(page, press, tick=[unit] if press == "save" else [])
     if cleared:
-        posted = [(name, value) for name, value in posted if name != review.question]
+        posted = import_review_cases.raw_post(posted, removed=[review.question])
     return review.draft_id, posted
 
 
@@ -39339,15 +39408,22 @@ def an_instructions_question_refused(
             typed[correct_box(review.card, "instruction:0")] = "Read nine."
         page = opened_for_typing(browser, review.draft_id, page, typed)
         made = page_post(page, press, tick=[unit] if press == "save" else [], typed=typed)
-        import_review_cases.carried(made)
-        posted = [(name, value) for name, value in made if name != review.question]
-        if case.startswith("chosen"):
-            posted.append((review.question, word))
+        held = [review.question] if any(name == review.question for name, _ in made) else []
+        chosen = [(review.question, word)] if case.startswith("chosen") else []
+        posted: Sequence[tuple[str, str]] = (
+            import_review_cases.raw_post(made, removed=held, added=chosen)
+            if held or chosen
+            else made
+        )
         assert all((name, value) in posted for name, value in typed.items())
         if press == "save" and route == "503":
             # The family's Review changes, made before the write is arranged to answer busy.
-            reviewed_post = import_review_cases.reviewed(browser, review.draft_id, posted)
-            posted = list(import_review_cases.carrying(reviewed_post, typed))
+            checked = send(
+                browser, review.draft_id, import_review_cases.raw_post(posted, {"press": "review"})
+            )
+            assert checked.status_code == 200, page_text(checked)[:300]
+            saving = page_post(checked.text, "save", tick=[unit])
+            posted = import_review_cases.carrying(saving, typed)
         if route == "503":
             drafts = state_of(browser).import_drafts
             monkeypatch.setattr(drafts, WRITE_OF_THE_PRESS[press], busy_store(StoreBusy))
@@ -39630,10 +39706,7 @@ def the_offer_on(page: str) -> list[tuple[str, str]]:
     offered = re.findall(
         r'<form method="post" action="[^"]+/review" id="offer-[^"]+">.*?</form>', page, re.S
     )
-    return [
-        (html.unescape(name), html.unescape(value))
-        for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', offered[-1])
-    ]
+    return import_review_cases.small_form_fields(offered[-1])
 
 
 def a_stale_offer(
@@ -39813,8 +39886,11 @@ def a_confirmation_on_a_row_another_page_left(
     fresh = loaded(browser, draft_id)
     press_outside(browser, fresh, leave_form_holding(fresh, str(json.loads(subject)[0])))
     posted = page_post(page, press, tick=units_on(page)[:1] if press == "save" else [])
-    if cleared:
-        posted = [(name, value) for name, value in posted if name != confirm]
+    if cleared and any(name == confirm for name, _ in posted):
+        posted = import_review_cases.raw_post(posted, removed=[confirm])
+    elif cleared and press == "save" and import_review_cases.offers_review_changes(page):
+        # A Save this page does not offer, sent on purpose as the raw POST it is.
+        posted = import_review_cases.unoffered(posted)
     return draft_id, posted
 
 
@@ -39873,17 +39949,20 @@ def test_a_confirmation_never_answered_left_unticked_on_a_row_another_page_left_
 
 # ------------------------------------------ a receipt at its page's version and revision
 
-RECEIPT_AT_ITS_PAGE_S_REVISION: Final = {"question stays": 0, "words typed beside it": 0}
-"""Per case: the lines a receipt's page says of an instructions answer its post cleared. Words
-typed on the card leave the question on the page Review changes returns, so nothing is missing."""
+RECEIPT_AT_ITS_PAGE_S_REVISION: Final = {"question stays": 0, "words typed beside it": 1}
+"""Per case: the lines a receipt's page says of an instructions answer its post cleared. With no
+words typed the question is drawn with nothing ticked, so the page shows the choice. With words
+typed on the card the receipt's page asks where the card goes again and draws no instructions
+question, so the cleared answer is a choice that page can't show."""
 
 
 def a_receipt_at_its_page_s_revision(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
-) -> tuple[Answer, tuple[int, int]]:
+) -> tuple[Answer, tuple[int, int], str]:
     """Real presses: the instructions question answered by a Keep, then a Save of one group with
     it cleared, the row's instruction typed in the one case; the receipt lookup forced to find
-    this acceptance. The answer, its reads of the review and ``draft_for_save`` calls."""
+    this acceptance. The answer, its reads of the review and ``draft_for_save`` calls, and the
+    question's field."""
     with here(open_settings(tmp_path)) as browser:
         review, page, unit, _, _ = a_page_of_groups(browser, monkeypatch)
         word = next(value for value, _ in options_of(page, review.question) if value)
@@ -39892,15 +39971,22 @@ def a_receipt_at_its_page_s_revision(
         typed: dict[str, str] = {}
         if case == "words typed beside it":
             typed[correct_box(review.card, "instruction:0")] = "Read nine."
-        posted = page_post(page, "save", tick=[unit], typed=typed)
-        posted = [(name, value) for name, value in posted if name != review.question]
+            page = opened_for_typing(browser, review.draft_id, page, typed)
+            checked = send(
+                browser, review.draft_id, page_post(page, "review", tick=[unit], typed=typed)
+            )
+            assert checked.status_code == 200, page_text(checked)[:300]
+            page = checked.text
+        made = import_review_cases.carrying(page_post(page, "save", tick=[unit]), typed)
+        held = [review.question] if any(n == review.question for n, _ in made) else []
+        posted = import_review_cases.raw_post(made, removed=held) if held else made
         record = state_of(browser).project_state
         monkeypatch.setattr(record, "homework_acceptance", lambda *_: [])
         reads = reads_of_the_review(browser, monkeypatch)
         tables = calls_to(monkeypatch, record, "draft_for_save")
         answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
-    return answer, (len(reads), len(tables))
+    return answer, (len(reads), len(tables)), review.question
 
 
 @pytest.mark.parametrize("case", list(RECEIPT_AT_ITS_PAGE_S_REVISION))
@@ -39908,13 +39994,18 @@ def test_a_receipt_at_its_page_s_revision_says_a_cleared_answer_by_the_record(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     """Real presses; forced store answer only, its reach by supported presses not established: a
-    receipt found at the page's version and revision. The record is read again for the answer."""
-    answer, reads = a_receipt_at_its_page_s_revision(tmp_path, monkeypatch, case)
+    receipt found at the page's version and revision. The record is read again for the answer.
+    The line is said exactly where the cleared answer's question isn't on the page."""
+    answer, reads, question = a_receipt_at_its_page_s_revision(tmp_path, monkeypatch, case)
 
     assert answer.status_code == 200, page_text(answer)[:400]
     assert recovery_of(answer).form
     assert reads == (2, 3)
-    assert page_text(answer).count(NOT_CARRIED) == RECEIPT_AT_ITS_PAGE_S_REVISION[case]
+    said = RECEIPT_AT_ITS_PAGE_S_REVISION[case]
+    assert page_text(answer).count(NOT_CARRIED) == said
+    shown = options_of(answer.text, question)
+    assert bool(shown) is (said == 0)
+    assert not any(ticked for _, ticked in shown)
 
 
 # ------------------------------------------ a lone tick on a Save that stops past its own write
@@ -40315,8 +40406,8 @@ once."""
 
 def with_words_carried(posted: Sequence[tuple[str, str]], none: str) -> list[tuple[str, str]]:
     """The post plus a carried-words field for this assigned date: a field no page sends beside
-    its "No assigned date was given" tick."""
-    return [*posted, (f"refused:{none}", CARRIED)]
+    its "No assigned date was given" tick, the raw post it is."""
+    return import_review_cases.raw_post(posted, added=[(f"refused:{none}", CARRIED)])
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
@@ -40371,8 +40462,17 @@ def test_a_no_date_tick_without_all_its_evidence_is_said_once_beside_carried_wor
         else:
             choose = another_kind_chosen(found.page)
         tick = [found.first] if press == "save" else []
-        posted = page_post(found.page, press, choose=choose, tick=tick)
-        posted = with_words_carried(posted, found.none)
+        posted: list[tuple[str, str]]
+        if case == "not held":
+            # The tick sits in a card this page shows closed: an injected field of the raw POST.
+            posted = import_review_cases.raw_post(
+                page_post(found.page, press, tick=tick),
+                added=[*choose.items(), (f"refused:{found.none}", CARRIED)],
+            )
+        else:
+            posted = with_words_carried(
+                page_post(found.page, press, choose=choose, tick=tick), found.none
+            )
         # The crafted post goes as made: its carried words and its choice are in it, and no box
         # differs from its reading, so no Review changes press stands before it.
         assert (f"refused:{found.none}", CARRIED) in posted
@@ -40854,7 +40954,7 @@ def test_a_save_sent_again_whose_post_reader_runs_twice_gives_back_every_box(
             browser, monkeypatch, post
         )
         posted = an_earlier_save_sent_again(browser, draft_id, page, opened_and_typed=typed)
-        fields = [(name, "0" if name == "version" else value) for name, value in posted]
+        fields = import_review_cases.raw_post(posted, {"version": "0"})
         before = {2: lambda: discarded(browser, draft_id)} if "discarded" in forced else {}
         own_reads_of_the_post_reader(monkeypatch, own_reads_forced(forced, key), before)
         answer, reads, _ = pressed_with_its_reads(browser, monkeypatch, draft_id, fields)
@@ -40877,7 +40977,7 @@ def test_a_first_state_lacking_a_row_gives_back_every_box_as_sent(
             browser, monkeypatch, post
         )
         posted = an_earlier_save_sent_again(browser, draft_id, page, opened_and_typed=typed)
-        fields = [(name, "0" if name == "version" else value) for name, value in posted]
+        fields = import_review_cases.raw_post(posted, {"version": "0"})
         own_reads_of_the_post_reader(monkeypatch, own_reads_forced(first, key))
         held = what_a_save_stores(monkeypatch)
         answer, reads, _ = pressed_with_its_reads(browser, monkeypatch, draft_id, fields)
@@ -40933,7 +41033,7 @@ def test_a_save_sent_again_whose_own_reads_give_no_state_gives_back_every_box(
         draft_id, page, _, typed = a_padded_instruction_opened_and_typed(browser, monkeypatch, post)
         posted = an_earlier_save_sent_again(browser, draft_id, page, opened_and_typed=typed)
         shape_3_progress_stored(browser, draft_id, page)
-        fields = [(name, "0" if name == "version" else value) for name, value in posted]
+        fields = import_review_cases.raw_post(posted, {"version": "0"})
         own_reads_of_the_post_reader(monkeypatch, {1: lambda _: None, 2: lambda _: None})
         answer, reads, _ = pressed_with_its_reads(browser, monkeypatch, draft_id, fields)
 
@@ -41479,7 +41579,9 @@ def test_a_crafted_box_its_page_did_not_draw_comes_back_on_an_earlier_save_s_pag
         draft_id, page, first = an_earlier_save_on_a_reading(browser, monkeypatch, "one line")
         second = json.loads(box_subject(page, "instruction:0", 1))[0]
         posted = page_post(page, press, tick=[first] if press == "save" else [])
-        posted = [*posted, (correct_box(key or second, field), text)]
+        posted = import_review_cases.raw_post(
+            posted, added=[(correct_box(key or second, field), text)]
+        )
         fields = earlier_save_past_its_post(
             "doesn't match, first read refused", posted, monkeypatch
         )
@@ -41501,7 +41603,7 @@ def test_one_box_name_posted_twice_gives_back_each_value_in_posted_order(
         draft_id, page, first = an_earlier_save_on_a_reading(browser, monkeypatch, "one line")
         box = correct_box(json.loads(box_subject(page, "instruction:0", 1))[0], "instruction:0")
         posted = page_post(page, press, tick=[first] if press == "save" else [])
-        posted = [*posted, (box, "Zebra words")]
+        posted = import_review_cases.raw_post(posted, added=[(box, "Zebra words")])
         fields = earlier_save_past_its_post(
             "doesn't match, first read refused", posted, monkeypatch
         )
@@ -41570,9 +41672,10 @@ AT_ANOTHER_VERSION: Final = {"keep": 200, "later": 409}
 """The status of a Keep and a Save for later sent from a page at another version."""
 
 
-def no_text_boxes(posted: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+def no_text_boxes(posted: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """A crafted post: this post with every Class, Title and Instructions box left out."""
-    return [pair for pair in posted if not owed([pair])]
+    left_out = sorted({pair[0] for pair in posted if owed([pair])})
+    return import_review_cases.raw_post(posted, removed=left_out) if left_out else posted
 
 
 @pytest.mark.parametrize("posted_as", ["the page's post", "a crafted post with no text box"])
@@ -41811,7 +41914,7 @@ def test_a_crafted_refused_name_on_a_title_box_gives_its_words_back_on_an_earlie
         second = json.loads(box_subject(page, "instruction:0", 1))[0]
         posted = page_post(page, press, tick=[first] if press == "save" else [])
         named = json.dumps([second, "title"], separators=(",", ":"))
-        posted = [*posted, (f"refused:{named}", "Carried Words")]
+        posted = import_review_cases.raw_post(posted, added=[(f"refused:{named}", "Carried Words")])
         fields = earlier_save_past_its_post(
             "doesn't match, first read refused", posted, monkeypatch
         )
@@ -41835,7 +41938,7 @@ def test_a_crafted_refused_name_on_a_title_box_gives_its_words_back_past_a_refus
         draft_id, page, first, other = two_rows(browser, monkeypatch)
         posted = page_post(page, press, tick=[first] if press == "save" else [])
         named = json.dumps([other, "title"], separators=(",", ":"))
-        posted = [*posted, (f"refused:{named}", "Carried Words")]
+        posted = import_review_cases.raw_post(posted, added=[(f"refused:{named}", "Carried Words")])
         Refusing(monkeypatch, ("review_press", "snapshot", 1, refusing_coded("SQLITE_BUSY")))
         answer = send(browser, draft_id, posted)
         monkeypatch.undo()
@@ -41908,7 +42011,7 @@ def test_keep_with_an_instructions_box_posted_twice_on_an_open_review_is_refused
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = a_review_reading(browser, monkeypatch, READ_WORDS)
         box = correct_box(json.loads(box_subject(page, "instruction:0", 1))[0], "instruction:0")
-        posted = [*page_post(page, "keep"), (box, "Zebra words")]
+        posted = import_review_cases.raw_post(page_post(page, "keep"), added=[(box, "Zebra words")])
         student, drafts = student_and_drafts(browser)
         before = (drafts.snapshot(student, draft_id).version, stored_answers(browser, draft_id))
         send(browser, draft_id, posted)
@@ -44898,7 +45001,11 @@ def test_a_joined_notes_tick_is_kept_for_later_on_reopening_and_through_a_refusa
         ]
         taken_back = followed(
             browser,
-            send(browser, draft_id, [(n, v) for n, v in page_post(reopened, "keep") if n != field]),
+            send(
+                browser,
+                draft_id,
+                import_review_cases.raw_post(page_post(reopened, "keep"), removed=[field]),
+            ),
         )
         after = stored_answers(browser, draft_id)
         record = state_of(browser).project_state
@@ -44937,7 +45044,7 @@ def test_a_joined_notes_tick_sent_twice_with_different_answers_keeps_and_saves_n
         page = opened_for_typing(browser, draft_id, page, {title: "Short essay outline"})
         fields = page_post(page, press, typed={title: "Short essay outline"}, tick=units_on(page))
         # An injected duplicate submission, sent as the raw POST it is, with its exact payload.
-        payload = [*fields, *((field, value) for value in values)]
+        payload = import_review_cases.raw_post(fields, added=[(field, value) for value in values])
         assert [value for name, value in payload if name == field] == list(values)
         assert (title, "Short essay outline") in payload
         refused = send(browser, draft_id, payload)
@@ -45473,7 +45580,7 @@ def test_an_untick_of_a_saved_joined_note_is_kept_and_removes_nothing(
         draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
         page = answered(browser, draft_id, page)
         field = joined_field(page)
-        unticked = [(n, v) for n, v in page_post(page, "keep") if n != field]
+        unticked = import_review_cases.raw_post(page_post(page, "keep"), removed=[field])
         kept = followed(browser, send(browser, draft_id, unticked))
         held = stored_answers(browser, draft_id)
         reopened = opened_and_kept_for_later(browser, draft_id, kept, {})
@@ -45535,16 +45642,18 @@ def test_an_untick_pressed_with_save_writes_in_one_press_and_removes_nothing(
         page = followed(
             browser, send(browser, draft_id, page_post(page, "keep", choose={field: "1"}))
         )
-        unticked = [(n, v) for n, v in page_post(page, "save", tick=units_on(page)) if n != field]
+        unticked = import_review_cases.raw_post(
+            page_post(page, "save", tick=units_on(page)), removed=[field]
+        )
         fresh = followed(browser, send(browser, draft_id, unticked))
         row, claims, words = essay_row(browser)
         before = essay_counts(browser)
         again_id, again = read_review(browser, monkeypatch, (RED, essay_answer()))
         again = answered(browser, again_id, again)
         again_field = joined_field(again)
-        sent = [
-            (n, v) for n, v in page_post(again, "save", tick=units_on(again)) if n != again_field
-        ]
+        made = page_post(again, "save", tick=units_on(again))
+        ticked = any(name == again_field for name, _ in made)
+        sent = import_review_cases.raw_post(made, removed=[again_field]) if ticked else made
         resaved = followed(browser, send(browser, again_id, sent))
         after = essay_counts(browser)
 
@@ -45649,7 +45758,11 @@ def test_the_one_of_two_joined_ticks_sent_twice_is_marked_on_the_page(
         twice = joined_field_of(page, SOURCES_NOTE)
         once = joined_field_of(page, ESSAY_NOTE)
         fields = page_post(page, "save", tick=units_on(page))
-        refused = send(browser, draft_id, [*fields, *((twice, value) for value in values)])
+        refused = send(
+            browser,
+            draft_id,
+            import_review_cases.raw_post(fields, added=[(twice, value) for value in values]),
+        )
         counts = essay_counts(browser)
 
     form = html.unescape(review_form(refused.text))
@@ -45966,8 +46079,7 @@ def test_a_single_answer_field_posted_twice_with_different_answers_writes_nothin
         name = family_field(page, fields, family)
         shown = next((value for field, value in fields if field == name), "1")
         values = (shown, "0" if family == "joined" else f"{shown}x")
-        rest = [(field, value) for field, value in fields if field != name]
-        posted = [*rest, *((name, value) for value in (values[::-1] if reverse else values))]
+        posted = posted_twice(fields, name, values, reverse)
         before = stored_answers(browser, draft_id)
         refused = send(browser, draft_id, posted)
         after = stored_answers(browser, draft_id)
@@ -45999,7 +46111,11 @@ def test_a_joined_notes_tick_posted_twice_with_one_answer_is_that_answer(
         page = answered(browser, draft_id, page)
         field = joined_field(page)
         fields = page_post(page, press, tick=units_on(page) if press == "save" else ())
-        answer = send(browser, draft_id, [*fields, (field, "1"), (field, "1")])
+        answer = send(
+            browser,
+            draft_id,
+            import_review_cases.raw_post(fields, added=[(field, "1"), (field, "1")]),
+        )
         text = followed(browser, answer)
         held = stored_answers(browser, draft_id)
         words = essay_row(browser)[2] if press == "save" else []
@@ -46071,7 +46187,7 @@ def test_a_joined_notes_tick_sent_twice_stays_unanswered_until_the_family_answer
         fields = page_post(page, press, typed={title: "Short essay outline"}, tick=ticks(page))
         # An injected duplicate submission and its unchanged retry, each sent as the raw POST it
         # is, with its exact payload.
-        payload = [*fields, *((field, value) for value in values)]
+        payload = import_review_cases.raw_post(fields, added=[(field, value) for value in values])
         assert [value for name, value in payload if name == field] == list(values)
         assert (title, "Short essay outline") in payload
         conflict = send(browser, draft_id, payload)
@@ -46132,9 +46248,11 @@ def test_a_date_box_s_read_mark_sent_twice_with_different_values_gives_the_box_b
 def posted_twice(
     fields: Sequence[tuple[str, str]], name: str, values: tuple[str, str], reverse: bool
 ) -> list[tuple[str, str]]:
-    """A post with one field sent twice, once with each value, in the order given or reversed."""
-    rest = [(field, value) for field, value in fields if field != name]
-    return [*rest, *((name, value) for value in (values[::-1] if reverse else values))]
+    """A post with one field sent twice, once with each value, in the order given or reversed: the
+    raw post it is."""
+    held = [name] if any(field == name for field, _ in fields) else []
+    twice = [(name, value) for value in (values[::-1] if reverse else values)]
+    return import_review_cases.raw_post(fields, removed=held, added=twice)
 
 
 def option_label(page: str, field: str, value: str) -> str:
@@ -46306,7 +46424,8 @@ def test_a_box_or_answer_sent_twice_with_one_value_is_that_one_answer(
         fields = page_post(page, "save", tick=units_on(page))
         name = family_field(page, fields, family)
         shown = next(value for field, value in fields if field == name)
-        saved = followed(browser, send(browser, draft_id, [*fields, (name, shown)]))
+        twice = import_review_cases.raw_post(fields, added=[(name, shown)])
+        saved = followed(browser, send(browser, draft_id, twice))
 
     assert says(saved, imports.counted(2, 0, 0, 0))
 
@@ -46421,9 +46540,14 @@ def test_a_family_answer_sent_twice_with_the_same_value_is_one_answer(
             # injected into that one Save. An answer given outside a card's boxes goes on the Save
             # it is posted with, as the raw POST it is, so the repeat lands beside that answer.
             raw = family == "empty" or family.startswith("answer:")
-            made = list(fields) if raw else list(reviewed(browser, draft_id, fields))
+            made = fields if raw else reviewed(browser, draft_id, fields)
             if count == 2:
-                made = [repeat, *made] if first else [*made, repeat]
+                made = (
+                    import_review_cases.RawPost([repeat, *made])
+                    if first
+                    else import_review_cases.raw_post(made, added=[repeat])
+                )
+                assert sorted(made).count(repeat) >= 1
             answer = import_review_cases.posted(browser, draft_id, made)
             pages.append(followed(browser, answer))
             outcomes.append(
@@ -46538,10 +46662,10 @@ def test_a_returned_review_whose_mark_does_not_match_its_page_is_refused_whole(
         mark = f"unresolved:{name}"
         present = any(field == mark for field, _ in returned)
         if tamper == "removed":
-            returned = [(field, value) for field, value in returned if field != mark]
+            returned = import_review_cases.raw_post(returned, removed=[mark])
         else:
             other = json.dumps(["Another answer"])
-            returned = [(field, other if field == mark else value) for field, value in returned]
+            returned = import_review_cases.raw_post(returned, {mark: other})
         refused = send(browser, draft_id, returned)
         refused_page = followed(browser, refused)
         unwritten = (stored_answers(browser, draft_id), answered_rows(browser))
@@ -47290,7 +47414,8 @@ def test_a_read_mark_sent_twice_with_the_same_value_saves_as_once(
         draft_id, page, name = read_mark_review(browser, monkeypatch, family)
         fields = page_post(page, "save", tick=units_on(page))
         shown = next(value for field, value in fields if field == name)
-        saved = followed(browser, send(browser, draft_id, [*fields, (name, shown)]))
+        twice = import_review_cases.raw_post(fields, added=[(name, shown)])
+        saved = followed(browser, send(browser, draft_id, twice))
 
     expected = imports.counted(1, 0, 0, 0) if family == "note-due" else imports.counted(2, 0, 0, 0)
     assert says(saved, expected)
@@ -47439,10 +47564,9 @@ def test_a_hand_made_save_with_an_unreviewed_correction_writes_nothing_and_opens
         if opened_first:
             page = send(browser, draft_id, page_post(page, correct_presses(page)[0])).text
         title = box_subject(page, "title")
-        posted = [
-            (name, "Sentence Combining" if name == f"correct:{title}" else value)
-            for name, value in page_post(page, "save", tick=units_on(page))
-        ]
+        posted = import_review_cases.raw_post(
+            page_post(page, "save", tick=units_on(page)), {f"correct:{title}": "Sentence Combining"}
+        )
         refused = send(browser, draft_id, posted)
         after = (saved_rows(browser), stored_answers(browser, draft_id))
         again = send(browser, draft_id, page_post(refused.text, "save", tick=units_on(page)))
@@ -47497,18 +47621,22 @@ def _unreviewed_value(
     if grammar == rf"refused:{screenshot_posts.BOX_SUBJECT}":
         draft_id, page, _, _ = words_beside_a_date_box(browser, monkeypatch)
         posted = page_post(page, "save", tick=units_on(page))
-        return draft_id, with_carried_text(list(posted), "Changed words."), "Changed words."
+        return draft_id, with_carried_text(posted, "Changed words."), "Changed words."
     draft_id, page = read_review(browser, monkeypatch, (RED, one_card_answer()))
     page = her_name_answered(browser, draft_id, page)
     if rendering == screenshot_posts.VISIBLE:
         page = send(browser, draft_id, page_post(page, correct_presses(page)[0])).text
-    posted = list(page_post(page, "save", tick=units_on(page)))
+    posted = page_post(page, "save", tick=units_on(page))
     if grammar.startswith("(?:none|empty)"):
         [subject] = no_date_subjects(page)
-        return draft_id, [*posted[:-1], (f"none:{subject}", "none"), posted[-1]], "none"
+        last = posted[-1]
+        ticked = import_review_cases.raw_post(
+            posted, removed=[last], added=[(f"none:{subject}", "none"), last]
+        )
+        return draft_id, ticked, "none"
     title = f"correct:{box_subject(page, 'title')}"
     changed = "A Title No Review Showed"
-    return draft_id, [(n, changed if n == title else v) for n, v in posted], changed
+    return draft_id, import_review_cases.raw_post(posted, {title: changed}), changed
 
 
 ANSWER_ENTRIES: Final = [
@@ -47579,9 +47707,12 @@ def _page_offering(
 
 
 def _sent_with(posted: Sequence[tuple[str, str]], field: str, value: str) -> list[tuple[str, str]]:
-    """This post with this one value for the field in place of any it sent, its press last."""
-    kept = [(name, sent) for name, sent in posted if name not in (field, "press")]
-    return [*kept, (field, value), ("press", "save")]
+    """This post with this one value for the field in place of any it sent, its press last: the
+    raw post it is."""
+    held = [name for name in (field, "press") if any(name == sent for sent, _ in posted)]
+    return import_review_cases.raw_post(
+        posted, removed=held, added=[(field, value), ("press", "save")]
+    )
 
 
 @pytest.mark.parametrize(
@@ -47605,10 +47736,9 @@ def test_a_left_out_answer_unoffered_or_stale_writes_nothing(
         else:
             opened = send(browser, draft_id, page_post(page, correct_presses(page)[0])).text
             title = f"correct:{box_subject(opened, 'title')}"
-            posted = [
-                (name, "A Title No Review Showed" if name == title else value)
-                for name, value in page_post(opened, "save", tick=units_on(page))
-            ]
+            posted = import_review_cases.raw_post(
+                page_post(opened, "save", tick=units_on(page)), {title: "A Title No Review Showed"}
+            )
             if field != "unit":
                 offered = [value for value, _ in options_of(page, field) if value]
                 posted = _sent_with(posted, field, offered[-1])
@@ -48567,10 +48697,778 @@ def test_a_joined_note_unticked_after_it_was_kept_stays_unticked_through_review_
         joined = joined_field(page)
         kept = send(browser, draft_id, page_post(page, "keep", choose={joined: "1"})).text
         choose = destination_starting(kept, "Short essay outline")
-        unticked = [
-            field for field in page_post(kept, "review", choose=choose) if field[0] != joined
-        ]
+        unticked = import_review_cases.raw_post(
+            page_post(kept, "review", choose=choose), removed=[joined]
+        )
         reviewed_page = send(browser, draft_id, unticked).text
 
     assert JOINED_TICK.findall(review_form(kept)) == [" checked"]
     assert JOINED_TICK.findall(review_form(reviewed_page)) == [""]
+
+
+def reviewed_storing_nothing(
+    browser: TestClient, draft_id: str, page: str, choose: Mapping[str, str]
+) -> str:
+    """Review changes pressed with ``choose`` chosen and the ticks ``page`` shows: the page it
+    returns, with every table of the record as it was."""
+    before = import_review_cases.every_row(browser)
+    reviewed = review_changes_choosing(browser, draft_id, page, choose)
+    assert import_review_cases.every_row(browser) == before
+    return reviewed
+
+
+def title_typed_with_the_tick_sent(
+    browser: TestClient, draft_id: str, page: str, title: str
+) -> tuple[str, list[str]]:
+    """The family ticks ``page``'s one group, presses "Correct what was read" on its card, types
+    ``title`` and presses Review changes with the tick sent: the page that returns, with every
+    table of the record as it was, and the tick."""
+    tick = units_on(page)
+    assert len(tick) == 1
+    box = f"correct:{box_subject(page, 'title')}"
+    [card] = import_review_cases.closed_cards(review_form(page), {box: title}, ())
+    opened = send(browser, draft_id, page_post(page, card, tick=tick))
+    assert units_ticked(opened.text) == tick
+    before = import_review_cases.every_row(browser)
+    answer = send(
+        browser, draft_id, page_post(opened.text, "review", typed={box: title}, tick=tick)
+    )
+    assert answer.status_code == 200, import_review_cases.page_text(answer.text)
+    assert import_review_cases.every_row(browser) == before
+    return answer.text, tick
+
+
+def saved_as_ticked(browser: TestClient, draft_id: str, page: str) -> str:
+    """Save pressed once on ``page`` with the ticks it shows: the page that follows."""
+    assert actions_of(page) == ["save"]
+    return followed(
+        browser, send(browser, draft_id, page_post(page, "save", tick=units_ticked(page)))
+    )
+
+
+def offered_words(page: str) -> list[str]:
+    """The words of each destination the review form offers."""
+    return [said for _, _, _, said in destinations_drawn(page)]
+
+
+def test_a_tick_stays_while_a_typed_title_asks_where_the_card_goes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved row chosen on a second read, the group ticked, then another title typed: Review
+    changes keeps the tick, keeps the saved row listed beside a new one with neither chosen, and
+    is the page's action. A new one chosen goes Review changes, then one Save writes one row and
+    leaves the saved row as it was."""
+    first = homework_answer(cards=[homework_card()])
+    again = homework_answer(
+        cards=[homework_card(instruction="Other words.", footer="Due (10/9/2026)")]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = read_review(browser, monkeypatch, (RED, first))
+        page = answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        whole = saved_whole(browser, "English 8")
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, again))
+        page = answered(browser, draft_id, page)
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, "Sentence Composing")
+        )
+        asked, tick = title_typed_with_the_tick_sent(
+            browser, draft_id, chosen, "Sentence Composing Two"
+        )
+        reviewed = reviewed_storing_nothing(
+            browser, draft_id, asked, destination_starting(asked, "A new Sentence Composing Two")
+        )
+        done = saved_as_ticked(browser, draft_id, reviewed)
+        rows, last = english(browser), saved_whole(browser, "English 8")
+
+    assert units_ticked(asked) == tick
+    assert actions_of(asked) == ["review"]
+    assert checked_destinations(asked) == []
+    assert [said for said in offered_words(asked) if said.startswith("Sentence Composing,")]
+    assert units_ticked(reviewed) == units_on(reviewed) == tick
+    assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+    assert len(rows) == 2
+    assert [one for one in last if one in whole] == whole
+
+
+@pytest.mark.parametrize("choice", ["new", "saved"])
+def test_a_title_typed_after_a_corrected_row_was_chosen_asks_again_before_one_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, choice: str
+) -> None:
+    """A row saved under a corrected title, chosen on a re-read, the group ticked, a third title
+    typed: the choice is asked again with its reason, the tick kept. Either answer goes Review
+    changes, then one Save: a new one writes one row, the saved one writes no second row."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, answer, {"title": "Corrected One"})
+        whole = saved_whole(browser, "English 8")
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, "Corrected One")
+        )
+        asked, tick = title_typed_with_the_tick_sent(browser, draft_id, chosen, "Third Title")
+        words = "A new Third Title" if choice == "new" else "Corrected One"
+        reviewed = reviewed_storing_nothing(
+            browser, draft_id, asked, destination_starting(asked, words)
+        )
+        done = saved_as_ticked(browser, draft_id, reviewed)
+        rows, last = english(browser), saved_whole(browser, "English 8")
+
+    assert units_ticked(asked) == tick
+    assert actions_of(asked) == ["review"]
+    assert checked_destinations(asked) == []
+    assert says(asked, screenshot_page.SAID["lost_correction"])
+    assert units_ticked(reviewed) == tick
+    assert not says(done, imports.PRESS_SAID["none_chosen"]), import_review_cases.page_text(done)
+    if choice == "new":
+        assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+        assert [title for title, _ in rows] == ["Corrected One", "Third Title"]
+    else:
+        assert [title for title, _ in rows] == ["Corrected One"]
+        assert last[0][0].assignment_id == whole[0][0].assignment_id
+
+
+def test_a_kept_destination_answered_anew_after_a_typed_title_saves_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved row chosen and kept with Keep these answers, another title typed, a new one chosen
+    where the page asks again: Review changes, then one Save writes one row and leaves the saved
+    row as it was. The kept answer never sends the Save back for another review."""
+    first = homework_answer(cards=[homework_card()])
+    again = homework_answer(
+        cards=[homework_card(instruction="Other words.", footer="Due (10/9/2026)")]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = read_review(browser, monkeypatch, (RED, first))
+        page = answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        whole = saved_whole(browser, "English 8")
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, again))
+        page = answered(browser, draft_id, page)
+        choose = destination_starting(page, "Sentence Composing")
+        kept = send(browser, draft_id, page_post(page, "keep", choose=choose)).text
+        asked, tick = title_typed_with_the_tick_sent(
+            browser, draft_id, kept, "Sentence Composing Two"
+        )
+        reviewed = reviewed_storing_nothing(
+            browser, draft_id, asked, destination_starting(asked, "A new Sentence Composing Two")
+        )
+        done = saved_as_ticked(browser, draft_id, reviewed)
+        rows, last = english(browser), saved_whole(browser, "English 8")
+
+    assert units_ticked(asked) == tick
+    assert checked_destinations(asked) == []
+    assert units_ticked(reviewed) == tick
+    assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+    assert len(rows) == 2
+    assert [one for one in last if one in whole] == whole
+
+
+def test_a_title_typed_on_a_reread_card_keeps_same_or_new_asked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A title typed on a card asked same or new: the saved row stays listed, nothing is chosen,
+    and Review changes stays the action; a hand-made Save with nothing chosen writes nothing and
+    chooses nothing. Choosing the saved row, then Review changes and one Save, leaves one row."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, answer, {"title": "Corrected One"})
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        typed = {f"correct:{box_subject(page, 'title')}": "Corrected One."}
+        opened = opened_for_typing(browser, draft_id, page, typed)
+        before = import_review_cases.every_row(browser)
+        asked = send(browser, draft_id, page_post(opened, "review", typed=typed)).text
+        unchanged = import_review_cases.every_row(browser) == before
+        stood = save_the_page_does_not_offer(browser, draft_id, asked)
+        rows_after_stood = english(browser)
+        reviewed = reviewed_storing_nothing(
+            browser, draft_id, stood, destination_starting(stood, "Corrected One,")
+        )
+        sent = page_post(reviewed, "save", tick=units_on(reviewed))
+        done = followed(browser, send(browser, draft_id, sent))
+        rows = english(browser)
+
+    assert unchanged
+    assert checked_destinations(asked) == []
+    assert actions_of(asked) == ["review"]
+    assert [said for said in offered_words(asked) if said.startswith("Corrected One,")]
+    assert checked_destinations(stood) == []
+    assert actions_of(stood) == ["review"]
+    assert rows_after_stood == [("Corrected One", date(2026, 10, 8))]
+    assert not says(done, imports.PRESS_SAID["none_chosen"]), import_review_cases.page_text(done)
+    assert [title for title, _ in rows] == ["Corrected One"]
+
+
+def test_words_typed_on_a_card_the_school_moved_keep_same_or_new_asked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same row read again with the school's due date moved, its words corrected on the
+    card: the saved row stays listed, nothing is chosen and Review changes stays the action."""
+    answer = homework_answer(cards=[homework_card()])
+    again = homework_answer(cards=[homework_card(footer="Due (10/9/2026)")])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, answer, {"title": "Corrected One"})
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, again))
+        page = answered(browser, draft_id, page)
+        typed = {f"correct:{box_subject(page, 'instruction:0')}": "Complete pages 12 to 15."}
+        opened = opened_for_typing(browser, draft_id, page, typed)
+        before = import_review_cases.every_row(browser)
+        asked = send(browser, draft_id, page_post(opened, "review", typed=typed)).text
+        unchanged = import_review_cases.every_row(browser) == before
+
+    assert unchanged
+    assert checked_destinations(asked) == []
+    assert actions_of(asked) == ["review"]
+    assert [said for said in offered_words(asked) if said.startswith("Corrected One,")]
+
+
+def test_a_first_read_of_two_same_named_cards_reviews_before_one_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two cards of one name with no saved row, neither chosen: Review changes is the action.
+    Each answered, Review changes stores nothing, then one Save writes both."""
+    answer = homework_answer(
+        cards=[
+            homework_card(title="Set", instruction="One.", y_top=210, y_bottom=300),
+            homework_card(
+                title="Set",
+                instruction="Two.",
+                footer="Due (10/30/2026)",
+                y_top=320,
+                y_bottom=400,
+            ),
+        ]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, page)
+        fields = list(dict.fromkeys(field for field, _, _, _ in destinations_drawn(page)))
+        choose = {
+            field: json.dumps({"new": slot}, separators=(",", ":"))
+            for slot, field in enumerate(fields, 1)
+        }
+        reviewed = reviewed_storing_nothing(browser, draft_id, page, choose)
+        sent = page_post(reviewed, "save", tick=units_on(reviewed))
+        done = followed(browser, send(browser, draft_id, sent))
+
+    assert checked_destinations(page) == []
+    assert actions_of(page) == ["review"]
+    assert actions_of(reviewed) == ["save"]
+    assert says(done, imports.counted(2, 0, 0, 0)), import_review_cases.page_text(done)
+
+
+def test_the_essay_retitled_after_its_saved_row_was_chosen_keeps_both_ticks(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The essay saved with its joined note, chosen again on a re-read with the note and group
+    ticked, then retitled: both ticks stay, the saved row stays listed with nothing chosen, and a
+    new one chosen goes Review changes, then one Save, the saved row as it was."""
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(
+            browser, monkeypatch, essay_answer(), {"title": "Short essay outline"}, note_ticked=True
+        )
+        whole = saved_whole(browser, "Religion 8")
+        draft_id, page = read_again(browser, monkeypatch, essay_answer())
+        choose = {**destination_starting(page, "Short essay outline"), joined_field(page): "1"}
+        chosen = reviewed_storing_nothing(browser, draft_id, page, choose)
+        asked, tick = title_typed_with_the_tick_sent(
+            browser, draft_id, chosen, "Short essay final draft"
+        )
+        reviewed = reviewed_storing_nothing(
+            browser, draft_id, asked, destination_starting(asked, "A new Short essay final draft")
+        )
+        done = saved_as_ticked(browser, draft_id, reviewed)
+        last = saved_whole(browser, "Religion 8")
+
+    assert JOINED_TICK.findall(review_form(asked)) == [" checked"]
+    assert units_ticked(asked) == tick
+    assert actions_of(asked) == ["review"]
+    assert checked_destinations(asked) == []
+    assert [said for said in offered_words(asked) if said.startswith("Short essay outline,")]
+    assert units_ticked(reviewed) == tick
+    assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+    assert sorted(row[0].title for row in last) == [
+        "Short essay final draft",
+        "Short essay outline",
+    ]
+    assert [one for one in last if one in whole] == whole
+
+
+def test_a_save_with_no_destination_chosen_leaves_the_retitled_essay_unchosen(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retitled essay asked again: a hand-made Save with nothing chosen writes no homework
+    and the page it returns has nothing chosen, its tick kept."""
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(
+            browser, monkeypatch, essay_answer(), {"title": "Short essay outline"}, note_ticked=True
+        )
+        whole = saved_whole(browser, "Religion 8")
+        draft_id, page = read_again(browser, monkeypatch, essay_answer())
+        choose = {**destination_starting(page, "Short essay outline"), joined_field(page): "1"}
+        chosen = reviewed_storing_nothing(browser, draft_id, page, choose)
+        asked, tick = title_typed_with_the_tick_sent(
+            browser, draft_id, chosen, "Short essay final draft"
+        )
+        stood = save_the_page_does_not_offer(browser, draft_id, asked)
+        last = saved_whole(browser, "Religion 8")
+
+    assert checked_destinations(stood) == []
+    assert actions_of(stood) == ["review"]
+    assert units_ticked(stood) == tick
+    assert last == whole
+
+
+def test_the_essay_retitled_as_another_saved_row_lists_both_and_chooses_neither(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The essay retitled with the exact title of another saved row: that row is listed by its
+    name, the row chosen before stays listed, neither is chosen, and the saved row chosen again
+    goes Review changes, then one Save, with both saved rows as they were."""
+    report = homework_answer(
+        cards=[
+            homework_card(
+                course="Religion 8",
+                title="Book report",
+                instruction="Read chapter two.",
+                footer="Due (10/9/2026)",
+            )
+        ]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(
+            browser, monkeypatch, essay_answer(), {"title": "Short essay outline"}, note_ticked=True
+        )
+        earlier, page = read_review(browser, monkeypatch, (GREEN, report))
+        page = answered(browser, earlier, page)
+        new_report = reviewed_storing_nothing(
+            browser, earlier, page, destination_starting(page, "A new Book report")
+        )
+        send(browser, earlier, page_post(new_report, "save", tick=units_on(new_report)))
+        whole = saved_whole(browser, "Religion 8")
+        draft_id, page = read_again(browser, monkeypatch, essay_answer())
+        choose = {**destination_starting(page, "Short essay outline"), joined_field(page): "1"}
+        chosen = reviewed_storing_nothing(browser, draft_id, page, choose)
+        asked, tick = title_typed_with_the_tick_sent(browser, draft_id, chosen, "Book report")
+        reviewed = reviewed_storing_nothing(
+            browser, draft_id, asked, destination_starting(asked, "Short essay outline,")
+        )
+        done = saved_as_ticked(browser, draft_id, reviewed)
+        last = saved_whole(browser, "Religion 8")
+
+    assert units_ticked(asked) == tick
+    assert actions_of(asked) == ["review"]
+    assert checked_destinations(asked) == []
+    offered = offered_words(asked)
+    assert [said for said in offered if said.startswith("Book report,")], offered
+    assert [said for said in offered if said.startswith("Short essay outline,")], offered
+    assert not says(done, imports.PRESS_SAID["none_chosen"]), import_review_cases.page_text(done)
+    assert sorted(row[0].title for row in last) == ["Book report", "Short essay outline"]
+    assert [row[0].assignment_id for row in last] == [row[0].assignment_id for row in whole]
+
+
+def test_a_row_named_only_by_typing_is_asked_again_and_keep_chooses_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card with no saved row as read, typed to a saved row's title, that row chosen, then
+    typed to another title: nothing is listed, New is not preselected and Review changes stays
+    the action; Keep these answers with nothing chosen leaves it unchosen."""
+    report = homework_answer(
+        cards=[homework_card(title="Book report", instruction="Read chapter two.")]
+    )
+    card = homework_answer(cards=[homework_card(title="Essay", instruction="Write it.")])
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = read_review(browser, monkeypatch, (GREEN, report))
+        page = answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, card))
+        page = answered(browser, draft_id, page)
+        box = f"correct:{box_subject(page, 'title')}"
+        typed = {box: "Book report"}
+        opened = opened_for_typing(browser, draft_id, page, typed)
+        named = send(browser, draft_id, page_post(opened, "review", typed=typed)).text
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, named, destination_starting(named, "Book report,")
+        )
+        asked, _ = title_typed_with_the_tick_sent(browser, draft_id, chosen, "Essay two")
+        kept = send(browser, draft_id, page_post(asked, "keep", tick=units_ticked(asked))).text
+
+    assert checked_destinations(asked) == []
+    assert actions_of(asked) == ["review"]
+    assert checked_destinations(kept) == []
+    assert actions_of(kept) == ["review"]
+
+
+def test_a_family_changed_date_read_again_reviews_before_one_save_with_the_group_ticked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The essay saved with the family's due date, read again and its saved row chosen: Review
+    changes asks the date with nothing stored; the date answered and the group ticked, one Save
+    writes nothing new."""
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(
+            browser, monkeypatch, essay_answer(), {"due": "2026-10-13"}, note_ticked=True
+        )
+        whole = saved_whole(browser, "Religion 8")
+        draft_id, page = read_again(browser, monkeypatch, essay_answer())
+        asked = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, "Short essay, due Tue 10/13")
+        )
+        [question] = fields_named(review_form(asked), "answer:due:")
+        sent = page_post(
+            asked,
+            "save",
+            choose={f"answer:due:{question}": "2026-10-13"},
+            tick=units_on(asked),
+        )
+        done = followed(browser, send(browser, draft_id, sent))
+        last = saved_whole(browser, "Religion 8")
+
+    assert actions_of(asked) == ["save"]
+    assert says(done, imports.counted(0, 0, 1, 0)), import_review_cases.page_text(done)
+    assert last == whole
+
+
+def test_a_wordless_card_on_a_saved_rows_date_never_says_the_row_has_its_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card read with no words under a saved row's class and due date, asked same or new: the
+    saved row is never said to have the card's words. Asked with nothing chosen, Review changes
+    stays the action; a new one chosen goes Review changes, then one Save writes one row."""
+    first = homework_answer(cards=[homework_card()])
+    wordless = homework_answer(cards=[homework_card(title="Grammar drill", instruction=None)])
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = read_review(browser, monkeypatch, (RED, first))
+        page = answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, wordless))
+        page = answered(browser, draft_id, page)
+        unanswered = reviewed_storing_nothing(browser, draft_id, page, {})
+        reviewed = reviewed_storing_nothing(
+            browser, draft_id, unanswered, destination_starting(unanswered, "A new Grammar drill")
+        )
+        sent = page_post(reviewed, "save", tick=units_on(reviewed))
+        done = followed(browser, send(browser, draft_id, sent))
+
+    assert screenshot_page.SAID["has_words"] not in html.unescape(review_form(page))
+    assert actions_of(page) == ["review"]
+    assert checked_destinations(unanswered) == []
+    assert actions_of(unanswered) == ["review"]
+    assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+
+
+def test_no_assigned_date_given_is_what_the_closed_card_says(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card read with an assigned date, "No assigned date was given" ticked and Review changes
+    pressed: the closed card names that answer and never the date as read, and one Save writes
+    no assigned date."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, page)
+        subject = box_subject(page, "assigned")
+        opened = import_review_cases.open_cards(
+            browser, draft_id, page, import_review_cases.every_press_to_correct(page)[:1]
+        )
+        sent = page_post(
+            opened,
+            "review",
+            typed={f"correct:{subject}": ""},
+            choose={f"none:{subject}": "none"},
+            tick=units_on(page),
+        )
+        reviewed = send(browser, draft_id, sent).text
+        done = saved_as_ticked(browser, draft_id, reviewed)
+        [row] = saved_whole(browser, "English 8")
+
+    closed = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", review_form(reviewed))).split())
+    label = screenshot_page.BOX_LABELS["assigned"]
+    assert f"{label}: {screenshot_page.SAID['no_assigned_given']}" in closed
+    assert "The date as read" not in closed
+    assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+    assert row[0].assigned_on is None
+
+
+@pytest.mark.parametrize("choice", ["saved", "new"])
+def test_choosing_where_a_card_goes_selects_it_on_review_and_one_save_finishes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, choice: str
+) -> None:
+    """A card asked same or new, its group offering no tick: the destination chosen and Review
+    changes pressed shows the group ticked with every table as it was, and the one Save the page
+    offers finishes it. The saved row chosen writes nothing new; a new one chosen writes exactly
+    one row."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, answer, {"title": "Corrected One"})
+        whole = saved_whole(browser, "English 8")
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        words = "Corrected One" if choice == "saved" else "A new Sentence Composing"
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, words)
+        )
+        done = saved_as_ticked(browser, draft_id, chosen)
+        last = saved_whole(browser, "English 8")
+
+    assert units_on(page) == []
+    assert actions_of(chosen) == ["save"]
+    assert units_ticked(chosen) == units_on(chosen) != []
+    assert not says(done, imports.PRESS_SAID["none_chosen"]), import_review_cases.page_text(done)
+    if choice == "saved":
+        assert says(done, imports.counted(0, 0, 1, 0)), import_review_cases.page_text(done)
+        assert last == whole
+    else:
+        assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+        assert len(last) == 2
+        assert [one for one in last if one in whole] == whole
+
+
+def test_a_chosen_row_that_raises_its_due_date_stays_selected_through_one_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The essay saved with the family's due date, read again and its saved row chosen: Review
+    changes asks the date with the group ticked and nothing stored; the date answered, the one
+    Save writes nothing new."""
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(
+            browser, monkeypatch, essay_answer(), {"due": "2026-10-13"}, note_ticked=True
+        )
+        whole = saved_whole(browser, "Religion 8")
+        draft_id, page = read_again(browser, monkeypatch, essay_answer())
+        asked = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, "Short essay, due Tue 10/13")
+        )
+        [question] = fields_named(review_form(asked), "answer:due:")
+        sent = page_post(
+            asked,
+            "save",
+            choose={f"answer:due:{question}": "2026-10-13"},
+            tick=units_ticked(asked),
+        )
+        done = followed(browser, send(browser, draft_id, sent))
+        last = saved_whole(browser, "Religion 8")
+
+    assert actions_of(asked) == ["save"]
+    assert units_ticked(asked) == units_on(asked) != []
+    assert says(done, imports.counted(0, 0, 1, 0)), import_review_cases.page_text(done)
+    assert last == whole
+
+
+def test_a_new_assignment_chosen_on_a_saved_rows_date_is_selected_for_one_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card read with no words on a saved row's class and due date, asked same or new: a new
+    one chosen and Review changes pressed shows the group ticked, and one Save writes one row."""
+    first = homework_answer(cards=[homework_card()])
+    wordless = homework_answer(cards=[homework_card(title="Grammar drill", instruction=None)])
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = read_review(browser, monkeypatch, (RED, first))
+        page = answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, wordless))
+        page = answered(browser, draft_id, page)
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, "A new Grammar drill")
+        )
+        done = saved_as_ticked(browser, draft_id, chosen)
+        rows = english(browser)
+
+    assert units_on(page) == []
+    assert units_ticked(chosen) == units_on(chosen) != []
+    assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+    assert sorted(title for title, _ in rows) == ["Grammar drill", "Sentence Composing"]
+
+
+def test_a_chosen_card_unticked_on_review_stays_unticked_and_save_writes_nothing_for_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A destination chosen selects its group on the page Review changes returns; the family's
+    untick then stands through each later Review changes, whose destination is unchanged, and a
+    Save with nothing ticked writes no assignment."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, answer, {"title": "Corrected One"})
+        whole = saved_whole(browser, "English 8")
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, page, destination_starting(page, "A new Sentence Composing")
+        )
+        before = import_review_cases.every_row(browser)
+        unticked = send(browser, draft_id, page_post(chosen, "review")).text
+        again = send(browser, draft_id, page_post(unticked, "review")).text
+        unchanged = import_review_cases.every_row(browser) == before
+        done = followed(browser, send(browser, draft_id, page_post(again, "save")))
+        last = saved_whole(browser, "English 8")
+
+    assert units_ticked(chosen) == units_on(chosen) != []
+    assert units_on(unticked) == units_on(chosen)
+    assert units_ticked(unticked) == []
+    assert units_ticked(again) == []
+    assert unchanged
+    assert says(done, imports.PRESS_SAID["none_chosen"]), import_review_cases.page_text(done)
+    assert last == whole
+
+
+@pytest.mark.parametrize("how", ["kept", "reopened"])
+def test_a_destination_restored_from_what_is_stored_selects_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """A destination held by Keep these answers, or by Save review for later with its group
+    unticked and the review reopened, comes back chosen from what is stored: that page and Review
+    changes from it leave the group unticked. Another destination chosen there selects it."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, answer, {"title": "Corrected One"})
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        choose = destination_starting(page, "Corrected One")
+        if how == "kept":
+            restored = send(browser, draft_id, page_post(page, "keep", choose=choose)).text
+        else:
+            chosen = reviewed_storing_nothing(browser, draft_id, page, choose)
+            followed(browser, send(browser, draft_id, page_post(chosen, "later")))
+            restored = browser.get(f"/parent/imports/{draft_id}").text
+        reviewed = send(browser, draft_id, page_post(restored, "review")).text
+        other = reviewed_storing_nothing(
+            browser, draft_id, reviewed, destination_starting(reviewed, "A new Sentence Composing")
+        )
+
+    assert [said[:13] for said in checked_destinations(restored)] == ["Corrected One"]
+    assert units_ticked(restored) == []
+    assert units_ticked(reviewed) == []
+    assert units_ticked(other) == units_on(other) != []
+
+
+def test_a_default_carried_forward_selects_nothing_and_a_choice_made_after_it_does(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved card read again starts on its default with its group ticked. Unticked, the default
+    carried through two Review changes selects nothing; another destination chosen then selects
+    the group."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        unticked = send(browser, draft_id, page_post(page, "review")).text
+        carried_on = send(browser, draft_id, page_post(unticked, "review")).text
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, carried_on, destination_starting(carried_on, "A new Sentence")
+        )
+
+    assert units_ticked(page) == units_on(page) != []
+    assert units_ticked(unticked) == []
+    assert units_ticked(carried_on) == []
+    assert units_ticked(chosen) == units_on(chosen) != []
+
+
+@pytest.mark.parametrize("ticked", [True, False])
+def test_choosing_one_cards_destination_leaves_other_ticks_as_they_were(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ticked: bool
+) -> None:
+    """The essay asked same or new beside a second assignment and its joined note: choosing the
+    essay's destination selects the essay's group alone. The second assignment's tick and the
+    joined note's tick stay as the post sent them, ticked or unticked."""
+    second = homework_card(
+        course="Science 8", title="Lab write-up", instruction="Finish it.", y_top=520, y_bottom=600
+    )
+    both = homework_answer(cards=[*essay_answer()["cards"], second])  # type: ignore[misc]
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(
+            browser, monkeypatch, essay_answer(), {"title": "Short essay outline"}, note_ticked=True
+        )
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, both))
+        page = answered(browser, draft_id, page)
+        [other] = units_on(page)
+        joined = joined_field(page)
+        choose = destination_starting(page, "A new Short essay")
+        sent = page_post(
+            page,
+            "review",
+            choose={**choose, joined: "1"} if ticked else choose,
+            tick=[other] if ticked else [],
+        )
+        reviewed = send(browser, draft_id, sent).text
+
+    assert JOINED_TICK.findall(review_form(page)) == [""]
+    [essay] = [unit for unit in units_on(reviewed) if unit != other]
+    assert sorted(units_ticked(reviewed)) == sorted([essay, other] if ticked else [essay])
+    assert JOINED_TICK.findall(review_form(reviewed)) == [" checked" if ticked else ""]
+
+
+def test_a_choice_and_an_untick_in_one_post_leave_the_group_unticked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page that shows the group ticked, posted with another destination chosen and the tick
+    left off: the family's untick stands. From that page, with the group unticked, a destination
+    chosen selects the group."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        choose = destination_starting(page, "A new Sentence")
+        left_off = send(browser, draft_id, page_post(page, "review", choose=choose)).text
+        chosen = reviewed_storing_nothing(
+            browser, draft_id, left_off, destination_starting(left_off, "Sentence Composing,")
+        )
+
+    assert units_ticked(page) == units_on(page) != []
+    assert [said[:14] for said in checked_destinations(left_off)] == ["A new Sentence"]
+    assert units_ticked(left_off) == []
+    assert units_ticked(chosen) == units_on(chosen) != []
+
+
+def test_limitation_a_corrected_class_read_again_proposes_new_and_can_save_a_duplicate(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The accepted limitation for this release, pinned so that it stays visible; the second row
+    is not the behavior a family wants. A card saved with its class corrected, the same screenshot
+    read again: New is proposed, "Find under another name" is offered, and saving the proposed New
+    writes a second row."""
+    answer = homework_answer(cards=[homework_card()])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(browser, monkeypatch, answer, {"course": "Language Arts 8"})
+        draft_id, page = read_again(browser, monkeypatch, answer)
+        done = saved_as_ticked(browser, draft_id, page)
+        rows = sorted(
+            (a.course, a.title)
+            for a in state_of(browser).project_state.all_assignments()
+            if a.title == "Sentence Composing"
+        )
+
+    assert checked_destinations(page) == ["A new Sentence Composing (1)"]
+    assert screenshot_page.SAID["find"] in html.unescape(review_form(page))
+    assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+    assert rows == [("English 8", "Sentence Composing"), ("Language Arts 8", "Sentence Composing")]
+
+
+def test_limitation_a_corrected_title_and_assigned_date_with_changed_words_proposes_new_and_can_save_a_duplicate(  # noqa: E501
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The accepted limitation for this release, pinned so that it stays visible; the second row
+    is not the behavior a family wants. A card saved with its title and assigned date corrected,
+    read again with the school's words changed and the same due date: New is proposed, "Find under
+    another name" is offered, and saving the proposed New writes a second row."""
+    first = homework_answer(cards=[homework_card()])
+    changed = homework_answer(cards=[homework_card(instruction="Complete pages 20 to 24.")])
+    with here(open_settings(tmp_path)) as browser:
+        opened_typed_and_saved(
+            browser,
+            monkeypatch,
+            first,
+            {"title": "Corrected One", "assigned": "2026-10-06"},
+        )
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, changed))
+        page = answered(browser, draft_id, page)
+        done = saved_as_ticked(browser, draft_id, page)
+        rows = english(browser)
+
+    assert checked_destinations(page) == ["A new Sentence Composing (1)"]
+    assert screenshot_page.SAID["find"] in html.unescape(review_form(page))
+    assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
+    assert sorted(rows, key=repr) == [
+        ("Corrected One", date(2026, 10, 8)),
+        ("Sentence Composing", date(2026, 10, 8)),
+    ]

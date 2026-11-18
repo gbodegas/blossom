@@ -19,11 +19,13 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
 from blossom.screenshot_page import (
+    CHOSEN_SHOWN,
     CORRECT_PRESS,
     EMPTY,
     INSTRUCTIONS_ASKED,
     OPEN_MARK,
     SHOWN,
+    TICKED_SHOWN,
     UNRESOLVED,
     PostRefused,
     answer_field,
@@ -166,6 +168,19 @@ class ReviewPost:
     unshown: Mapping[tuple[str, str], str | None] = dataclasses.field(default_factory=dict)
     """Each correction, by key and field, as posted, where its page didn't sign it as shown on
     the card: checked by a Save against the saved progress before any store, on any group."""
+    unchosen: frozenset[str] = frozenset()
+    """The cards, by piece name, whose destination its page asked with nothing chosen and no page
+    default, left unchosen by this press: the page it returns chooses nothing for them."""
+    retaken: frozenset[str] = frozenset()
+    """The cards, by piece name, whose destination this press's own typing left offered only
+    through the card as read: taken back from its answers, and asked again."""
+    chosen_here: frozenset[str] = frozenset()
+    """The cards, by piece name, whose posted destination differs from the one its page signed as
+    shown chosen, a card its page showed with none chosen included: the family's choice on this
+    press, never an answer restored or a default carried forward."""
+    left_off: frozenset[str] = frozenset()
+    """The cards, by piece name, of each group its page signed as shown ticked and this press did
+    not tick: the family's untick, which a destination chosen on the same press never overrides."""
 
     @property
     def refused(self) -> bool:
@@ -195,6 +210,8 @@ WITHDRAWABLE: Final = (
 )
 """The answer fields, by prefix, a press takes back when it posts none of their boxes: each is
 a set of checkboxes, so a box left unticked sends nothing. A joined note's tick is one."""
+DESTINATION_FIELD: Final = "answer:destination:"
+"""What starts the name of a card's destination field."""
 JOINED_PREFIX: Final = "answer:joined:"
 """A joined note's tick's field, by prefix."""
 SEVERAL_PREFIXES: Final = ("answer:instructions:", JOINED_PREFIX)
@@ -790,6 +807,25 @@ def read_review(
             if shown_digest(value)
             not in offered.get(SHOWN + json.dumps([key, field], separators=(",", ":")), ())
         },
+        unchosen=frozenset(
+            name.removeprefix(DESTINATION_FIELD)
+            for name in offered
+            if name.startswith(DESTINATION_FIELD)
+            and name not in chosen
+            and name.removeprefix(DESTINATION_FIELD) not in defaults
+        ),
+        chosen_here=frozenset(
+            answer.subject
+            for answer in answers
+            if answer.kind == "destination"
+            and answer.value not in offered.get(CHOSEN_SHOWN + answer.subject, ())
+        ),
+        left_off=frozenset(
+            piece
+            for name in offered
+            if name.startswith(TICKED_SHOWN) and name.removeprefix(TICKED_SHOWN) not in units
+            for piece in name.removeprefix(TICKED_SHOWN).split("+")
+        ),
     )
 
 
