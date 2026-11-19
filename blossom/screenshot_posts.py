@@ -232,10 +232,22 @@ class ReviewPost:
 
     @property
     def carries_its_page(self) -> bool:
-        """Whether this press, any but Save, is refused for a box it can't take as posted, so its
-        page's signatures travel on as signed. What was chosen and reviewed stands, and the next
-        accepted press decides on the words it finds."""
-        return self.press != "save" and bool(self.too_long or self.needed or self.both)
+        """Whether this press, any but Save, is refused for a box it can't take as posted, for an
+        instruction ticked beside "None of these apply", or for a field sent twice or marked so and
+        left unanswered, so its page's signatures travel on as signed: no word typed on it is
+        signed as shown, and a Save from the page it returns with that typing is refused as not
+        reviewed. What was chosen and reviewed stands, and the next accepted press decides on the
+        words it finds."""
+        return self.press != "save" and bool(
+            self.too_long
+            or self.needed
+            or self.both
+            or self.conflicted
+            or self.sent_twice
+            or self.unanswered
+            or self.twice
+            or self.left_open
+        )
 
 
 WITHDRAWABLE: Final = (

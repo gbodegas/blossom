@@ -2717,8 +2717,9 @@ def typing_asks_again(review: ReviewState, post: ReviewPost) -> ReviewPost:
     digests (``ReviewPost.shown_signed``), so words a review showed count as reviewed until they
     change, and words changed and changed back take nothing back. The page asks again with nothing
     chosen, and the same choice made on the page that shows the typing stands. Correct what was
-    read gives every choice back as posted, and so does a press refused for a box it can't take
-    (``ReviewPost.carries_its_page``), the next accepted press deciding. Worked out from the read
+    read gives every choice back as posted, and so does a press refused for a box it can't take, a
+    conflict or a field sent twice (``ReviewPost.carries_its_page``), the next accepted press
+    deciding. Worked out from the read
     the post was checked against, with no further read of the record."""
     if post.press.startswith(CORRECT_PRESS) or post.carries_its_page or not post.unshown:
         return post
@@ -2822,8 +2823,8 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         chosen = (
             post.chosen_here if post.press == "save" and post.version == found.version else None
         )
-        # A Correct press refused whole, or any press refused for a box, shows no review of its
-        # typing: its page's signatures travel on.
+        # A Correct press refused whole, and any press but Save refused for a box, a conflict or a
+        # field sent twice, show no review of their typing: their page's signatures travel on.
         carries = post.press.startswith(CORRECT_PRESS) or post.carries_its_page
         return recorded or await with_typing(
             request,

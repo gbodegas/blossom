@@ -1827,7 +1827,8 @@ def rows_shown(
     with the values sent) names both at that field, the box's fold open, none of the answer's
     options chosen. The cards named in ``opened``, and any with a box refused or marked, show
     their boxes open. A page that shows no review of its typing (Correct what was read, any press
-    but Save refused for a box, or a Save refused for corrections no review showed) signs each
+    but Save refused for a box, a conflict or a field sent twice, or a Save refused for
+    corrections no review showed) signs each
     group's digests as its post carried them (``signed_digests``) and each correction its post's
     page signed as shown as that page signed it (``shown_signed``), whatever the box holds, and
     signs no typing of its own: words a review showed stay reviewed, and a Save from it with other

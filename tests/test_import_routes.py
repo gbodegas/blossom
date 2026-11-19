@@ -17690,9 +17690,12 @@ def test_a_conflict_gives_back_typing_on_a_row_another_tab_saved(
 def test_a_conflict_with_typing_on_the_same_card_keeps_the_typing_and_the_sentence(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
-    """A limit: typing on that card changes what it asks, so the rows it comes back to don't hold
-    that question, as they wouldn't with no conflict. The sentence at the top says why nothing was
-    kept, the typing stays, and nothing is written."""
+    """On Save, typing on that card changes what it asks, so the rows it comes back to don't hold
+    that question, as they wouldn't with no conflict, and the page says some choices can't be
+    shown. Keep these answers and Save review for later take no destination back, so the question
+    stays on its card with both ticks as posted and the sentence in its fieldset, and no line says
+    a choice can't be shown. Each press says at the top why nothing was kept, the typing stays,
+    and nothing is written."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page, piece = landing_with_a_question(
             browser, monkeypatch, opened_and_typed="New words typed."
@@ -17701,7 +17704,7 @@ def test_a_conflict_with_typing_on_the_same_card_keeps_the_typing_and_the_senten
             browser, draft_id, page, {correct_box(piece, "title"): "A New Title"}
         )
         before = on_the_record(browser)
-        posted, field, _ = both_ticked(
+        posted, field, value = both_ticked(
             page,
             press,
             typed={correct_box(piece, "title"): "A New Title"},
@@ -17713,8 +17716,16 @@ def test_a_conflict_with_typing_on_the_same_card_keeps_the_typing_and_the_senten
 
     assert answer.status_code == 422, answer.text[:400]
     assert CONFLICT_SAID in page_text(answer)
-    assert "Some of your choices can't be shown on this page." in page_text(answer)
-    assert fieldset_of(answer.text, field) is None
+    block = fieldset_of(answer.text, field)
+    if press == "save":
+        assert "Some of your choices can't be shown on this page." in page_text(answer)
+        assert block is None
+    else:
+        assert "Some of your choices can't be shown on this page." not in page_text(answer)
+        assert block is not None
+        assert CONFLICT_SAID in html.unescape(block)
+        ticked = [option for option, shown in options_of(answer.text, field) if shown]
+        assert sorted(ticked) == sorted([value, ""])
     assert "A New Title" in html.unescape(answer.text)
     assert before == after
 
@@ -18664,28 +18675,40 @@ def test_a_conflict_s_page_doesn_t_get_past_another_tab_s_save_for_later(
 def test_a_choice_that_can_t_carry_is_said_for_any_cause(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
-    """Typing on the card takes its question off the page, so its ticks can't carry. Nothing changed
-    before she answered, so the sentence says neither that nor what to answer."""
+    """On Save, typing on the card takes its question off the page, so its ticks can't carry.
+    Keep these answers and Save review for later take no destination back, so the question stays
+    on its card with both ticks as posted and the sentence in its fieldset, and nothing says a
+    choice can't carry. Nothing changed before she answered, so no sentence says that or what to
+    answer."""
     with here(open_settings(tmp_path)) as browser:
         review = a_review_of_choices(browser, monkeypatch)
         before = on_the_record(browser)
         typing = {correct_box(review.card, "title"): "A New Title"}
         page = opened_for_typing(browser, review.draft_id, review.page, typing)
+        conflict = the_conflict_on(page, review.question)
         # An injected conflict, sent as the raw POST it is: the refusal is this press's own.
         answer = send(
             browser,
             review.draft_id,
-            shown_post(page, press, typed=typing, add=the_conflict_on(page, review.question)),
+            shown_post(page, press, typed=typing, add=conflict),
         )
         after = on_the_record(browser)
 
     assert answer.status_code == 422, answer.text[:400]
     assert before == after
-    assert NOT_CARRIED in page_text(answer)
     assert CONFLICT_SAID in page_text(answer)
     assert "changed before you answered" not in page_text(answer)
     assert imports.OUT_OF_DATE not in page_text(answer)
-    assert fieldset_of(answer.text, review.question) is None
+    block = fieldset_of(answer.text, review.question)
+    if press == "save":
+        assert NOT_CARRIED in page_text(answer)
+        assert block is None
+    else:
+        assert NOT_CARRIED not in page_text(answer)
+        assert block is not None
+        assert CONFLICT_SAID in html.unescape(block)
+        ticked = [option for option, shown in options_of(answer.text, review.question) if shown]
+        assert sorted(ticked) == sorted(value for _, value in conflict)
 
 
 @pytest.mark.parametrize("press", THE_PRESSES)
@@ -54758,6 +54781,271 @@ def test_a_group_the_page_asks_about_proposes_no_update_until_review_changes_bri
     assert screenshot_page.SAID["new_title"].format(title="Delta") in shown_again, shown_again
     assert says(done, imports.counted(*counts)), import_review_cases.page_text(done)
     assert titles == written
+
+
+# ------------------------------------- a press refused for a conflict or a field sent twice
+
+NEW_WORDS: Final = "Beta two"
+"""The title typed on the new card on a press refused for a conflict or a field sent twice."""
+TWO_CLASSES: Final = ("Art 8", "Music 8")
+"""The two values the new card's class box is sent with on the raw path."""
+
+
+def alpha_asks_its_instructions(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str]:
+    """Saved Alpha read again with instructions it doesn't hold beside a new Beta, "Delta" typed on
+    the first card and reviewed, its saved row and a new slot chosen and reviewed: which of its
+    instructions apply is asked. The review's id and the page."""
+    earlier, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=[alpha_card()])))
+    page = answered(browser, earlier, page)
+    send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+    again = homework_answer(
+        cards=[alpha_card(instruction="Alpha words, part two."), card_beside("Beta")]
+    )
+    draft_id, page = read_review(browser, monkeypatch, (BLUE, again))
+    page = answered(browser, draft_id, page)
+    typed = titles_typed_and_reviewed(browser, draft_id, page, ["Delta", None])
+    choose = saved_row_and_a_new_slot(typed, "Alpha")
+    shown = reviewed_storing_nothing(browser, draft_id, typed, choose)
+    instruction_values(shown)
+    return draft_id, shown
+
+
+def every_table_and_answer(browser: TestClient, draft_id: str) -> tuple[object, object]:
+    """Every table of the record, and the answers the draft holds."""
+    return import_review_cases.every_row(browser), stored_answers(browser, draft_id)
+
+
+def refused_for_a_conflict(
+    browser: TestClient, draft_id: str, page: str, press: str, typing: Mapping[str, str]
+) -> tuple[str, str, str]:
+    """``press`` sent from ``page`` with ``typing`` in its boxes and an instruction ticked beside
+    "None of these apply", on the raw path: refused whole with 422, every table and the draft's
+    answers as they were. The page it returns, the question's field and the instruction's value."""
+    before = every_table_and_answer(browser, draft_id)
+    posted, field, value = both_ticked(page, press, typed=typing, tick=units_ticked(page))
+    assert [sent for name, sent in posted if name == field] == [value, ""]
+    assert [sent for name, sent in posted if name == "press"] == [press]
+    answer = send(browser, draft_id, posted)
+    assert answer.status_code == 422, import_review_cases.page_text(answer.text)
+    assert CONFLICT_SAID in import_review_cases.page_text(answer.text)
+    assert every_table_and_answer(browser, draft_id) == before
+    return answer.text, field, value
+
+
+def refused_for_a_class_sent_twice(
+    browser: TestClient, draft_id: str, page: str, press: str, typing: Mapping[str, str]
+) -> str:
+    """``press`` sent from ``page`` with ``typing`` in its boxes and the second card's class box
+    sent twice with two classes, on the raw path: refused whole with 422, every table and the
+    draft's answers as they were. The page it returns."""
+    before = every_table_and_answer(browser, draft_id)
+    course = named_box(page, "course", 1)
+    fields = page_post(page, press, typed=typing, tick=units_ticked(page))
+    sent = import_review_cases.raw_post(
+        fields, removed=[course], added=[(course, value) for value in TWO_CLASSES]
+    )
+    assert [value for name, value in sent if name == course] == list(TWO_CLASSES)
+    assert [value for name, value in sent if name == "press"] == [press]
+    answer = send(browser, draft_id, sent)
+    assert answer.status_code == 422, import_review_cases.page_text(answer.text)
+    assert every_table_and_answer(browser, draft_id) == before
+    return answer.text
+
+
+def raw_save_changes_nothing(
+    browser: TestClient, draft_id: str, sent: Sequence[tuple[str, str]], box: str
+) -> str:
+    """A Save its page does not offer, sent on the raw path as ``sent`` with the new words in
+    ``box``: refused as not reviewed, every table and the draft's answers as they were."""
+    assert [value for name, value in sent if name == box] == [NEW_WORDS]
+    assert [value for name, value in sent if name == "press"] == ["save"]
+    before = every_table_and_answer(browser, draft_id)
+    done = followed(browser, send(browser, draft_id, import_review_cases.unoffered(sent)))
+    assert says(done, NOT_REVIEWED), import_review_cases.page_text(done)
+    assert every_table_and_answer(browser, draft_id) == before
+    return done
+
+
+def new_words_unsigned(refused: str, opened: str, box: str) -> None:
+    """The refused page holds the new words in their box and signs what the page it was pressed
+    from signed, and nothing newly typed."""
+    assert box_holds(refused, box) == NEW_WORDS
+    assert signed_as_shown(refused) == signed_as_shown(opened)
+    assert digests_signed(refused) == digests_signed(opened)
+    new = screenshot_page.shown_digest(NEW_WORDS)
+    assert not [name for name, signed in signed_as_shown(refused).items() if new in signed]
+
+
+@pytest.mark.parametrize("press", PRESSES_THAT_STORE_OR_REVIEW)
+def test_new_words_on_a_press_refused_for_an_instruction_conflict_stay_unreviewed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The new card's title typed "Beta two" and an instruction ticked beside "None of these apply":
+    the refused page signs no new words, and a Save sent on the raw path from it with the conflict
+    put right is refused before any store, every table and the draft's answers unchanged."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = alpha_asks_its_instructions(browser, monkeypatch)
+        opened = correct_pressed(browser, draft_id, shown, 1)
+        box = title_box(opened, 1)
+        refused, field, value = refused_for_a_conflict(
+            browser, draft_id, opened, press, {box: NEW_WORDS}
+        )
+        new_words_unsigned(refused, opened, box)
+        assert actions_of(refused) == ["review"], import_review_cases.page_text(refused)
+        sent = shown_post(refused, "save", drop=[(field, value)])
+        assert [answer for name, answer in sent if name == field] == [""]
+        raw_save_changes_nothing(browser, draft_id, sent, box)
+        titles = every_title(browser)
+
+    assert titles == ["Alpha"]
+
+
+@pytest.mark.parametrize("press", PRESSES_THAT_STORE_OR_REVIEW)
+def test_new_words_on_a_press_refused_for_a_field_sent_twice_stay_unreviewed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The new card's title typed "Beta two" and its class box sent twice: the refused page signs no
+    new words, and a Save sent on the raw path from it with the class sent once is refused before
+    any store, every table and the draft's answers unchanged."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = rename_reviewed(browser, monkeypatch)
+        opened = correct_pressed(browser, draft_id, shown, 1)
+        box, course = title_box(opened, 1), named_box(opened, "course", 1)
+        refused = refused_for_a_class_sent_twice(browser, draft_id, opened, press, {box: NEW_WORDS})
+        new_words_unsigned(refused, opened, box)
+        assert actions_of(refused) == ["review"], import_review_cases.page_text(refused)
+        sent = page_post(refused, "save", typed={course: "English 8"}, tick=units_ticked(refused))
+        assert [value for name, value in sent if name == course] == ["English 8"]
+        raw_save_changes_nothing(browser, draft_id, sent, box)
+        titles = every_title(browser)
+
+    assert titles == ["Alpha"]
+
+
+@pytest.mark.parametrize("refusal", ["instruction conflict", "field sent twice"])
+def test_after_the_refusal_review_changes_shows_the_new_words_and_one_save_writes_them(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, refusal: str
+) -> None:
+    """From the refused page, the conflict put right or the class sent once, Review changes shows
+    "Beta two" and signs it as shown, and one Save writes Beta two and Delta once."""
+    with here(open_settings(tmp_path)) as browser:
+        if refusal == "instruction conflict":
+            draft_id, shown = alpha_asks_its_instructions(browser, monkeypatch)
+            opened = correct_pressed(browser, draft_id, shown, 1)
+            box = title_box(opened, 1)
+            refused, field, value = refused_for_a_conflict(
+                browser, draft_id, opened, "review", {box: NEW_WORDS}
+            )
+            sent = shown_post(refused, "review", drop=[(field, value)])
+            before = import_review_cases.every_row(browser)
+            answer = send(browser, draft_id, sent)
+            assert answer.status_code == 200, import_review_cases.page_text(answer.text)
+            assert import_review_cases.every_row(browser) == before
+            back = answer.text
+        else:
+            draft_id, shown = rename_reviewed(browser, monkeypatch)
+            opened = correct_pressed(browser, draft_id, shown, 1)
+            box, course = title_box(opened, 1), named_box(opened, "course", 1)
+            refused = refused_for_a_class_sent_twice(
+                browser, draft_id, opened, "review", {box: NEW_WORDS}
+            )
+            back = reviewed_with_typing(browser, draft_id, refused, {course: "English 8"})
+        signed = signed_as_shown(back).get(box.removeprefix("correct:"), frozenset())
+        alpha_stands(back)
+        done = saved_as_ticked(browser, draft_id, back)
+        titles = every_title(browser)
+
+    assert screenshot_page.shown_digest(NEW_WORDS) in signed, import_review_cases.page_text(back)
+    assert NEW_WORDS in import_review_cases.page_text(back)
+    assert says(done, imports.counted(1, 1, 0, 0)), import_review_cases.page_text(done)
+    assert titles == [NEW_WORDS, "Delta"]
+
+
+@pytest.mark.parametrize("press", PRESSES_THAT_STORE_OR_REVIEW)
+def test_a_conflict_refused_with_no_new_typing_keeps_the_destination_and_one_save_writes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Guard: the conflict refused with nothing newly typed, the words already reviewed stay
+    reviewed: saved Alpha stays chosen with no line, and the conflict put right, Review changes
+    and one Save write both rows once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = alpha_asks_its_instructions(browser, monkeypatch)
+        opened = correct_pressed(browser, draft_id, shown, 1)
+        refused, field, value = refused_for_a_conflict(browser, draft_id, opened, press, {})
+        alpha_stands(refused)
+        carried = signed_as_shown(refused) == signed_as_shown(opened)
+        back = send(browser, draft_id, shown_post(refused, "review", drop=[(field, value)]))
+        assert back.status_code == 200, import_review_cases.page_text(back.text)
+        alpha_stands(back.text)
+        done = saved_as_ticked(browser, draft_id, back.text)
+        titles = every_title(browser)
+
+    assert carried
+    assert says(done, imports.counted(1, 1, 0, 0)), import_review_cases.page_text(done)
+    assert titles == ["Beta", "Delta"]
+
+
+@pytest.mark.parametrize("press", PRESSES_THAT_STORE_OR_REVIEW)
+def test_new_words_on_the_chosen_card_refused_for_a_conflict_keep_the_destination_until_reviewed(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Gamma typed on Alpha's card and the conflict, refused: Alpha stays chosen with no line and
+    Gamma unsigned. The conflict put right, Review changes asks where the card goes with the line,
+    as its words changed; Alpha chosen and Review changes ask which of Alpha's instructions apply,
+    and one Save with that answered writes Beta and Gamma once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = alpha_asks_its_instructions(browser, monkeypatch)
+        opened = correct_pressed(browser, draft_id, shown, 0)
+        box = title_box(opened)
+        refused, field, value = refused_for_a_conflict(
+            browser, draft_id, opened, press, {box: "Gamma"}
+        )
+        alpha_stands(refused)
+        assert box_holds(refused, box) == "Gamma"
+        assert signed_as_shown(refused) == signed_as_shown(opened)
+        back = send(browser, draft_id, shown_post(refused, "review", drop=[(field, value)]))
+        assert back.status_code == 200, import_review_cases.page_text(back.text)
+        alpha_asked_again(back.text)
+        chosen = reviewed_storing_nothing(browser, draft_id, back.text, alpha_chosen(back.text))
+        alpha_stands(chosen)
+        assert actions_of(chosen) == ["save"], import_review_cases.page_text(chosen)
+        question, _ = instruction_values(chosen)
+        asked = [option for option, shown in options_of(chosen, question) if shown]
+        sent = shown_post(chosen, "save", add=[(question, "")])
+        done = followed(browser, send(browser, draft_id, sent))
+        titles = every_title(browser)
+
+    assert asked == [], import_review_cases.page_text(chosen)
+    assert "Still to answer: which instructions apply." in import_review_cases.page_text(chosen)
+    assert says(done, imports.counted(1, 1, 0, 0)), import_review_cases.page_text(done)
+    assert titles == ["Beta", "Gamma"]
+
+
+@pytest.mark.parametrize("press", PRESSES_THAT_STORE_OR_REVIEW)
+def test_reviewed_words_put_back_after_a_conflict_leave_the_destination_standing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Gamma typed on Alpha's card and the conflict, refused; Delta put back and the conflict put
+    right, Review changes: Alpha stands with no line, and one Save writes Beta and Delta once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = alpha_asks_its_instructions(browser, monkeypatch)
+        opened = correct_pressed(browser, draft_id, shown, 0)
+        box = title_box(opened)
+        refused, field, value = refused_for_a_conflict(
+            browser, draft_id, opened, press, {box: "Gamma"}
+        )
+        sent = shown_post(refused, "review", typed={box: "Delta"}, drop=[(field, value)])
+        assert [typed for name, typed in sent if name == box] == ["Delta"]
+        back = send(browser, draft_id, sent)
+        assert back.status_code == 200, import_review_cases.page_text(back.text)
+        alpha_stands(back.text)
+        done = saved_as_ticked(browser, draft_id, back.text)
+        titles = every_title(browser)
+
+    assert says(done, imports.counted(1, 1, 0, 0)), import_review_cases.page_text(done)
+    assert titles == ["Beta", "Delta"]
 
 
 THE_FIFTH: Final = date(2026, 10, 5)
