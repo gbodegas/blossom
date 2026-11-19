@@ -1821,6 +1821,7 @@ async def rows_of(
     twice: Mapping[str, tuple[str, ...]] | None = None,
     opened: frozenset[str] = frozenset(),
     signed_digests: Mapping[str, tuple[str, ...]] | None = None,
+    shown_signed: Mapping[str, tuple[str, ...]] | None = None,
     posted: ReviewPost | None = None,
     unchosen: frozenset[str] = frozenset(),
     retaken: frozenset[str] = frozenset(),
@@ -1843,7 +1844,8 @@ async def rows_of(
     one sent twice or marked so and left unanswered (``unresolved``) is offered as its actual
     choice, neither side chosen, until it is answered. A box or answer of one value it sent twice
     with different values (``twice``) names both at that field. The cards in ``opened`` show their
-    boxes open, and ``signed_digests`` are signed in place of the groups' own (``rows_shown``).
+    boxes open, and ``signed_digests`` are signed in place of the groups' own, with ``shown_signed``
+    in place of the corrections the page shows (``rows_shown``).
     With ``posted`` (a page that stores nothing), the proposal is worked out with those answers
     held as keeping them would hold them, nothing stored, so every question they raise is shown;
     on a page other than Review changes, with the page defaults it sent unchanged worked out as
@@ -1901,6 +1903,7 @@ async def rows_of(
         twice=twice,
         opened=opened,
         signed_digests=signed_digests,
+        shown_signed=shown_signed,
         retaken=retaken,
         chosen_here=chosen_here,
         left_off=left_off,
@@ -2708,10 +2711,13 @@ def with_selection_shown(post: ReviewPost, found: DraftSnapshot) -> ReviewPost:
 
 def typing_asks_again(review: ReviewState, post: ReviewPost) -> ReviewPost:
     """The post with each destination its own typing made stale taken back before anything holds
-    or stores it: a saved assignment chosen on a card whose newly typed correction leaves that
-    assignment offered only through the card as read. The page asks again with nothing chosen,
-    and the same choice made on the page that shows the typing stands. Correct what was read
-    gives every choice back as posted. Worked out from the read the post was checked against,
+    or stores it: a saved assignment chosen on a card whose words differ from those its page
+    signed as shown (``ReviewPost.unshown``), where that correction leaves the assignment offered
+    only through the card as read. A signature travels through every page that signs its post's
+    digests (``ReviewPost.shown_signed``), so words a review showed count as reviewed until they
+    change, and words changed and changed back take nothing back. The page asks again with nothing
+    chosen, and the same choice made on the page that shows the typing stands. Correct what was
+    read gives every choice back as posted. Worked out from the read the post was checked against,
     with no further read of the record."""
     if post.press.startswith(CORRECT_PRESS) or not post.unshown:
         return post
@@ -2815,6 +2821,8 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         chosen = (
             post.chosen_here if post.press == "save" and post.version == found.version else None
         )
+        # A Correct press refused whole shows no review of its typing, as one that comes back does.
+        correcting = post.press.startswith(CORRECT_PRESS)
         return recorded or await with_typing(
             request,
             state,
@@ -2824,6 +2832,7 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
             422,
             found=found,
             opened=frozenset(post.opened),
+            signed_digests=post.digests if correcting else None,
             held_answers=destinations_held(post),
         )
     if post.press == "review" or post.press.startswith(CORRECT_PRESS):
@@ -2887,8 +2896,9 @@ async def nothing_written(
 ) -> Response:
     """Correct what was read and Review changes, which write nothing and store no answer: Correct
     what was read comes back with that card's boxes open beside those already open, the typing,
-    choices and ticks as posted, each group's digests as the post carried them, and the post's
-    destinations held (``destinations_held``); Review changes comes back with every card closed
+    choices and ticks as posted, each group's digests and each correction shown as the post's page
+    signed them, and the post's destinations held (``destinations_held``); Review changes comes
+    back with every card closed
     and the corrected proposal signed, worked out with the post's answers held as keeping them
     would hold them (``as_kept``), so every question it raises is asked before Save and Save then
     writes it once."""
@@ -3288,7 +3298,8 @@ async def with_typing(
     its own transaction raised the review to (``saved``). A press that writes nothing by design,
     Correct what was read, Review changes, or a Save refused for corrections no review showed
     (``as_posted``), comes back with its choices as posted at the page's version, the cards in
-    ``opened`` open and ``signed_digests`` signed (``rows_of``). A page that stores nothing works
+    ``opened`` open and ``signed_digests`` signed with the corrections its post's page signed as
+    shown (``ReviewPost.shown_signed``, ``rows_of``). A page that stores nothing works
     its proposal out with the answers in ``held_answers`` held as keeping them would hold them,
     nothing stored: Review changes all its post's, and Correct what was read and each refusal that
     keeps the typing its post's destinations (``destinations_held``), so every question that
@@ -3392,6 +3403,7 @@ async def with_typing(
             twice={**post.twice, **post.left_open} if current else None,
             opened=opened,
             signed_digests=signed_digests if current else None,
+            shown_signed=post.shown_signed if current else None,
             posted=held_answers if current else None,
             unchosen=post.unchosen if current else frozenset(),
             retaken=post.retaken if current else frozenset(),

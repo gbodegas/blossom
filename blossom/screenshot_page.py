@@ -1809,6 +1809,7 @@ def rows_shown(
     twice: Mapping[str, tuple[str, ...]] | None = None,
     opened: frozenset[str] = frozenset(),
     signed_digests: Mapping[str, tuple[str, ...]] | None = None,
+    shown_signed: Mapping[str, tuple[str, ...]] | None = None,
     retaken: frozenset[str] = frozenset(),
     chosen_here: frozenset[str] = frozenset(),
     left_off: frozenset[str] = frozenset(),
@@ -1825,12 +1826,15 @@ def rows_shown(
     answer of one value a refused press sent twice with different values (``twice``, by field,
     with the values sent) names both at that field, the box's fold open, none of the answer's
     options chosen. The cards named in ``opened``, and any with a box refused or marked, show
-    their boxes open. A page that shows no review of its typing (Correct what was read, or a
-    Save refused for corrections no review showed) signs each group's digests as its post
-    carried them (``signed_digests``), so a Save from it with that typing is refused again. A
-    group the family ticked (``selected``) that waits for its destination keeps its tick, signed
-    with no digests, so the destination is the only thing asked. A card whose press's typing took
-    its destination back (``retaken``) says why it asks again. A group holding a card whose
+    their boxes open. A page that shows no review of its typing (Correct what was read, refused
+    or not, or a Save refused for corrections no review showed) signs each group's digests as its
+    post carried them (``signed_digests``) and each correction its post's page signed as shown as
+    that page signed it (``shown_signed``), whatever the box holds, and signs no typing of its
+    own: words a review showed stay reviewed, and a Save from it with other typing is refused
+    again. A group the family ticked (``selected``) that waits for its destination keeps its
+    tick, signed with no digests, so the destination is the only thing asked. A card whose press's
+    typing took its destination back (``retaken``) says why it asks again, and its group is kept
+    back as a held group is, whatever answer is stored for it. A group holding a card whose
     destination the press chose (``chosen_here``) is shown ticked, unless it holds a card of a
     group that press unticked (``left_off``). The page signs the destinations and ticks it shows,
     for the next press to tell a choice from an answer carried, and which groups it shows ready.
@@ -2059,7 +2063,7 @@ def rows_shown(
         # a destination whose effect is shown and signed (``unit_digests``), with any open
         # question one that effect already covers, so the answer and the tick save in one press.
         destination_asked = bool(unit.unanswered or unit.stale)
-        kept_back = bool(held_back & set(unit.unit))
+        kept_back = bool((held_back | retaken) & set(unit.unit))
         if kept_back:
             unsigned.add(unit_name(unit.unit))
         ready = (
@@ -2168,7 +2172,8 @@ def rows_shown(
                     if signed_digests is None and box_field in box_shown:
                         # The correction this page shows on the card, signed as shown, so a Save
                         # carrying one no review showed is told from it on any group, whether or
-                        # not the group has digests; signed only where the page signs its own.
+                        # not the group has digests; signed only where the page signs its own, a
+                        # page signing its post's digests carrying its post's (``shown_signed``).
                         as_shown = (shown_digest(box_shown[box_field]),)
                         asked_fields.append((SHOWN + box.subject, as_shown))
                     signed_marks += box.marks
@@ -2179,6 +2184,9 @@ def rows_shown(
             for question in block.questions:
                 asked_fields.append((question.field, [o[0] for o in question.options]))
                 signed_marks += question.marks
+    if signed_digests is not None:
+        # The words its post's page signed as shown travel as signed, whatever the boxes hold.
+        asked_fields += [(SHOWN + box, signed) for box, signed in (shown_signed or {}).items()]
     # An answer sent twice is marked below (``_answers_twice``) with the values sent.
     answers_asked = {name for name, _ in asked_fields if name.startswith("answer:")}
     signed_marks += [

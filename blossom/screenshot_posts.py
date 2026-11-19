@@ -170,6 +170,10 @@ class ReviewPost:
     unshown: Mapping[tuple[str, str], str | None] = dataclasses.field(default_factory=dict)
     """Each correction, by key and field, as posted, where its page didn't sign it as shown on
     the card: checked by a Save against the saved progress before any store, on any group."""
+    shown_signed: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """Each correction its page signed as shown on the card, by its box's subject, with the digests
+    signed: a page that signs this post's digests in place of its own signs these as they stand,
+    so words a review showed stay reviewed until a page signs its own."""
     unchosen: frozenset[str] = frozenset()
     """The cards, by piece name, whose destination its page asked with nothing chosen and no page
     default, left unchosen by this press: the page it returns chooses nothing for them."""
@@ -845,6 +849,11 @@ def read_review(
             for field, value in fields.items()
             if shown_digest(value)
             not in offered.get(SHOWN + json.dumps([key, field], separators=(",", ":")), ())
+        },
+        shown_signed={
+            name.removeprefix(SHOWN): tuple(sorted(values))
+            for name, values in offered.items()
+            if name.startswith(SHOWN)
         },
         unchosen=frozenset(
             name.removeprefix(DESTINATION_FIELD)
