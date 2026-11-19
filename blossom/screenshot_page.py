@@ -558,6 +558,10 @@ def carried_digest(words: str) -> str:
 
 SHOWN: Final = "shown:"
 """The signed list's name, before a box's key and field, of the correction its page shows for it."""
+BASIS: Final = "basis:"
+"""The signed list's name, before a box's key and field, of the correction a page drew as the
+basis of the choices it carries, signed apart from ``SHOWN``: a plain load signs the saved words
+so, and no review showed them."""
 CHOSEN_SHOWN: Final = "chosen:"
 """The signed list's name, before a piece's name, of the destination its page shows chosen."""
 TICKED_SHOWN: Final = "ticked:"
@@ -1109,6 +1113,10 @@ class UnitShown:
     """Whether a question is open on it."""
     still_open: tuple[str, ...] = ()
     """The questions left to answer on it, each as the preview names it, where it goes included."""
+    unreviewed: bool = False
+    """Whether a card of it shows a correction its page doesn't sign as shown: no review showed
+    those words, so the group is not ready and a Save carrying them is refused until Review
+    changes shows them."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1179,9 +1187,15 @@ class RowsShown:
 
     @property
     def offers_save(self) -> bool:
-        """Whether Save is offered: at least one group is ready and no card's boxes are open.
-        Another card may be asking; it stays unresolved and nothing is written for it."""
-        return not self.editing and any(unit.ready for unit in self.units)
+        """Whether Save is offered: at least one group is ready, no card's boxes are open, and no
+        card shows a correction the page doesn't sign as shown, as a Save carrying one on any
+        group is refused. Another card may be asking; it stays unresolved and nothing is written
+        for it."""
+        return (
+            not self.editing
+            and any(unit.ready for unit in self.units)
+            and not any(unit.unreviewed for unit in self.units)
+        )
 
     @property
     def offers_review(self) -> bool:
@@ -1814,6 +1828,8 @@ def rows_shown(
     chosen_here: frozenset[str] = frozenset(),
     left_off: frozenset[str] = frozenset(),
     held_back: frozenset[str] = frozenset(),
+    basis_signed: Mapping[str, tuple[str, ...]] | None = None,
+    held_moved: frozenset[str] = frozenset(),
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
@@ -1827,12 +1843,15 @@ def rows_shown(
     with the values sent) names both at that field, the box's fold open, none of the answer's
     options chosen. The cards named in ``opened``, and any with a box refused or marked, show
     their boxes open. A page that shows no review of its typing (Correct what was read, any press
-    but Save refused for a box, a conflict or a field sent twice, or a Save refused for
-    corrections no review showed) signs each
-    group's digests as its post carried them (``signed_digests``) and each correction its post's
-    page signed as shown as that page signed it (``shown_signed``), whatever the box holds, and
-    signs no typing of its own: words a review showed stay reviewed, and a Save from it with other
-    typing is refused again. A group the family ticked (``selected``) that waits for its
+    refused whole before a store, or a Save refused for corrections no review showed) signs each
+    group's digests as its post carried them (``signed_digests``) and signs none of the words it
+    carries beside a date box. Any page given its post's signatures (``shown_signed``: a plain
+    load, and every page with a post but one an accepted Review changes press made, a form that
+    posts no ticks included) signs each correction its post's page signed as shown as that page
+    signed it, whatever the box
+    holds, and signs no correction of its own: words a review showed stay reviewed, and a Save
+    from it with other typing is refused as not reviewed. A group the family ticked (``selected``)
+    that waits for its
     destination keeps its tick, signed with no digests, so the destination is the only thing
     asked. A card whose press's typing took its destination back (``retaken``) says why it asks
     again, and its group is kept back as a held group is, whatever answer is stored for it, each
@@ -1842,7 +1861,18 @@ def rows_shown(
     destinations and ticks it shows, for the next press to tell a choice from an answer carried,
     and which groups it shows ready.
     A group holding a card a Save held back (``held_back``) shows its effect, is signed with no
-    digests and is not ready, so only Review changes leads to its Save."""
+    digests and is not ready, so only Review changes leads to its Save. A group holding a card
+    whose destination a press refused whole moved (``held_moved``) is held the same way, its
+    destination left chosen, and proposes nothing, each of its cards shown as read and corrected,
+    until Review changes shows its effect; every other group keeps its signed digests. A group
+    holding a card
+    whose correction the page shows and doesn't sign as shown, words carried beside a date box
+    apart, is not ready, and Save isn't offered beside it (``UnitShown.unreviewed``). Apart from
+    what it signs as shown, a page
+    carrying its post's signatures carries the words its post's page signed as the basis of its
+    choices (``basis_signed``, ``BASIS``), and one given none (a plain load, or a form that posts
+    no ticks) signs the corrections it draws as that basis: the next press tells words changed
+    since a choice from words no review showed since the page was loaded."""
     values = dict(state.values)
     image_ids = image_ids or {}
     reworked: dict[tuple[str, ...], list[tuple[Offer, Sequence[PreviewEntry]]]] = {}
@@ -1893,6 +1923,9 @@ def rows_shown(
     digests = unit_digests(state)
     asks_where = frozenset(
         name for unit in state.validation.units if retaken & set(unit.unit) for name in unit.unit
+    )
+    unproposed = asks_where | frozenset(
+        name for unit in state.validation.units if held_moved & set(unit.unit) for name in unit.unit
     )
     wordless: dict[str, list[tuple[str, str]]] = {}
     for place, owner in sorted(
@@ -2035,7 +2068,7 @@ def rows_shown(
             label = _dest_label(state, entry, labels, members[0].title)
             questions = tuple(_dest_questions(state, entry, label, values))
             placed |= set(entry.pieces)
-            if asks_where & set(unit.unit):
+            if unproposed & set(unit.unit):
                 # Its Save writes none of this group, so the page proposes nothing for it. The
                 # destination's questions stay, on its first card, so their answers carry.
                 blocks += [
@@ -2084,11 +2117,21 @@ def rows_shown(
         # a destination whose effect is shown and signed (``unit_digests``), with any open
         # question one that effect already covers, so the answer and the tick save in one press.
         destination_asked = bool(unit.unanswered or unit.stale)
-        kept_back = bool((held_back | retaken) & set(unit.unit))
+        kept_back = bool((held_back | retaken | held_moved) & set(unit.unit))
         if kept_back:
             unsigned.add(unit_name(unit.unit))
+        # A correction shown on a card of this group that the page doesn't sign as shown: no
+        # review showed it, so the group waits for Review changes. Words carried beside a date
+        # box keep their own signature.
+        unreviewed = shown_signed is not None and any(
+            box.carried is None and _drawn_unsigned(box.subject, corrections, shown_signed)
+            for _, block in blocks
+            for card in block.cards
+            for box in card.boxes
+        )
         ready = (
             not kept_back
+            and not unreviewed
             and unit_name(unit.unit) in digests
             and (
                 (unit.ready and not still_any)
@@ -2141,6 +2184,7 @@ def rows_shown(
                         {*still_names, *(("destination",) if destination_asked else ())}
                     )
                 ),
+                unreviewed,
             )
         )
     shown_units = _placed(names, splits, shown_units)
@@ -2190,13 +2234,18 @@ def rows_shown(
                         asked_fields.append((box.carried[0], (carried_digest(box.carried[1]),)))
                     box_key, box_field = json.loads(box.subject)
                     box_shown = corrections.get(box_key, {})
-                    if signed_digests is None and box_field in box_shown:
+                    if shown_signed is None and box_field in box_shown:
                         # The correction this page shows on the card, signed as shown, so a Save
                         # carrying one no review showed is told from it on any group, whether or
                         # not the group has digests; signed only where the page signs its own, a
-                        # page signing its post's digests carrying its post's (``shown_signed``).
+                        # page carrying its post's signatures signing those (``shown_signed``).
                         as_shown = (shown_digest(box_shown[box_field]),)
                         asked_fields.append((SHOWN + box.subject, as_shown))
+                    elif basis_signed is None and box_field in box_shown:
+                        # The correction a page with nothing to carry draws, signed as the basis
+                        # of the choices it shows and not as shown.
+                        drawn = (shown_digest(box_shown[box_field]),)
+                        asked_fields.append((BASIS + box.subject, drawn))
                     signed_marks += box.marks
                     if box.none is not None:
                         asked_fields.append((box.none[0], ("none",)))
@@ -2205,9 +2254,11 @@ def rows_shown(
             for question in block.questions:
                 asked_fields.append((question.field, [o[0] for o in question.options]))
                 signed_marks += question.marks
-    if signed_digests is not None:
+    if shown_signed is not None:
         # The words its post's page signed as shown travel as signed, whatever the boxes hold.
-        asked_fields += [(SHOWN + box, signed) for box, signed in (shown_signed or {}).items()]
+        asked_fields += [(SHOWN + box, signed) for box, signed in shown_signed.items()]
+        # So do the words it signed as the basis of its choices.
+        asked_fields += [(BASIS + box, signed) for box, signed in (basis_signed or {}).items()]
     # An answer sent twice is marked below (``_answers_twice``) with the values sent.
     answers_asked = {name for name, _ in asked_fields if name.startswith("answer:")}
     signed_marks += [
@@ -2287,6 +2338,16 @@ def rows_shown(
         progress={} if progress is None else progress,
         unselected=_unselected(state, places, labels, shown_units, destinations or {}),
     )
+
+
+def _drawn_unsigned(
+    subject: str, corrections: Corrections, shown_signed: Mapping[str, tuple[str, ...]]
+) -> bool:
+    """Whether the box of this subject shows a correction that ``shown_signed`` doesn't sign as
+    shown."""
+    key, field = json.loads(subject)
+    fields = corrections.get(key, {})
+    return field in fields and shown_digest(fields[field]) not in shown_signed.get(subject, ())
 
 
 def _selected_by_default(state: ReviewState, unit: UnitCheck) -> bool:

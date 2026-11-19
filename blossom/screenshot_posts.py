@@ -19,6 +19,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
 from blossom.screenshot_page import (
+    BASIS,
     CHOSEN_SHOWN,
     CORRECT_PRESS,
     EMPTY,
@@ -169,11 +170,19 @@ class ReviewPost:
     checked by a Save against the saved progress before any store."""
     unshown: Mapping[tuple[str, str], str | None] = dataclasses.field(default_factory=dict)
     """Each correction, by key and field, as posted, where its page didn't sign it as shown on
-    the card: checked by a Save against the saved progress before any store, on any group."""
+    the card: checked by a Save before any store, on any group, words the saved progress keeps
+    included, apart from words Blossom couldn't read as a date, which keep their own check."""
     shown_signed: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
     """Each correction its page signed as shown on the card, by its box's subject, with the digests
     signed: a page that signs this post's digests in place of its own signs these as they stand,
     so words a review showed stay reviewed until a page signs its own."""
+    basis_signed: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """Each correction its page signed as the basis of the choices it carries and not as shown
+    (``BASIS``: the words a plain load drew), by its box's subject, with the digests signed: a
+    page carrying this post's signatures carries these too."""
+    unbased: frozenset[tuple[str, str]] = frozenset()
+    """Each correction, by key and field, whose words its page signed neither as shown nor as the
+    basis of its choices: words changed since the page's choices were made."""
     unchosen: frozenset[str] = frozenset()
     """The cards, by piece name, whose destination its page asked with nothing chosen and no page
     default, left unchosen by this press: the page it returns chooses nothing for them."""
@@ -232,22 +241,12 @@ class ReviewPost:
 
     @property
     def carries_its_page(self) -> bool:
-        """Whether this press, any but Save, is refused for a box it can't take as posted, for an
-        instruction ticked beside "None of these apply", or for a field sent twice or marked so and
-        left unanswered, so its page's signatures travel on as signed: no word typed on it is
-        signed as shown, and a Save from the page it returns with that typing is refused as not
-        reviewed. What was chosen and reviewed stands, and the next accepted press decides on the
-        words it finds."""
-        return self.press != "save" and bool(
-            self.too_long
-            or self.needed
-            or self.both
-            or self.conflicted
-            or self.sent_twice
-            or self.unanswered
-            or self.twice
-            or self.left_open
-        )
+        """Whether this press, whichever it is, Save included, is refused whole before any store
+        (``refused``), so its page's signatures and digests travel on as signed: no word typed on
+        it is signed as shown, no destination is taken back, and a Save from the page it returns
+        with that typing is refused as not reviewed. What was chosen and reviewed stands, and the
+        next accepted press decides on the words it finds."""
+        return self.refused
 
 
 WITHDRAWABLE: Final = (
@@ -874,6 +873,19 @@ def read_review(
             for name, values in offered.items()
             if name.startswith(SHOWN)
         },
+        basis_signed={
+            name.removeprefix(BASIS): tuple(sorted(values))
+            for name, values in offered.items()
+            if name.startswith(BASIS)
+        },
+        unbased=frozenset(
+            (key, field)
+            for key, fields in corrections.items()
+            for field, value in fields.items()
+            if shown_digest(value)
+            not in offered.get(SHOWN + _subject(key, field), frozenset())
+            | offered.get(BASIS + _subject(key, field), frozenset())
+        ),
         unchosen=frozenset(
             name.removeprefix(DESTINATION_FIELD)
             for name in offered
@@ -904,6 +916,11 @@ def read_review(
             if name.startswith(CHOSEN_SHOWN) and values
         },
     )
+
+
+def _subject(key: str, field: str) -> str:
+    """A box's subject, as the signed list names it after ``SHOWN`` or ``BASIS``."""
+    return json.dumps([key, field], separators=(",", ":"))
 
 
 def _marks_one_value(name: str, offered: Mapping[str, frozenset[str]]) -> bool:

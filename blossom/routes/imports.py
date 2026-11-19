@@ -86,6 +86,7 @@ from blossom.screenshot_posts import (
 )
 from blossom.screenshot_reading import ReadOutcome, read_screenshots
 from blossom.screenshot_review import (
+    PIECE_DATES,
     UNJOINED,
     Corrections,
     change_told,
@@ -93,6 +94,7 @@ from blossom.screenshot_review import (
     dest_key,
     dest_kind,
     offered_as_it_stands,
+    typed_day,
     unit_name,
     value_json,
     value_of,
@@ -1828,6 +1830,8 @@ async def rows_of(
     chosen_here: frozenset[str] = frozenset(),
     left_off: frozenset[str] = frozenset(),
     held_back: frozenset[str] = frozenset(),
+    basis_signed: Mapping[str, tuple[str, ...]] | None = None,
+    held_moved: frozenset[str] = frozenset(),
 ) -> RowsShown | None:
     """The review's rows once anything is read, worked out from its stored state and the record
     as the save works them out, with the corrections and the groups ticked as saved for later
@@ -1844,8 +1848,10 @@ async def rows_of(
     one sent twice or marked so and left unanswered (``unresolved``) is offered as its actual
     choice, neither side chosen, until it is answered. A box or answer of one value it sent twice
     with different values (``twice``) names both at that field. The cards in ``opened`` show their
-    boxes open, and ``signed_digests`` are signed in place of the groups' own, with ``shown_signed``
-    in place of the corrections the page shows (``rows_shown``).
+    boxes open, ``signed_digests`` are signed in place of the groups' own, and ``shown_signed``,
+    where given, in place of the corrections the page shows (``rows_shown``), with
+    ``basis_signed``, where given, as the words its choices were made beside. A plain load
+    (``typed`` None) signs no saved words as shown and signs them as that basis instead.
     With ``posted`` (a page that stores nothing), the proposal is worked out with those answers
     held as keeping them would hold them, nothing stored, so every question they raise is shown;
     on a page other than Review changes, with the page defaults it sent unchanged worked out as
@@ -1854,11 +1860,17 @@ async def rows_of(
     never start on a new slot, and the latter say why they ask again. A press that gives its
     choices back selects the group of each card whose destination it chose (``chosen_here``),
     unless it unticked that group (``left_off``). The cards a Save held back (``held_back``) wait
-    for Review changes."""
+    for Review changes, as do those whose destination a press refused whole moved
+    (``held_moved``), with no update proposed for them."""
     if not any(r.kind == "homework_list" for r in snapshot.readings):
         return None
     kept = await saved_corrections(state, snapshot)
     corrections = kept if typed is None else typed
+    if typed is None and shown_signed is None:
+        # A plain load signs no saved words as shown on a card: a card showing them waits for one
+        # Review changes, whatever a review showed before the family left. Words carried beside a
+        # date box keep their own signature (``unreviewed_words``).
+        shown_signed = {}
     shown_defaults = None if posted is None or posted.press == "review" else posted.defaults
     review = await state_of_review(
         state, snapshot, corrections, posted, shown_defaults, unchosen | retaken
@@ -1908,6 +1920,8 @@ async def rows_of(
         chosen_here=chosen_here,
         left_off=left_off,
         held_back=held_back,
+        basis_signed=basis_signed,
+        held_moved=held_moved,
     )
 
 
@@ -2711,19 +2725,23 @@ def with_selection_shown(post: ReviewPost, found: DraftSnapshot) -> ReviewPost:
 
 def typing_asks_again(review: ReviewState, post: ReviewPost) -> ReviewPost:
     """The post with each destination its own typing made stale taken back before anything holds
-    or stores it: a saved assignment chosen on a card whose words differ from those its page
-    signed as shown (``ReviewPost.unshown``), where that correction leaves the assignment offered
-    only through the card as read. A signature travels through every page that signs its post's
-    digests (``ReviewPost.shown_signed``), so words a review showed count as reviewed until they
-    change, and words changed and changed back take nothing back. The page asks again with nothing
+    or stores it: a saved assignment chosen on a card whose words changed since the choice, where
+    that correction leaves the assignment offered only through the card as read. Words changed
+    since the choice are those its page signed neither as shown nor as the basis of its choices
+    (``ReviewPost.unbased``): a plain load signs the saved words it draws as that basis, the
+    stored choices it shows having passed their own check against them on that load, so words no
+    review showed since reopening take nothing back while they stand as saved. Signatures travel
+    through every page that carries its post's (``ReviewPost.shown_signed``,
+    ``ReviewPost.basis_signed``), so words a review showed count as reviewed until they change,
+    and words changed and changed back take nothing back. The page asks again with nothing
     chosen, and the same choice made on the page that shows the typing stands. Correct what was
-    read gives every choice back as posted, and so does a press refused for a box it can't take, a
-    conflict or a field sent twice (``ReviewPost.carries_its_page``), the next accepted press
-    deciding. Worked out from the read
+    read gives every choice back as posted, and so does every press refused whole before any
+    store, Save included (``ReviewPost.carries_its_page``), the next accepted press deciding.
+    Worked out from the read
     the post was checked against, with no further read of the record."""
-    if post.press.startswith(CORRECT_PRESS) or post.carries_its_page or not post.unshown:
+    if post.press.startswith(CORRECT_PRESS) or post.carries_its_page or not post.unbased:
         return post
-    typed = {key for key, _ in post.unshown}
+    typed = {key for key, _ in post.unbased}
     pieces = {piece.name: piece for piece in review.pieces_with(post.corrections)}
     retaken = frozenset(
         answer.subject
@@ -2820,12 +2838,11 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         return to_review(state, draft_id, [PRESS_SAID[refused]])
     if post.refused:
         recorded = await replayed(request, state, draft_id) if post.press == "save" else None
-        chosen = (
-            post.chosen_here if post.press == "save" and post.version == found.version else None
-        )
-        # A Correct press refused whole, and any press but Save refused for a box, a conflict or a
-        # field sent twice, show no review of their typing: their page's signatures travel on.
-        carries = post.press.startswith(CORRECT_PRESS) or post.carries_its_page
+        moved = post.chosen_here if post.version == found.version else frozenset()
+        chosen = moved if post.press == "save" and post.version == found.version else None
+        # Every press refused whole before any store, Save and a kept row that isn't on the record
+        # included, shows no review of its typing: its page's signatures and digests travel on,
+        # apart from a group whose destination this press moved, which is held (``held_moved``).
         return recorded or await with_typing(
             request,
             state,
@@ -2835,8 +2852,9 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
             422,
             found=found,
             opened=frozenset(post.opened),
-            signed_digests=post.digests if carries else None,
+            signed_digests=post.digests,
             held_answers=destinations_held(post),
+            held_moved=moved,
         )
     if post.press == "review" or post.press.startswith(CORRECT_PRESS):
         return await nothing_written(request, state, found, post)
@@ -2866,7 +2884,9 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         return await with_typing(request, state, draft_id, post, [OUT_OF_DATE], 409, found=found)
     except (StoreBusy, WriterBusy):
         said = [PRESS_SAID["keep_failed"]]
-        return await with_typing(request, state, draft_id, post, said, 503, found=found)
+        return await with_typing(
+            request, state, draft_id, post, said, 503, found=found, signed_digests=post.digests
+        )
     except DraftClosed:
         return await closed_on_press(request, state, draft_id, 409, rows=False)
     except (DraftExpired, DraftNotFound) as error:
@@ -2917,6 +2937,7 @@ async def nothing_written(
         signed_digests=None if review else post.digests,
         as_posted=True,
         held_answers=post if review else destinations_held(post),
+        reviewed=review,
     )
 
 
@@ -3032,16 +3053,18 @@ async def unreviewed_shown(
     state: ApplicationState, found: DraftSnapshot, post: ReviewPost
 ) -> frozenset[str]:
     """The cards of a Save carrying a correction its page didn't sign as shown on the card
-    (``ReviewPost.unshown``) that the saved progress doesn't keep: on any group, whether or not
-    its digests can be worked out or were signed, so a group with a question still open is
-    checked as one with digests is."""
+    (``ReviewPost.unshown``), words the saved progress keeps included, as a plain load signs
+    none: on any group, whether or not its digests can be worked out or were signed, so a group
+    with a question still open is checked as one with digests is. Words Blossom couldn't read as
+    a date that the saved progress keeps beside a date box are left to their own check
+    (``unreviewed_words``)."""
     if not post.unshown:
         return frozenset()
     kept = await saved_corrections(state, found)
     changed = {
         key
         for (key, field), value in post.unshown.items()
-        if field not in kept.get(key, {}) or value != kept[key][field]
+        if not (kept_date_words(key, field, value) and kept.get(key, {}).get(field) == value)
     }
     if not changed:
         return frozenset()
@@ -3052,6 +3075,16 @@ async def unreviewed_shown(
     )
     # Refused whatever its cards: one no read places is named by its key.
     return names or frozenset(key.removeprefix("date:") for key in changed)
+
+
+def kept_date_words(key: str, field: str, value: str | None) -> bool:
+    """Whether a correction is words Blossom couldn't read as a date, in a piece's date box."""
+    return (
+        key.startswith(dates_key(""))
+        and field in PIECE_DATES
+        and bool(value)
+        and typed_day(value or "") is None
+    )
 
 
 async def unreviewed_words(
@@ -3160,11 +3193,19 @@ async def press_refused(
     write, as the press's own lines for a write whose outcome isn't known (``unknown``). An offer's
     or a found row's form signs the revision of the read that filled it (``found``). A Save a
     busy file refused passes its homework lines on (``homework``, as ``with_typing`` takes
-    them)."""
+    them). A busy file's page carries its post's digests, as it wrote nothing."""
     said = [PRESS_SAID[failed]]
     if busy_file(error):
         return await with_typing(
-            request, state, draft_id, post, said, 503, found=found, homework=homework
+            request,
+            state,
+            draft_id,
+            post,
+            said,
+            503,
+            found=found,
+            homework=homework,
+            signed_digests=post.digests,
         )
     if unknown:
         return await with_typing(request, state, draft_id, post, unknown, 503, found=found)
@@ -3226,6 +3267,8 @@ async def with_typing(
     held_answers: ReviewPost | None = None,
     left_answers: bool = False,
     stored_here: frozenset[str] = frozenset(),
+    reviewed: bool = False,
+    held_moved: frozenset[str] = frozenset(),
 ) -> Response:
     """A press that saved nothing, or a save that left the review open, answers with the review as
     it stands now, the corrections it typed and the groups it ticked in the form, and an answer just
@@ -3301,8 +3344,12 @@ async def with_typing(
     its own transaction raised the review to (``saved``). A press that writes nothing by design,
     Correct what was read, Review changes, or a Save refused for corrections no review showed
     (``as_posted``), comes back with its choices as posted at the page's version, the cards in
-    ``opened`` open and ``signed_digests`` signed with the corrections its post's page signed as
-    shown (``ReviewPost.shown_signed``, ``rows_of``). A page that stores nothing works
+    ``opened`` open and ``signed_digests`` signed. Every page here signs the corrections its post's
+    page signed as shown (``ReviewPost.shown_signed``, ``rows_of``), past this press's own write
+    and past another tab's, and signs none it draws, apart from the page an accepted Review changes
+    press made (``reviewed``): only Review changes marks new wording as reviewed. An offer's or a
+    found row's page, whose form carries no typing, signs the words it draws as the basis of its
+    choices, as a plain load does (``basis_signed``). A page that stores nothing works
     its proposal out with the answers in ``held_answers`` held as keeping them would hold them,
     nothing stored: Review changes all its post's, and Correct what was read and each refusal that
     keeps the typing its post's destinations (``destinations_held``), so every question that
@@ -3326,7 +3373,9 @@ async def with_typing(
     what each waits on (``held_said``). A split answer that comes back unstored says where to keep
     it (``with_split_waiting``). A destination chosen on a press whose choices come back selects
     its group, and a Save holds that group for Review changes; a form that posts no ticks selects
-    the group it chose for too."""
+    the group it chose for too. A press refused whole holds each card whose destination it moved
+    (``held_moved``): the choice stays chosen, no update is proposed for it, and its group is
+    signed with no digests and not ready until Review changes shows its effect."""
     saved_exactly = text_boxes(saved.stored) if saved else frozenset()
     stored = answers_said(own_write) if done and own_write is not None else []
     after = read or await snapshot_keeping_typing(
@@ -3406,7 +3455,8 @@ async def with_typing(
             twice={**post.twice, **post.left_open} if current else None,
             opened=opened,
             signed_digests=signed_digests if current else None,
-            shown_signed=post.shown_signed if current else None,
+            shown_signed=None if reviewed else post.shown_signed,
+            basis_signed=post.basis_signed if post.ticked else None,
             posted=held_answers if current else None,
             unchosen=post.unchosen if current else frozenset(),
             retaken=post.retaken if current else frozenset(),
@@ -3417,6 +3467,7 @@ async def with_typing(
             ),
             left_off=post.left_off if current else frozenset(),
             held_back=post.held_back - post.held_asking,
+            held_moved=held_moved if current else frozenset(),
         )
         said_lost = await choices_said_lost(
             state, draft_id, post, rows, own, current, behind, answers_read=answers_said_lost
@@ -3817,7 +3868,9 @@ async def later_press(
         return await with_typing(request, state, found.draft_id, post, [OUT_OF_DATE], 409)
     except (StoreBusy, WriterBusy):
         said = [PRESS_SAID["later_failed"]]
-        return await with_typing(request, state, found.draft_id, post, said, 503)
+        return await with_typing(
+            request, state, found.draft_id, post, said, 503, signed_digests=post.digests
+        )
     except DraftClosed:
         return await closed_on_press(request, state, found.draft_id, 409, rows=False)
     except (DraftExpired, DraftNotFound) as error:
@@ -4153,7 +4206,16 @@ async def save_press(
         busy = [PRESS_SAID["save_failed"]]
         return await replayed(
             request, state, draft_id, busy, notes=busy, homework=none_written
-        ) or await with_typing(request, state, draft_id, post, busy, 503, homework=none_written)
+        ) or await with_typing(
+            request,
+            state,
+            draft_id,
+            post,
+            busy,
+            503,
+            homework=none_written,
+            signed_digests=post.digests,
+        )
     except DraftClosed:
         return await closed_on_press(request, state, draft_id, 409)
     except (DraftExpired, DraftNotFound) as error:
