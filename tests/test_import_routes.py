@@ -37705,12 +37705,13 @@ A_SAVED_SET_3: Final = Assignment(
 
 
 @pytest.mark.parametrize("press", ["keep", "later", "save"])
-def test_a_choice_its_own_typing_makes_stale_is_asked_again_on_the_refused_page(
+def test_a_choice_its_own_typing_makes_stale_stands_on_the_refused_page_and_asks_on_the_next_review(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
 ) -> None:
     """Real presses: the second card offered as the saved "Set 3" and chosen so, its title typed
     "Quiz 9", the first title past its limit. The 422 form, drawn with that typing, keeps the
-    saved row listed for the card as read, chooses nothing and says why it asks again."""
+    saved row chosen as posted with no line. The first title put right, Review changes chooses
+    nothing and says why it asks again."""
     with here(open_settings(tmp_path)) as browser:
         state_of(browser).project_state.upsert_assignments([A_SAVED_SET_3])
         reading = homework_answer(cards=[homework_card(), homework_card(**A_SECOND_CARD)])
@@ -37736,13 +37737,22 @@ def test_a_choice_its_own_typing_makes_stale_is_asked_again_on_the_refused_page(
                 page, the_press_refused(press), tick=units_on(page), typed=typed, choose=choose
             ),
         )
+        reads_of_the_press = len(reads)
+        put_right = {first_title: "Short title"}
+        sent = page_post(answer.text, "review", typed=put_right, tick=units_ticked(answer.text))
+        next_review = send(browser, draft_id, sent)
 
-    assert len(reads) == CHANGED_PAGE_READS[f"refused at the page's version, {press}"]
+    assert reads_of_the_press == CHANGED_PAGE_READS[f"refused at the page's version, {press}"]
     assert answer.status_code == 422
     drawn = [one for one in destinations_drawn(answer.text) if one[0].endswith(piece)]
     assert offered in [value for _, value, _, _ in drawn]
-    assert not [said for _, _, checked, said in drawn if checked]
-    assert says(answer.text, screenshot_page.SAID["lost_correction"])
+    assert [value for _, value, checked, _ in drawn if checked] == [offered]
+    assert not says(answer.text, screenshot_page.SAID["lost_correction"])
+    assert next_review.status_code == 200
+    again = [one for one in destinations_drawn(next_review.text) if one[0].endswith(piece)]
+    assert offered in [value for _, value, _, _ in again]
+    assert not [said for _, _, checked, said in again if checked]
+    assert says(next_review.text, screenshot_page.SAID["lost_correction"])
 
 
 def test_a_save_past_a_discard_gives_back_whitespace_only_text_exactly(
@@ -54453,6 +54463,313 @@ def test_a_stored_saved_row_then_another_title_ticked_alone_writes_nothing(
     assert actions_of(done) == ["save"], said
 
 
+# ---------------------------------------------------------------- a refused press changes nothing
+
+
+BOX_REFUSED: Final = {
+    "title cleared": ("title", ""),
+    "class cleared": ("course", ""),
+    "class over-long": ("course", TOO_LONG_CLASS),
+}
+"""Each box a press is refused for: the field, and what the box is sent with."""
+BOX_PUT_BACK: Final = {"title": "Delta", "course": "English 8"}
+"""What each of those boxes held on the page its card's destination was chosen on."""
+NEW_WORDS_BESIDE: Final = {"title": ("course", "Art 8"), "course": ("title", "Gamma")}
+"""Words no review showed, typed in the other box of the card a press is refused for."""
+PRESSES_THAT_STORE_OR_REVIEW: Final = ("review", "keep", "later")
+"""The presses named by their own value on the review form."""
+EVERY_REFUSED_PRESS: Final = (*PRESSES_THAT_STORE_OR_REVIEW, "correct")
+"""Each press refused for a box, "correct" being Correct what was read on the card beside."""
+
+
+def named_box(page: str, field: str, place: int = 0) -> str:
+    """The box of this field on the card at ``place``, by its posted name."""
+    return f"correct:{box_subject(page, field, place)}"
+
+
+def press_named(page: str, press: str) -> str:
+    """The value a press is sent with: Correct what was read is the last closed card's."""
+    return import_review_cases.every_press_to_correct(page)[-1] if press == "correct" else press
+
+
+def refused_press(
+    browser: TestClient, draft_id: str, page: str, press: str, typing: Mapping[str, str]
+) -> str:
+    """``press`` sent from ``page`` with ``typing`` in its boxes: refused whole with 422 and every
+    table as it was. The page it returns."""
+    before = import_review_cases.every_row(browser)
+    sent = page_post(page, press_named(page, press), typed=typing, tick=units_ticked(page))
+    answer = send(browser, draft_id, sent)
+    assert answer.status_code == 422, import_review_cases.page_text(answer.text)
+    assert import_review_cases.every_row(browser) == before
+    return answer.text
+
+
+def reviewed_with_typing(
+    browser: TestClient, draft_id: str, page: str, typing: Mapping[str, str]
+) -> str:
+    """Review changes pressed from ``page`` with ``typing`` in its boxes: accepted, with every table
+    as it was. The page it returns."""
+    before = import_review_cases.every_row(browser)
+    sent = page_post(page, "review", typed=typing, tick=units_ticked(page))
+    answer = send(browser, draft_id, sent)
+    assert answer.status_code == 200, import_review_cases.page_text(answer.text)
+    assert import_review_cases.every_row(browser) == before
+    return answer.text
+
+
+def digests_signed(page: str) -> dict[str, str]:
+    """Each group's digests as the page signs them, by the field that carries them."""
+    return {name: value for name, value in page_post(page, "review") if name.startswith("digest:")}
+
+
+def box_holds(page: str, name: str) -> str:
+    """What the one box of this posted name holds on the review form."""
+    [tag] = [
+        tag
+        for tag in re.findall(r"<input [^>]*>", review_form(page))
+        if import_review_cases.attribute(tag, "name") == name
+    ]
+    return import_review_cases.attribute(tag, "value") or ""
+
+
+@pytest.mark.parametrize(
+    ("reached", "counts", "written"),
+    [
+        (rename_reviewed, (1, 1, 0, 0), ["Beta", "Delta"]),
+        (rename_reviewed_alone, (0, 1, 0, 0), ["Delta"]),
+    ],
+    ids=["beside a second card", "a review of one card"],
+)
+def test_a_reviewed_title_cleared_refused_and_typed_back_leaves_the_destination_standing(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reached: Callable[[TestClient, pytest.MonkeyPatch], tuple[str, str]],
+    counts: tuple[int, int, int, int],
+    written: list[str],
+) -> None:
+    """The reviewed title cleared, Review changes refused, and the same title typed back: the
+    destination stands with no line, and one Save writes the reviewed title once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = reached(browser, monkeypatch)
+        opened = correct_pressed(browser, draft_id, shown, 0)
+        box = title_box(opened)
+        refused = refused_press(browser, draft_id, opened, "review", {box: ""})
+        back = reviewed_with_typing(browser, draft_id, refused, {box: "Delta"})
+        alpha_stands(back)
+        done = saved_as_ticked(browser, draft_id, back)
+        titles = every_title(browser)
+
+    assert says(done, imports.counted(*counts)), import_review_cases.page_text(done)
+    assert titles == written
+
+
+@pytest.mark.parametrize("box", BOX_REFUSED)
+@pytest.mark.parametrize("press", PRESSES_THAT_STORE_OR_REVIEW)
+def test_a_press_refused_for_a_box_put_right_leaves_the_destination_standing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, box: str
+) -> None:
+    """A reviewed card's box refused on a press: the refused page keeps the destination as posted
+    with no line, and the box put back, Review changes keeps it, and one Save writes both rows."""
+    field, sent = BOX_REFUSED[box]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = rename_reviewed(browser, monkeypatch)
+        opened = correct_pressed(browser, draft_id, shown, 0)
+        name = named_box(opened, field)
+        refused = refused_press(browser, draft_id, opened, press, {name: sent})
+        alpha_stands(refused)
+        back = reviewed_with_typing(browser, draft_id, refused, {name: BOX_PUT_BACK[field]})
+        alpha_stands(back)
+        done = saved_as_ticked(browser, draft_id, back)
+        titles = every_title(browser)
+
+    assert says(done, imports.counted(1, 1, 0, 0)), import_review_cases.page_text(done)
+    assert titles == ["Beta", "Delta"]
+
+
+@pytest.mark.parametrize("box", BOX_REFUSED)
+@pytest.mark.parametrize("press", EVERY_REFUSED_PRESS)
+def test_every_refused_press_carries_its_signatures_and_takes_no_destination_back(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, box: str
+) -> None:
+    """A box refused with new words typed beside it, on each press: the page signs what its post's
+    page signed and nothing newly typed, keeps the destination and holds the typing in its boxes."""
+    field, sent = BOX_REFUSED[box]
+    other, words = NEW_WORDS_BESIDE[field]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = rename_reviewed(browser, monkeypatch)
+        opened = correct_pressed(browser, draft_id, shown, 0)
+        typing = {named_box(opened, field): sent, named_box(opened, other): words}
+        refused = refused_press(browser, draft_id, opened, press, typing)
+
+    alpha_stands(refused)
+    assert signed_as_shown(refused) == signed_as_shown(opened)
+    assert digests_signed(refused) == digests_signed(opened)
+    assert {name: box_holds(refused, name) for name in typing} == typing
+
+
+@pytest.mark.parametrize("press", PRESSES_THAT_STORE_OR_REVIEW)
+def test_an_assigned_date_refused_beside_no_assigned_date_takes_no_destination_back(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """A date typed beside "No assigned date was given", a box the press can't take as posted: the
+    page signs what its post's page signed, keeps the destination and holds the date in its box."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = rename_reviewed(browser, monkeypatch)
+        opened = correct_pressed(browser, draft_id, shown, 0)
+        subject = box_subject(opened, "assigned")
+        box = f"correct:{subject}"
+        sent = page_post(
+            opened,
+            press,
+            choose={f"none:{subject}": "none"},
+            typed={box: "2026-10-06"},
+            tick=units_ticked(opened),
+        )
+        answer = send(browser, draft_id, sent)
+
+    assert answer.status_code == 422, import_review_cases.page_text(answer.text)
+    assert says(answer.text, screenshot_page.SAID["both"])
+    alpha_stands(answer.text)
+    assert signed_as_shown(answer.text) == signed_as_shown(opened)
+    assert digests_signed(answer.text) == digests_signed(opened)
+    assert box_holds(answer.text, box) == "2026-10-06"
+
+
+@pytest.mark.parametrize("press", EVERY_REFUSED_PRESS)
+def test_words_changed_and_left_stand_on_the_refused_page_and_ask_on_the_next_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """Gamma typed beside a refused class: the refused page keeps the choice as posted, and the next
+    accepted Review changes, the class put back and Gamma left, asks again with the line."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = rename_reviewed(browser, monkeypatch)
+        opened = correct_pressed(browser, draft_id, shown, 0)
+        course = named_box(opened, "course")
+        typing = {course: "", title_box(opened): "Gamma"}
+        refused = refused_press(browser, draft_id, opened, press, typing)
+        alpha_stands(refused)
+        back = reviewed_with_typing(browser, draft_id, refused, {course: "English 8"})
+
+    alpha_asked_again(back)
+
+
+@pytest.mark.parametrize("on_the_press", [True, False], ids=["on the press", "on the refused page"])
+@pytest.mark.parametrize("press", EVERY_REFUSED_PRESS)
+def test_a_raw_save_of_new_words_from_any_refused_page_is_refused(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str, on_the_press: bool
+) -> None:
+    """A Save sent on the raw path from a refused page with Gamma in the title box and the class put
+    right: refused as not reviewed, with no table changed."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = rename_reviewed(browser, monkeypatch)
+        opened = correct_pressed(browser, draft_id, shown, 0)
+        course, title = named_box(opened, "course"), title_box(opened)
+        typing = {course: "", **({title: "Gamma"} if on_the_press else {})}
+        refused = refused_press(browser, draft_id, opened, press, typing)
+        raw_save_refused(browser, draft_id, refused, {course: "English 8", title: "Gamma"})
+        titles = every_title(browser)
+
+    assert titles == ["Alpha"]
+
+
+def test_a_stored_destination_comes_back_after_a_refused_press_is_put_right(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A destination stored by Save review for later, the review reopened, the class refused on
+    Review changes and put back: the destination is shown chosen, and one Save writes both rows."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = rename_reviewed(browser, monkeypatch)
+        send(browser, draft_id, page_post(shown, "later", tick=units_ticked(shown)))
+        opened = correct_pressed(browser, draft_id, loaded(browser, draft_id), 0)
+        course = named_box(opened, "course")
+        refused = refused_press(browser, draft_id, opened, "review", {course: ""})
+        back = reviewed_with_typing(browser, draft_id, refused, {course: "English 8"})
+        alpha_stands(back)
+        done = saved_as_ticked(browser, draft_id, back)
+        titles = every_title(browser)
+
+    assert says(done, imports.counted(1, 1, 0, 0)), import_review_cases.page_text(done)
+    assert titles == ["Beta", "Delta"]
+
+
+def test_a_destination_chosen_with_no_typing_stands_past_a_refused_press(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved row chosen for a card nothing was typed on, the class refused on Review changes and
+    put back: the destination stands with no line, and one Save writes the new card."""
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[alpha_card()]))
+        )
+        page = answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        again = homework_answer(cards=[alpha_card(title="Alpha draft"), card_beside("Beta")])
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, again))
+        page = answered(browser, draft_id, page)
+        chosen = saved_row_and_a_new_slot(page, "Alpha")
+        shown = reviewed_storing_nothing(browser, draft_id, page, chosen)
+        opened = correct_pressed(browser, draft_id, shown, 0)
+        course = named_box(opened, "course")
+        refused = refused_press(browser, draft_id, opened, "review", {course: ""})
+        alpha_stands(refused)
+        back = reviewed_with_typing(browser, draft_id, refused, {course: "English 8"})
+        alpha_stands(back)
+        done = saved_as_ticked(browser, draft_id, back)
+        titles = every_title(browser)
+
+    assert says(done, imports.counted(1, 0, 1, 0)), import_review_cases.page_text(done)
+    assert titles == ["Alpha", "Beta"]
+
+
+@pytest.mark.parametrize(
+    ("beside", "counts", "written"),
+    [(False, (0, 1, 0, 0), ["Delta"]), (True, (1, 1, 0, 0), ["Beta", "Delta"])],
+    ids=["alone", "beside a ready card"],
+)
+def test_a_group_the_page_asks_about_proposes_no_update_until_review_changes_brings_it_back(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    beside: bool,
+    counts: tuple[int, int, int, int],
+    written: list[str],
+) -> None:
+    """A card asking where it goes, whatever answer is stored for it, has no update under "What
+    saving adds". Review changes brings the stored destination back with its update, and one Save
+    writes it once."""
+    as_saved = screenshot_page.TYPE_LINE["saved"].format(kind="homework")
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, asked = asked_with_its_destination_stored(browser, monkeypatch, beside=beside)
+        alpha_asked_again(asked)
+        back = reviewed_storing_nothing(browser, draft_id, asked, {})
+        alpha_stands(back)
+        done = saved_as_ticked(browser, draft_id, back)
+        titles = every_title(browser)
+
+    said = import_review_cases.page_text(asked)
+    assert "What saving adds" in said, said
+    assert "Updates Alpha" not in said, said
+    assert "Its title becomes" not in said, said
+    assert as_saved not in said, said
+    assert screenshot_page.SAID["choose_first"] in said, said
+    assert ("New assignment." in said) == beside, said
+    shown_again = import_review_cases.page_text(back)
+    assert "Updates Alpha" in shown_again, shown_again
+    assert screenshot_page.SAID["new_title"].format(title="Delta") in shown_again, shown_again
+    assert says(done, imports.counted(*counts)), import_review_cases.page_text(done)
+    assert titles == written
+
+
+THE_FIFTH: Final = date(2026, 10, 5)
+"""The assigned date the cards of these reviews carry, from their list's school day."""
+
+
+def english_assigned(browser: TestClient) -> list[date | None]:
+    """The assigned date of each row saved under English 8."""
+    rows = state_of(browser).project_state.all_assignments()
+    return [row.assigned_on for row in rows if row.course == "English 8"]
+
+
 def test_limitation_a_rename_saved_first_then_a_new_card_of_its_title_and_dates_can_save_a_duplicate(  # noqa: E501
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -54470,11 +54787,13 @@ def test_limitation_a_rename_saved_first_then_a_new_card_of_its_title_and_dates_
         choose = destination_starting(first, "A new Gamma (1)")
         last = chosen_reviewed_and_saved(browser, draft_id, first, choose)
         rows = english(browser)
+        assigned = english_assigned(browser)
 
     assert says(first, imports.counted(0, 1, 0, 1)), import_review_cases.page_text(first)
     assert offered == [], import_review_cases.page_text(first)
     assert says(last, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(last)
     assert rows == [("Gamma", THE_EIGHTH), ("Gamma", THE_EIGHTH)]
+    assert assigned == [THE_FIFTH, THE_FIFTH]
 
 
 def test_limitation_an_identical_title_beside_a_card_sent_to_new_can_save_a_duplicate(
@@ -54498,9 +54817,11 @@ def test_limitation_an_identical_title_beside_a_card_sent_to_new_can_save_a_dupl
         shown = reviewed_storing_nothing(browser, draft_id, typed, choose)
         done = saved_as_ticked(browser, draft_id, shown)
         rows = english(browser)
+        assigned = english_assigned(browser)
 
     assert says(done, imports.counted(1, 0, 0, 0)), import_review_cases.page_text(done)
     assert rows == [("Alpha", THE_EIGHTH), ("Alpha", THE_EIGHTH)]
+    assert assigned == [THE_FIFTH, THE_FIFTH]
 
 
 @pytest.mark.parametrize(
@@ -54524,9 +54845,11 @@ def test_limitation_new_cards_differing_only_by_case_both_save_on_one_ordinary_s
         shown = titles_typed_and_reviewed(browser, draft_id, page, typed) if typed else page
         done = saved_as_ticked(browser, draft_id, shown)
         rows = english(browser)
+        assigned = english_assigned(browser)
 
     said = import_review_cases.page_text(shown)
     assert "What saving adds" in said, said
     assert said.count("New assignment.") == 2, said
     assert says(done, imports.counted(2, 0, 0, 0)), import_review_cases.page_text(done)
     assert sorted(rows) == [("GAMMA", THE_EIGHTH), ("Gamma", THE_EIGHTH)]
+    assert assigned == [THE_FIFTH, THE_FIFTH]

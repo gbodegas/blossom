@@ -1826,18 +1826,20 @@ def rows_shown(
     answer of one value a refused press sent twice with different values (``twice``, by field,
     with the values sent) names both at that field, the box's fold open, none of the answer's
     options chosen. The cards named in ``opened``, and any with a box refused or marked, show
-    their boxes open. A page that shows no review of its typing (Correct what was read, refused
-    or not, or a Save refused for corrections no review showed) signs each group's digests as its
-    post carried them (``signed_digests``) and each correction its post's page signed as shown as
-    that page signed it (``shown_signed``), whatever the box holds, and signs no typing of its
-    own: words a review showed stay reviewed, and a Save from it with other typing is refused
-    again. A group the family ticked (``selected``) that waits for its destination keeps its
-    tick, signed with no digests, so the destination is the only thing asked. A card whose press's
-    typing took its destination back (``retaken``) says why it asks again, and its group is kept
-    back as a held group is, whatever answer is stored for it. A group holding a card whose
-    destination the press chose (``chosen_here``) is shown ticked, unless it holds a card of a
-    group that press unticked (``left_off``). The page signs the destinations and ticks it shows,
-    for the next press to tell a choice from an answer carried, and which groups it shows ready.
+    their boxes open. A page that shows no review of its typing (Correct what was read, any press
+    but Save refused for a box, or a Save refused for corrections no review showed) signs each
+    group's digests as its post carried them (``signed_digests``) and each correction its post's
+    page signed as shown as that page signed it (``shown_signed``), whatever the box holds, and
+    signs no typing of its own: words a review showed stay reviewed, and a Save from it with other
+    typing is refused again. A group the family ticked (``selected``) that waits for its
+    destination keeps its tick, signed with no digests, so the destination is the only thing
+    asked. A card whose press's typing took its destination back (``retaken``) says why it asks
+    again, and its group is kept back as a held group is, whatever answer is stored for it, each
+    of its cards shown as read and corrected with no update proposed, as its Save writes none. A
+    group holding a card whose destination the press chose (``chosen_here``) is shown ticked,
+    unless it holds a card of a group that press unticked (``left_off``). The page signs the
+    destinations and ticks it shows, for the next press to tell a choice from an answer carried,
+    and which groups it shows ready.
     A group holding a card a Save held back (``held_back``) shows its effect, is signed with no
     digests and is not ready, so only Review changes leads to its Save."""
     values = dict(state.values)
@@ -1888,6 +1890,9 @@ def rows_shown(
             asking.setdefault((whose, field), []).append(piece)
     previews = {e.dest: e for e in state.preview}
     digests = unit_digests(state)
+    asks_where = frozenset(
+        name for unit in state.validation.units if retaken & set(unit.unit) for name in unit.unit
+    )
     wordless: dict[str, list[tuple[str, str]]] = {}
     for place, owner in sorted(
         ((c, p) for p in open_pieces for c in (*own_wordless(p), *own_carried(p))),
@@ -1983,7 +1988,7 @@ def rows_shown(
                 ),
                 helper=SAID["type_helper"],
                 about=about,
-                notes=_type_lines(state, row_pieces, labels, places, previews),
+                notes=_type_lines(state, row_pieces, labels, places, previews, asks_where),
             )
         return CardShown(
             piece.name,
@@ -2026,19 +2031,34 @@ def rows_shown(
                 if not still
                 else "Still to answer: " + ", ".join(OPEN_NAMES[q] for q in still) + "."
             )
-            head = _card_head(state, entry, labels, until, last_open, said_open)
             label = _dest_label(state, entry, labels, members[0].title)
+            questions = tuple(_dest_questions(state, entry, label, values))
+            placed |= set(entry.pieces)
+            if asks_where & set(unit.unit):
+                # Its Save writes none of this group, so the page proposes nothing for it. The
+                # destination's questions stay, on its first card, so their answers carry.
+                blocks += [
+                    (
+                        order[member.name],
+                        BlockShown(
+                            dataclasses.replace(
+                                _own_head(member), still_open=None if at else said_open
+                            ),
+                            (card_of(member, None),),
+                            () if at else questions,
+                            not at,
+                        ),
+                    )
+                    for at, member in enumerate(members)
+                ]
+                continue
+            head = _card_head(state, entry, labels, until, last_open, said_open)
             blocks.append(
                 (
                     min(order[m.name] for m in members),
-                    BlockShown(
-                        head,
-                        tuple(card_of(m, head) for m in members),
-                        tuple(_dest_questions(state, entry, label, values)),
-                    ),
+                    BlockShown(head, tuple(card_of(m, head) for m in members), questions),
                 )
             )
-            placed |= set(entry.pieces)
         for name in unit.unit:
             if name in placed:
                 continue
@@ -2682,12 +2702,18 @@ def _type_lines(
     labels: Mapping[str, str],
     places: Mapping[str, int],
     previews: Mapping[tuple[str, ...], PreviewEntry],
+    asks_where: frozenset[str] = frozenset(),
 ) -> tuple[tuple[str, str], ...]:
     """What saving does with a row's Type, by Save's own rule, one line per open piece of the
-    row, each led by its date when the row has more than one."""
+    row, each led by its date when the row has more than one. A piece of a group asking where it
+    goes (``asks_where``) waits for that answer, whatever answer is stored for it."""
     out = []
     for piece in pieces:
-        text, target = _type_line(state, piece, labels, places, previews)
+        text, target = (
+            (SAID["choose_first"], "")
+            if piece.name in asks_where
+            else _type_line(state, piece, labels, places, previews)
+        )
         if len(pieces) > 1:
             text = f"{day_text(piece.assigned or piece.due)}: {text}"
         out.append((text, target))

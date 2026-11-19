@@ -2717,9 +2717,10 @@ def typing_asks_again(review: ReviewState, post: ReviewPost) -> ReviewPost:
     digests (``ReviewPost.shown_signed``), so words a review showed count as reviewed until they
     change, and words changed and changed back take nothing back. The page asks again with nothing
     chosen, and the same choice made on the page that shows the typing stands. Correct what was
-    read gives every choice back as posted. Worked out from the read the post was checked against,
-    with no further read of the record."""
-    if post.press.startswith(CORRECT_PRESS) or not post.unshown:
+    read gives every choice back as posted, and so does a press refused for a box it can't take
+    (``ReviewPost.carries_its_page``), the next accepted press deciding. Worked out from the read
+    the post was checked against, with no further read of the record."""
+    if post.press.startswith(CORRECT_PRESS) or post.carries_its_page or not post.unshown:
         return post
     typed = {key for key, _ in post.unshown}
     pieces = {piece.name: piece for piece in review.pieces_with(post.corrections)}
@@ -2821,8 +2822,9 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         chosen = (
             post.chosen_here if post.press == "save" and post.version == found.version else None
         )
-        # A Correct press refused whole shows no review of its typing, as one that comes back does.
-        correcting = post.press.startswith(CORRECT_PRESS)
+        # A Correct press refused whole, or any press refused for a box, shows no review of its
+        # typing: its page's signatures travel on.
+        carries = post.press.startswith(CORRECT_PRESS) or post.carries_its_page
         return recorded or await with_typing(
             request,
             state,
@@ -2832,7 +2834,7 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
             422,
             found=found,
             opened=frozenset(post.opened),
-            signed_digests=post.digests if correcting else None,
+            signed_digests=post.digests if carries else None,
             held_answers=destinations_held(post),
         )
     if post.press == "review" or post.press.startswith(CORRECT_PRESS):

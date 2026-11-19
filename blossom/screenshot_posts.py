@@ -230,6 +230,13 @@ class ReviewPost:
             or self.left_open
         )
 
+    @property
+    def carries_its_page(self) -> bool:
+        """Whether this press, any but Save, is refused for a box it can't take as posted, so its
+        page's signatures travel on as signed. What was chosen and reviewed stands, and the next
+        accepted press decides on the words it finds."""
+        return self.press != "save" and bool(self.too_long or self.needed or self.both)
+
 
 WITHDRAWABLE: Final = (
     "answer:confirm:",
