@@ -5,11 +5,10 @@
 A group whose date, kind or instructions questions are checked under each answer they offer is
 worked out over its own pieces and those its checks against other cards read, and the saved
 assignments are read once for each working out of the review a page makes, so the page's work grows
-with its cards, not with their square. Both tests count, so they depend on nothing but the code:
-the record's reads of every assignment while a page works out the review, and the pieces each
-preview of a group's answers works out. A save's own working out, inside its transaction, reads as
-it reads (``tests/test_screenshot_save.py`` counts its statements). The time of 60 cards against
-the time of 10 is compared in ``tests/full_scale_import_review.py``.
+with its cards, not with their square. Each test counts one thing, so it depends on nothing but
+the code and no clock: the first, the record's reads of every assignment while one page is worked
+out; the second, the pieces each answer preview works out. A save's own working out, inside its
+transaction, reads as it reads (``tests/test_screenshot_save.py`` counts its statements).
 """
 
 import inspect
@@ -64,6 +63,8 @@ def reads_while_worked_out(
 def test_each_working_out_of_the_review_a_page_makes_reads_every_assignment_once(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Counts the record's reads of every assignment while one page is worked out: one read for
+    each working out of the review, the same count at 10 cards and at 20."""
     ten = reads_while_worked_out(tmp_path, monkeypatch, 10)
     twenty = reads_while_worked_out(tmp_path, monkeypatch, 20)
     said = f"(workings out, reads): 10 cards {ten}; 20 cards {twenty}"
@@ -100,6 +101,8 @@ def pieces_each_answer_preview_works_out(
 def test_each_answer_preview_works_out_the_same_pieces_at_10_20_and_60_cards(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Counts the pieces each answer preview works out: the same numbers of pieces at 10, 20 and
+    60 cards."""
     found = {
         cards: pieces_each_answer_preview_works_out(tmp_path, monkeypatch, cards)
         for cards in (10, 20, 60)

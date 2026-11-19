@@ -92,7 +92,12 @@ from blossom.stores.import_drafts import (
     TooManyImages,
     new_creation_token,
 )
-from blossom.stores.project_state import Assignment, AssignmentKind, ProjectStateStore
+from blossom.stores.project_state import (
+    Assignment,
+    AssignmentKind,
+    ClaimReadings,
+    ProjectStateStore,
+)
 from blossom.uploads import as_new_image, prepare_image
 from tests import import_review_cases
 from tests.import_review_cases import (
@@ -15780,6 +15785,52 @@ def another_tab_moves_the_saved_card(
         return done
 
     monkeypatch.setattr(imports, "save_homework", saving)
+
+
+def test_a_save_of_reviewed_corrections_after_another_tab_changes_its_homework_says_so(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A title typed on one card and shown by Review changes, its group landing on a saved
+    assignment, and the Save of the page Review changes returned sent after another tab's own
+    review saves a new due date onto that assignment: the Save is refused before any store, saying
+    that the homework changed after the corrections were reviewed, never that they were not
+    reviewed, and never that this attempt kept answers, since it kept none; no table changes.
+    Corrections no review showed keep the not-reviewed line
+    (``test_a_due_date_retyped_after_review_changes_asked_is_not_saved``)."""
+    with here(open_settings(tmp_path)) as browser:
+        cards = homework_answer()["cards"]
+        saved = dict(cards[1], title=TYPED_ON_THE_OTHER)
+        draft_id, page = a_review_beside_a_saved_card(browser, monkeypatch, saved, cards)
+        [first_unit] = units_on(page)
+        open_unit = the_group_asked(page)
+        other = correct_box(open_unit, "title")
+        page = opened_for_typing(browser, draft_id, page, {other: TYPED_ON_THE_OTHER})
+        posted = reviewed_then_ticked(
+            browser, draft_id, page, {other: TYPED_ON_THE_OTHER}, [first_unit], open_unit
+        )
+        assert (other, TYPED_ON_THE_OTHER) in posted
+        # Another tab's own review saves a new due date onto the assignment the group lands on,
+        # a real write, after the page Review changes returned and before this Save.
+        # A card with no due line takes its due date from the day heading it is read under.
+        moved = dict(saved, footer="Due (10/12/2026)") if saved.get("footer") else saved
+        heading = None if saved.get("footer") else "Monday 10/12/2026"
+        another_review_saves(
+            browser, monkeypatch, moved, "answer:due:", lambda _: "2026-10-12", heading=heading
+        )
+        before = every_row(browser)
+        answer = send(browser, draft_id, posted)
+        after = every_row(browser)
+
+    said = page_text(answer)
+    assert answer.status_code == 200
+    assert imports.PRESS_SAID["changed_after_review"] == (
+        "This homework changed after you reviewed your corrections. Your homework changes "
+        "weren't saved."
+    )
+    assert imports.PRESS_SAID["changed_after_review"] in said
+    assert imports.PRESS_SAID["not_reviewed"] not in said
+    assert imports.PRESS_SAID["answers_kept"] not in said
+    assert after == before
 
 
 def test_a_changed_row_on_a_review_closed_before_its_rows_says_nothing_of_checking_it(
@@ -43328,12 +43379,14 @@ def test_a_save_that_saved_homework_past_a_refused_rows_read_says_no_answers_kep
         )
         # The post carries the typed title, as reviewed, before it is sent.
         assert (title, "This Tab ") in posted
+        before = {row.assignment_id for row in state_of(browser).project_state.all_assignments()}
         written = answers_written_by(browser, monkeypatch, "keep_answers")
         # The read of the page's rows past the homework save: the fifth review read of this
         # Save, after the read of its post and the three reads of the check before any store.
         Refusing(monkeypatch, ("state_of_review", "draft_for_save", 5, FILE_REFUSED))
         answer = saved_with_corrections(browser, review.draft_id, posted)
         monkeypatch.undo()
+        after = state_of(browser).project_state.all_assignments()
 
     [kept] = written
     assert (kept.stored > 0, kept.dropped) == (False, 0)
@@ -43341,6 +43394,11 @@ def test_a_save_that_saved_homework_past_a_refused_rows_read_says_no_answers_kep
     assert 'name="correct:' not in answer.text
     assert "Saved: 1 new assignment." in page_text(answer)
     assert SAID_OF_ONE_ATTEMPT["kept"] not in page_text(answer)
+    # The homework the receipt names, as stored: exactly one new assignment, the ready group's
+    # card as read, and nothing under the title typed on the other card.
+    added = [row for row in after if row.assignment_id not in before]
+    assert [(row.course, row.title) for row in added] == [("Art 8", "Sketch")]
+    assert not any(row.title.strip() == "This Tab" for row in after)
 
 
 FIRST_PAGE_READS_REFUSED_ANOTHER_WAY: Final[dict[str, tuple[str, str, str]]] = {
@@ -45555,6 +45613,151 @@ def test_a_note_that_settles_no_due_date_says_so_with_its_dates_as_text(
     assert box_subject(page, "due")
 
 
+def said_on(page: str) -> str:
+    """The words of a review's form as read, single-spaced, without the markup."""
+    return html.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", review_form(page))))
+
+
+def note_saved_and_read_again(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, answer: dict[str, object]
+) -> tuple[str, str, str, str]:
+    """A note's review, the Save of it with every card ticked, the review of the same
+    screenshot read again, and the Save of that review as shown."""
+    draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+    page = answered(browser, draft_id, page)
+    saved = followed(browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page))))
+    again_id, again = read_review(browser, monkeypatch, (RED, answer))
+    again = answered(browser, again_id, again)
+    resaved = followed(
+        browser, send(browser, again_id, page_post(again, "save", tick=ticked_on(again)))
+    )
+    return page, saved, again, resaved
+
+
+@pytest.mark.parametrize(
+    "words", ["Essay is not due Friday; finish it Monday.", "Essay will not be due Friday."]
+)
+def test_a_note_whose_cue_is_negated_reads_no_due_date_and_offers_none(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, words: str
+) -> None:
+    """A screenshot note whose "due" is negated right before it reads no due date and says no
+    date: no Friday, no date choice. Saved ticked, its row has no due date and no claim; read
+    again it is already saved, and a save adds nothing."""
+    with here(open_settings(tmp_path)) as browser:
+        page, saved, again, resaved = note_saved_and_read_again(
+            browser, monkeypatch, note_under("Monday 11/16/2026", words)
+        )
+        row, claims = english_row(browser)
+
+    shown = said_on(page)
+    assert words in shown
+    assert "November 20" not in shown
+    assert screenshot_page.SAID["note_open"] not in shown
+    assert not re.findall(r'type="radio"[^>]*value="20\d\d-', review_form(page))
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert (row.due_date, claims) == (None, set())
+    assert screenshot_page.SAID["already"] in html.unescape(review_form(again))
+    assert says(resaved, imports.counted(0, 0, 1, 0))
+
+
+def test_a_note_due_on_either_of_two_dates_says_both_as_text_and_saves_no_due_date(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A note "Essay due Wednesday or Thursday." on a screenshot: the card says the note doesn't
+    settle a due date and the dates it could mean, as text, with no date choice. Saved
+    ticked, its row has no due date and no claim; read again it is already saved, and a save
+    adds nothing."""
+    answer = note_under("Monday 11/16/2026", "Essay due Wednesday or Thursday.")
+    with here(open_settings(tmp_path)) as browser:
+        page, saved, again, resaved = note_saved_and_read_again(browser, monkeypatch, answer)
+        row, claims = english_row(browser)
+
+    shown = said_on(page)
+    assert screenshot_page.SAID["note_open"] in shown
+    could = screenshot_page.SAID["note_could_mean"]
+    assert could.format(days="Wednesday, November 18 or Thursday, November 19") in shown
+    assert not re.findall(r'type="radio"[^>]*value="20\d\d-', review_form(page))
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert (row.title, row.due_date, claims) == ("Essay", None, set())
+    assert screenshot_page.SAID["already"] in html.unescape(review_form(again))
+    assert says(resaved, imports.counted(0, 0, 1, 0))
+
+
+@pytest.mark.parametrize("end", ["", "."], ids=["no-period", "period"])
+def test_a_count_on_the_line_after_a_january_date_on_a_screenshot_saves_the_school_s_date(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, end: str
+) -> None:
+    """A screenshot note "Essay due January 8, 1500" in its title with "words" in its
+    instruction, under Tuesday 12/15/2026, read as the screenshot path joins the two, with one
+    space: due January 8, 2027, the school's date seen in the teacher's note. Read again it is
+    already saved, and a save adds nothing."""
+    heading = {"text": "Tuesday 12/15/2026", "y": 150, "uncertain": None}
+    wrapped = homework_card(
+        badge=None,
+        course="English 8",
+        title="Essay due January 8, 1500",
+        instruction=f"words{end}",
+        footer=None,
+        y_top=200,
+        y_bottom=260,
+    )
+    answer = homework_answer(headings=[heading], cards=[wrapped])
+    with here(open_settings(tmp_path)) as browser:
+        _, saved, again, resaved = note_saved_and_read_again(browser, monkeypatch, answer)
+        row, claims = english_row(browser)
+
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert (row.title, row.due_date) == ("Essay", date(2027, 1, 8))
+    assert claims == {("2027-01-08", intake.TEACHER_NOTE)}
+    assert screenshot_page.SAID["already"] in html.unescape(review_form(again))
+    assert says(resaved, imports.counted(0, 0, 1, 0))
+
+
+@pytest.mark.parametrize("end", ["", "."], ids=["no-period", "period"])
+def test_milestones_on_a_screenshot_are_said_as_text_with_their_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, end: str
+) -> None:
+    """A note "Draft due Wednesday and final copy due Friday" on a screenshot: one card,
+    saying the note doesn't settle a due date and each milestone's date with its words, as
+    text, with no date choice. Saved ticked, one row with no due date and no claim; read again
+    it is already saved, and a save adds nothing."""
+    words = f"Draft due Wednesday and final copy due Friday{end}"
+    with here(open_settings(tmp_path)) as browser:
+        page, saved, again, resaved = note_saved_and_read_again(
+            browser, monkeypatch, note_under("Monday 11/16/2026", words)
+        )
+        row, claims = english_row(browser)
+
+    shown = said_on(page)
+    milestone = screenshot_page.SAID["note_milestone"]
+    assert screenshot_page.SAID["note_open"] in shown
+    assert milestone.format(words="Draft", day="Wednesday, November 18") in shown
+    assert milestone.format(words="final copy", day="Friday, November 20") in shown
+    assert not re.findall(r'type="radio"[^>]*value="20\d\d-', review_form(page))
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert (row.title, row.due_date, claims) == ("Draft", None, set())
+    assert screenshot_page.SAID["already"] in html.unescape(review_form(again))
+    assert says(resaved, imports.counted(0, 0, 1, 0))
+
+
+def test_a_milestone_in_another_year_on_a_screenshot_is_said_with_its_year(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A milestone more than a year away is said as the card says any date the note names in
+    another year: as text, with its year, and never as a choice."""
+    words = "Draft due Wednesday and final copy due January 8, 2028"
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, note_under("Monday 11/16/2026", words))
+        )
+        page = answered(browser, draft_id, page)
+
+    shown = said_on(page)
+    milestone = screenshot_page.SAID["note_milestone"]
+    assert milestone.format(words="final copy", day="Saturday, January 8, 2028") in shown
+    assert not re.findall(r'type="radio"[^>]*value="20\d\d-', review_form(page))
+
+
 @pytest.mark.parametrize("typed", ["2026-11-25", ""], ids=["set", "cleared"])
 def test_a_date_set_or_cleared_on_a_note_survives_a_refusal_reopening_save_and_reread(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, typed: str
@@ -46133,6 +46336,118 @@ def test_a_joined_tick_pressed_with_save_against_a_moved_record_writes_nothing(
     assert after == before
     assert ("2026-10-07", intake.TEACHER_NOTE) not in claims
     assert words == []
+
+
+UNRELATED_SAVED: Final = Assignment(
+    assignment_id="assignment-unrelated-math-bbbb0001",
+    course="Math 8",
+    title="Unrelated practice",
+    due_date=date(2026, 10, 20),
+    dependencies=[],
+    reported_submission_status="not_reported",
+    assigned_on=None,
+    kind=AssignmentKind.HOMEWORK,
+)
+"""A saved assignment no card of the review names."""
+
+
+def claims_unreadable_under(patched: pytest.MonkeyPatch, assignment_id: str) -> None:
+    """A store failure, simulated: every read of claims that takes in this assignment reports its
+    claims unreadable, as a damaged row would."""
+    real = ProjectStateStore.read_claims
+
+    def read_claims(
+        store: ProjectStateStore, assignment_ids: Iterable[str] | None = None
+    ) -> ClaimReadings:
+        wanted = None if assignment_ids is None else list(assignment_ids)
+        got = real(store, wanted)
+        if wanted is None or assignment_id in wanted:
+            return ClaimReadings(got.records, got.unreadable | {assignment_id})
+        return got
+
+    patched.setattr(ProjectStateStore, "read_claims", read_claims)
+
+
+UNREADABLE_CLAIM_PRESSES: Final = ("review", "keep", "later", "save")
+
+
+@pytest.mark.parametrize("press", ["page", *UNREADABLE_CLAIM_PRESSES])
+def test_an_unreadable_claim_on_another_assignment_leaves_a_joined_note_review_unavailable(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """A claim the record can't read under a saved assignment no card names, with a teacher's
+    note joined to the review's card, whose comparison reads every assignment's claims: the
+    review's address answers 503 with ``REVIEW_UNAVAILABLE``, and Review changes, Keep these
+    answers, Save review for later and Save each answer as a press whose review the store refuses
+    to read before anything is written (``unshown_unread``): 503, ``REVIEW_NOT_SHOWN``, writing
+    nothing in any table."""
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([UNRELATED_SAVED])
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
+        page = answered(browser, draft_id, page)
+        choose = {joined_field(page): "1"}
+        fields = (
+            page_post(page, press, choose=choose, tick=units_on(page) if press == "save" else ())
+            if press != "page"
+            else []
+        )
+        before = every_row(browser)
+        with monkeypatch.context() as patched:
+            claims_unreadable_under(patched, UNRELATED_SAVED.assignment_id)
+            answer: Answer
+            if press == "page":
+                answer = browser.get(f"/parent/imports/{draft_id}")
+            else:
+                answer = send(browser, draft_id, fields)
+        after = every_row(browser)
+
+    assert answer.status_code == 503
+    if press == "page":
+        assert says(answer.text, imports.REVIEW_UNAVAILABLE)
+    else:
+        assert says(answer.text, imports.REVIEW_NOT_SHOWN)
+        assert not says(answer.text, imports.REVIEW_UNAVAILABLE)
+    assert after == before
+
+
+@pytest.mark.parametrize("press", ["page", "save"])
+def test_an_unreadable_claim_on_another_assignment_leaves_a_review_with_no_joined_note_as_it_is(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, press: str
+) -> None:
+    """The same unreadable claim beside a review whose card has no joined note: its comparison
+    reads around that claim, so the review shows and Save saves the card."""
+    card = homework_card(
+        course="Religion 8",
+        title="Short essay",
+        instruction=None,
+        footer="Due (10/9/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    with here(open_settings(tmp_path)) as browser:
+        state_of(browser).project_state.upsert_assignments([UNRELATED_SAVED])
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=[card])))
+        page = answered(browser, draft_id, page)
+        fields = page_post(page, "save", tick=units_on(page))
+        before = {row.assignment_id for row in state_of(browser).project_state.all_assignments()}
+        with monkeypatch.context() as patched:
+            claims_unreadable_under(patched, UNRELATED_SAVED.assignment_id)
+            answer: Answer
+            if press == "page":
+                answer = browser.get(f"/parent/imports/{draft_id}")
+            else:
+                answer = send(browser, draft_id, fields)
+            shown = followed(browser, answer)
+        after = state_of(browser).project_state.all_assignments()
+
+    added = [row.title for row in after if row.assignment_id not in before]
+    assert answer.status_code in {200, 303}
+    if press == "page":
+        assert 'name="unit"' in shown
+        assert added == []
+    else:
+        assert says(shown, imports.counted(1, 0, 0, 0))
+        assert added == ["Short essay"]
 
 
 SOURCES_NOTE: Final = "Short essay. Use two sources from the library."

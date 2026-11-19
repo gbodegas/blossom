@@ -123,6 +123,7 @@ SAID: Final = {
     "note_open": "The note doesn't settle a due date.",
     "note_could_mean": "It could mean {days}.",
     "note_names": "It names {days}.",
+    "note_milestone": "The note's date for {words} is {day}.",
     "too_long": "Keep the {named} to {most:,} characters or fewer.",
     "nothing": "none",
     "lost_correction": "This card's corrections changed since you chose, so choose where it goes "
@@ -1604,22 +1605,26 @@ def _own_head(piece: Piece) -> CardHead:
 
 def note_lines(pieces: Iterable[Piece]) -> list[str]:
     """For each piece read from a teacher's note: the school day it was first listed under,
-    and, where the note settles no due date, that it doesn't, with the dates it could mean
-    and the dates it names, as text and never as choices. A date in another year than the
-    school day's is said with its year."""
+    and, where the note settles no due date, that it doesn't, with the dates it could mean,
+    each milestone's date with its words and the dates it names, as text and never as
+    choices. A date in another year than the school day's is said with its year."""
     out: list[str] = []
     for piece in pieces:
         task = None if piece.reading is None else piece.reading.teacher_note
         if task is None:
             continue
         out.append(SAID["note_day"].format(day=long_day(task.first_day)))
-        if task.deadline is not None or not (task.choices or task.named):
+        if task.deadline is not None or not (task.choices or task.milestones or task.named):
             continue
         year = task.first_day.year
         out.append(SAID["note_open"])
         if task.choices:
             days = " or ".join(_day_in(day, year) for day in task.choices)
             out.append(SAID["note_could_mean"].format(days=days))
+        out += [
+            SAID["note_milestone"].format(words=each.words, day=_day_in(each.day, year))
+            for each in task.milestones
+        ]
         if task.named:
             days = " and ".join(_day_in(day, year) for day in task.named)
             out.append(SAID["note_names"].format(days=days))

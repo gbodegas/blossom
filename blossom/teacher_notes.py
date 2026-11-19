@@ -10,18 +10,26 @@ a deadline.
 
 The rules are closed lists, not a reading of language. A deadline statement is
 "due" or "by" followed by one of a fixed set of date expressions, or "due" with
-no word after it. Homework without a deadline statement is told by a fixed set
-of opening words, each counted only when a fixed set of words after it does not
-show it names a thing. Anything these lists do not settle is kept whole and marked
-unclear: no split and no date is made up, and the school day a note is listed
-under is never taken for a deadline.
+no word after it. Date expressions listed after a cue and joined by a final "or"
+("Monday or Tuesday", "Monday, Tuesday or Wednesday", "Monday or Tuesday or
+Wednesday") are one statement that could mean any of them; "and" joins none. A
+cue negated right before it ("not", "never", "no" then "longer", or a word ending
+in "n't", its apostrophe ASCII or typographic, with at most "be" between) settles
+nothing, and no date in its statement is named. Several deadline statements in
+one task settle no single deadline: each date one of them settles is kept with
+its milestone, the words its clause names before its cue. Homework without a
+deadline statement is told by a fixed set of opening words, each counted only
+when a fixed set of words after it does not show it names a thing. Anything
+these lists do not settle is kept whole and marked unclear: no split and no date
+is made up, and the school day a note is listed under is never taken for a
+deadline.
 
 Nothing here reads a clock or a store. "Today", "tomorrow" and a weekday are
 worked out from the first school day a task is listed under, and a month and
 day are read in that day's year unless a year is written with them, except that
 January named under a school day in December is read in the next year. Four
-digits after a date's comma or space that a counting noun follows, such as
-"1500 words", count something and are no year.
+digits after a date's comma or space that a counting noun follows, on the same
+line or the next, such as "1500 words", count something and are no year.
 """
 
 import enum
@@ -145,9 +153,10 @@ _COUNTING_NOUNS: Final = (
     "oraciones",
 )
 """The nouns that, right after four digits, make them a count and not a year."""
-_COUNTED: Final = rf"(?![^\S\n]+(?:{'|'.join(_COUNTING_NOUNS)})\b)"
-"""After four digits joined to a date by a comma or a space: no counting noun follows, so
-the digits are a year and not a count ("January 8, 1500 words")."""
+_COUNTED: Final = rf"(?!\s+(?:{'|'.join(_COUNTING_NOUNS)})\b)"
+"""After four digits joined to a date by a comma or a space: no counting noun follows, on
+the same line or after a line break, so the digits are a year and not a count ("January 8,
+1500 words")."""
 _EXPLICIT: Final = re.compile(
     rf"(?<![A-Za-z])(?P<english>{_months(_ENGLISH_MONTHS, tuple(_ENGLISH_SHORT))})"
     r"\s+(?P<english_day>\d{1,2})(?:st|nd|rd|th)?\b"
@@ -161,6 +170,18 @@ _EXPLICIT: Final = re.compile(
     re.IGNORECASE,
 )
 _CUE: Final = re.compile(r"\b(?:due|by)\b", re.IGNORECASE)
+_NEGATED: Final = re.compile(
+    r"(?:\b(?:not|never|no\s+longer)|\w+n['\N{RIGHT SINGLE QUOTATION MARK}]t)"
+    r"\s+(?:be\s+)?\Z",
+    re.IGNORECASE,
+)
+"""The words right before a cue that negate it: "not", "never", "no" then "longer", or a word
+ending in "n't", its apostrophe ASCII or typographic (U+2019), with at most "be" between."""
+_OR: Final = re.compile(r"\s*,?\s+or\s+", re.IGNORECASE)
+_LISTED: Final = re.compile(r"\s*,\s*")
+"""The comma between two date expressions of a list."""
+_JOINING: Final = re.compile(r"(?:\W|\b(?:and|then)\b)*", re.IGNORECASE)
+"""Punctuation, spaces and the joining words "and" and "then" that open a clause."""
 _GAP: Final = re.compile(r"\s+")
 _DUE_ON: Final = re.compile(r"\s+(?:on\s+)?", re.IGNORECASE)
 _DUE_BY: Final = re.compile(r"\s+by\s+", re.IGNORECASE)
@@ -205,6 +226,16 @@ class NoteBlock:
 
 
 @dataclass(frozen=True)
+class Milestone:
+    """A date one of a task's several deadline statements settles, with the words that
+    statement's clause names before its cue, without joining words or punctuation: "Draft"
+    and "final copy" in "Draft due Wednesday and final copy due Friday"."""
+
+    words: str
+    day: date
+
+
+@dataclass(frozen=True)
 class NoteTask:
     """One task read from the notes of a paste.
 
@@ -217,7 +248,10 @@ class NoteTask:
     ``named`` the dates the words name outside a deadline statement, which are
     never the deadline. ``listed_after`` holds the school days the task is
     still listed under after its deadline. ``line`` is the line of the note it
-    was first listed under.
+    was first listed under. ``milestones`` holds, for a task with several
+    deadline statements, each date one of them settles with its milestone's
+    words; a milestone's date is never the deadline, a choice or a named date.
+    A task that says no homework is assigned keeps no milestone.
     """
 
     subject: str
@@ -232,19 +266,22 @@ class NoteTask:
     named: tuple[date, ...]
     listed_after: tuple[date, ...]
     line: int
+    milestones: tuple[Milestone, ...] = ()
 
 
 @dataclass(frozen=True)
 class _Statement:
     """A deadline statement in a piece of text, with every date it could mean.
 
-    No date means "due" alone; one date means the statement settles it.
+    No date means "due" alone; one date means the statement settles it. A negated
+    statement settles nothing; its place is kept so no date in it is named.
     """
 
     start: int
     end: int
     words: str
     dates: tuple[date, ...]
+    negated: bool = False
 
 
 @dataclass(frozen=True)
@@ -284,6 +321,7 @@ class _Reading:
     deadline_words: str | None
     choices: tuple[date, ...]
     named: tuple[date, ...]
+    milestones: tuple[Milestone, ...] = ()
 
 
 @dataclass
@@ -367,13 +405,45 @@ def _date_at(text: str, at: int, day: date) -> tuple[int, tuple[date, ...]] | No
     return end, tuple(sorted({exact, *could}))
 
 
+def _or_after(
+    text: str, expression: tuple[int, tuple[date, ...]], day: date
+) -> tuple[int, tuple[date, ...]]:
+    """A date expression with the ones listed after it, each after a comma, "or" or ", or",
+    up to the last one joined by "or" or ", or": where that last one ends and every date any
+    of them could mean, in order, each once. Expressions after the last "or", or listed with
+    no "or", are not joined, and neither is one after "and". With none joined, the
+    expression."""
+    end, dates = expression
+    joined: set[date] = set(dates)
+    listed: set[date] = set()
+    at = end
+    while True:
+        separator = _OR.match(text, at)
+        if separator is not None:
+            after = _date_at(text, separator.end(), day)
+            if after is not None:
+                at = end = after[0]
+                joined |= listed | set(after[1])
+                listed = set()
+                continue
+        separator = _LISTED.match(text, at)
+        after = _date_at(text, separator.end(), day) if separator else None
+        if after is None:
+            break
+        at = after[0]
+        listed |= set(after[1])
+    return end, tuple(sorted(joined))
+
+
 def _statements(text: str, day: date) -> tuple[_Statement, ...]:
     """Every deadline statement in the text, in order.
 
     "due" or "by" followed by a date expression, "due on" or "due by" followed
     by one, or "due" where the end of the text, a line end or punctuation comes
-    next. "by" with no date expression after it is not one, and neither is
-    "due" before any other word.
+    next. Date expressions listed after the first and joined by a final "or"
+    make one statement with the dates of all of them. "by" with no date expression after it is
+    not one, and neither is "due" before any other word. A cue negated right
+    before it makes a negated statement.
     """
     found: list[_Statement] = []
     covered = 0
@@ -387,12 +457,13 @@ def _statements(text: str, day: date) -> tuple[_Statement, ...]:
             gap = lead.match(text, cue.end())
             expression = _date_at(text, gap.end(), day) if gap else None
             if expression is not None:
-                end, dates = expression
+                end, dates = _or_after(text, expression, day)
                 break
         else:
             if not is_due or _NOTHING_AFTER.match(text, cue.end()) is None:
                 continue
-        found.append(_Statement(cue.start(), end, text[cue.start() : end], dates))
+        negated = _NEGATED.search(text, 0, cue.start()) is not None
+        found.append(_Statement(cue.start(), end, text[cue.start() : end], dates, negated))
         covered = end
     return tuple(found)
 
@@ -497,10 +568,12 @@ def _sets_work(words: str) -> bool:
 
 
 def _unit(paragraph: int, text: str, start: int, end: int, day: date) -> _Unit:
-    """One piece of a paragraph with its deadline statements and the dates it names."""
+    """One piece of a paragraph with its deadline statements and the dates it names. A
+    negated statement is none of its statements, and no date in it is named."""
     piece = text[start:end]
-    statements = _statements(piece, day)
-    return _Unit(paragraph, start, end, piece, statements, _named(piece, statements, day))
+    every = _statements(piece, day)
+    statements = tuple(statement for statement in every if not statement.negated)
+    return _Unit(paragraph, start, end, piece, statements, _named(piece, every, day))
 
 
 def _units(paragraph: int, text: str, day: date) -> list[_Unit]:
@@ -530,6 +603,25 @@ def _words(units: Sequence[_Unit], paragraphs: Sequence[str]) -> str:
     return "\n\n".join(parts)
 
 
+def _milestones(units: Sequence[_Unit]) -> tuple[Milestone, ...]:
+    """Each date one of a task's deadline statements settles, with the words its clause names
+    before its cue: from the end of the statement before it in the same piece, or from the
+    piece's start, without joining words ("and", "then") or punctuation, and without a
+    trailing "is" or "are". A statement that settles no one date, or whose clause names no
+    words, keeps none."""
+    kept: list[Milestone] = []
+    for unit in units:
+        start = 0
+        for statement in unit.statements:
+            clause = unit.text[start : statement.start]
+            start = statement.end
+            opening = _JOINING.match(clause)
+            words = _name_before(clause[opening.end() if opening else 0 :])
+            if len(statement.dates) == 1 and words:
+                kept.append(Milestone(words, statement.dates[0]))
+    return tuple(kept)
+
+
 def _reading(units: Sequence[_Unit], paragraphs: Sequence[str]) -> _Reading:
     """One task from the pieces that make it up.
 
@@ -537,7 +629,8 @@ def _reading(units: Sequence[_Unit], paragraphs: Sequence[str]) -> _Reading:
     an opening word that asks for a task anywhere in them, a deadline statement after more
     words than the ones that say no homework, or a later deadline statement after the one
     that says no homework. Words that set work as well are unclear, and the date each later
-    deadline statement settles is named for review.
+    deadline statement settles is named for review. Other words with several deadline
+    statements keep each date one of them settles as a milestone.
     """
     first = units[0]
     words = _words(units, paragraphs)
@@ -570,6 +663,7 @@ def _reading(units: Sequence[_Unit], paragraphs: Sequence[str]) -> _Reading:
         deadline_words=statements[0].words if len(statements) == 1 else None,
         choices=dates if len(dates) > 1 else (),
         named=tuple(sorted(named)),
+        milestones=() if says_none or len(statements) < 2 else _milestones(units),
     )
 
 
@@ -640,4 +734,5 @@ def _task(seen: _Seen) -> NoteTask:
         named=reading.named,
         listed_after=tuple(day for day in days if deadline is not None and day > deadline),
         line=seen.block.line,
+        milestones=reading.milestones,
     )

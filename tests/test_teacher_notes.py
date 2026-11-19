@@ -13,7 +13,14 @@ from datetime import date
 
 import pytest
 
-from blossom.teacher_notes import NAME_LIMIT, NoteBlock, NoteTask, Standing, read_notes
+from blossom.teacher_notes import (
+    NAME_LIMIT,
+    Milestone,
+    NoteBlock,
+    NoteTask,
+    Standing,
+    read_notes,
+)
 
 HOMEWORK, UNCLEAR, NOT_ASSIGNMENT = Standing.HOMEWORK, Standing.UNCLEAR, Standing.NOT_ASSIGNMENT
 
@@ -1054,3 +1061,199 @@ def test_a_no_homework_statement_followed_by_a_deadline_is_unclear_with_that_dat
     assert task.standing is UNCLEAR
     assert (task.deadline, task.choices) == (None, ())
     assert task.named == (nov(6),)
+
+
+MONDAY_16 = nov(16)
+"""A Monday; that week's Wednesday, Thursday and Friday are November 18, 19 and 20."""
+
+NEGATED = [
+    "Essay is not due Friday; finish it Monday",
+    "Essay is not due Friday; finish it Monday.",
+    "Essay isn't due Friday.",
+    "Essay will not be due Friday.",
+    "Essay is no " + "longer due Friday.",
+]
+
+
+@pytest.mark.parametrize("words", NEGATED)
+def test_a_deadline_cue_negated_right_before_it_settles_nothing(words: str) -> None:
+    """A negation, "not", "never", "no" then "longer", or a word ending in "n't", right before "due"
+    or "by", with at most "be" between, makes the statement settle nothing: no deadline, no choice
+    and no date named from it; the words stay as written."""
+    (task,) = read_notes((note("Language Arts", MONDAY_16, words),))
+
+    assert (task.deadline, task.deadline_words) == (None, None)
+    assert (task.choices, task.named) == ((), ())
+    assert task.words == words
+
+
+@pytest.mark.parametrize("words", ["Do not forget: essay due Friday.", "Essay due Friday."])
+def test_a_negation_not_right_before_the_cue_leaves_the_deadline(words: str) -> None:
+    """A negation earlier in the words, not right before the cue, negates nothing."""
+    (task,) = read_notes((note("Language Arts", MONDAY_16, words),))
+
+    assert (task.deadline, task.choices) == (nov(20), ())
+
+
+ALTERNATIVES = [
+    "Essay due Wednesday or Thursday.",
+    "Essay due Wednesday, or Thursday.",
+    "Essay due November 18 or November 19",
+    "Essay due November 18, or November 19",
+]
+
+
+@pytest.mark.parametrize("words", ALTERNATIVES)
+def test_two_dates_joined_by_or_after_a_cue_settle_nothing_and_are_both_choices(
+    words: str,
+) -> None:
+    """A date expression after a cue, then "or" (or ", or") and a second date expression,
+    is one statement whose dates are every date either could mean: no deadline, both dates
+    its choices, none named."""
+    (task,) = read_notes((note("Language Arts", MONDAY_16, words),))
+
+    assert (task.name, task.standing) == ("Essay", HOMEWORK)
+    assert task.deadline is None
+    assert (task.choices, task.named) == ((nov(18), nov(19)), ())
+
+
+@pytest.mark.parametrize(
+    ("words", "deadline"),
+    [
+        ("Essay due January 8, 1500\nwords", date(2027, 1, 8)),
+        ("Essay due January 8, 1500\nwords.", date(2027, 1, 8)),
+        ("Essay due January 8, 2028\nplease", date(2028, 1, 8)),
+    ],
+    ids=["count", "count-period", "year-then-prose"],
+)
+def test_four_digits_with_a_counting_noun_on_the_next_line_are_a_count(
+    words: str, deadline: date
+) -> None:
+    """Four digits after a date with a counting noun after a line break count something, as
+    on one line; with any other word after the line break they are the year."""
+    (task,) = read_notes((note("Language Arts", DECEMBER_15, words),))
+
+    assert (task.deadline, task.choices) == (deadline, ())
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        "Draft due Wednesday and final copy due Friday",
+        "Draft due Wednesday and final copy due Friday.",
+    ],
+    ids=["no-period", "period"],
+)
+def test_several_deadline_statements_keep_each_date_with_its_milestone(words: str) -> None:
+    """Two deadline statements in one task, each settling one date: no single deadline, and
+    each date kept with the words its clause names before its cue, without joining words or
+    punctuation. A milestone's date is never the deadline, a choice or a named date."""
+    (task,) = read_notes((note("Art", MONDAY_16, words),))
+
+    assert (task.name, task.words) == ("Draft", words)
+    assert (task.deadline, task.choices, task.named) == (None, (), ())
+    assert task.milestones == (Milestone("Draft", nov(18)), Milestone("final copy", nov(20)))
+
+
+def test_a_milestone_clause_drops_then_and_a_statement_settling_no_one_date_keeps_none() -> None:
+    """A clause's opening "then" and punctuation are no part of its milestone; a statement
+    whose weekday the school day shares settles no one date and keeps no milestone."""
+    then_words = "Draft due Wednesday, then final copy due Friday."
+    (then,) = read_notes((note("Art", MONDAY_16, then_words),))
+    (open_,) = read_notes((note("Art", MONDAY_16, "Draft due Monday and final copy due Friday."),))
+
+    assert then.milestones == (Milestone("Draft", nov(18)), Milestone("final copy", nov(20)))
+    assert open_.milestones == (Milestone("final copy", nov(20)),)
+    assert open_.deadline is None
+
+
+def test_a_no_homework_statement_with_a_later_deadline_keeps_no_milestone() -> None:
+    """Words that say no homework is due one day and then set a deadline name that date for
+    review and keep no milestone."""
+    (task,) = read_notes((note("Language Arts", nov(2), MIXED),))
+
+    assert task.named == (nov(6),)
+    assert task.milestones == ()
+
+
+@pytest.mark.parametrize(
+    ("words", "ascii_words"),
+    [
+        ("Essay isn\N{RIGHT SINGLE QUOTATION MARK}t due Friday.", "Essay isn't due Friday."),
+        ("Essay won\N{RIGHT SINGLE QUOTATION MARK}t be due Friday.", "Essay won't be due Friday."),
+    ],
+    ids=["isnt", "wont-be"],
+)
+def test_a_word_ending_in_n_t_with_a_typographic_apostrophe_negates_the_cue(
+    words: str, ascii_words: str
+) -> None:
+    """A word ending in "n't" written with a typographic apostrophe negates the cue right
+    after it as the same word with an ASCII apostrophe does: no deadline, no choice and no
+    date named from that statement; the words stay as written."""
+    (task,) = read_notes((note("Language Arts", MONDAY_16, words),))
+    (ascii_task,) = read_notes((note("Language Arts", MONDAY_16, ascii_words),))
+
+    read = (task.deadline, task.deadline_words, task.choices, task.named)
+    assert read == (None, None, (), ())
+    assert read == (
+        ascii_task.deadline,
+        ascii_task.deadline_words,
+        ascii_task.choices,
+        ascii_task.named,
+    )
+    assert task.words == words
+
+
+FRIDAY_13 = nov(13)
+"""A Friday; the next Monday, Tuesday and Wednesday are November 16, 17 and 18."""
+
+
+@pytest.mark.parametrize(
+    ("words", "choices"),
+    [
+        ("Essay due Monday, Tuesday or Wednesday.", (nov(16), nov(17), nov(18))),
+        ("Essay due Monday, Tuesday, or Wednesday.", (nov(16), nov(17), nov(18))),
+        ("Essay due Monday or Tuesday or Wednesday.", (nov(16), nov(17), nov(18))),
+        ("Essay due November 18, November 19 or November 20", (nov(18), nov(19), nov(20))),
+    ],
+    ids=["comma-or", "comma-comma-or", "or-or", "dates-comma-or"],
+)
+def test_dates_listed_after_a_cue_and_joined_by_a_final_or_are_all_choices(
+    words: str, choices: tuple[date, ...]
+) -> None:
+    """Date expressions listed after a cue, separated by commas or "or" and joined by a final
+    "or", are one statement that settles nothing: no deadline, every date any of them could
+    mean a choice, in order and once, and none named."""
+    (task,) = read_notes((note("Language Arts", FRIDAY_13, words),))
+
+    assert (task.name, task.standing) == ("Essay", HOMEWORK)
+    assert (task.deadline, task.deadline_words) == (None, words.rstrip(".")[len("Essay ") :])
+    assert (task.choices, task.named) == (choices, ())
+
+
+@pytest.mark.parametrize(
+    ("words", "named"),
+    [
+        ("Essay due Monday, bring your notes.", ()),
+        ("Essay due Monday, Tuesday.", (nov(17),)),
+        ("Essay due Monday, Tuesday and Wednesday.", (nov(17), nov(18))),
+    ],
+    ids=["comma-words", "comma-date", "comma-and"],
+)
+def test_dates_listed_after_a_cue_with_no_or_leave_the_first_date_the_deadline(
+    words: str, named: tuple[date, ...]
+) -> None:
+    """A comma list with no "or", and dates joined by "and", are not joined to the statement:
+    the cue's first date is the deadline and every other date is named."""
+    (task,) = read_notes((note("Language Arts", FRIDAY_13, words),))
+
+    assert (task.deadline, task.choices, task.named) == (nov(16), (), named)
+
+
+def test_two_milestones_that_share_a_date_are_both_kept() -> None:
+    """Two deadline statements settling the same date each keep their milestone, and the
+    date is no deadline, choice or named date."""
+    (task,) = read_notes((note("Art", MONDAY_16, "Draft due Friday and final copy due Friday."),))
+
+    assert task.milestones == (Milestone("Draft", nov(20)), Milestone("final copy", nov(20)))
+    assert (task.deadline, task.choices, task.named) == (None, (), ())

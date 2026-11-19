@@ -146,6 +146,7 @@ from blossom.stores.import_drafts import (
     new_creation_token,
 )
 from blossom.stores.paths import UnsafeCheckpointPath
+from blossom.stores.project_state import UnreadableClaim
 from blossom.templating import answering, page_templates
 from blossom.uploads import Upload, UploadRefused, prepare_upload, read_upload
 
@@ -2030,7 +2031,10 @@ async def snapshot_or_page(
 
 @router.get("/{draft_id}")
 async def review(request: Request, draft_id: str, state: State) -> Response:
-    """The review: its images, how each stands, and the Read press for those not read."""
+    """The review: its images, how each stands, and the Read press for those not read. A claim
+    the record can't read, where a joined note's comparison reads every assignment's claims
+    (``UnreadableClaim``), is answered as a file that refuses the read: the review can't be shown,
+    and nothing is guessed in its place."""
     found = await snapshot_or_page(request, state, draft_id, address=True)
     if isinstance(found, Response):
         return found
@@ -2040,7 +2044,7 @@ async def review(request: Request, draft_id: str, state: State) -> Response:
         answering(request)
     try:
         rows = await rows_of(request, state, found, said)
-    except sqlite3.Error as error:
+    except (sqlite3.Error, UnreadableClaim) as error:
         noted(error)
         return said_page(request, marks_of(state), REVIEW_UNAVAILABLE, 503)
     answer = review_page(request, state, found, said, rows=rows, told=note.told, done=note.done)
@@ -2201,6 +2205,10 @@ PRESS_SAID: Final = {
     "not_reviewed": (
         "Your corrections were not reviewed, so nothing was saved. Check them, then press "
         "Review changes."
+    ),
+    "changed_after_review": (
+        "This homework changed after you reviewed your corrections. Your homework changes "
+        "weren't saved."
     ),
     "keep_invalid": (
         "Some of these questions changed before you answered, so none of these answers was "
@@ -2815,7 +2823,9 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         post, named = await review_post(request, state, found)
     except ListTooLarge:
         post, named, too_large = None, "save" if await save_pressed(request) else "keep", True
-    except sqlite3.Error as error:
+    except (sqlite3.Error, UnreadableClaim) as error:
+        # Reading the post works the review out before any press writes, so a claim the record
+        # can't read refuses every press here, as a file that refuses the read does.
         noted(error)
         return await replayed(request, state, draft_id) or await unshown_unread(
             request, state, draft_id, error
@@ -3037,20 +3047,35 @@ def destinations_held(post: ReviewPost) -> ReviewPost:
     )
 
 
+class Unreviewed(NamedTuple):
+    """The cards a Save at its page's version can't write as reviewed, by cause: ``never``, those
+    carrying a correction no review showed (``unreviewed_words``, ``unreviewed_shown``), and
+    ``moved``, those whose effect differs from the one their page signed (``unreviewed_effects``).
+    Where ``never`` is empty, every correction the Save carries is one a review showed, and an
+    effect that moved since is read as the homework changing after that review. The page signs
+    the destinations and ticks it shows, not every other answer, so an effect moved by anything
+    else the post carries is read the same way."""
+
+    never: frozenset[str]
+    moved: frozenset[str]
+
+    @property
+    def cards(self) -> frozenset[str]:
+        """Every card the Save can't write as reviewed, whatever the cause."""
+        return self.never | self.moved
+
+
 async def unreviewed_cards(
     state: ApplicationState, found: DraftSnapshot, post: ReviewPost
-) -> frozenset[str]:
+) -> Unreviewed:
     """The cards of a Save at its page's version that carries corrections no review showed: those
     whose effect the signed digests tell (``unreviewed_effects``) and those whose carried words no
-    review showed (``unreviewed_words``). Empty where the review has moved past the page, which
-    its stale-record refusal answers."""
+    review showed (``unreviewed_words``), kept apart by cause (``Unreviewed``). Empty where the
+    review has moved past the page, which its stale-record refusal answers."""
     if post.version != found.version:
-        return frozenset()
-    return (
-        await unreviewed_words(state, found, post)
-        | await unreviewed_shown(state, found, post)
-        | await unreviewed_effects(state, found, post)
-    )
+        return Unreviewed(frozenset(), frozenset())
+    never = await unreviewed_words(state, found, post) | await unreviewed_shown(state, found, post)
+    return Unreviewed(never, await unreviewed_effects(state, found, post))
 
 
 async def unreviewed_shown(
@@ -4128,17 +4153,21 @@ async def save_press(
     except sqlite3.Error as error:
         noted(error)
         return await unshown_unread(request, state, draft_id, error)
-    if unreviewed:
-        # Checked before any store: no answer and no assignment is written for it.
+    if unreviewed.cards:
+        # Checked before any store: no answer and no assignment is written for it, so the page
+        # never says this attempt kept answers. Corrections a review showed whose effect moved
+        # since are said as the homework changing after that review; a correction no review
+        # showed keeps the not-reviewed line.
+        why = "not_reviewed" if unreviewed.never else "changed_after_review"
         return await with_typing(
             request,
             state,
             draft_id,
             dataclasses.replace(post, held_back=post.chosen_here),
-            [PRESS_SAID["not_reviewed"]],
+            [PRESS_SAID[why]],
             200,
             homework=none_written,
-            opened=unreviewed,
+            opened=unreviewed.cards,
             signed_digests=post.digests,
             as_posted=True,
             held_answers=destinations_held(post),

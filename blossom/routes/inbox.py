@@ -154,6 +154,9 @@ NAMED_TOO_FAR: Final = (
     "The note names {day}. It can't be saved as the due date because it's more than a year {way}."
 )
 """What a note card says of a date the note names that the due-date check refuses."""
+MILESTONE_CHOICE: Final = "{day}, the note's date for {words}"
+"""A due-date choice on a note card for the date one of the note's deadline statements
+settles, with the words that statement names before its cue."""
 NOT_A_KIND: Final = "Choose Homework or Task."
 LOOK_AGAIN: Final = (
     "The saved assignments changed since this preview, and one of these needs your answer "
@@ -1048,9 +1051,10 @@ class NoteFields:
 
 def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int, NoteFields]:
     """The fields of each card read from a teacher's note, by its key. The choices are the
-    date as read, each date the note leaves open, each date it names, and no due date, each
-    date once. Any of these dates that the due-date check refuses, as of ``today``, is no
-    choice: the card says it, with its year and why it can't be the due date. A card whose
+    date as read, each date the note leaves open, each milestone's date labeled with its
+    words, each date it names, and no due date, each date once. Any of these dates that the
+    due-date check refuses, as of ``today``, is no choice: the card says it, with its year
+    and why it can't be the due date. A card whose
     answers were sent shows them as typed. Otherwise the date as read is chosen, or no due
     date where none was read or the date as read is refused; on a card that lands on a row
     whose saved due date is none, or another than the one chosen so, nothing is chosen."""
@@ -1065,6 +1069,13 @@ def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int,
             given[task.deadline] = f"{spoken_day(task.deadline)}, as the note says"
         for day in task.choices:
             given.setdefault(day, spoken_day(day))
+        milestones: dict[date, list[str]] = {}
+        for milestone in task.milestones:
+            milestones.setdefault(milestone.day, []).append(milestone.words)
+        for day, words in milestones.items():
+            given.setdefault(
+                day, MILESTONE_CHOICE.format(day=spoken_day(day), words=" and ".join(words))
+            )
         for day in task.named:
             given.setdefault(day, f"{spoken_day(day)}, named in the note")
         too_far = tuple(day for day in given if not within_a_school_year(day, today))

@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 from blossom.app import create_app
 from blossom.reconciliation import SourceChannel
 from blossom.routes.inbox import REVIEW_FIELDS, review_field
+from tests.import_review_cases import every_row
 from tests.support import (
     SAME_ORIGIN,
     Answer,
@@ -828,6 +829,153 @@ def test_an_untick_of_a_selected_joined_note_saves_in_one_press_without_it(
     assert saved.status_code == 303
     assert [row.title for row in rows if row.title == "Short essay"] == ["Short essay"]
     assert claimed["Short essay"] == []
+
+
+SAVED_ALONE = """Homework for Wren
+11/03/2026 - Tuesday
+Religion - Due: Short essay:
+Write 250 words on your question.
+"""
+"""One card, saved on its own before the text below is read."""
+JOINED_ON_SAVED = """Homework for Wren
+11/03/2026 - Tuesday
+Religion -
+Short essay due Friday.
+Religion - Due: Short essay:
+Write 250 words on your question.
+"""
+"""The same card with a teacher's note above it that names it: the note's only new content is
+joined to homework already saved."""
+JOINED_SAYING_MORE = JOINED_ON_SAVED.replace(
+    "Short essay due Friday.", "Short essay due Friday. Write it in ink."
+)
+"""The same, the note saying more than the name and the deadline."""
+NEW_NOTE_ON_SAVED = """Homework for Wren
+11/03/2026 - Tuesday
+Religion -
+Read chapter 4 by Friday.
+Religion - Due: Short essay:
+Write 250 words on your question.
+"""
+"""The same card with a teacher's note above it that names other homework: a review of a new
+note beside homework already saved."""
+PRIMARY_SAVE = r'<button type="submit" class="primary"[^>]*>'
+
+
+def read_again_once_saved(client: TestClient, text: str) -> str:
+    """The review of ``text`` once ``SAVED_ALONE`` is saved, as the page shows it."""
+    first = client.post("/parent/inbox/read", data={"text": SAVED_ALONE}).text
+    assert client.post("/parent/inbox/keep", data=ticked_form(first)).status_code == 303
+    return client.post("/parent/inbox/read", data={"text": text}).text
+
+
+def save_panel_line(page: str) -> str:
+    """The words beside Save, in the review's Save panel."""
+    found = re.search(r'<aside class="review-aside".*?<p class="note">(.*?)</p>', page, re.S)
+    assert found is not None
+    return " ".join(html.unescape(found.group(1)).split())
+
+
+@pytest.mark.parametrize("text", [JOINED_ON_SAVED, JOINED_SAYING_MORE], ids=["names", "more"])
+def test_a_joined_note_on_saved_homework_offers_a_save_the_page_script_leaves_enabled(
+    tmp_path: pathlib.Path, text: str
+) -> None:
+    """A paste whose only new content is a note joined to homework already saved offers its
+    joined note's tick, unselected, and one Save with no label for the page script to show it
+    as done (the script disables only a Save marked ``data-unchanged-label``); the line beside
+    Save never says there is nothing to save while that note is on the page."""
+    with client_in(tmp_path) as client:
+        page = read_again_once_saved(client, text)
+
+    saves = re.findall(PRIMARY_SAVE, page)
+    assert joined_ticks(page) == {"join-0-0": False}
+    assert len(saves) == 1, saves
+    assert "data-unchanged-label" not in saves[0]
+    assert "nothing to save" not in save_panel_line(page)
+
+
+def test_a_joined_note_saved_already_leaves_the_page_with_nothing_to_save(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Once the joined note is saved, the same text read again offers its tick with nothing it
+    would add, and the page reads as having nothing to save, its Save marked for the page script
+    to show as done."""
+    with client_in(tmp_path) as client:
+        page = read_again_once_saved(client, JOINED_ON_SAVED)
+        form = ticked_form(page) | {"join-0-0": "1"}
+        assert client.post("/parent/inbox/keep", data=form).status_code == 303
+        again = client.post("/parent/inbox/read", data={"text": JOINED_ON_SAVED}).text
+
+    saves = re.findall(PRIMARY_SAVE, again)
+    assert "If selected: Already saved." in card(again, "Short essay")
+    assert len(saves) == 1, saves
+    assert 'data-unchanged-label="Save 0 assignments"' in saves[0]
+    assert save_panel_line(again).startswith(
+        "Everything here is saved already; there is nothing to save."
+    )
+
+
+def test_a_joined_note_on_saved_homework_saves_in_one_press_without_scripts(
+    tmp_path: pathlib.Path,
+) -> None:
+    """With scripts off, the joined note's tick pressed with Save on the page that showed it
+    unselected adds, in that one press, the note's date as one teacher's-note claim to the saved
+    assignment; its words name the homework and its deadline and say nothing more, so they add no
+    instruction. It adds no assignment, and the same press sent again adds nothing more."""
+    with client_in(tmp_path) as client:
+        page = read_again_once_saved(client, JOINED_ON_SAVED)
+        before = every_row(client)
+        form = ticked_form(page) | {"join-0-0": "1"}
+        saved = client.post("/parent/inbox/keep", data=form)
+        after = every_row(client)
+        claimed = teacher_note_claims(client)
+        kept = instruction_texts(client)
+        again = client.post("/parent/inbox/keep", data=form)
+        after_again = every_row(client)
+
+    assert saved.status_code == 303
+    assert [row[0] for row in after["assignments"]] == [row[0] for row in before["assignments"]]
+    assert len(after["assignments"]) == 1
+    assert len(after["date_claims"]) == len(before["date_claims"]) + 1
+    assert claimed == {"Short essay": ["2026-11-06"]}
+    assert kept["Short essay"] == ["Write 250 words on your question."]
+    assert again.status_code == 303
+    assert after_again["assignments"] == after["assignments"]
+    assert after_again["date_claims"] == after["date_claims"]
+
+
+def test_a_press_with_nothing_ticked_beside_saved_homework_says_what_a_review_of_new_notes_says(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Save pressed with the joined note left unticked writes nothing and answers as a review of
+    a new note beside the same saved homework answers a Save with nothing ticked: the same way
+    back, whose page says that nothing was saved."""
+    (tmp_path / "joined").mkdir()
+    (tmp_path / "new").mkdir()
+    with client_in(tmp_path / "joined") as client:
+        page = read_again_once_saved(client, JOINED_ON_SAVED)
+        before = every_row(client)
+        joined = client.post("/parent/inbox/keep", data=ticked_form(page))
+        joined_rows = every_row(client)
+        joined_said = client.get(joined.headers["location"]).text
+    with client_in(tmp_path / "new") as client:
+        page = read_again_once_saved(client, NEW_NOTE_ON_SAVED)
+        ticks = re.findall(r'<input type="checkbox" name="(take-\d+)" value="1"( checked)?>', page)
+        new_before = every_row(client)
+        new = client.post("/parent/inbox/keep", data=ticked_form(page))
+        new_rows = every_row(client)
+        new_said = client.get(new.headers["location"]).text
+
+    assert [checked for _, checked in ticks] == [""]
+    assert joined_rows == before
+    assert new_rows == new_before
+    assert (joined.status_code, joined.headers["location"]) == (
+        new.status_code,
+        new.headers["location"],
+    )
+    said = "Nothing to save: everything read was saved already (1 unchanged)."
+    assert said in " ".join(joined_said.split())
+    assert said in " ".join(new_said.split())
 
 
 REVIEW_NO_LONGER_MATCHES = (
@@ -4581,3 +4729,248 @@ def test_a_box_sent_twice_is_resolved_by_an_explicit_answer(
     assert counts[0] == (1 if field.startswith("link") else 2)
     if field.startswith("link"):
         assert counts[3] == (1 if answer == "1" else 0)
+
+
+def one_note(subject: str, words: str, day: str = "11/16/2026 - Monday") -> str:
+    """A paste of one school day whose only content is one teacher's note."""
+    return f"Homework for Wren\n{day}\n{subject} -\n{words}\n"
+
+
+def only_key(page: str) -> int:
+    """The key of the one card a page offers."""
+    (key,) = numbers(page, r'name="offered-(\d+)"')
+    return key
+
+
+def due_records(client: TestClient) -> list[tuple[str, SourceChannel, str, str | None]]:
+    """Every due-date claim on record that counts: its homework's title, its channel, its
+    date and where it was seen."""
+    store = store_of(client)
+    return [
+        (row.title, each.channel, each.asserted_value, each.seen_in)
+        for row in store.all_assignments()
+        for each in store.deadline_records(row.assignment_id)
+    ]
+
+
+def saved_rows(client: TestClient) -> list[tuple[str, str, datetime.date | None]]:
+    """Every saved assignment: its id, title and due date."""
+    return [
+        (row.assignment_id, row.title, row.due_date) for row in store_of(client).all_assignments()
+    ]
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        "Essay is not due Friday; finish it Monday",
+        "Essay is not due Friday; finish it Monday.",
+        "Essay isn't due Friday.",
+    ],
+)
+def test_a_note_whose_cue_is_negated_offers_no_date_and_saves_no_school_deadline(
+    tmp_path: pathlib.Path, words: str
+) -> None:
+    """A note whose "due" is negated right before it: its card, details opened, offers no
+    Friday, with No due date yet chosen; ticked and saved, its row has no due date and no
+    claim of one. The same text read again shows it saved, and a save adds nothing."""
+    text = one_note("Language Arts", words)
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+        key = only_key(first)
+        title = re.search(r"<h2>([^<]*)</h2>", card_of_key(first, key))
+        assert title is not None
+        page = opened(client, first, key).text
+        saved = client.post("/parent/inbox/keep", data=ticked_form(first) | {f"take-{key}": "1"})
+        rows = saved_rows(client)
+        records = due_records(client)
+        again = client.post("/parent/inbox/read", data={"text": text}).text
+        resaved = client.post("/parent/inbox/keep", data=ticked_form(again))
+        after = saved_rows(client)
+
+    body = card(page, title.group(1))
+    assert when_options(body, key) == [("none", True), ("other", False)]
+    assert "2026-11-20" not in body
+    assert "November 20" not in body
+    assert saved.status_code == 303
+    assert [(name, due) for _, name, due in rows] == [(html.unescape(title.group(1)), None)]
+    assert records == []
+    assert '<span class="pill">Already saved</span>' in card(again, title.group(1))
+    assert resaved.status_code == 303
+    assert after == rows
+
+
+def card_of_key(page: str, key: int) -> str:
+    """The card on a page that offers this key."""
+    found = re.findall(
+        rf'<article [^>]*>(?:(?!</article>).)*?name="offered-{key}".*?</article>', page, re.S
+    )
+    assert len(found) == 1, key
+    return str(found[0])
+
+
+def test_a_note_due_on_either_of_two_dates_offers_both_and_saves_the_chosen_one_as_the_familys(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note "Essay due Wednesday or Thursday.": the card says the note leaves the due date
+    open, and, details opened, offers both dates with neither chosen and No due date yet chosen.
+    Thursday chosen, reviewed and saved is the family's entry: the row is due that day from
+    the parent's entry, its one claim the parent's. Read again, it is saved with that date,
+    asks nothing, and a save adds nothing."""
+    text = one_note("Language Arts", "Essay due Wednesday or Thursday.")
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+        page = homework_selected(client, text)
+        key = key_of(page, "Essay")
+        shown = opened(client, page, key).text
+        form = ticked_form(page) | {f"when-{key}": "2026-11-19", "recheck": "1"}
+        reviewed = client.post("/parent/inbox/find", data=form)
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        row = store_of(client).all_assignments()
+        records = due_records(client)
+        again = client.post("/parent/inbox/read", data={"text": text}).text
+        resaved = client.post("/parent/inbox/keep", data=ticked_form(again))
+        after = saved_rows(client)
+
+    assert (
+        "The note leaves the due date open: Wednesday, November 18, 2026 or Thursday, "
+        "November 19, 2026."
+    ) in card(first, "Essay")
+    assert when_options(card(shown, "Essay"), key) == [
+        ("2026-11-18", False),
+        ("2026-11-19", False),
+        ("none", True),
+        ("other", False),
+    ]
+    assert (reviewed.status_code, kept.status_code) == (200, 303)
+    assert [(each.title, each.due_date, each.origins["due_date"]) for each in row] == [
+        ("Essay", datetime.date(2026, 11, 19), SourceChannel.PARENT_ENTRY)
+    ]
+    assert [(title, channel, value) for title, channel, value, _ in records] == [
+        ("Essay", SourceChannel.PARENT_ENTRY, "2026-11-19")
+    ]
+    assert '<span class="pill">Already saved</span>' in card(again, "Essay")
+    for asked in ("identity-question-", "occurrence-question-", "instructions-question-"):
+        assert asked not in again
+    assert resaved.status_code == 303
+    assert [(title, due) for _, title, due in after] == [("Essay", datetime.date(2026, 11, 19))]
+
+
+@pytest.mark.parametrize("end", ["", "."], ids=["no-period", "period"])
+def test_a_count_on_the_line_after_a_january_date_saves_the_school_s_date(
+    tmp_path: pathlib.Path, end: str
+) -> None:
+    """A note "Essay due January 8, 1500" with "words" on the next line, under Tuesday
+    12/15/2026: the four digits are a count, so the note is due January 8, 2027, the school's
+    date seen in the teacher's note. Read again, it is saved, and a save adds nothing."""
+    text = one_note(
+        "Language Arts", f"Essay due January 8, 1500\nwords{end}", "12/15/2026 - Tuesday"
+    )
+    with client_in(tmp_path, today="2026-12-15") as client:
+        page = homework_selected(client, text)
+        kept = client.post("/parent/inbox/keep", data=ticked_form(page))
+        rows = saved_rows(client)
+        records = due_records(client)
+        again = client.post("/parent/inbox/read", data={"text": text}).text
+        resaved = client.post("/parent/inbox/keep", data=ticked_form(again))
+        after = saved_rows(client)
+
+    assert kept.status_code == 303
+    assert [(title, due) for _, title, due in rows] == [("Essay", datetime.date(2027, 1, 8))]
+    assert records == [("Essay", SourceChannel.LMS, "2027-01-08", "the teacher's note")]
+    assert '<span class="pill">Already saved</span>' in card(again, "Essay")
+    assert resaved.status_code == 303
+    assert after == rows
+
+
+@pytest.mark.parametrize("end", ["", "."], ids=["no-period", "period"])
+def test_milestones_are_date_choices_labeled_with_their_words_and_one_saves_as_the_familys(
+    tmp_path: pathlib.Path, end: str
+) -> None:
+    """A note "Draft due Wednesday and final copy due Friday": one card, no due date read;
+    details opened, each milestone's date is a choice labeled with its words, none chosen, No due
+    date yet chosen. Friday chosen, ticked, reviewed and saved: one assignment, due that day
+    from the parent's entry. Read again, it is saved, and a save adds nothing."""
+    text = one_note("Art", f"Draft due Wednesday and final copy due Friday{end}")
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+        key = key_of(first, "Draft")
+        shown = opened(client, first, key).text
+        form = ticked_form(first) | {
+            f"take-{key}": "1",
+            f"when-{key}": "2026-11-20",
+            "recheck": "1",
+        }
+        reviewed = client.post("/parent/inbox/find", data=form)
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        row = store_of(client).all_assignments()
+        records = due_records(client)
+        again = client.post("/parent/inbox/read", data={"text": text}).text
+        resaved = client.post("/parent/inbox/keep", data=ticked_form(again))
+        after = saved_rows(client)
+
+    body = html.unescape(card(shown, "Draft"))
+    assert when_options(card(shown, "Draft"), key) == [
+        ("2026-11-18", False),
+        ("2026-11-20", False),
+        ("none", True),
+        ("other", False),
+    ]
+    assert "<span>Wednesday, November 18, 2026, the note's date for Draft</span>" in body
+    assert "<span>Friday, November 20, 2026, the note's date for final copy</span>" in body
+    assert (reviewed.status_code, kept.status_code) == (200, 303)
+    assert [(each.title, each.due_date, each.origins["due_date"]) for each in row] == [
+        ("Draft", datetime.date(2026, 11, 20), SourceChannel.PARENT_ENTRY)
+    ]
+    assert [(title, channel, value) for title, channel, value, _ in records] == [
+        ("Draft", SourceChannel.PARENT_ENTRY, "2026-11-20")
+    ]
+    assert '<span class="pill">Already saved</span>' in card(again, "Draft")
+    assert resaved.status_code == 303
+    assert [(title, due) for _, title, due in after] == [("Draft", datetime.date(2026, 11, 20))]
+
+
+def test_a_milestone_date_the_due_date_check_refuses_is_said_as_a_refused_named_date(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A milestone more than a year away is no choice: the card says it as it says any date
+    the note names that can't be the due date."""
+    text = one_note("Art", "Draft due Wednesday and final copy due January 8, 2028")
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+        key = key_of(first, "Draft")
+        shown = opened(client, first, key).text
+
+    body = html.unescape(card(shown, "Draft"))
+    assert when_options(card(shown, "Draft"), key) == [
+        ("2026-11-18", False),
+        ("none", True),
+        ("other", False),
+    ]
+    assert (
+        "The note names Saturday, January 8, 2028. It can't be saved as the due date because "
+        "it's more than a year away."
+    ) in body
+
+
+def test_two_milestones_that_share_a_date_are_one_choice_with_both_milestones_words(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note "Draft due Friday and final copy due Friday.": details opened, the card offers
+    that Friday once, labeled with both milestones' words joined by " and ", not chosen, and
+    No due date yet chosen."""
+    text = one_note("Art", "Draft due Friday and final copy due Friday.")
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+        key = key_of(first, "Draft")
+        shown = opened(client, first, key).text
+
+    body = html.unescape(card(shown, "Draft"))
+    assert when_options(card(shown, "Draft"), key) == [
+        ("2026-11-20", False),
+        ("none", True),
+        ("other", False),
+    ]
+    label = "<span>Friday, November 20, 2026, the note's date for Draft and final copy</span>"
+    assert body.count(label) == 1
+    assert body.count("the note's date for") == 1
