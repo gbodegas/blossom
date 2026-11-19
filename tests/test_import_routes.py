@@ -53445,3 +53445,399 @@ def test_a_review_read_as_finished_but_not_closed_claims_nothing_about_answers(
     assert imports.SAID["closed"] not in said
     assert "about these screenshots" not in said
     assert imports.PRESS_SAID["answers_kept"] not in said
+
+
+# ------------------------------------------------------------------ a rename in another case
+
+
+def saved_in_two_cases_then_alpha_read_again(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str]:
+    """Saved "Alpha" and "ALPHA" of one class and dates, then the Alpha card read again alone: the
+    review's id and the page."""
+    both = homework_answer(cards=[alpha_card(), card_beside("ALPHA")])
+    earlier, page = read_review(browser, monkeypatch, (RED, both))
+    page = answered(browser, earlier, page)
+    send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+    again = homework_answer(cards=[alpha_card()])
+    draft_id, page = read_review(browser, monkeypatch, (BLUE, again))
+    return draft_id, answered(browser, draft_id, page)
+
+
+def test_a_title_another_saved_row_holds_is_asked_where_it_differs_from_its_own_only_by_case(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saved "Alpha" and "ALPHA", "ALPHA" typed on the Alpha card: the page names the title the
+    other row holds and asks, and a Save sent on the raw path leaves both rows as they are."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = saved_in_two_cases_then_alpha_read_again(browser, monkeypatch)
+        typed = titles_typed_and_reviewed(browser, draft_id, page, ["ALPHA"])
+        choose = destination_starting(typed, "Alpha")
+        asked = reviewed_storing_nothing(browser, draft_id, typed, choose)
+        said = import_review_cases.page_text(asked)
+        assert actions_of(asked) == ["review"], said
+        before = saved_whole(browser, "English 8")
+        raw = import_review_cases.unoffered(page_post(asked, "save", tick=units_on(asked)))
+        followed(browser, send(browser, draft_id, raw))
+        after = saved_whole(browser, "English 8")
+
+    assert "Another saved assignment already has the title “ALPHA”." in said, said
+    assert WHICH_TITLE in said, said
+    assert "Its title becomes" not in said, said
+    assert after == before
+    assert sorted(row.title for row, _, _ in after) == ["ALPHA", "Alpha"]
+
+
+def test_a_rename_in_another_case_beside_a_new_card_of_its_dates_is_asked_and_the_new_card_saves(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saved "Alpha" given the title "ALPHA" beside a new "ALPHA" of its class and dates: saving it
+    would leave two such assignments, so it is asked, Alpha stays whole and the new card saves."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, asked = rename_reviewed_beside_a_new_card(
+            browser, monkeypatch, ("ALPHA", None), alpha_card(), card_beside("ALPHA")
+        )
+        [before] = saved_whole(browser, "English 8")
+        sent = page_post(asked, "save", tick=units_on(asked))
+        done = followed(browser, send(browser, draft_id, sent))
+        after = saved_whole(browser, "English 8")
+
+    said = import_review_cases.page_text(asked)
+    assert WHICH_TITLE in said, said
+    assert beside_new("ALPHA") in said, said
+    assert "Its title becomes" not in said, said
+    left = import_review_cases.page_text(done)
+    assert says(done, imports.counted(1, 0, 0, 1)), left
+    assert TITLE_FIRST in left, left
+    assert before in after
+    assert sorted(row.title for row, _, _ in after) == ["ALPHA", "Alpha"]
+
+
+def test_a_typed_title_identical_to_the_saved_one_beside_a_new_card_of_it_asks_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card read as "Alfa", "Alpha" typed for the saved Alpha beside a new "Alpha" of its dates:
+    the typed title is the row's own, so nothing is renamed and nothing is asked."""
+    with here(open_settings(tmp_path)) as browser:
+        earlier, page = read_review(
+            browser, monkeypatch, (RED, homework_answer(cards=[alpha_card()]))
+        )
+        page = answered(browser, earlier, page)
+        send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+        again = homework_answer(cards=[alpha_card(title="Alfa"), card_beside("Alpha")])
+        draft_id, page = read_review(browser, monkeypatch, (BLUE, again))
+        page = answered(browser, draft_id, page)
+        typed = titles_typed_and_reviewed(browser, draft_id, page, ["Alpha", None])
+        _, second = destination_fields(typed)
+        choose = {second: new_slot(typed, second, 1)}
+        shown = reviewed_storing_nothing(browser, draft_id, typed, choose)
+
+    said = import_review_cases.page_text(shown)
+    assert WHICH_TITLE not in said, said
+    assert "Its title becomes" not in said, said
+    assert actions_of(shown) == ["save"], said
+
+
+def rename_reviewed_beside_two_unplaced_cards(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str]:
+    """Saved Alpha read again beside two "Gamma" cards that ask where they go, "Gamma" typed on the
+    Alpha card and its saved row chosen, then Review changes: the review's id and the page."""
+    saved = alpha_card()
+    earlier, page = read_review(browser, monkeypatch, (RED, homework_answer(cards=[saved])))
+    page = answered(browser, earlier, page)
+    send(browser, earlier, page_post(page, "save", tick=units_on(page)))
+    one = homework_card(title="Gamma", instruction="Week one.", y_top=320, y_bottom=400)
+    two = homework_card(title="Gamma", instruction="Week two.", y_top=420, y_bottom=500)
+    draft_id, page = read_review(
+        browser, monkeypatch, (BLUE, homework_answer(cards=[saved, one, two]))
+    )
+    page = answered(browser, draft_id, page)
+    typed = titles_typed_and_reviewed(browser, draft_id, page, ["Gamma"])
+    first = destination_fields(typed)[0]
+    offered = destinations_drawn(typed)
+    choose = {first: next(v for f, v, _, w in offered if f == first and w.startswith("Alpha"))}
+    return draft_id, reviewed_storing_nothing(browser, draft_id, typed, choose)
+
+
+def test_a_rename_beside_a_new_card_chosen_on_the_save_itself_is_held_and_then_asked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Alpha renamed "Gamma" and reviewed, a "Gamma" card of its dates chosen onto a new slot on the
+    Save: nothing is written, the chosen card is held, and Review changes shows the question."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, shown = rename_reviewed_beside_two_unplaced_cards(browser, monkeypatch)
+        first, second, _ = destination_fields(shown)
+        assert first != second
+        before = import_review_cases.every_row(browser)
+        choose = {second: new_slot(shown, second, 1)}
+        sent = page_post(shown, "save", choose=choose, tick=units_ticked(shown))
+        done = followed(browser, send(browser, draft_id, sent))
+        after = import_review_cases.every_row(browser)
+        posted = page_post(done, "review", tick=units_ticked(done))
+        again = send(browser, draft_id, posted).text
+        rows = english(browser)
+
+    said = import_review_cases.page_text(done)
+    assert after == before, said
+    assert TITLE_FIRST in said, said
+    assert "A new Gamma (1)" in checked_destinations(done), said
+    asked = import_review_cases.page_text(again)
+    assert WHICH_TITLE in asked, asked
+    assert beside_new("Gamma") in asked, asked
+    assert "Its title becomes" not in asked, asked
+    assert rows == [("Alpha", THE_EIGHTH)]
+
+
+# ------------------------------------------------------------------ every Save offered
+
+
+NOT_REVIEWED: Final = imports.PRESS_SAID["not_reviewed"]
+"""What a Save carrying a correction no review showed says."""
+
+
+def every_title(browser: TestClient) -> list[str]:
+    """The title of every assignment saved under the classes these reviews read, sorted."""
+    rows = state_of(browser).project_state.all_assignments()
+    return sorted(a.title for a in rows if a.course in ("English 8", "Science 8"))
+
+
+def asked_again_beside_a_ready_card(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str]:
+    """Saved Alpha read again beside a new Beta: "Delta" typed on the first card and reviewed, its
+    saved row and a new slot chosen and reviewed, then "Zeta" typed on the second and reviewed. The
+    first card asks where it goes again, and Save is offered for the second."""
+    draft_id, page = saved_then_read_beside(browser, monkeypatch, alpha_card(), card_beside("Beta"))
+    typed = titles_typed_and_reviewed(browser, draft_id, page, ["Delta"])
+    chosen = saved_row_and_a_new_slot(typed, "Alpha")
+    shown = reviewed_storing_nothing(browser, draft_id, typed, chosen)
+    return draft_id, titles_typed_and_reviewed(browser, draft_id, shown, [None, "Zeta"])
+
+
+def asked_again_beside_a_card_given_its_title(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str]:
+    """As ``asked_again_beside_a_ready_card``, with "Zeta" typed on both cards."""
+    draft_id, page = saved_then_read_beside(browser, monkeypatch, alpha_card(), card_beside("Beta"))
+    typed = titles_typed_and_reviewed(browser, draft_id, page, ["Zeta"])
+    chosen = saved_row_and_a_new_slot(typed, "Alpha")
+    shown = reviewed_storing_nothing(browser, draft_id, typed, chosen)
+    return draft_id, titles_typed_and_reviewed(browser, draft_id, shown, [None, "Zeta"])
+
+
+def chosen_reviewed_and_saved(
+    browser: TestClient, draft_id: str, page: str, choose: Mapping[str, str]
+) -> str:
+    """``choose`` chosen with Review changes, then one Save with the ticks shown: the page it
+    returns."""
+    return saved_as_ticked(
+        browser, draft_id, reviewed_storing_nothing(browser, draft_id, page, choose)
+    )
+
+
+@pytest.mark.parametrize(
+    ("ticks", "named"),
+    [(units_ticked, WHERE_IT_GOES), (lambda page: [unit_titled(page, "Zeta")], None)],
+    ids=["ticks as shown", "the ready group ticked alone"],
+)
+def test_a_card_asked_again_where_it_goes_is_held_and_the_ready_card_beside_it_saves(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ticks: Callable[[str], list[str]],
+    named: str | None,
+) -> None:
+    """A card whose destination is asked again beside a ready one: Save writes the ready card, keeps
+    the typing, and names the question. Its answer, Review changes and one Save write it once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = asked_again_beside_a_ready_card(browser, monkeypatch)
+        assert actions_of(page) == ["save"], import_review_cases.page_text(page)
+        [before] = saved_whole(browser, "English 8")
+        sent = page_post(page, "save", tick=ticks(page))
+        done = followed(browser, send(browser, draft_id, sent))
+        assert NOT_REVIEWED not in import_review_cases.page_text(done)
+        between = saved_whole(browser, "English 8")
+        last = chosen_reviewed_and_saved(
+            browser, draft_id, done, destination_starting(done, "Alpha")
+        )
+        once = every_title(browser)
+
+    said = import_review_cases.page_text(done)
+    assert says(done, imports.counted(1, 0, 0, 1)), said
+    assert named is None or named in said, said
+    assert before in between
+    assert sorted(row.title for row, _, _ in between) == ["Alpha", "Zeta"]
+    assert 'value="Delta"' in review_form(done), said
+    assert says(last, imports.counted(0, 1, 0, 0)), import_review_cases.page_text(last)
+    assert once == ["Delta", "Zeta"]
+
+
+def test_a_correction_no_review_showed_beside_a_card_asked_again_refuses_the_whole_form(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another title typed on the card asked again and sent with Save on the raw path, no review of
+    it shown: the whole form is refused and nothing is written, the ready card included."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = asked_again_beside_a_ready_card(browser, monkeypatch)
+        box = f"correct:{box_subject(page, 'title')}"
+        opened = opened_for_typing(browser, draft_id, page, {box: "Omega"})
+        before = import_review_cases.every_row(browser)
+        sent = page_post(opened, "save", typed={box: "Omega"}, tick=units_ticked(opened))
+        done = followed(browser, send(browser, draft_id, import_review_cases.unoffered(sent)))
+        after = import_review_cases.every_row(browser)
+
+    assert says(done, NOT_REVIEWED), import_review_cases.page_text(done)
+    assert after == before
+
+
+def all_ready(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
+    """Two new cards, both ready: the review's id and the page."""
+    both = homework_answer(cards=[alpha_card(), card_beside("Beta")])
+    draft_id, page = read_review(browser, monkeypatch, (RED, both))
+    return draft_id, answered(browser, draft_id, page)
+
+
+def essay_held_beside_a_ready_lab(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str]:
+    """The essay's destination chosen on a Save with nothing ticked: the page that holds it for
+    Review changes, a ready Lab write-up beside it."""
+    draft_id, page = essay_asked_beside_lab(browser, monkeypatch)
+    choose = destination_starting(page, "A new Sentence Composing (1)")
+    sent = page_post(page, "save", choose=choose, tick=[])
+    return draft_id, followed(browser, send(browser, draft_id, sent))
+
+
+def title_asked_beside_a_ready_card(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str]:
+    """A rename to "Gamma" asked beside a new "Gamma" of its dates: the review's id and the page."""
+    return rename_reviewed_beside_a_new_card(
+        browser, monkeypatch, ("Gamma", None), alpha_card(), card_beside()
+    )
+
+
+def essay_chosen_and_saved(browser: TestClient, draft_id: str, page: str) -> str:
+    """The essay sent to a new slot with Review changes, then one Save."""
+    choose = destination_starting(page, "A new Sentence Composing (1)")
+    return chosen_reviewed_and_saved(browser, draft_id, page, choose)
+
+
+def held_reviewed_and_saved(browser: TestClient, draft_id: str, page: str) -> str:
+    """Review changes with the choices the page holds, then one Save."""
+    return chosen_reviewed_and_saved(browser, draft_id, page, {})
+
+
+def saved_row_chosen_and_saved(browser: TestClient, draft_id: str, page: str) -> str:
+    """The saved Alpha chosen again on the page's first card with Review changes, then one Save."""
+    first = destination_fields(page)[0]
+    offered = destinations_drawn(page)
+    choose = {first: next(v for f, v, _, w in offered if f == first and w.startswith("Alpha"))}
+    return chosen_reviewed_and_saved(browser, draft_id, page, choose)
+
+
+def other_title_reviewed_and_saved(browser: TestClient, draft_id: str, page: str) -> str:
+    """The title "Delta" typed, the saved Alpha chosen, Review changes and one Save."""
+    retitled = titles_typed_and_reviewed(browser, draft_id, page, ["Delta"])
+    return saved_row_chosen_and_saved(browser, draft_id, retitled)
+
+
+class SaveOffered(NamedTuple):
+    """A page that offers Save: what its Save does, and the offered presses that finish it."""
+
+    reached: Callable[[TestClient, pytest.MonkeyPatch], tuple[str, str]]
+    ticks: Callable[[str], list[str]]
+    added: int
+    named: str | None
+    finish: Callable[[TestClient, str, str], str] | None
+    titles: tuple[str, ...]
+
+
+EVERY_SAVE_OFFERED: Final = {
+    "all ready": SaveOffered(all_ready, units_ticked, 2, None, None, ("Alpha", "Beta")),
+    "one ready, one asking": SaveOffered(
+        essay_asked_beside_lab,
+        units_ticked,
+        1,
+        None,
+        essay_chosen_and_saved,
+        ("Lab write-up", "Sentence Composing", "Sentence Composing"),
+    ),
+    "one held, ticked as shown": SaveOffered(
+        essay_held_beside_a_ready_lab,
+        units_ticked,
+        0,
+        imports.PRESS_SAID["held_back"],
+        held_reviewed_and_saved,
+        ("Sentence Composing", "Sentence Composing"),
+    ),
+    "one ready, one held": SaveOffered(
+        essay_held_beside_a_ready_lab,
+        units_on,
+        1,
+        imports.PRESS_SAID["held_back"],
+        held_reviewed_and_saved,
+        ("Lab write-up", "Sentence Composing", "Sentence Composing"),
+    ),
+    "a destination asked again": SaveOffered(
+        asked_again_beside_a_ready_card,
+        units_ticked,
+        1,
+        WHERE_IT_GOES,
+        saved_row_chosen_and_saved,
+        ("Delta", "Zeta"),
+    ),
+    "a destination asked again, ticked alone": SaveOffered(
+        asked_again_beside_a_ready_card,
+        lambda page: [unit for unit in units_ticked(page) if unit != unit_titled(page, "Zeta")],
+        0,
+        WHERE_IT_GOES,
+        saved_row_chosen_and_saved,
+        ("Delta",),
+    ),
+    "a destination asked again beside a card given its title": SaveOffered(
+        asked_again_beside_a_card_given_its_title,
+        units_ticked,
+        1,
+        WHERE_IT_GOES,
+        other_title_reviewed_and_saved,
+        ("Delta", "Zeta"),
+    ),
+    "a title asked": SaveOffered(
+        title_asked_beside_a_ready_card,
+        units_ticked,
+        1,
+        TITLE_FIRST,
+        other_title_reviewed_and_saved,
+        ("Delta", "Gamma"),
+    ),
+}
+"""Each page state that offers Save, by what stands on it."""
+
+
+@pytest.mark.parametrize("state", EVERY_SAVE_OFFERED)
+def test_every_save_offered_writes_a_ready_group_or_names_what_stops_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    """Save pressed with the ticks a page offers it with: it writes what is ready, or writes nothing
+    and names the question, and the presses the page offers next finish the review's work."""
+    case = EVERY_SAVE_OFFERED[state]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = case.reached(browser, monkeypatch)
+        assert "save" in actions_of(page), import_review_cases.page_text(page)
+        before = every_title(browser)
+        tables = import_review_cases.every_row(browser)
+        sent = page_post(page, "save", tick=case.ticks(page))
+        done = followed(browser, send(browser, draft_id, sent))
+        assert NOT_REVIEWED not in import_review_cases.page_text(done)
+        written = len(every_title(browser)) - len(before)
+        unchanged = import_review_cases.every_row(browser) == tables
+        last = None if case.finish is None else case.finish(browser, draft_id, done)
+        titles = every_title(browser)
+
+    said = import_review_cases.page_text(done)
+    assert written == case.added, said
+    assert unchanged == (case.added == 0), said
+    assert case.named is None or case.named in said, said
+    assert last is None or "Saved:" in import_review_cases.page_text(last)
+    assert tuple(titles) == case.titles, said

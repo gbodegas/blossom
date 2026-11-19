@@ -891,18 +891,25 @@ def title_key(course: str, title: str) -> tuple[str, str]:
     return named, words.casefold()
 
 
+def typed_rename(members: Sequence[Piece], row: SavedRow | None) -> str | None:
+    """The one title typed on the cards going to the saved assignment ``row``, where saving would
+    change that assignment's title, a change of case included. None for a new assignment, with no
+    title or two titles typed, and for a typed title identical to ``row``'s own."""
+    typed = typed_titles(members)
+    if row is None or len(typed) != 1 or intake.pair(row.course, typed[0]) == row.pair:
+        return None
+    return typed[0]
+
+
 def title_holder(
     members: Sequence[Piece], row: SavedRow | None, rows: Mapping[str, SavedRow]
 ) -> SavedRow | None:
-    """The different saved assignment of its class that holds the one title typed on the cards
-    going to the saved assignment ``row``, whatever its dates and the title's case. None where
-    the typed title is ``row``'s own, in its case or another."""
-    typed = typed_titles(members)
-    if row is None or len(typed) != 1:
+    """The different saved assignment of its class that holds the title typed to rename the saved
+    assignment ``row`` (``typed_rename``), whatever its dates and the title's case."""
+    typed = typed_rename(members, row)
+    if row is None or typed is None:
         return None
-    named = title_key(row.course, typed[0])
-    if named == title_key(row.course, row.title):
-        return None
+    named = title_key(row.course, typed)
     return next(
         (
             other
@@ -925,15 +932,15 @@ def title_taken(
 def titles_given_twice(
     destinations: Iterable[tuple[tuple[str, ...], Sequence[Piece]]], rows: Mapping[str, SavedRow]
 ) -> frozenset[str]:
-    """The saved assignments, by id, that share a class and are each given the same one typed title
-    by the cards going to them, the title's case set aside: saving both would leave two
-    assignments under that title."""
+    """The saved assignments, by id, that share a class and are each renamed to the same title by
+    the cards going to them (``typed_rename``), the title's case set aside: saving both would leave
+    two assignments under that title."""
     named: dict[tuple[str, str], set[str]] = {}
     for dest, members in destinations:
         row = rows.get(dest[1]) if dest[0] != "new" else None
-        typed = typed_titles(members)
-        if row is not None and len(typed) == 1:
-            named.setdefault(title_key(row.course, typed[0]), set()).add(row.assignment_id)
+        typed = typed_rename(members, row)
+        if row is not None and typed is not None:
+            named.setdefault(title_key(row.course, typed), set()).add(row.assignment_id)
     return frozenset(found for ids in named.values() if len(ids) > 1 for found in ids)
 
 
@@ -942,10 +949,9 @@ def renames_beside_new(
     rows: Mapping[str, SavedRow],
     answers: Mapping[tuple[str, str], Any],
 ) -> frozenset[str]:
-    """The saved assignments, by id, that the one title typed for them would leave with the class,
-    title, due date and assigned date of a new assignment among these destinations, the title's
-    case set aside. A typed title that is the saved one in another case makes no such pair: the
-    two would match with or without it."""
+    """The saved assignments, by id, that the title typed to rename them (``typed_rename``) would
+    leave with the class, title, due date and assigned date of a new assignment among these
+    destinations, the title's case set aside."""
     given = list(destinations)
 
     def left(
@@ -961,13 +967,8 @@ def renames_beside_new(
     found: set[str] = set()
     for dest, members in given:
         row = rows.get(dest[1]) if dest[0] != "new" else None
-        typed = typed_titles(members)
-        if (
-            row is not None
-            and len(typed) == 1
-            and title_key(row.course, typed[0]) != title_key(row.course, row.title)
-            and left(dest, members, row, typed[0]) in new
-        ):
+        typed = typed_rename(members, row)
+        if row is not None and typed is not None and left(dest, members, row, typed) in new:
             found.add(row.assignment_id)
     return frozenset(found)
 
@@ -979,17 +980,10 @@ def proposed_title(
     twice: frozenset[str] = frozenset(),
 ) -> str | None:
     """The title saving gives the saved assignment ``row``: the one title typed on the cards going
-    there, where it names something other than the saved title. None for a new assignment, with no
-    title typed, and for what is asked instead (``titles_asked``)."""
-    typed = typed_titles(members)
-    if (
-        row is None
-        or len(typed) != 1
-        or intake.pair(row.course, typed[0]) == row.pair
-        or titles_asked(members, row, rows, twice)
-    ):
-        return None
-    return typed[0]
+    there, where it names something other than the saved title (``typed_rename``). None for a new
+    assignment, with no title typed, and for what is asked instead (``titles_asked``)."""
+    typed = typed_rename(members, row)
+    return None if typed is None or titles_asked(members, row, rows, twice) else typed
 
 
 def titles_asked(

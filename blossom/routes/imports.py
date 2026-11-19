@@ -3067,25 +3067,28 @@ async def unreviewed_effects(
     tick or a destination never counts as a correction, and compared with those its page signed;
     a page Review changes made signs them with every answer of its post held (``as_kept`` on a
     Review changes press), an answer that replaces a kept one included, so a group matching those
-    is reviewed too. Every card of a group that matches neither. Empty where each group matches,
-    where the post carries no correction, and where the review has moved past the page, which its
-    stale-record refusal answers."""
+    is reviewed too. Every card of a group that matches neither. A group its page signed with no
+    digests, its destination asked or the group held back, shows no effect to compare and is never
+    written by this press: ``unreviewed_shown`` checks its corrections, and it is held. Empty where
+    each group matches, where the post carries no correction, and where the review has moved past
+    the page, which its stale-record refusal answers."""
     if not post.corrections or post.version != found.version:
         return frozenset()
     review = await state_of_review(state, found, post.corrections)
     if review is None:
         return frozenset()
     worked = unit_digests(review)
+    signed = {unit: digests for unit, digests in post.digests.items() if digests}
     # A group the page signed whose cards the stored answers place nowhere (its destination
     # posted, not stored) has no digests here: it is compared with the post's answers held, and
     # only where the post's corrections change it from the corrections the draft keeps, so its
     # choices alone never count as a correction.
     placed = {name for unit in worked for name in unit.split("+")}
     unplaced = {
-        unit for unit in post.digests if unit not in worked and placed.isdisjoint(unit.split("+"))
+        unit for unit in signed if unit not in worked and placed.isdisjoint(unit.split("+"))
     }
     differ = {
-        unit for unit, digests in worked.items() if post.digests.get(unit, digests) != digests
+        unit for unit, digests in worked.items() if signed.get(unit, digests) != digests
     } | unplaced
     if not differ:
         return frozenset()
@@ -3098,10 +3101,7 @@ async def unreviewed_effects(
         as_kept_here = {} if plain is None else unit_digests(plain)
         differ -= {unit for unit in unplaced if as_kept_here.get(unit) == as_reviewed.get(unit)}
     return frozenset(
-        name
-        for unit in differ
-        if post.digests[unit] != as_reviewed.get(unit)
-        for name in unit.split("+")
+        name for unit in differ if signed[unit] != as_reviewed.get(unit) for name in unit.split("+")
     )
 
 
@@ -4311,9 +4311,10 @@ async def units_written(
 ) -> tuple[tuple[str, ...], frozenset[str], frozenset[str]]:
     """The ticked groups this Save writes, worked out before any store: those its page showed
     ready, with no destination changed on this press, none sharing a new slot with a destination
-    chosen on it (``new_slot_shared``), no Type answer moving the effect its page signed, and,
-    where a question was open on the page, with this press's answers leaving none open. Every
-    other ticked group is held. Beside them, the cards of each held group that only an unanswered
+    chosen on it (``new_slot_shared``), none whose title a destination chosen on it leaves asked
+    (``titles_left_asked``), no Type answer moving the effect its page signed, and, where a
+    question was open on the page, with this press's answers leaving none open. Every other
+    ticked group is held. Beside them, the cards of each held group that only an unanswered
     question stops (``ReviewPost.held_asking``), and the cards the destinations chosen on this
     press select (``cards_selected``). A page behind the review is left to its stale-record
     refusal."""
@@ -4328,7 +4329,11 @@ async def units_written(
         if asks or (post.chosen_here and post.version == found.version)
         else None
     )
-    stopped = post.chosen_here | new_slot_shared(review, post.chosen_here)
+    stopped = (
+        post.chosen_here
+        | new_slot_shared(review, post.chosen_here)
+        | titles_left_asked(review, post.chosen_here)
+    )
     unchanged = [unit for unit in post.units if not stopped & set(unit.split("+"))]
     asking = [unit for unit in unchanged if post.ready_shown.get(unit) == READY_ASKING]
     answered: set[str] = set()
@@ -4369,6 +4374,17 @@ def new_slot_shared(review: ReviewState | None, chosen: frozenset[str]) -> froze
 
     slots = {slot_of(name) for name in chosen} - {None}
     return frozenset(name for name in review.mapping if slot_of(name) in slots)
+
+
+def titles_left_asked(review: ReviewState | None, chosen: frozenset[str]) -> frozenset[str]:
+    """The cards going to a saved assignment whose typed title is asked once the destinations in
+    ``chosen`` are held (``review``): the rename its page proposed would leave two assignments of
+    one class, title and dates beside the card chosen on this press, so it waits for that answer."""
+    if review is None or not chosen:
+        return frozenset()
+    return frozenset(
+        name for entry in review.preview if "title" in entry.open_questions for name in entry.pieces
+    )
 
 
 def cards_selected(review: ReviewState | None, post: ReviewPost) -> frozenset[str]:
