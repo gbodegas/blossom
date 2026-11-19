@@ -17,14 +17,18 @@ import hashlib
 import hmac
 import json
 import zlib
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date
 from typing import Final
 
 from blossom.grades.draft import folded
+from blossom.intake import spoken_day
+from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import to_wire
 from blossom.screenshot_review import (
+    JOINED,
     KINDS,
+    UNJOINED,
     ChangeTold,
     Corrections,
     DateQuestion,
@@ -41,12 +45,15 @@ from blossom.screenshot_review import (
     dest_kind,
     facts,
     field_most,
+    joined_subject,
     kind_question,
     offers,
     reference,
     settles_due,
     subject_for,
+    title_holder,
     typed_day,
+    typed_titles,
     unit_name,
     value_json,
     value_of,
@@ -66,7 +73,7 @@ from blossom.screenshot_save import (
     unit_digests,
     unreadable_dates,
 )
-from blossom.screenshots import CardPlace, ScreenshotRow, UnreadCard
+from blossom.screenshots import CardPlace, ScreenshotRow, UnreadCard, note_tag
 
 SAID: Final = {
     "status": (
@@ -100,6 +107,22 @@ SAID: Final = {
     "type_helper": "Task: a form to sign, supplies to bring, or similar.",
     "due_differs": "Its due line and its day heading name different dates. Which due date does "
     "Blossom use?",
+    "joined_note": "The teacher's note for {day} also says: {words}",
+    "joined_tick": "Add this note to the assignment",
+    "joined_sent_twice": "This tick was sent twice with different answers. Choose one.",
+    "joined_leave": "Don't add it",
+    "box_twice": "This box was sent twice with different answers: {sent}. Enter one.",
+    "answer_twice": "This was sent twice with different answers: {sent}. Choose one.",
+    "empty_no_due": "No due date",
+    "empty_as_read": "The date as read: {day}",
+    "empty_remove": "Remove these instructions",
+    "empty_no_words": "No instructions",
+    "joined_dates": "Due date on this review: {due}. The teacher's note for {day} says {noted}.",
+    "joined_undated": "No due date on this review. The teacher's note for {day} says {noted}.",
+    "note_day": "From the teacher's note for {day}.",
+    "note_open": "The note doesn't settle a due date.",
+    "note_could_mean": "It could mean {days}.",
+    "note_names": "It names {days}.",
     "too_long": "Keep the {named} to {most:,} characters or fewer.",
     "nothing": "none",
     "lost_correction": "This card's corrections changed since you chose, so choose where it goes "
@@ -127,6 +150,15 @@ SAID: Final = {
     "new_assignment": "New assignment.",
     "already": "Already saved. Nothing new is written.",
     "updates": "Updates {title}.",
+    "new_title": "Its title becomes “{title}”.",
+    "titles_differ": "Different titles were typed for this assignment: {titles}. Type one title "
+    "on these cards.",
+    "title_taken": "Another saved assignment already has the title “{title}”. Choose that "
+    "assignment or change the title.",
+    "title_twice": "The title “{title}” was typed for two saved assignments of this "
+    "class. Change the title on one of them.",
+    "title_beside_new": "A new assignment in this review would have the same class, dates and "
+    "title “{title}”. Change this title or where that card goes.",
     "no_assigned_line": "No assigned date.",
     "no_due_line": "No due date",
     "choose_first": "Choose where it goes first.",
@@ -134,8 +166,13 @@ SAID: Final = {
     "typing_lost": "Typed corrections aren't kept by this button; use Save review for later first.",
     "tick_one": "Save this assignment",
     "tick_many": "Save these assignments",
+    "may_be_homework": "Notes that may be homework",
+    "may_be_homework_helper": "These start unselected. Select any that are homework.",
+    "no_homework": "Notes with no homework",
+    "no_homework_helper": "The school's note says no homework is assigned. These start unselected.",
 }
-"""The fixed sentences and labels of the review's rows."""
+"""The fixed sentences and labels of the review's rows. The headings and helpers of the notes
+that may be homework and the notes with no homework are the School text review's words."""
 
 NEEDED: Final = {
     "course": "A class is needed.",
@@ -173,6 +210,10 @@ TYPE_LINE: Final = {
 }
 """The line under a row's Type, by where the kind Save writes comes from."""
 
+ANOTHER_TITLE: Final = "Saved under another title; this card reads {title}"
+"""The fact beside a saved assignment listed because it may be the card's under the title the
+family gave it (``saved_under_another_title``): the title as read, beside the saved one."""
+
 KIND_LINE: Final = {
     "suggested": "Saved as {kind}, as suggested.",
     "saved": "Stays {kind}, as saved.",
@@ -202,6 +243,8 @@ OPEN_NAMES: Final = {
     "confirm": "a field the reader wasn't sure of",
     "name": "the student name",
     "due_read": "which due date Blossom uses",
+    "title": "which title to use",
+    "destination": "where it goes",
 }
 """How the preview names each question still open."""
 
@@ -390,6 +433,44 @@ def due_option(piece: Piece, day: date) -> str:
     return f"Due {day_text(day)}, as the {'due line' if lines else 'day heading'} says"
 
 
+def joined_questions(
+    piece: Piece, values: Mapping[tuple[str, str], str], about: str
+) -> list["Question"]:
+    """A tick of its own for each note joined to the piece's card, unticked until the family
+    ticks it: the note's words, and both dates with where each was read where the note's
+    deadline is not the piece's due date. Leaving it unticked is an answer, so it is never
+    still to answer. Two notes of one tag share one tick."""
+    out: list[Question] = []
+    seen: set[str] = set()
+    for task in () if piece.reading is None else piece.reading.joined_notes:
+        tag = note_tag(task)
+        if tag in seen:
+            continue
+        seen.add(tag)
+        subject = joined_subject(piece.name, tag)
+        day = f"{task.first_day.strftime('%B')} {task.first_day.day}"
+        notes: tuple[tuple[str, str], ...] = ()
+        if task.deadline is not None and task.deadline != piece.due:
+            noted = spoken_day(task.deadline)
+            said = (
+                SAID["joined_undated"].format(day=day, noted=noted)
+                if piece.due is None
+                else SAID["joined_dates"].format(due=spoken_day(piece.due), day=day, noted=noted)
+            )
+            notes = ((said, ""),)
+        out.append(
+            Question(
+                answer_field("joined", subject),
+                SAID["joined_note"].format(day=day, words=task.words),
+                ((JOINED, SAID["joined_tick"], values.get(("joined", subject)) == JOINED),),
+                about=about,
+                notes=notes,
+                answered=True,
+            )
+        )
+    return out
+
+
 def confirm_question(
     piece: Piece, field: str, values: Mapping[tuple[str, str], str], fold: str
 ) -> "Question":
@@ -427,16 +508,104 @@ class Box:
     carried: tuple[str, str] | None = None
     """For a typed date Blossom can't read: the hidden field that carries it back as typed, and
     its text, so a page posted unchanged keeps it."""
+    empty: str | None = None
+    """What the box left empty means, where it means anything: offered as an explicit choice
+    beside it only while it is marked (``marks``), since a marked box posted empty is
+    unanswered."""
+    marks: tuple[tuple[str, str], ...] = ()
+    """Hidden fields it carries, by name and value: a box sent twice with different values
+    carries the values sent (``UNRESOLVED``) until it is answered."""
 
     @property
     def subject(self) -> str:
         """Its key and field, as its name and the signed list name it."""
         return self.name.removeprefix("correct:")
 
+    @property
+    def changed(self) -> bool:
+        """Whether it holds a value other than the one read, which a closed card shows as text."""
+        return read_digest(self.value) != self.read
+
+    @property
+    def said(self) -> str:
+        """Its value as a closed card says it: a date as the review's rows say a day ("Fri
+        10/9"), anything else, or a date Blossom can't read, as the box holds it. An empty box
+        says what it left empty means, in the words the page offers for that choice (``empty``),
+        or "none" where it means nothing more; with "No assigned date was given" ticked, those
+        words."""
+        if not self.value:
+            if self.none is not None and self.none[1]:
+                return SAID["no_assigned_given"]
+            return self.empty or SAID["nothing"]
+        if self.kind != "date":
+            return self.value
+        try:
+            return day_text(date.fromisoformat(self.value))
+        except ValueError:
+            return self.value
+
 
 def box_name(key: str, field: str) -> str:
     """The posted name of a box."""
     return "correct:" + json.dumps([key, field], separators=(",", ":"))
+
+
+def carried_digest(words: str) -> str:
+    """The digest a page signs of the words Blossom couldn't read that it carries beside a date
+    box, exactly as carried: one SHA-256 whatever their length."""
+    return hashlib.sha256(words.encode()).hexdigest()
+
+
+SHOWN: Final = "shown:"
+"""The signed list's name, before a box's key and field, of the correction its page shows for it."""
+BASIS: Final = "basis:"
+"""The signed list's name, before a box's key and field, of the correction a page drew as the
+basis of the choices it carries, signed apart from ``SHOWN``: a plain load signs the saved words
+so, and no review showed them."""
+CHOSEN_SHOWN: Final = "chosen:"
+"""The signed list's name, before a piece's name, of the destination its page shows chosen."""
+TICKED_SHOWN: Final = "ticked:"
+"""The signed list's name, before a group's name, of a group its page shows ticked."""
+READY_SHOWN: Final = "ready:"
+"""The signed list's name, before a group's name, of a group its page shows ready for Save."""
+READY_WHOLE: Final = "whole"
+"""A group its page shows ready with no question open."""
+READY_ASKING: Final = "asking"
+"""A group its page shows ready whichever answer its open questions are given."""
+SELECTION_SHOWN: Final = "selection_shown"
+"""The signed field of a form that posts no ticks (a found row, an offer, Leave this group unsaved
+and the Find button leading to a found row): the selection its page showed."""
+SELECTION_CHECK: Final = "selection_check"
+"""The signature of the Find button's selection, which that form has no other signature for."""
+
+
+def selection_field(revision: int, open_keys: Iterable[str], selected: Collection[str]) -> str:
+    """The selection a page showed, as a form that posts no ticks carries it: the page's progress
+    revision, then one binary digit per open row in sorted order, packed as hexadecimal behind a
+    leading one, so the field grows by a quarter of a byte per open row."""
+    bits = "".join("1" if key in selected else "0" for key in sorted(open_keys))
+    return f"{revision}:{int('1' + bits, 2):x}"
+
+
+def selection_read(value: str, open_keys: Iterable[str]) -> tuple[int, frozenset[str]] | None:
+    """The progress revision and the rows selected of a signed ``selection_field``; None where the
+    review's open rows aren't the ones its page counted."""
+    revision, _, packed = value.partition(":")
+    keys = sorted(open_keys)
+    try:
+        bits = f"{int(packed, 16):b}"
+        shown = int(revision)
+    except ValueError:
+        return None
+    if len(bits) != len(keys) + 1:
+        return None
+    return shown, frozenset(key for key, bit in zip(keys, bits[1:], strict=True) if bit == "1")
+
+
+def shown_digest(value: str | None) -> str:
+    """The digest a page signs of a correction it shows on a card, as a press posts it: one
+    SHA-256 of the correction as JSON, whatever its length."""
+    return hashlib.sha256(json.dumps(value).encode()).hexdigest()
 
 
 def _text_box(
@@ -457,6 +626,9 @@ def _text_box(
         refused = NEEDED[field]
     elif typed is not None and len(typed) > field_most(field):
         refused = SAID["too_long"].format(named=named, most=field_most(field))
+    empty = None
+    if field not in NEEDED:
+        empty = SAID["empty_remove"] if read else SAID["empty_no_words"]
     return Box(
         box_name(key, field),
         label,
@@ -465,6 +637,7 @@ def _text_box(
         read_digest(read),
         refused,
         SAID["not_saved_yet"] if unsaved else None,
+        empty=empty,
     )
 
 
@@ -491,7 +664,7 @@ def _date_box(
     value = "" if shown is None else shown.isoformat()
     if given and typed is not None:
         day = typed_day(typed) if typed else None
-        if typed == "" and field in NEEDED:
+        if typed == "" and field in NEEDED and not _from_a_note(piece):
             refused = NEEDED[field]
         elif len(typed) > field_most(field):
             refused = SAID["too_long"].format(named=BOX_NAMED[field], most=field_most(field))
@@ -505,12 +678,22 @@ def _date_box(
     hint = None
     if field == "due" and not piece.due_resolved:
         hint = SAID["due_hint"]
-    elif field == "assigned":
+    elif field == "assigned" and carried is None:
+        # Beside text it carries back as typed, the box left empty answers nothing (the text
+        # comes back with it), so it doesn't say that empty keeps the date as read.
         hint = SAID["assigned_hint"]
     none = None
     if field == "assigned":
         ticked = (given and typed is None) or both or (confirmed and not given)
         none = ("none:" + name.removeprefix("correct:"), ticked)
+    # A due date box left empty is no due date on a note's piece, or where none was read, and is
+    # refused otherwise; an assigned date box left empty is the date as read, and where none was
+    # read "No assigned date was given" says it.
+    empty = None
+    if field == "due" and (as_read is None or _from_a_note(piece)):
+        empty = SAID["empty_no_due"]
+    elif field == "assigned" and as_read is not None:
+        empty = SAID["empty_as_read"].format(day=day_text(as_read))
     return Box(
         name,
         BOX_LABELS[field],
@@ -522,6 +705,7 @@ def _date_box(
         hint,
         none,
         carried,
+        empty,
     )
 
 
@@ -538,7 +722,9 @@ def fold_boxes(
     value: the row's class, title, one box per instruction text and one empty box per open card
     read with no words the reader wasn't sure of (``wordless``, by field and label, the label
     naming its screenshot and card) when ``row_boxes`` (on the row's first open card), then
-    the piece's due and assigned dates."""
+    the piece's due and assigned dates. A piece read from a teacher's note has no Instructions
+    box: its words are the school's wording, shown as read, which a later reading of the same
+    note is recognized by."""
     read = piece.as_read
     if read is None:
         return ()
@@ -562,6 +748,8 @@ def fold_boxes(
             (f"instruction:{i}", BOX_LABELS["instruction"], t) for i, t in enumerate(read.texts)
         ]
         boxes += [(field, label, "") for field, label in wordless]
+        if _from_a_note(piece):
+            boxes = []
         for field, label, text in boxes:
             typed = (row[field] or "") if field in row else None
             out.append(
@@ -610,8 +798,9 @@ UNREAD_SAID: Final = {
         "Look at the screenshot and enter it by hand if it's homework.",
     ),
     "no_day": (
-        "Homework read, but its date couldn't be told",
-        "No date was on the card or in a heading above it in this screenshot.",
+        "Read, but its date couldn't be told",
+        "No date was on the card or in a heading above it in this screenshot. "
+        "A teacher's note is read only under a day heading.",
     ),
     "clipped": (
         "Cut off at the screenshot's edge",
@@ -681,7 +870,8 @@ def unread_shown(
 def fact_text(fact_kind: str, entry_day: date | None, piece_day: date | None, about: str) -> str:
     """One fact beside an entry, as text."""
     if fact_kind == "due_differs":
-        return f"Due {day_text(entry_day) or SAID['no_due']}: this card says {day_text(piece_day)}"
+        piece_due = day_text(piece_day) or SAID["no_due"]
+        return f"Due {day_text(entry_day) or SAID['no_due']}: this card says {piece_due}"
     if fact_kind == "assigned_differs":
         return f"Assigned {day_text(entry_day)}: this card says {day_text(piece_day)}"
     if fact_kind == "also_saved_in":
@@ -719,6 +909,17 @@ class PieceControl:
     """Its fieldset's id on the page, by its place among the open pieces."""
     unsaved: bool = False
     """Whether what's checked is a choice a refused press sent and the record doesn't hold."""
+    required: bool = False
+    """Whether one of its choices must be chosen before the form is sent."""
+    marks: tuple[tuple[str, str], ...] = ()
+    """Hidden fields it carries, by name and value: a destination sent twice with different
+    answers carries the values sent (``UNRESOLVED``) until it is answered."""
+
+    @property
+    def asks(self) -> bool:
+        """Whether none of its choices is chosen, one option left unchosen included: Review
+        changes is then the form's action, so the chosen one's effect is shown before Save."""
+        return not any(choice.checked for choice in self.choices)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -746,9 +947,62 @@ class Question:
     (resolved to that question's anchor once the page's questions are placed)."""
     answered: bool = False
     """For a field the reader wasn't sure of: whether a correction in the fold answers it, as
-    it does for the save, with no option checked."""
+    it does for the save, with no option checked. A joined note's tick is always answered."""
     unsaved: bool = False
     """Whether what's checked is a choice a refused press sent and the record doesn't hold."""
+    required: bool = False
+    """Whether one of its options must be chosen before the form is sent."""
+    marks: tuple[tuple[str, str], ...] = ()
+    """Hidden fields it carries, by name and value: a joined note's tick sent twice with
+    different answers carries the values sent (``UNRESOLVED``) until it is answered."""
+
+
+UNRESOLVED: Final = "unresolved:"
+"""The prefix of the unsigned field a returned review carries for a joined note's tick sent
+twice with different answers, holding the values sent, until the family answers it."""
+CORRECT_PRESS: Final = "correct:"
+"""What starts the value of a card's Correct what was read press, before its piece name."""
+OPEN_MARK: Final = "open:"
+"""The prefix of the hidden field a card shown with its boxes open carries, before its piece
+name, so the page a press returns shows it open too."""
+ONE_PRESS_QUESTIONS: Final = frozenset({"due", "assigned", "kind", "instructions"})
+"""The open questions a group's tick is offered beside where it is ready whichever is answered:
+each answer's effect is in the digests its page signs, so the answer and the tick save in one
+press."""
+
+
+def _unresolved_ticks(
+    units: Sequence["UnitShown"], unresolved: Mapping[str, tuple[str, ...]]
+) -> list["UnitShown"]:
+    """The groups with each joined note's tick in ``unresolved`` offered as the actual choice,
+    adding the note or not, both required and neither chosen, marked with the values sent."""
+
+    def opened(asked: Question) -> Question:
+        if asked.field not in unresolved:
+            return asked
+        return dataclasses.replace(
+            asked,
+            options=((JOINED, SAID["joined_tick"], False), (UNJOINED, SAID["joined_leave"], False)),
+            required=True,
+            marks=((f"{UNRESOLVED}{asked.field}", json.dumps(list(unresolved[asked.field]))),),
+        )
+
+    return [
+        dataclasses.replace(
+            unit,
+            blocks=tuple(
+                dataclasses.replace(
+                    block,
+                    cards=tuple(
+                        dataclasses.replace(card, checks=tuple(opened(q) for q in card.checks))
+                        for card in block.cards
+                    ),
+                )
+                for block in unit.blocks
+            ),
+        )
+        for unit in units
+    ]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -805,6 +1059,10 @@ class CardShown:
     said: tuple[str, ...]
     control: PieceControl
     type: Question | None = None
+    open: bool = False
+    """Whether its boxes are shown to type in: after its Correct what was read press, while the
+    page it came from showed them, or where a box is refused or marked; a closed card shows its
+    corrected values as text and carries every box hidden."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -829,9 +1087,11 @@ class UnitShown:
     blocks: tuple[BlockShown, ...]
     tick: bool
     ticked: bool
-    """Ticked on the page, for display only: with saved progress, when its selection names every
-    row of the group and the group is still open and can be ticked; with none, every group that
-    can be ticked."""
+    """Selected on the page: on a press, what its post ticked and each destination a press that
+    stores nothing chose, unless that post left the group's tick off; on a plain load, what saved
+    progress names, and with none, a group on the page's own default with no stored answer that
+    holds no teacher's note, of any standing, that is not saved already with nothing new to
+    write. Selection stands apart from ``ready``: an open question never takes it away."""
     waits: tuple[str, ...]
     refusals: tuple[str, ...]
     offers: tuple[OfferShown, ...]
@@ -841,6 +1101,22 @@ class UnitShown:
     about: str = ""
     """The unit's cards by title and place, which its repeated controls' names end with."""
     tick_label: str = ""
+    note: str = ""
+    """``unclear`` or ``not_assignment`` for a group holding a teacher's note read as unclear
+    or as no homework, which the page shows under its own heading; empty otherwise."""
+    ready: bool = False
+    """Whether Save can write it from this page: every card has a destination whose effect the
+    page shows, and any open question is one whose answer that effect already covers
+    (``ONE_PRESS_QUESTIONS``). A group a Save held back is not ready until Review changes shows
+    its effect."""
+    asking: bool = False
+    """Whether a question is open on it."""
+    still_open: tuple[str, ...] = ()
+    """The questions left to answer on it, each as the preview names it, where it goes included."""
+    unreviewed: bool = False
+    """Whether a card of it shows a correction its page doesn't sign as shown: no review showed
+    those words, so the group is not ready and a Save carrying them is refused until Review
+    changes shows them."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -856,6 +1132,13 @@ class NameQuestion:
     """Its fieldset's id on the page, by its place among the review's questions."""
     unsaved: bool = False
     """Whether what's checked is a choice a refused press sent and the record doesn't hold."""
+    notes: tuple[str, ...] = ()
+    """Lines said beneath its legend."""
+    required: bool = False
+    """Whether one of its options must be chosen before the form is sent."""
+    marks: tuple[tuple[str, str], ...] = ()
+    """Hidden fields it carries, by name and value: an answer sent twice with different values
+    carries the values sent (``UNRESOLVED``) until it is answered."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -894,6 +1177,31 @@ class RowsShown:
     unselected: tuple[str, ...] = dataclasses.field(default=(), kw_only=True)
     """For each destination posted beside them (``destinations``) that no control shows selected,
     the line naming its card, and the destination's label where the page establishes one."""
+
+    @property
+    def editing(self) -> bool:
+        """Whether any card's boxes are open: Save isn't offered then."""
+        return any(
+            card.open for unit in self.units for block in unit.blocks for card in block.cards
+        )
+
+    @property
+    def offers_save(self) -> bool:
+        """Whether Save is offered: at least one group is ready, no card's boxes are open, and no
+        card shows a correction the page doesn't sign as shown, as a Save carrying one on any
+        group is refused. Another card may be asking; it stays unresolved and nothing is written
+        for it."""
+        return (
+            not self.editing
+            and any(unit.ready for unit in self.units)
+            and not any(unit.unreviewed for unit in self.units)
+        )
+
+    @property
+    def offers_review(self) -> bool:
+        """Whether Review changes is offered: on every page that shows a card, as the form's
+        first submit button."""
+        return any(block.cards for unit in self.units for block in unit.blocks)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1047,6 +1355,8 @@ def _choices(
             fact_text(f.kind, f.entry_date, f.piece_date, labels.get(str(f.about), ""))
             for f in facts(piece, row, state.rows, state.picks)
         )
+        if entry.kind == "listed" and row.pair != piece.pair and not _from_a_note(piece):
+            shown = (ANOTHER_TITLE.format(title=piece.title), *shown)
         out.append(Choice(entry.value, label, shown, entry.value == picked))
     for refusal in state.validation.of(piece.name).refusals:
         holder = refusal.named[1] if refusal.kind == "copy" else None
@@ -1136,6 +1446,30 @@ def _assigned_line(entry: PreviewEntry, row: SavedRow | None, members: Sequence[
     return f"Assigned {long_day(entry.assigned)}."
 
 
+SAVED_DUE_FROM: Final = {
+    SourceChannel.PARENT_ENTRY: "The family's",
+    SourceChannel.STUDENT_REPORT: "Her report's",
+}
+"""Whose a saved due date is, by the channel the record keeps for it; any other channel, or
+none, is the school's."""
+
+
+def _whose_due(
+    state: ReviewState, row: SavedRow | None, members: Sequence[Piece], tag: str, day: date
+) -> str:
+    """Where a date the due question offered came from, as the line beside the chosen date
+    names it: the saved assignment's by the channel the record keeps for its due date; a
+    card's as the school's, or as the teacher's note's where only a piece read from a note
+    gives it."""
+    if tag == "as_saved" and row is not None:
+        channel = state.due_origins.get(row.assignment_id)
+        return "The school's" if channel is None else SAVED_DUE_FROM.get(channel, "The school's")
+    giving = [m for m in members if m.due == day]
+    if giving and all(_from_a_note(m) for m in giving):
+        return "The teacher's note's"
+    return "The school's"
+
+
 def _effect_lines(
     state: ReviewState,
     entry: PreviewEntry,
@@ -1148,16 +1482,29 @@ def _effect_lines(
     row = state.rows.get(entry.stands_for) if entry.stands_for else None
     members = [state.by_name[n] for n in entry.pieces]
     lines = []
+    if "title" in entry.open_questions:
+        titles = typed_titles(members)
+        holder = title_holder(members, row, state.rows)
+        if holder is not None:
+            lines.append(SAID["title_taken"].format(title=holder.title))
+        elif entry.beside_new:
+            lines.append(SAID["title_beside_new"].format(title=titles[0]))
+        elif len(titles) == 1:
+            lines.append(SAID["title_twice"].format(title=titles[0]))
+        else:
+            typed = " and ".join(f"“{title}”" for title in titles)
+            lines.append(SAID["titles_differ"].format(titles=typed))
     asked = {
         q.kind: q
         for q in state.validation.of(entry.pieces[0]).questions
         if q.subject == subject_for(entry.dest, entry.pieces)
     }
     if "due" in asked and entry.due is not None and "due" not in entry.open_questions:
-        others = [d for _, d in asked["due"].options if d != entry.due]
-        for other in others:
+        others = [(tag, d) for tag, d in asked["due"].options if d != entry.due]
+        for tag, other in others:
             lines.append(
-                f"Due {day_text(entry.due)}, as you chose. The school's {day_text(other)} is "
+                f"Due {day_text(entry.due)}, as you chose. "
+                f"{_whose_due(state, row, members, tag, other)} {day_text(other)} is "
                 "kept beside it, and her page will say the sources disagree."
             )
     if "assigned" in asked and entry.assigned and "assigned" not in entry.open_questions:
@@ -1216,12 +1563,15 @@ def _card_head(
         effect = SAID["already"]
     else:
         effect = SAID["new_assignment"] if row is None else SAID["updates"].format(title=row.title)
+        if entry.new_title is not None:
+            effect = f"{effect} {SAID['new_title'].format(title=entry.new_title)}"
         lead_in = "From the school:" if row is None else "Adds"
         words = tuple((lead_in, text) for text in entry.adds)
     kind = _kind_line(entry, row, lead)
     quiet = [_assigned_line(entry, row, members), effect if kind is None else f"{effect} {kind}"]
     if not entry.nothing_new and not entry.adds:
         quiet.insert(0, SAID["no_new_words"])
+    quiet += note_lines(members)
     return CardHead(
         course,
         title,
@@ -1248,8 +1598,37 @@ def _own_head(piece: Piece) -> CardHead:
         piece.title,
         due,
         tuple(("From the school:", text) for text in texts),
-        (assigned,),
+        (assigned, *note_lines([piece])),
     )
+
+
+def note_lines(pieces: Iterable[Piece]) -> list[str]:
+    """For each piece read from a teacher's note: the school day it was first listed under,
+    and, where the note settles no due date, that it doesn't, with the dates it could mean
+    and the dates it names, as text and never as choices. A date in another year than the
+    school day's is said with its year."""
+    out: list[str] = []
+    for piece in pieces:
+        task = None if piece.reading is None else piece.reading.teacher_note
+        if task is None:
+            continue
+        out.append(SAID["note_day"].format(day=long_day(task.first_day)))
+        if task.deadline is not None or not (task.choices or task.named):
+            continue
+        year = task.first_day.year
+        out.append(SAID["note_open"])
+        if task.choices:
+            days = " or ".join(_day_in(day, year) for day in task.choices)
+            out.append(SAID["note_could_mean"].format(days=days))
+        if task.named:
+            days = " and ".join(_day_in(day, year) for day in task.named)
+            out.append(SAID["note_names"].format(days=days))
+    return out
+
+
+def _day_in(day: date, year: int) -> str:
+    """A day as her week's card says it, with its year when it is not ``year``."""
+    return long_day(day) if day.year == year else f"{long_day(day)}, {day.year}"
 
 
 def row_texts_of(piece: Piece) -> tuple[str, ...]:
@@ -1439,12 +1818,61 @@ def rows_shown(
     own: frozenset[str] = frozenset(),
     progress: Corrections | None = None,
     destinations: Mapping[str, str] | None = None,
+    sent_twice: frozenset[str] = frozenset(),
+    unresolved: Mapping[str, tuple[str, ...]] | None = None,
+    twice: Mapping[str, tuple[str, ...]] | None = None,
+    opened: frozenset[str] = frozenset(),
+    signed_digests: Mapping[str, tuple[str, ...]] | None = None,
+    shown_signed: Mapping[str, tuple[str, ...]] | None = None,
+    retaken: frozenset[str] = frozenset(),
+    chosen_here: frozenset[str] = frozenset(),
+    left_off: frozenset[str] = frozenset(),
+    held_back: frozenset[str] = frozenset(),
+    basis_signed: Mapping[str, tuple[str, ...]] | None = None,
+    held_moved: frozenset[str] = frozenset(),
 ) -> RowsShown:
     """The review's rows: the name questions, the split questions, and one group of what
     saving adds per unit, each destination as her week's card with the cards going there and
     its own questions, each card with its source, its questions about what was read, its fold
     of corrections and where it goes, a row's Type on its first open card; then the group's
-    refusals, offers and tick, plus the signed fields the review form carries."""
+    refusals, offers and tick, plus the signed fields the review form carries. A joined note's
+    tick a refused press sent twice with different answers (``sent_twice``, by field) says so
+    in its own fieldset; one sent twice or marked so and left unanswered (``unresolved``, with
+    the values sent) is offered as the actual choice, neither side chosen, both signed. A box or
+    answer of one value a refused press sent twice with different values (``twice``, by field,
+    with the values sent) names both at that field, the box's fold open, none of the answer's
+    options chosen. The cards named in ``opened``, and any with a box refused or marked, show
+    their boxes open. A page that shows no review of its typing (Correct what was read, any press
+    refused whole before a store, or a Save refused for corrections no review showed) signs each
+    group's digests as its post carried them (``signed_digests``) and signs none of the words it
+    carries beside a date box. Any page given its post's signatures (``shown_signed``: a plain
+    load, and every page with a post but one an accepted Review changes press made, a form that
+    posts no ticks included) signs each correction its post's page signed as shown as that page
+    signed it, whatever the box
+    holds, and signs no correction of its own: words a review showed stay reviewed, and a Save
+    from it with other typing is refused as not reviewed. A group the family ticked (``selected``)
+    that waits for its
+    destination keeps its tick, signed with no digests, so the destination is the only thing
+    asked. A card whose press's typing took its destination back (``retaken``) says why it asks
+    again, and its group is kept back as a held group is, whatever answer is stored for it, each
+    of its cards shown as read and corrected with no update proposed, as its Save writes none. A
+    group holding a card whose destination the press chose (``chosen_here``) is shown ticked,
+    unless it holds a card of a group that press unticked (``left_off``). The page signs the
+    destinations and ticks it shows, for the next press to tell a choice from an answer carried,
+    and which groups it shows ready.
+    A group holding a card a Save held back (``held_back``) shows its effect, is signed with no
+    digests and is not ready, so only Review changes leads to its Save. A group holding a card
+    whose destination a press refused whole moved (``held_moved``) is held the same way, its
+    destination left chosen, and proposes nothing, each of its cards shown as read and corrected,
+    until Review changes shows its effect; every other group keeps its signed digests. A group
+    holding a card
+    whose correction the page shows and doesn't sign as shown, words carried beside a date box
+    apart, is not ready, and Save isn't offered beside it (``UnitShown.unreviewed``). Apart from
+    what it signs as shown, a page
+    carrying its post's signatures carries the words its post's page signed as the basis of its
+    choices (``basis_signed``, ``BASIS``), and one given none (a plain load, or a form that posts
+    no ticks) signs the corrections it draws as that basis: the next press tells words changed
+    since a choice from words no review showed since the page was loaded."""
     values = dict(state.values)
     image_ids = image_ids or {}
     reworked: dict[tuple[str, ...], list[tuple[Offer, Sequence[PreviewEntry]]]] = {}
@@ -1493,6 +1921,12 @@ def rows_shown(
             asking.setdefault((whose, field), []).append(piece)
     previews = {e.dest: e for e in state.preview}
     digests = unit_digests(state)
+    asks_where = frozenset(
+        name for unit in state.validation.units if retaken & set(unit.unit) for name in unit.unit
+    )
+    unproposed = asks_where | frozenset(
+        name for unit in state.validation.units if held_moved & set(unit.unit) for name in unit.unit
+    )
     wordless: dict[str, list[tuple[str, str]]] = {}
     for place, owner in sorted(
         ((c, p) for p in open_pieces for c in (*own_wordless(p), *own_carried(p))),
@@ -1518,6 +1952,7 @@ def rows_shown(
                     about=about,
                 )
             )
+        checks += joined_questions(piece, values, about)
         for (whose, field), host in confirm_on.items():
             if host != piece.name:
                 continue
@@ -1542,6 +1977,8 @@ def rows_shown(
         boxes = fold_boxes(
             piece, own, corrections, unsaved, both, wordless.get(piece.key, ()), none_confirmed
         )
+        if twice:
+            boxes = tuple(_box_twice(box, twice) for box in boxes)
         sources = tuple(
             (
                 SAID["source"].format(shot=places.get(c.sha256, 0), card=c.place + 1),
@@ -1562,13 +1999,14 @@ def rows_shown(
         ):
             named = title if folded(course) == folded(head.course) else f"{course}: {title}"
             read_as = SAID["read_as"].format(title=named)
+        piece_choices = _choices(state, piece, piece.name in state.defaulted, labels)
         control = PieceControl(
             piece.name,
-            _choices(state, piece, piece.name in state.defaulted, labels),
+            piece_choices,
             finds[piece.name],
             piece.name in state.defaults and piece.name not in state.stored,
             piece.name in state.validation.of(piece.name).stale,
-            SAID["lost_correction"] if piece.name in state.lost else None,
+            SAID["lost_correction"] if piece.name in state.lost | retaken else None,
             choices_at[piece.name],
         )
         kind = None
@@ -1584,7 +2022,7 @@ def rows_shown(
                 ),
                 helper=SAID["type_helper"],
                 about=about,
-                notes=_type_lines(state, row_pieces, labels, places, previews),
+                notes=_type_lines(state, row_pieces, labels, places, previews, asks_where),
             )
         return CardShown(
             piece.name,
@@ -1598,6 +2036,7 @@ def rows_shown(
             dates_said(piece, places),
             control,
             kind,
+            piece.name in opened or any(box.refused or box.marks for box in boxes),
         )
 
     ordered = sorted(
@@ -1605,11 +2044,14 @@ def rows_shown(
     )
     forms = [OutsideForm(form_id, "find", (("piece", name),)) for name, form_id in finds.items()]
     shown_units = []
+    kept_ticks: set[str] = set()
+    unsigned: set[str] = set()
     for number, unit in enumerate(ordered, 1):
         last_open = set(unit.unit) >= {p.name for p in open_pieces}
         blocks: list[tuple[int, BlockShown]] = []
         placed: set[str] = set()
         still_any = False
+        still_names: set[str] = set()
         for dest, names_there in state.validation.destinations.items():
             if not set(names_there) <= set(unit.unit) or dest not in previews:
                 continue
@@ -1617,24 +2059,40 @@ def rows_shown(
             members = sorted((state.by_name[n] for n in entry.pieces), key=first_card)
             still = _still_open(entry, members, values, waiting, corrections)
             still_any = still_any or bool(still)
+            still_names.update(still)
             said_open = (
                 None
                 if not still
                 else "Still to answer: " + ", ".join(OPEN_NAMES[q] for q in still) + "."
             )
-            head = _card_head(state, entry, labels, until, last_open, said_open)
             label = _dest_label(state, entry, labels, members[0].title)
+            questions = tuple(_dest_questions(state, entry, label, values))
+            placed |= set(entry.pieces)
+            if unproposed & set(unit.unit):
+                # Its Save writes none of this group, so the page proposes nothing for it. The
+                # destination's questions stay, on its first card, so their answers carry.
+                blocks += [
+                    (
+                        order[member.name],
+                        BlockShown(
+                            dataclasses.replace(
+                                _own_head(member), still_open=None if at else said_open
+                            ),
+                            (card_of(member, None),),
+                            () if at else questions,
+                            not at,
+                        ),
+                    )
+                    for at, member in enumerate(members)
+                ]
+                continue
+            head = _card_head(state, entry, labels, until, last_open, said_open)
             blocks.append(
                 (
                     min(order[m.name] for m in members),
-                    BlockShown(
-                        head,
-                        tuple(card_of(m, head) for m in members),
-                        tuple(_dest_questions(state, entry, label, values)),
-                    ),
+                    BlockShown(head, tuple(card_of(m, head) for m in members), questions),
                 )
             )
-            placed |= set(entry.pieces)
         for name in unit.unit:
             if name in placed:
                 continue
@@ -1655,18 +2113,61 @@ def rows_shown(
         leave = [("version", str(version)), ("keys", keys)]
         leave.append(("check", page_check(page_key, leave)))
         forms.append(OutsideForm(f"leave-{number}", "set-aside", tuple(leave)))
-        tickable = unit.ready and not still_any and unit_name(unit.unit) in digests
+        # The one decision each group gets. Destination: asked until every card has one. Ready:
+        # a destination whose effect is shown and signed (``unit_digests``), with any open
+        # question one that effect already covers, so the answer and the tick save in one press.
+        destination_asked = bool(unit.unanswered or unit.stale)
+        kept_back = bool((held_back | retaken | held_moved) & set(unit.unit))
+        if kept_back:
+            unsigned.add(unit_name(unit.unit))
+        # A correction shown on a card of this group that the page doesn't sign as shown: no
+        # review showed it, so the group waits for Review changes. Words carried beside a date
+        # box keep their own signature.
+        unreviewed = shown_signed is not None and any(
+            box.carried is None and _drawn_unsigned(box.subject, corrections, shown_signed)
+            for _, block in blocks
+            for card in block.cards
+            for box in card.boxes
+        )
+        ready = (
+            not kept_back
+            and not unreviewed
+            and unit_name(unit.unit) in digests
+            and (
+                (unit.ready and not still_any)
+                or (
+                    unit_name(unit.unit) in state.ready_answered
+                    and still_names <= ONE_PRESS_QUESTIONS
+                )
+            )
+        )
         held = sorted((state.by_name[n] for n in unit.unit), key=first_card)
         chosen_blocks = sum(1 for _, block in blocks if block.chosen)
+        note = _note_standing(held)
+        unit_keys = {state.by_name[name].key for name in unit.unit}
+        # Selected: apart from readiness, so an open question never takes a selection away. A
+        # destination chosen on a press whose choices come back selects its group, unless the same
+        # press unticked it. A plain load with no saved progress selects a group only on the
+        # page's own default: an answer restored from what is stored selects nothing.
+        chose_it = bool(chosen_here & set(unit.unit)) and not left_off & set(unit.unit)
+        if selected is not None:
+            is_selected = chose_it or unit_keys <= selected
+        else:
+            is_selected = chose_it or _selected_by_default(state, unit)
+        # A group with a destination always draws its tick. A selected group whose destination
+        # is asked keeps drawing it, signed with no digests, so it is never read as an untick.
+        has_destination = (
+            unit_name(unit.unit) in digests and not destination_asked and not unit.refusals
+        )
+        tick_kept = destination_asked and is_selected
+        if tick_kept:
+            kept_ticks.add(unit_name(unit.unit))
         shown_units.append(
             UnitShown(
                 unit_name(unit.unit),
                 tuple(block for _, block in blocks),
-                tickable,
-                tickable
-                and (
-                    selected is None or {state.by_name[name].key for name in unit.unit} <= selected
-                ),
+                has_destination or tick_kept,
+                is_selected and (has_destination or tick_kept),
                 _waits(unit),
                 refusals,
                 tuple(shown_offers),
@@ -1674,6 +2175,16 @@ def rows_shown(
                 f"saving-{number}",
                 "; ".join(piece_text(places, m) for m in held),
                 SAID["tick_one"] if chosen_blocks <= 1 else SAID["tick_many"],
+                note,
+                ready,
+                still_any,
+                tuple(
+                    OPEN_NAMES[question]
+                    for question in sorted(
+                        {*still_names, *(("destination",) if destination_asked else ())}
+                    )
+                ),
+                unreviewed,
             )
         )
     shown_units = _placed(names, splits, shown_units)
@@ -1681,27 +2192,81 @@ def rows_shown(
     splits = tuple(
         dataclasses.replace(q, anchor=f"ask-{n}") for n, q in enumerate(splits, len(names) + 1)
     )
+    shown_units = _unresolved_ticks(shown_units, unresolved or {})
+    marks = own | {state.by_name[name].key for name in own if name in state.by_name}
+    names, splits, shown_units, not_carried, beyond_its_save = _carried(
+        names, splits, shown_units, choices or {}, conflicted or {}, marks
+    )
     asked_fields: list[tuple[str, Sequence[str]]] = [
         *((q.field, [o[0] for o in q.options]) for q in names),
         *((q.field, [o[0] for o in q.options]) for q in splits),
     ]
+    # Each mark of a field sent twice, with the values it holds, is signed with the page, so a
+    # post whose marks differ (one dropped, added or changed) is not the page signed.
+    signed_marks: list[tuple[str, str]] = [
+        *(mark for q in names for mark in q.marks),
+        *(mark for q in splits for mark in q.marks),
+    ]
     for shown_unit in shown_units:
+        if shown_unit.ticked:
+            asked_fields.append((TICKED_SHOWN + shown_unit.unit, ("ticked",)))
+        if shown_unit.ready:
+            mark = READY_ASKING if shown_unit.asking else READY_WHOLE
+            asked_fields.append((READY_SHOWN + shown_unit.unit, (mark,)))
         for block in shown_unit.blocks:
             for card in block.cards:
-                asked_fields.append(
-                    (
-                        answer_field("destination", card.name),
-                        [c.value for c in card.control.choices],
-                    )
-                )
+                destination = answer_field("destination", card.name)
+                asked_fields.append((destination, [c.value for c in card.control.choices]))
+                shows = [c.value for c in card.control.choices if c.checked]
+                if shows and destination not in (twice or {}):
+                    # An answer sent twice shows none of its options chosen (``_answers_twice``).
+                    asked_fields.append((CHOSEN_SHOWN + card.name, (_destination_text(shows[0]),)))
+                signed_marks += card.control.marks
                 for question in (*card.checks, *((card.type,) if card.type else ())):
                     asked_fields.append((question.field, [o[0] for o in question.options]))
+                    signed_marks += question.marks
                 for box in card.boxes:
                     asked_fields.append((box.name, ()))
+                    if box.carried is not None and signed_digests is None:
+                        # The words this page shows beside the box, signed as shown; a page that
+                        # signs its post's digests in place of its own signs none, so a Save from
+                        # it is checked against the saved progress alone.
+                        asked_fields.append((box.carried[0], (carried_digest(box.carried[1]),)))
+                    box_key, box_field = json.loads(box.subject)
+                    box_shown = corrections.get(box_key, {})
+                    if shown_signed is None and box_field in box_shown:
+                        # The correction this page shows on the card, signed as shown, so a Save
+                        # carrying one no review showed is told from it on any group, whether or
+                        # not the group has digests; signed only where the page signs its own, a
+                        # page carrying its post's signatures signing those (``shown_signed``).
+                        as_shown = (shown_digest(box_shown[box_field]),)
+                        asked_fields.append((SHOWN + box.subject, as_shown))
+                    elif basis_signed is None and box_field in box_shown:
+                        # The correction a page with nothing to carry draws, signed as the basis
+                        # of the choices it shows and not as shown.
+                        drawn = (shown_digest(box_shown[box_field]),)
+                        asked_fields.append((BASIS + box.subject, drawn))
+                    signed_marks += box.marks
                     if box.none is not None:
                         asked_fields.append((box.none[0], ("none",)))
+                    if box.marks and box.empty is not None:
+                        asked_fields.append((EMPTY + box.subject, (EMPTY_VALUE,)))
             for question in block.questions:
                 asked_fields.append((question.field, [o[0] for o in question.options]))
+                signed_marks += question.marks
+    if shown_signed is not None:
+        # The words its post's page signed as shown travel as signed, whatever the boxes hold.
+        asked_fields += [(SHOWN + box, signed) for box, signed in shown_signed.items()]
+        # So do the words it signed as the basis of its choices.
+        asked_fields += [(BASIS + box, signed) for box, signed in (basis_signed or {}).items()]
+    # An answer sent twice is marked below (``_answers_twice``) with the values sent.
+    answers_asked = {name for name, _ in asked_fields if name.startswith("answer:")}
+    signed_marks += [
+        (f"{UNRESOLVED}{field}", json.dumps(list(values)))
+        for field, values in sorted((twice or {}).items())
+        if field in answers_asked
+    ]
+    asked_fields += [(name, (value,)) for name, value in signed_marks]
     hidden = [
         ("version", str(version)),
         ("progress_revision", str(progress_revision)),
@@ -1716,7 +2281,11 @@ def rows_shown(
         ),
         ("identity", json.dumps(sorted({i.status for i in images}), separators=(",", ":"))),
     ]
-    hidden += [(f"digest:{u}", ",".join(d)) for u, d in sorted(digests.items())]
+    shown_digests = digests if signed_digests is None else {**digests, **signed_digests}
+    hidden += [
+        (f"digest:{u}", "" if u in unsigned else ",".join(shown_digests.get(u, ())))
+        for u in sorted({*digests, *kept_ticks})
+    ]
     hidden.append(("check", page_check(page_key, hidden)))
     unread_groups, unread_forms = unread_shown(unread, places, open_keys, page_key, version)
     for index, row in enumerate(state.asking, 1):
@@ -1728,6 +2297,14 @@ def rows_shown(
         dataclasses.replace(question, leave=f"leave-split-{index}")
         for index, question in enumerate(splits, 1)
     )
+    ticked_rows = frozenset(
+        state.by_name[name].key
+        for shown_unit in shown_units
+        if shown_unit.ticked
+        for name in shown_unit.unit.split("+")
+    )
+    selection = selection_field(progress_revision, open_keys, ticked_rows)
+    forms = [_carrying_selection(form, selection, page_key) for form in forms]
     finishing = [
         ("version", str(version)),
         ("keys", json.dumps(sorted(open_keys), separators=(",", ":"))),
@@ -1735,10 +2312,10 @@ def rows_shown(
     finishing.append(("check", page_check(page_key, [*finishing, ("action", "finish")])))
     forms.append(OutsideForm("finish", "finish", tuple(finishing)))
     forms.append(signed_action("not-hers", page_key, version))
-    marks = own | {state.by_name[name].key for name in own if name in state.by_name}
-    names, splits, shown_units, not_carried, beyond_its_save = _carried(
-        names, splits, shown_units, choices or {}, conflicted or {}, marks
-    )
+    if sent_twice or unresolved:
+        shown_units = _marked_twice(shown_units, sent_twice | frozenset(unresolved or {}))
+    if twice:
+        names, splits, shown_units = _answers_twice(names, splits, shown_units, twice)
     return RowsShown(
         tuple(names),
         splits,
@@ -1761,6 +2338,61 @@ def rows_shown(
         progress={} if progress is None else progress,
         unselected=_unselected(state, places, labels, shown_units, destinations or {}),
     )
+
+
+def _drawn_unsigned(
+    subject: str, corrections: Corrections, shown_signed: Mapping[str, tuple[str, ...]]
+) -> bool:
+    """Whether the box of this subject shows a correction that ``shown_signed`` doesn't sign as
+    shown."""
+    key, field = json.loads(subject)
+    fields = corrections.get(key, {})
+    return field in fields and shown_digest(fields[field]) not in shown_signed.get(subject, ())
+
+
+def _selected_by_default(state: ReviewState, unit: UnitCheck) -> bool:
+    """Whether a plain load with no saved progress selects this group: its destination is the
+    page's own default with no answer stored for it, and it holds no teacher's note left to save."""
+    saved_already = {
+        name
+        for entry in state.preview
+        if entry.nothing_new and set(entry.pieces) <= set(unit.unit)
+        for name in entry.pieces
+    }
+    return (
+        not (unit.unanswered or unit.stale)
+        and not set(unit.unit) & set(state.stored)
+        and not _new_note((state.by_name[name] for name in unit.unit), saved_already)
+    )
+
+
+def selected_on_load(state: ReviewState, selected: frozenset[str] | None) -> frozenset[str]:
+    """The rows a plain load of the review ticks (``rows_shown``): those of each group saved
+    progress selects (``selected``), or with no saved progress, each group on its default."""
+    digests = unit_digests(state)
+    rows: set[str] = set()
+    for unit in state.validation.units:
+        keys = {state.by_name[name].key for name in unit.unit}
+        chosen = _selected_by_default(state, unit) if selected is None else keys <= selected
+        drawn = bool(unit.unanswered or unit.stale) or (
+            unit_name(unit.unit) in digests and not unit.refusals
+        )
+        if chosen and drawn:
+            rows |= keys
+    return frozenset(rows)
+
+
+def _carrying_selection(form: OutsideForm, selection: str, page_key: bytes) -> OutsideForm:
+    """A form that posts no ticks with the selection its page showed, signed with its other
+    fields; the Find button's form signs that selection alone, for the found row it leads to."""
+    if form.action == "find":
+        fields = (*form.fields, (SELECTION_SHOWN, selection))
+        return dataclasses.replace(
+            form, fields=(*fields, (SELECTION_CHECK, page_check(page_key, fields)))
+        )
+    signature, _ = form.fields[-1]
+    fields = (*form.fields[:-1], (SELECTION_SHOWN, selection))
+    return dataclasses.replace(form, fields=(*fields, (signature, page_check(page_key, fields))))
 
 
 def _destination_text(value: str) -> str:
@@ -1813,6 +2445,149 @@ def _unselected(
     return tuple(dict.fromkeys(out))
 
 
+def _marked_twice(units: Sequence[UnitShown], fields: frozenset[str]) -> list[UnitShown]:
+    """The groups with each card's question whose field is in ``fields`` saying, above its
+    options, that it was sent twice with different answers."""
+
+    def marked(asked: Question) -> Question:
+        if asked.field not in fields:
+            return asked
+        return dataclasses.replace(asked, notes=((SAID["joined_sent_twice"], ""), *asked.notes))
+
+    return _marked_by(units, marked)
+
+
+def said_twice(said: str, sent: Sequence[str]) -> str:
+    """The line at a box (``box_twice``) or an answer (``answer_twice``) sent twice with different
+    values, naming each as sent, in the order sent."""
+    return SAID[said].format(sent=" and ".join(f'"{text}"' for text in sent))
+
+
+EMPTY: Final = "empty:"
+"""The prefix of the explicit choice beside a box marked as sent twice: what the box left
+empty means, chosen."""
+EMPTY_VALUE: Final = "empty"
+"""The value the explicit choice beside a marked box is sent with."""
+
+
+def _box_twice(box: Box, twice: Mapping[str, tuple[str, ...]]) -> Box:
+    """A box with the line naming both values, where it, or the date Blossom couldn't read carried
+    beside it, was sent twice with different values: empty, carrying nothing, marked with the
+    values sent, and offering what it means left empty as an explicit choice where that means
+    anything; the line opens its fold."""
+    sent = twice.get(box.name) or twice.get(f"refused:{box.subject}")
+    if not sent:
+        return box
+    return dataclasses.replace(
+        box,
+        value="",
+        refused=said_twice("box_twice", sent),
+        carried=None,
+        marks=((f"{UNRESOLVED}{box.name}", json.dumps(list(sent))),),
+    )
+
+
+def _answers_twice(
+    names: Sequence[NameQuestion],
+    splits: Sequence[Question],
+    units: Sequence[UnitShown],
+    twice: Mapping[str, tuple[str, ...]],
+) -> tuple[list[NameQuestion], tuple[Question, ...], list[UnitShown]]:
+    """Everything on the page that asks with each answer sent twice with different values saying,
+    at that answer, both values sent, by the labels its options show them with; its options
+    offered with none chosen, one required, and marked with the values sent."""
+
+    def line(field: str, labels: Mapping[str, str]) -> str:
+        return said_twice("answer_twice", [labels.get(value, value) for value in twice[field]])
+
+    def mark(field: str) -> tuple[tuple[str, str], ...]:
+        return ((f"{UNRESOLVED}{field}", json.dumps(list(twice[field]))),)
+
+    def question(asked: Question) -> Question:
+        if asked.field not in twice:
+            return asked
+        said = line(asked.field, {value: label for value, label, _ in asked.options})
+        return dataclasses.replace(
+            asked,
+            options=tuple((value, label, False) for value, label, _ in asked.options),
+            notes=((said, ""), *asked.notes),
+            required=True,
+            marks=mark(asked.field),
+        )
+
+    def name_question(asked: NameQuestion) -> NameQuestion:
+        if asked.field not in twice:
+            return asked
+        said = line(asked.field, {value: label for value, label, _ in asked.options})
+        return dataclasses.replace(
+            asked,
+            options=tuple((value, label, False) for value, label, _ in asked.options),
+            notes=(said, *asked.notes),
+            required=True,
+            marks=mark(asked.field),
+        )
+
+    def card_of(card: CardShown) -> CardShown:
+        field = answer_field("destination", card.name)
+        control = card.control
+        if field in twice:
+            said = line(field, {choice.value: choice.label for choice in control.choices})
+            control = dataclasses.replace(
+                control,
+                choices=tuple(
+                    dataclasses.replace(choice, checked=False) for choice in control.choices
+                ),
+                lost=said,
+                preselected=False,
+                required=True,
+                marks=mark(field),
+            )
+        return dataclasses.replace(
+            card,
+            checks=tuple(question(asked) for asked in card.checks),
+            type=None if card.type is None else question(card.type),
+            control=control,
+        )
+
+    shown = [
+        dataclasses.replace(
+            unit,
+            blocks=tuple(
+                dataclasses.replace(
+                    block,
+                    cards=tuple(card_of(card) for card in block.cards),
+                    questions=tuple(question(asked) for asked in block.questions),
+                )
+                for block in unit.blocks
+            ),
+        )
+        for unit in units
+    ]
+    return [name_question(asked) for asked in names], tuple(question(q) for q in splits), shown
+
+
+def _marked_by(
+    units: Sequence[UnitShown], marked: Callable[[Question], Question]
+) -> list[UnitShown]:
+    """The groups with each card's question as ``marked`` gives it."""
+    return [
+        dataclasses.replace(
+            unit,
+            blocks=tuple(
+                dataclasses.replace(
+                    block,
+                    cards=tuple(
+                        dataclasses.replace(card, checks=tuple(marked(q) for q in card.checks))
+                        for card in block.cards
+                    ),
+                )
+                for block in unit.blocks
+            ),
+        )
+        for unit in units
+    ]
+
+
 def _carried(
     names: Sequence[NameQuestion],
     splits: Sequence[Question],
@@ -1827,8 +2602,8 @@ def _carried(
     whether a choice has no question or option here; and whether one of those is more than a
     confirmed save took with its own rows (``marks``, their pieces and row keys, which are in the
     fields that ask about them) or a name question. A value is never swapped for another. This only
-    marks what's shown, and runs after everything the page signs is worked out, so the next post
-    meets every check as it would. The groups' ticks come back as posted through ``selected``, with
+    marks what's shown and changes no field or option the page signs, so the next post meets every
+    check as it would. The groups' ticks come back as posted through ``selected``, with
     no such note: they aren't answers the record holds, and beside "Save this assignment" it would
     read as about the homework."""
     if not choices:
@@ -1989,12 +2764,18 @@ def _type_lines(
     labels: Mapping[str, str],
     places: Mapping[str, int],
     previews: Mapping[tuple[str, ...], PreviewEntry],
+    asks_where: frozenset[str] = frozenset(),
 ) -> tuple[tuple[str, str], ...]:
     """What saving does with a row's Type, by Save's own rule, one line per open piece of the
-    row, each led by its date when the row has more than one."""
+    row, each led by its date when the row has more than one. A piece of a group asking where it
+    goes (``asks_where``) waits for that answer, whatever answer is stored for it."""
     out = []
     for piece in pieces:
-        text, target = _type_line(state, piece, labels, places, previews)
+        text, target = (
+            (SAID["choose_first"], "")
+            if piece.name in asks_where
+            else _type_line(state, piece, labels, places, previews)
+        )
         if len(pieces) > 1:
             text = f"{day_text(piece.assigned or piece.due)}: {text}"
         out.append((text, target))
@@ -2149,9 +2930,30 @@ def _still_open(
             still.append(field)
     if any(not m.due_resolved for m in members):
         still.append("due_read")
-    if any(c.sha256 in waiting for m in members for c in m.cards):
+    if any(c.sha256 in waiting for m in members for c in (*m.cards, *m.noted_cards)):
         still.append("name")
     return still
+
+
+def _from_a_note(piece: Piece) -> bool:
+    """Whether a piece was read from a teacher's note."""
+    return piece.reading is not None and piece.reading.teacher_note is not None
+
+
+def _new_note(pieces: Iterable[Piece], saved_already: set[str]) -> bool:
+    """Whether a group holds a piece read from a teacher's note, whatever its standing, that
+    is not saved already with nothing new to write."""
+    return any(_from_a_note(piece) and piece.name not in saved_already for piece in pieces)
+
+
+def _note_standing(pieces: Iterable[Piece]) -> str:
+    """The standing of the first teacher's note among a group's pieces that is not read as
+    homework, ``unclear`` or ``not_assignment``; empty when there is none."""
+    for piece in pieces:
+        task = None if piece.reading is None else piece.reading.teacher_note
+        if task is not None and task.standing != "homework":
+            return str(task.standing)
+    return ""
 
 
 def _waits(unit: UnitCheck) -> tuple[str, ...]:

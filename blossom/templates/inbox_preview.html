@@ -14,12 +14,16 @@
 
   {#
     Nothing is saved yet. Each card says what the text says about one
-    assignment and, against the record as it is now, exactly what saving
+    assignment and, against the record as it stands, exactly what saving
     would do: save it as new, add a date beside the saved one, fill in what
-    the record lacks, or nothing, because it is saved already. Lines the
-    reader did not take are listed first, so nothing is dropped in silence,
-    and a question the record cannot settle is asked before anything is
-    written.
+    the record lacks, or nothing, because it is saved already. A card read
+    from a teacher's note shows the note's words, a tick, and a title and a
+    due date the family may correct; every note starts unselected unless
+    saved already, homework read from a note is with the cards, notes that
+    may be homework or say none is assigned are under their own headings,
+    and a note's card that is not selected saves nothing. Lines the reader did not take are
+    listed first, so nothing is dropped in silence, and a question the record
+    cannot settle is asked before anything is written.
   #}
   {#
     A page returned for an answer about the school's instructions puts the
@@ -32,18 +36,21 @@
   {% elif notice %}
     <p class="problem" role="alert">{{ notice }}</p>
   {% endif %}
-  {% set total = changes|length %}
+  {% set total = changes|rejectattr("left_out")|list|length %}
   {% set dated = weeks|selectattr("start")|list|length %}
   {% set undated = weeks|rejectattr("start")|map(attribute="changes")|map("length")|sum %}
   {% if total == 0 %}
-    <p class="empty">Nothing in the text was read as an assignment.</p>
+    <p class="empty">{% if changes %}No assignment is selected to save.{% else %}Nothing in the text was read as an assignment.{% endif %}</p>
   {% else %}
     <p class="note review-summary" role="status">
       {{ total }} assignment{% if total != 1 %}s{% endif %}{% if dated %} across {{ dated }} week{% if dated != 1 %}s{% endif %}{% if undated %}, {{ undated }} with no due date yet{% endif %}{% else %} with no due date yet{% endif %}:
       {{ counts.new }} new, {{ counts.updated }} update{% if counts.updated != 1 %}s{% endif %}, {{ counts.unchanged }} already saved{% if counts.review %}, {{ counts.review }} need{% if counts.review == 1 %}s{% endif %} your answer{% endif %}.
       Nothing is saved until Save is pressed.
     </p>
-  {% endif %}
+  {% endif %}{% if notes_found and notes_found[0] %}
+  {# The items read from the notes, each note's own or joined to a card, told apart from the ones selected, so a review with none selected is not taken for a failed reading. #}
+  {% set found, chosen_notes = notes_found %}
+  <p class="note" id="notes-found">Found {{ found }} item{% if found != 1 %}s{% endif %} in the teacher's notes; {% if chosen_notes == 0 %}none is selected yet{% elif chosen_notes == 1 %}1 is selected{% else %}{{ chosen_notes }} are selected{% endif %}.</p>{% endif %}
 
   <form method="post" action="/parent/inbox/keep" class="review-form">
     {% for name, value in draft.items() %}
@@ -54,7 +61,9 @@
       {% endif %}
     {% endfor %}
     {# The answers to which homework each card is that this page was made with, signed, so a save knows which questions it asked. #}
-    <input type="hidden" name="made_with" value="{{ made_with }}">
+    <input type="hidden" name="made_with" value="{{ made_with }}">{% if note_tasks %}
+    {# The form's first submit button, so Enter in a title or date box shows the review again with what was typed: Review changes' request, out of the tab order and hidden from assistive technology, which reach the visible one. #}
+    <button type="submit" class="visually-hidden" formaction="/parent/inbox/find" formnovalidate name="recheck" value="1" tabindex="-1" aria-hidden="true">Review changes</button>{% endif %}
 
     <div class="review-main">
       {% if unread %}
@@ -70,8 +79,10 @@
             {% endfor %}
           </ul>
           <div class="actions">
-            <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate>Edit the text</button>
-          </div>
+            <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate{% if note_tasks %} aria-describedby="typing-lost"{% endif %}>Edit the text</button>
+          </div>{% if note_tasks %}
+          {# Editing the text reads it again from the start, so nothing chosen or typed on a note's card goes with it. #}
+          <p class="helper" id="typing-lost">Selections, titles, and due dates aren't kept when the text is edited.</p>{% endif %}
         </section>
       {% endif %}
 
@@ -88,42 +99,75 @@
         another question still open loses nothing.
       #}
       {% for change in folded %}
-        <input type="hidden" name="occurrence-{{ change.key }}" value="update">
+        <input type="hidden" name="occurrence-{{ change.key }}" value="{{ change.occurrence }}">
         <input type="hidden" name="kind-{{ change.key }}" value="{{ change.kind.value }}">
         <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
         <input type="hidden" name="folded-{{ change.key }}" value="{{ change.folded_into }}">
-        {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}
+        {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}{% if change.reading.teacher_note %}
+        {# A folded note is selected, and its tick travels with its answer. #}
+        <input type="hidden" name="offered-{{ change.key }}" value="1">{% if ("take-" ~ change.key) not in unresolved %}
+        <input type="hidden" name="take-{{ change.key }}" value="1">{% endif %}
+        {# So do its title and due date, as typed, except one sent twice, which its card below asks for. #}{% set fields = note_fields[change.key] %}{% if ("title-" ~ change.key) not in unresolved %}
+        <input type="hidden" name="title-{{ change.key }}" value="{{ fields.title }}">{% endif %}{% if ("when-" ~ change.key) not in unresolved %}{% if fields.chosen %}
+        <input type="hidden" name="when-{{ change.key }}" value="{{ fields.chosen }}">{% endif %}
+        <input type="hidden" name="when_other-{{ change.key }}" value="{{ fields.other }}">{% endif %}{% endif %}{% for task in change.reading.joined_notes %}{% if (change.key, loop.index0) in joined_ticked and ("join-" ~ change.key ~ "-" ~ loop.index0) not in unresolved %}
+        {# A note joined to a folded card travels with it, ticked as it was. #}
+        <input type="hidden" name="join-{{ change.key }}-{{ loop.index0 }}" value="1">{% endif %}{% endfor %}
       {% endfor %}
       {% if folded %}
         <p class="note">{{ folded|length }} card{% if folded|length != 1 %}s{% endif %} folded into the card for the same assignment, as you said.</p>
       {% endif %}
 
-      {% for week in weeks %}
+      {% for week in sections %}{#
+        The weeks, then the notes that may be homework and the notes that say none is
+        assigned, each kind under its own heading. A count is of the selected cards only.
+      #}
         <section class="review-week">
           <h2>{{ week.label }}</h2>
           <p class="note">
-            {{ week.changes|length }} assignment{% if week.changes|length != 1 %}s{% endif %}:
-            {{ week.count("new") }} new, {{ week.count("claimed") }} update{% if week.count("claimed") != 1 %}s{% endif %}, {{ week.count("known") }} already saved{% if week.count("review") %}, {{ week.count("review") }} need{% if week.count("review") == 1 %}s{% endif %} your answer{% endif %}.
-          </p>
+            {% if week.helper %}{{ week.helper }}{% else %}{% set chosen = week.changes|rejectattr("left_out")|list|length %}{{ chosen }} assignment{% if chosen != 1 %}s{% endif %}:
+            {{ week.count("new") }} new, {{ week.count("claimed") }} update{% if week.count("claimed") != 1 %}s{% endif %}, {{ week.count("known") }} already saved{% if week.count("review") %}, {{ week.count("review") }} need{% if week.count("review") == 1 %}s{% endif %} your answer{% endif %}.{% endif %}
+          </p>{% if loop.first %}{% for change in folded if change.key in folded_open %}
+          {# A carried answer of a folded card sent twice with different answers: the card shown again for that field only, nothing chosen and marked until it is answered, the answer that folded it kept as given. #}
+          {% set reading = change.reading %}{% set fields = note_fields.get(change.key) %}<article class="assignment reading-folded" id="card-{{ change.key }}" tabindex="-1">
+          <p class="course-name">{{ reading.course }}</p>
+          <h2>{{ reading.title }}</h2>
+          <p class="note">Folded into the card for the same assignment, as you said. Answer the choice below, then save.</p>{% if reading.teacher_note %}{% if ("title-" ~ change.key) in unresolved %}
+          <label>Title<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span>{% for said in twice_said.get("title-" ~ change.key, ()) %} <span class="problem">{{ said }}</span>{% endfor %} <input type="text" name="title-{{ change.key }}" value="" maxlength="{{ title_max_length }}" autocomplete="off" id="title-{{ change.key }}"></label>{% for name, value in unresolved["title-" ~ change.key] %}
+          <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}{% endif %}{% if ("when-" ~ change.key) in unresolved %}
+          <fieldset class="choice" id="when-{{ change.key }}" tabindex="-1">
+            <legend>Due date<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></legend>{% for said in twice_said.get("when-" ~ change.key, ()) %}
+            <p class="problem">{{ said }}</p>{% endfor %}{% for name, value in unresolved["when-" ~ change.key] %}
+            <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
+            {% for value, words, chosen in fields.choices %}<label><input type="radio" name="when-{{ change.key }}" value="{{ value }}"> <span>{{ words }}</span></label>
+            {% endfor %}<label><input type="radio" name="when-{{ change.key }}" value="other"> <span>Another date</span></label>
+            <label><span class="visually-hidden"> Another date for {{ reading.title }}, {{ reading.course }}</span> <input type="date" name="when_other-{{ change.key }}" value="{{ fields.other }}"></label>
+          </fieldset>{% endif %}{% endif %}{% for task in reading.joined_notes %}{% set join_field = "join-" ~ change.key ~ "-" ~ loop.index0 %}{% if join_field in unresolved %}
+          <div class="choice">
+            <label><input type="radio" name="{{ join_field }}" value="1" required> <span>Add this note to the assignment<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
+            <label><input type="radio" name="{{ join_field }}" value="0" required> <span>Don't add it<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>{% for name, value in unresolved[join_field] %}<input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}{% for said in twice_said.get(join_field, ()) %}
+            <p class="problem">{{ said }}</p>{% endfor %}
+          </div>{% endif %}{% endfor %}
+          </article>{% endfor %}{% endif %}
           {% for change in week.changes %}
-            {% set reading = change.reading %}
-            <article class="assignment reading-{{ change.state }}">
+            {% set reading = change.reading %}{# A note not selected that asks once selected shows that question before it is selected. #}{% set asking = unselected_asks.get(change.key, change) %}{% set given = occurrence_given.get(change.key) %}
+            <article class="assignment reading-{{ change.state }}"{% if check_card == change.key %} id="card-{{ change.key }}" tabindex="-1"{% endif %}>
               <p class="course-name">{{ reading.course }}</p>
               <h2>{{ reading.title }}</h2>
               <p class="status">
                 <span class="pill">{{ change.label }}</span>
                 {% if reading.reported_status %}<span class="pill">School reported: {{ reading.reported_status }}</span>{% endif %}
               </p>
-              {% if (change.dates_differ or change.state == "review") and change.beside and reading.due_date %}
+              {% if (change.dates_differ or asking.state == "review") and asking.beside and reading.due_date %}
                 <dl class="compare">
-                  <dt>{% if change.on_record %}Saved due date{% else %}Also due in this text{% endif %}</dt>
-                  <dd>{{ spoken_day(change.beside) }}</dd>
+                  <dt>{% if asking.on_record %}Saved due date{% else %}Also due in this text{% endif %}</dt>
+                  <dd>{{ spoken_day(asking.beside) }}</dd>
                   <dt>{% if reading.origin == "PARENT_ENTRY" %}Entered due date{% else %}Pasted due date{% endif %}</dt>
                   <dd>{{ spoken_day(reading.due_date) }}{% if reading.claims %} ({{ reading.claims[-1].spoken() }}){% endif %}</dd>
                 </dl>
               {% else %}
                 <p class="due">
-                  {% if reading.due_date %}Due {{ spoken_day(reading.due_date) }}{% elif reading.origin == "PARENT_ENTRY" %}No due date given{% else %}No due date in the text{% endif %}
+                  {% if reading.due_date %}Due {{ spoken_day(reading.due_date) }}{% elif reading.teacher_note %}No due date{% elif reading.origin == "PARENT_ENTRY" %}No due date given{% else %}No due date in the text{% endif %}
                   {% if reading.assigned_on %}<span class="source">Assigned {{ spoken_day(reading.assigned_on) }}</span>{% endif %}
                 </p>
               {% endif %}
@@ -132,7 +176,44 @@
                 {% set saved = change.saved_as %}
                 <p class="source names" id="names-{{ change.key }}">{% if reading.origin == "PARENT_ENTRY" %}This entry names it{% else %}The school calls this{% endif %} <span class="authored-text">{{ reading.title }}</span>, {{ reading.course }}, {% if reading.due_date %}due {{ spoken_day(reading.due_date) }}{% else %}with no due date{% endif %}. It's saved here as <span class="authored-text">{{ saved.title }}</span>, {{ saved.course }}, {% if saved.due_date %}due {{ spoken_day(saved.due_date) }}{% else %}with no due date yet{% endif %}.</p>
               {% endif %}
-              <p class="effect" data-base="{{ change.effect_base }}">{{ change.effect }}</p>
+              <p class="effect" data-base="{{ change.effect_base }}">{{ change.effect }}</p>{% if reading.teacher_note %}
+              {# A reading made from a teacher's note is offered with a tick; the page says it was offered, so a tick not sent is a choice. #}
+              <input type="hidden" name="offered-{{ change.key }}" value="1">
+              <div class="choice">{% if ("take-" ~ change.key) in unresolved %}
+                {# A tick sent twice with different answers, unanswered: the actual choice, neither side chosen, marked until it is answered. #}
+                <label><input type="radio" name="take-{{ change.key }}" value="1" required> <span>Save this as homework<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
+                <label><input type="radio" name="take-{{ change.key }}" value="0" required> <span>Leave it out<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>{% for name, value in unresolved["take-" ~ change.key] %}<input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}{% else %}
+                <label><input type="checkbox" name="take-{{ change.key }}" value="1"{% if not change.left_out %} checked{% endif %}> <span>Save this as homework<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>{% endif %}{% for said in twice_said.get("take-" ~ change.key, ()) %}
+                <p class="problem">{{ said }}</p>{% endfor %}
+              </div>{% if change.left_out %}
+              {# What the note does once it is selected, which the page signs, so a tick set here saves in one press. #}
+              <p class="helper">If selected: {{ if_selected[change.key] }}.</p>{% endif %}
+              {% set fields = note_fields[change.key] %}{% if change.key in editing %}
+              {# The title and due date a parent may correct, open for editing; Review changes shows them as reviewed, and the page signs them only then, so a save writes no other. #}
+              <input type="hidden" name="editing-{{ change.key }}" value="1">
+              <label>Title<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span>{% for said in twice_said.get("title-" ~ change.key, ()) %} <span class="problem">{{ said }}</span>{% endfor %} <input type="text" name="title-{{ change.key }}" value="{% if ("title-" ~ change.key) not in unresolved %}{{ fields.title }}{% endif %}" maxlength="{{ title_max_length }}" autocomplete="off" id="title-{{ change.key }}"{% if problem_link and problem_link[0] == "title-" ~ change.key %} aria-describedby="problem-summary"{% endif %}></label>{% for name, value in unresolved.get("title-" ~ change.key, ()) %}
+              {# A title sent twice with different answers, unanswered: the box to be filled again, marked until it is. #}
+              <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
+              {% for said in fields.named_too_far %}<p class="source">{{ said }}</p>
+              {% endfor %}<fieldset class="choice" id="when-{{ change.key }}" tabindex="-1"{% if problem_link and problem_link[0] == "when-" ~ change.key %} aria-describedby="problem-summary"{% endif %}>
+                <legend>Due date<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></legend>{% for said in twice_said.get("when-" ~ change.key, ()) %}
+                <p class="problem">{{ said }}</p>{% endfor %}{% set date_open = ("when-" ~ change.key) in unresolved %}{% for name, value in unresolved.get("when-" ~ change.key, ()) %}
+                {# A due date sent twice with different answers, unanswered: every choice of the card, none chosen, marked until one is. #}
+                <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
+                {% for value, words, chosen in fields.choices %}<label><input type="radio" name="when-{{ change.key }}" value="{{ value }}"{% if chosen and not date_open %} checked{% endif %}> <span>{{ words }}</span></label>
+                {% endfor %}<label><input type="radio" name="when-{{ change.key }}" value="other"{% if fields.other_chosen and not date_open %} checked{% endif %}> <span>Another date</span></label>
+                <label><span class="visually-hidden"> Another date for {{ reading.title }}, {{ reading.course }}</span> <input type="date" name="when_other-{{ change.key }}" value="{{ fields.other }}"></label>
+              </fieldset>{% else %}
+              {# The title and due date as reviewed, with the press that opens them for editing; answers sent for them travel as sent, so the save writes what the page showed. #}
+              <p class="source">Title: <span class="authored-text">{{ reading.title }}</span>. Due date: {% if reading.due_date %}{{ spoken_day(reading.due_date) }}{% else %}No due date yet{% endif %}.</p>
+              {% for said in fields.named_too_far %}<p class="source">{{ said }}</p>
+              {% endfor %}{% if fields.left_open %}<p class="source">The note leaves the due date open: {{ fields.left_open|join(" or ") }}.</p>
+              {% endif %}{% if change.key in answered_tasks %}<input type="hidden" name="title-{{ change.key }}" value="{{ fields.title }}">{% if fields.chosen %}
+              <input type="hidden" name="when-{{ change.key }}" value="{{ fields.chosen }}">{% endif %}
+              <input type="hidden" name="when_other-{{ change.key }}" value="{{ fields.other }}">
+              {% endif %}<div class="actions">
+                <button type="submit" class="secondary" formaction="/parent/inbox/find" formnovalidate name="details" value="{{ change.key }}">Edit details<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></button>
+              </div>{% endif %}{% endif %}
               {% if change.state == "review" %}
                 <input type="hidden" name="asked-{{ change.key }}" value="1">
               {% endif %}
@@ -150,7 +231,10 @@
                 {% endif %}
                 {% set described = ((["problem-summary"] if problem_target == change.key else []) + (["kept-separate-" ~ change.key] if change.kept_separate else []))|join(" ") %}
                 <fieldset class="choice identity" id="identity-question-{{ change.key }}" tabindex="-1"{% if described %} aria-describedby="{{ described }}"{% endif %}>
-                  <legend>{% if change.identity_question == "report" and report %}Which homework is this report about?{% elif change.candidates|length == 1 %}Is this the same homework?{% else %}Which homework is this?{% endif %}</legend>
+                  <legend>{% if change.identity_question == "report" and report %}Which homework is this report about?{% elif change.candidates|length == 1 %}Is this the same homework?{% else %}Which homework is this?{% endif %}</legend>{% for said in twice_said.get("identity-" ~ change.key, ()) %}
+                  <p class="problem">{{ said }}</p>{% endfor %}{% for name, value in unresolved.get("identity-" ~ change.key, ()) %}
+                  {# An answer sent twice with different answers, unanswered: every choice offered, none chosen, marked until one is. #}
+                  <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
                   {% for candidate in change.candidates %}
                     <label><input type="radio" name="identity-{{ change.key }}" value="{{ same_as(candidate.assignment_id) }}"> <span>{% if change.candidates|length == 1 %}Same homework{% else %}<span class="authored-text">{{ candidate.title }}</span>, {{ candidate.course }}{% endif %} <span class="source">{% if candidate.due_date %}Due {{ spoken_day(candidate.due_date) }}{% else %}No due date yet{% endif %}. {% if candidate.assignment_id in change.identity_hers %}From her note{% if candidate.note_by == "student" %}: <q class="authored-text">{{ candidate.note }}</q>{% else %}.{% endif %}{% elif came_from(candidate) %}{{ came_from(candidate) }}{% endif %} {% if change.candidates|length == 1 and change.identity_question == "hers" %}{% if reading.origin == "PARENT_ENTRY" %}The dates entered here go to her assignment.{% else %}The school's dates, reports, and instructions go to her assignment.{% endif %} Her note stays hers. {% endif %}Id {{ candidate.assignment_id }}.</span></span></label>
                   {% endfor %}
@@ -160,17 +244,21 @@
                   <p class="note" id="kept-separate-{{ change.key }}">These assignments were kept separate earlier. Choosing one here adds this school update to it. Their existing records stay separate; combining them isn't available here.</p>
                 {% endif %}
                 <p class="helper">Blossom compares class and title only. If this is homework saved here under another name, find it below.</p>
-              {% elif change.ambiguous %}
+              {% elif asking.ambiguous %}{% if not change.left_out %}
                 {# The page notes the cards it asks which homework they are. #}
-                <input type="hidden" name="which-{{ change.key }}" value="1">
+                <input type="hidden" name="which-{{ change.key }}" value="1">{% endif %}
                 <fieldset class="choice" id="occurrence-question-{{ change.key }}" tabindex="-1"{% if problem_target == change.key %} aria-describedby="problem-summary"{% endif %}>
-                  <legend>Which is it?</legend>
-                  <label><input type="radio" name="occurrence-{{ change.key }}" value="update"> The same assignment, its due date changed</label>
-                  <label><input type="radio" name="occurrence-{{ change.key }}" value="new"> New work under the same name</label>
+                  <legend>Which is it?</legend>{% for said in twice_said.get("occurrence-" ~ change.key, ()) %}
+                  <p class="problem">{{ said }}</p>{% endfor %}{% for name, value in unresolved.get("occurrence-" ~ change.key, ()) %}
+                  {# An answer sent twice with different answers, unanswered: every choice offered, none chosen, marked until one is. #}
+                  <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
+                  {% if reading.teacher_note and asking.beside %}{# A note's choices say what each does to the due date; the date is changed only by the choice that says so. An answer given on a note not selected stays chosen. #}<label><input type="radio" name="occurrence-{{ change.key }}" value="keep"{% if given == "keep" %} checked{% endif %}> The same assignment; keep its due date of {{ spoken_day(asking.beside) }}</label>{% if reading.due_date and reading.due_date != asking.beside %}
+                  <label><input type="radio" name="occurrence-{{ change.key }}" value="update"{% if given == "update" %} checked{% endif %}> The same assignment; change its due date from {{ spoken_day(asking.beside) }} to {{ spoken_day(reading.due_date) }}</label>{% endif %}{% else %}<label><input type="radio" name="occurrence-{{ change.key }}" value="update"{% if given == "update" %} checked{% endif %}> {% if reading.teacher_note %}The same assignment{% else %}The same assignment, its due date changed{% endif %}</label>{% endif %}
+                  <label><input type="radio" name="occurrence-{{ change.key }}" value="new"{% if given == "new" %} checked{% endif %}> New work under the same name</label>
                 </fieldset>
-              {% elif change.occurrence %}
-                {# An answer given already rides along, so a page returned for another question keeps it. #}
-                <input type="hidden" name="occurrence-{{ change.key }}" value="{{ change.occurrence }}">
+              {% elif change.occurrence or change.key in occurrence_kept %}
+                {# An answer given already rides along, so a page returned for another question keeps it, as does the answer that folded a note whose tick waits for the family's answer. #}
+                <input type="hidden" name="occurrence-{{ change.key }}" value="{{ change.occurrence or occurrence_kept[change.key] }}">
               {% endif %}
               {% if change.key in answered %}
                 {# So does an answer about which homework this is, with the token its question was signed with. #}
@@ -213,7 +301,8 @@
                 {% set looking = search_view is not none and search_view.key == change.key %}
                 <details class="rename" id="rename-{{ change.key }}"{% if looking or change.key in unsaved_picks or focus == "rename-" ~ change.key %} open{% endif %}>
                   <summary{% if focus == "rename-" ~ change.key %} autofocus{% endif %}>Is this homework already here under another name?</summary>
-                  <p class="helper">Search the homework saved here by words from its class or title, then choose it. Nothing is saved until you press Save.</p>
+                  <p class="helper">Search the homework saved here by words from its class or title, then choose it. Nothing is saved until you press Save.</p>{% for said in twice_said.get("search-" ~ change.key, ()) %}
+                  <p class="problem">{{ said }}</p>{% endfor %}
                   <div class="search-line">
                     <label for="search-{{ change.key }}">Class or title words</label>
                     <input type="text" id="search-{{ change.key }}" name="search-{{ change.key }}" maxlength="{{ query_max_length }}" value="{{ typed.get(change.key, '') }}" autocomplete="off">
@@ -242,18 +331,21 @@
                     </div>
                   {% endif %}
                 </details>
-              {% endif %}
+              {% endif %}{% if not change.left_out %}
               <input type="hidden" name="suggested-{{ change.key }}" value="{{ change.suggested.value }}">
               <input type="hidden" name="shown-{{ change.key }}" value="{{ change.kind.value }}">
               {% if change.kind_by_parent %}<input type="hidden" name="chosen-{{ change.key }}" value="1">{% endif %}
-              <label class="type-choice">Type
-                <select name="kind-{{ change.key }}" data-saved="{{ change.suggested.value }}">
+              {% set kind_open = ("kind-" ~ change.key) in unresolved %}<label class="type-choice">Type{% for said in twice_said.get("kind-" ~ change.key, ()) %} <span class="problem">{{ said }}</span>{% endfor %}
+                <select name="kind-{{ change.key }}" data-saved="{{ change.suggested.value }}"{% if kind_open %} required{% endif %}>{% if kind_open %}
+                  {# A type sent twice with different answers, unanswered: both offered, neither chosen, marked until one is. #}
+                  <option value="" selected>Choose one</option>{% endif %}
                   {% for value, label in kind_choices %}
-                    <option value="{{ value }}"{% if value == change.kind.value %} selected{% endif %}>{{ label }}</option>
+                    <option value="{{ value }}"{% if value == change.kind.value and not kind_open %} selected{% endif %}>{{ label }}</option>
                   {% endfor %}
                 </select>
-              </label>
-              <p class="helper">Task: a form to sign, supplies to bring, or similar. {% if change.on_record %}As saved; change it if it is wrong.{% else %}Suggested from the title; change it if it is wrong.{% endif %}</p>
+              </label>{% for name, value in unresolved.get("kind-" ~ change.key, ()) %}
+              <input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}
+              <p class="helper">Task: a form to sign, supplies to bring, or similar. {% if change.on_record %}As saved; change it if it is wrong.{% else %}Suggested from the title; change it if it is wrong.{% endif %}</p>{% endif %}
               {% if change.key in unsaved_on %}
                 {#
                   What was chosen and not saved, said back whether or not the card puts
@@ -290,9 +382,13 @@
                   <legend>The school's instructions for {{ reading.title }}: which apply now?</legend>
                   <p class="helper">These are the school's words. Which of them apply is the family's choice, and the school's record is not changed. The ones not chosen are kept as history.</p>
                   {% for item in change.instructions_shown %}
-                    <label><input type="checkbox" name="apply-{{ change.key }}-{{ loop.index0 }}" value="1"{% if item.text in change.instructions_ticked %} checked{% endif %}> <span><q class="authored-text">{{ item.text }}</q> <span class="source">{% if item.standing == "current" %}Saved, applies now{% elif item.standing == "history" %}Saved earlier, does not apply{% elif item.standing == "awaiting" %}Waiting for review{% else %}New in this text{% endif %}{% if item.card_day %}. Read on the school's card for {{ item.card_day.strftime("%B") }} {{ item.card_day.day }}{% endif %}.</span></span></label>
+                    {% set box = "apply-" ~ change.key ~ "-" ~ loop.index0 %}{% if box in unresolved %}{# A box sent twice with different answers, unanswered: the actual choice, neither side chosen, marked until it is answered. #}<label><input type="radio" name="{{ box }}" value="1" required> <span>It applies: <q class="authored-text">{{ item.text }}</q></span></label>
+                    <label><input type="radio" name="{{ box }}" value="0" required> <span>It does not apply<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>{% for name, value in unresolved[box] %}<input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}{% for said in twice_said.get(box, ()) %}
+                    <p class="problem">{{ said }}</p>{% endfor %}{% else %}<label><input type="checkbox" name="apply-{{ change.key }}-{{ loop.index0 }}" value="1"{% if item.text in change.instructions_ticked %} checked{% endif %}> <span><q class="authored-text">{{ item.text }}</q> <span class="source">{% if item.standing == "current" %}Saved, applies now{% elif item.standing == "history" %}Saved earlier, does not apply{% elif item.standing == "awaiting" %}Waiting for review{% else %}New in this text{% endif %}{% if item.card_day %}. Read {% if item.card is none %}in the school's note{% else %}on the school's card{% endif %} for {{ item.card_day.strftime("%B") }} {{ item.card_day.day }}{% endif %}.</span></span></label>{% endif %}
                   {% endfor %}
-                  <label><input type="checkbox" name="none-{{ change.key }}" value="1"{% if change.instructions_none_ticked %} checked{% endif %}> <span>No school instruction applies now</span></label>
+                  {% set box = "none-" ~ change.key %}{% if box in unresolved %}<label><input type="radio" name="{{ box }}" value="1" required> <span>No school instruction applies now</span></label>
+                  <label><input type="radio" name="{{ box }}" value="0" required> <span>An instruction above applies</span></label>{% for name, value in unresolved[box] %}<input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}{% for said in twice_said.get(box, ()) %}
+                  <p class="problem">{{ said }}</p>{% endfor %}{% else %}<label><input type="checkbox" name="none-{{ change.key }}" value="1"{% if change.instructions_none_ticked %} checked{% endif %}> <span>No school instruction applies now</span></label>{% endif %}
                 </fieldset>
               {% elif change.instructions_with is not none %}
                 <p class="source">The school's instructions under this card are shown on the first card for this assignment.</p>
@@ -304,9 +400,25 @@
                 #}
                 {% for item in (change.instructions_read if change.instructions is not none else reading.instructions) %}
                   {% set standing = item.standing if change.instructions is not none else "" %}
-                  <p class="from-teacher">From the school: <q class="authored-text">{{ item.text }}</q>{% if standing or item.card_day %} <span class="source">{% if standing == "current" %}Saved, applies now.{% elif standing == "history" %}Saved earlier, does not apply.{% elif standing == "awaiting" %}Waiting for review.{% elif standing == "new" %}New in this text; it applies.{% endif %}{% if standing and item.card_day %} {% endif %}{% if item.card_day %}Read on the school's card for {{ item.card_day.strftime("%B") }} {{ item.card_day.day }}.{% endif %}</span>{% endif %}</p>
+                  <p class="from-teacher">From the school: <q class="authored-text">{{ item.text }}</q>{% if standing or item.card_day %} <span class="source">{% if standing == "current" %}Saved, applies now.{% elif standing == "history" %}Saved earlier, does not apply.{% elif standing == "awaiting" %}Waiting for review.{% elif standing == "new" %}New in this text; it applies.{% endif %}{% if standing and item.card_day %} {% endif %}{% if item.card_day %}Read {% if item.card is none %}in the school's note{% else %}on the school's card{% endif %} for {{ item.card_day.strftime("%B") }} {{ item.card_day.day }}.{% endif %}</span>{% endif %}</p>
                 {% endfor %}
-              {% endif %}
+              {% endif %}{% if reading.teacher_note and not reading.instructions %}
+              {# A note saved before brings no instruction to decide again; its words are shown all the same, so no line of the text goes unshown. #}
+              <p class="from-teacher">From the school: <q class="authored-text">{{ reading.teacher_note.words }}</q> <span class="source">Read in the school's note for {{ reading.teacher_note.first_day.strftime("%B") }} {{ reading.teacher_note.first_day.day }}.</span></p>{% endif %}{% for task in reading.joined_notes %}{% set place = loop.index0 %}{% if task.words not in (reading.instructions|map(attribute="text")|list) %}
+              <p class="source">The teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} also says: <q class="authored-text">{{ task.words }}</q></p>{% endif %}{% if task.deadline and task.deadline != reading.due_date %}
+              {# Both dates and where each was read, before anything is saved; a selected note's date is the school's evidence and never the card's due date. #}
+              <p class="source">{% if reading.due_date %}The card says due {{ spoken_day(reading.due_date) }}{% else %}The card gives no due date{% endif %}; the teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} says {{ spoken_day(task.deadline) }}.</p>{% endif %}
+              {# A joined note adds nothing to the card until it is selected; the page signs its tick as shown. #}
+              <div class="choice">{% set join_field = "join-" ~ change.key ~ "-" ~ place %}{% if join_field in unresolved %}
+                {# A joined note's tick sent twice with different answers, unanswered: the actual choice, neither side chosen, marked until it is answered. #}
+                <label><input type="radio" name="{{ join_field }}" value="1" required> <span>Add this note to the assignment<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>
+                <label><input type="radio" name="{{ join_field }}" value="0" required> <span>Don't add it<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>{% for name, value in unresolved[join_field] %}<input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}{% else %}
+                <label><input type="checkbox" name="join-{{ change.key }}-{{ place }}" value="1"{% if (change.key, place) in joined_ticked %} checked{% endif %}> <span>Add this note to the assignment<span class="visually-hidden"> for {{ reading.title }}, {{ reading.course }}</span></span></label>{% endif %}{% for said in twice_said.get("join-" ~ change.key ~ "-" ~ place, ()) %}
+                <p class="problem">{{ said }}</p>{% endfor %}
+              </div>{% if join_labels.get((change.key, place)) %}
+              {# What saving does with the tick the other way, which the page signs, so a tick changed here saves in one press. #}
+              <p class="helper">{% if (change.key, place) in joined_ticked %}If not selected{% else %}If selected{% endif %}: {{ join_labels[(change.key, place)] }}.</p>{% endif %}{% endfor %}{% if reading.teacher_note and reading.due_date and reading.due_date == reading.teacher_note.deadline %}{# Said only while the due date is the note's own, so it never outlives a date the family changed or cleared. #}{% for day in reading.teacher_note.listed_after %}
+              <p class="source">Still listed on {{ spoken_day(day) }}, after its due date of {{ spoken_day(reading.teacher_note.deadline) }}.</p>{% endfor %}{% endif %}
               {% if change.note_change == "kept" and change.standing and change.standing.note %}
                 <p class="from-teacher">Her note: <q class="authored-text">{{ change.standing.note }}</q></p>
               {% endif %}
@@ -321,7 +433,9 @@
                 <fieldset class="choice links" id="links-{{ change.key }}">
                   <legend>Her {% if change.waiting|length == 1 %}note{% else %}notes{% endif %} waiting with this class and title</legend>
                   {% for note in change.waiting %}
-                    <label><input type="checkbox" name="link-{{ change.key }}-{{ loop.index0 }}" value="1"{% if (note.capture_id, note.revision) in links_ticked.get(change.key, []) %} checked{% endif %}> <span>Link her note to <span class="authored-text">{{ reading.title }}</span> <span class="source"><q class="authored-text">{{ note.text }}</q>{% if note.due_date %} Her day: {{ spoken_day(note.due_date) }}.{% endif %}</span></span></label>
+                    {% set box = "link-" ~ change.key ~ "-" ~ loop.index0 %}{% if box in unresolved %}{# A box sent twice with different answers, unanswered: the actual choice, neither side chosen, marked until it is answered. #}<label><input type="radio" name="{{ box }}" value="1" required> <span>Link her note to <span class="authored-text">{{ reading.title }}</span> <span class="source"><q class="authored-text">{{ note.text }}</q>{% if note.due_date %} Her day: {{ spoken_day(note.due_date) }}.{% endif %}</span></span></label>
+                    <label><input type="radio" name="{{ box }}" value="0" required> <span>Don't link it<span class="visually-hidden"> to {{ reading.title }}</span></span></label>{% for name, value in unresolved[box] %}<input type="hidden" name="unresolved-{{ name }}" value="{{ value }}">{% endfor %}{% for said in twice_said.get(box, ()) %}
+                    <p class="problem">{{ said }}</p>{% endfor %}{% else %}<label><input type="checkbox" name="link-{{ change.key }}-{{ loop.index0 }}" value="1"{% if (note.capture_id, note.revision) in links_ticked.get(change.key, []) %} checked{% endif %}> <span>Link her note to <span class="authored-text">{{ reading.title }}</span> <span class="source"><q class="authored-text">{{ note.text }}</q>{% if note.due_date %} Her day: {{ spoken_day(note.due_date) }}.{% endif %}</span></span></label>{% endif %}
                   {% endfor %}
                 </fieldset>
               {% endif %}
@@ -350,20 +464,28 @@
           <p class="note">
             {% if to_save == 0 and counts.review == 0 %}{% if kept_note %}Her note will stay, and your note won't be saved to her homework. Nothing else here needs saving.{% elif waiting %}Everything read is saved already; a note of hers ticked above is linked when saved.{% else %}Everything here is saved already; there is nothing to save.{% endif %} A type changed on a card can still be saved.{% elif counts.review %}Answer the question{% if counts.review != 1 %}s{% endif %} above, then save.{% else %}Saving adds {{ counts.new }} and updates {{ counts.updated }}; the other {{ counts.unchanged }} stay as they are.{% endif %}
           </p>
-        {% endif %}
+        {% endif %}{% if note_tasks %}
+        <p class="helper">Review changes shows this review again with your selections. Nothing is saved until you save.</p>{% endif %}
         <div class="actions review-actions">
-          {% if total %}
-            {# A typed note kept off her homework is still something to finish, so the family page can say so. #}
+          {% if total or note_tasks %}
+            {# A typed note kept off her homework is still something to finish, so the family page can say so. A review of notes offers Save with none selected, so a tick whose effect the card shows saves in one press. #}
             {% set done = to_save == 0 and counts.review == 0 and not kept_note and not waiting %}
-            {% if done %}
+            {% if done and not note_tasks %}
               {# Every card's Type can still change, so the press is offered without scripts; the script shows it as done until a type changes. #}
               <button type="submit" class="primary" data-unchanged-label="Save 0 assignments" data-changed-label="Save changes">Save changes</button>
+            {% elif note_tasks %}{% if not editing %}
+              {# A tick can change how many assignments a save writes, so this save names no count and the page script has nothing of it to rewrite. While a card's details are open, Review changes is the action and no Save is offered. #}
+              <button type="submit" class="primary">Save selected assignments</button>{% endif %}
             {% else %}
               <button type="submit" class="primary" data-changed-label="Save changes">{% if to_save == 0 and kept_note %}Keep her note{% elif to_save == 0 and waiting %}Save the ticked links{% else %}Save {{ to_save }} assignment{% if to_save != 1 %}s{% endif %}{% endif %}</button>
             {% endif %}
-          {% endif %}
-          <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate>Edit</button>
-        </div>
+          {% endif %}{% if note_tasks %}
+          {# A press that shows the review again with the selections as sent and writes nothing. #}
+          <button type="submit" class="secondary" formaction="/parent/inbox/find" formnovalidate name="recheck" value="1">Review changes</button>{% endif %}
+          <button type="submit" class="secondary" formaction="/parent/inbox/edit" formnovalidate{% if note_tasks %} aria-describedby="edit-typing-lost"{% endif %}>Edit</button>
+        </div>{% if note_tasks %}
+        {# This Edit reads the text again from the start as Edit the text does, so it says the same beside it. #}
+        <p class="helper" id="edit-typing-lost">Selections, titles, and due dates aren't kept when the text is edited.</p>{% endif %}
         <p class="return"><a class="cancel" href="/parent">Cancel import</a></p>
       </div>
     </aside>

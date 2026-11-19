@@ -405,19 +405,23 @@ def paste_answers(items: Iterable[tuple[str, object]]) -> ReadAnswers:
     ``instruction-<card>-<place>`` for the words, or ``row-<card>-<place>``
     for a kept instruction too long to travel in words, ``apply-<card>-<place>``
     for a box, and ``none-<card>``. Every other field of the form is the
-    review's own, read by its own reader. A field of these names sent twice,
-    sent as a file, or named another way is malformed, and so is a card whose
-    fields are not an answer the page could have written. What such a card
-    chose, as far as it can be read, is kept to say back; every other card's
-    answer stands as it was sent.
+    review's own, read by its own reader. A box, ``apply`` or ``none``, sent
+    twice with the same value is the one answer it gives. Any other field of
+    these names sent twice, a box sent twice with different values, a field
+    sent as a file, or one named another way is malformed, and so is a card
+    whose fields are not an answer the page could have written. What such a
+    card chose, as far as it can be read, is kept to say back; every other
+    card's answer stands as it was sent.
     """
     cards: dict[int, AnswerFields] = {}
     bent: set[int] = set()
-    seen: set[str] = set()
+    seen: dict[str, str] = {}
     malformed = False
     for name, value in items:
         head, _, rest = name.partition("-")
         if head not in PASTE_HEADS:
+            continue
+        if head in ("apply", "none") and name in seen and value == seen[name]:
             continue
         parts = rest.split("-")
         card = int(parts[0]) if review_key(parts[0]) else None
@@ -427,7 +431,7 @@ def paste_answers(items: Iterable[tuple[str, object]]) -> ReadAnswers:
             if card is not None:
                 bent.add(card)
             continue
-        seen.add(name)
+        seen[name] = value
         fields = cards.setdefault(card, AnswerFields())
         if head == "instructions":
             fields.revision = value

@@ -196,9 +196,12 @@ def result_said(
 
 def context_of(item: SchoolInstruction) -> str:
     """Where an instruction was read, as the page says it beside its standing. A card's day
-    says where it was read, never when the teacher wrote it. An instruction kept by a save
-    with no card to say where was read somewhere not known; one with no moment of its own
-    came from the old note field."""
+    says where it was read, never when the teacher wrote it. A day with no card is the school
+    day of the teacher's note it was read in. An instruction kept by a save with no day to say
+    where was read somewhere not known; one with no moment of its own came from the old note
+    field."""
+    if item.card_day is not None and item.card is None:
+        return f"Read in the school's note for {spoken_month_day(item.card_day)}."
     if item.card_day is not None:
         return f"Read on the school's card for {spoken_month_day(item.card_day)}."
     if item.state == "awaiting":

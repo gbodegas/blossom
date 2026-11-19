@@ -18,6 +18,7 @@ import pathlib
 import random
 import re
 import sqlite3
+import traceback
 import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -36,7 +37,7 @@ from blossom.app import create_app
 from blossom.school_instructions import to_wire
 from blossom.screenshot_page import page_check
 from blossom.screenshot_review import field_most
-from blossom.screenshot_save import correction_digest
+from blossom.screenshot_save import correction_digest, read_digest
 from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, SCREENSHOT_IMPORT_VARIABLE, Settings
 from blossom.stores.import_drafts import AnswerToKeep, new_creation_token
 from tests.support import (
@@ -95,15 +96,32 @@ def open_settings(tmp_path: pathlib.Path) -> Settings:
     )
 
 
+BROWSERS: Final[list[TestClient]] = []
+"""The app each open ``here`` reaches, the innermost last."""
+
+
+@contextmanager
+def reached_by(browser: TestClient) -> Iterator[TestClient]:
+    """This app, the one a helper's post opens its cards through while it is open."""
+    BROWSERS.append(browser)
+    try:
+        yield browser
+    finally:
+        BROWSERS.remove(browser)
+
+
 @contextmanager
 def here(settings: Settings) -> Iterator[TestClient]:
     """The app as this computer's browser reaches it with the sign-in off."""
-    with TestClient(
-        create_app(settings),
-        follow_redirects=False,
-        headers={"Host": LOOPBACK, "Origin": f"http://{LOOPBACK}"},
-        client=("127.0.0.1", 50000),
-    ) as browser:
+    with (
+        TestClient(
+            create_app(settings),
+            follow_redirects=False,
+            headers={"Host": LOOPBACK, "Origin": f"http://{LOOPBACK}"},
+            client=("127.0.0.1", 50000),
+        ) as browser,
+        reached_by(browser),
+    ):
         yield browser
 
 
@@ -166,6 +184,17 @@ def fields_named(form: str, prefix: str) -> list[str]:
     return list(dict.fromkeys(html.unescape(name) for name in found))
 
 
+def no_date_subjects(page: str) -> list[str]:
+    """The subject of each assigned date box's "No assigned date was given" on this page's review
+    form, in page order, its card open (the checkbox shown) or closed (the assigned date the card
+    carries): every assigned date box has one."""
+    return [
+        subject
+        for subject in fields_named(review_form(page), "correct:")
+        if json.loads(subject)[1] == "assigned"
+    ]
+
+
 def fields_of(page: str, prefix: str) -> list[str]:
     """The whole names of this page's fields with this prefix."""
     return [prefix + subject for subject in fields_named(review_form(page), prefix)]
@@ -202,6 +231,156 @@ def worded_options(page: str, field: str) -> list[tuple[str, str]]:
     return found
 
 
+class Post(list[tuple[str, str]]):
+    """A review post a helper made from a page, with that page, the closed cards its typing or
+    choices land in (``closed``, each by its "Correct what was read" press), how to make the
+    same post from another page (``remade``), the typing it was made with (``typed``) and the
+    names it chose (``chosen``). No helper opens a card on its own: a test opens one by its own
+    press (``open_cards``) and makes the post from the page that press returns. A post whose
+    typing or choice isn't in it fails its test as it is sent (``carried``)."""
+
+    def __init__(
+        self,
+        fields: Iterable[tuple[str, str]],
+        page: str,
+        closed: Sequence[str],
+        remade: Callable[[str], "Post"],
+        typed: Mapping[str, str] | None = None,
+        chosen: Iterable[str] = (),
+    ) -> None:
+        super().__init__(fields)
+        self.made = tuple(self)
+        self.page = page
+        self.closed = tuple(closed)
+        self.remade = remade
+        self.typed = dict(typed or {})
+        self.chosen = tuple(chosen)
+
+
+class RawPost(list[tuple[str, str]]):
+    """A submission no page offers, sent on purpose and exactly as it stands: ``raw_post`` makes
+    one from a helper's post, stating every change, and ``unoffered`` from a Save its page does
+    not offer."""
+
+
+class Reviewed(list[tuple[str, str]]):
+    """A post whose earlier presses were already made (``reviewed``), sent as given: a helper's
+    post or a raw post, checked as ``carried`` checks each. A plain list fails the test."""
+
+    def __init__(self, fields: Fields) -> None:
+        carried(fields)
+        super().__init__(fields)
+
+
+def the_call() -> str:
+    """The file, line and function of the test code a post came from, past this module and the
+    thin wrappers that pass a post on."""
+    passing_on = {"send", "posted", "as_a_browser_sends", "<lambda>"}
+    for frame in reversed(traceback.extract_stack()):
+        if pathlib.Path(frame.filename).name == pathlib.Path(__file__).name:
+            continue
+        if frame.name not in passing_on:
+            return f"{pathlib.Path(frame.filename).name}:{frame.lineno} in {frame.name}"
+    return "a call outside the tests"
+
+
+def carried(fields: Fields) -> None:
+    """The one gate every test post passes, closed to all but three kinds: a helper's post
+    (``Post``) as it was made, a post already reviewed (``Reviewed``) and a raw post (``RawPost``).
+    Anything else, a plain list made from a post included, fails the test at once, naming the
+    call. A helper's post fails the same way where it was changed after it was made, and where it
+    doesn't carry what its test typed or chose, naming the field and the page the post was made
+    from: typing in a box that page offers only in a closed card the test did not open, typing in
+    a box the page does not offer, typing the post sends another value for, and "No assigned date
+    was given" chosen in a closed card."""
+    if isinstance(fields, Reviewed | RawPost):
+        return
+    if not isinstance(fields, Post):
+        pytest.fail(
+            f"{the_call()} sends a plain list, not a post a helper made: send the helper's post "
+            "as made, or state each change with raw_post.",
+            pytrace=False,
+        )
+    if tuple(fields) != fields.made:
+        pytest.fail(
+            f"{the_call()} sends a helper's post changed after it was made: state each change "
+            "with raw_post.",
+            pytrace=False,
+        )
+    form = review_form(fields.page)
+    boxes: set[str] = set()
+    hidden: dict[str, str] = {}
+    shown: set[str] = set()
+    for tag in re.findall(r"<input [^>]*>", form):
+        name, kind = attribute(tag, "name") or "", attribute(tag, "type")
+        shown.add(name)
+        if kind == "hidden":
+            hidden[name] = attribute(tag, "value") or ""
+        elif kind in ("text", "date"):
+            boxes.add(name)
+    boxes.update(attribute(tag, "name") or "" for tag in re.findall(r"<textarea [^>]*>", form))
+    title = re.search(r"<title>(.*?)</title>", fields.page, re.S)
+    action = re.search(r'action="([^"]+/review)"', form)
+    page = (
+        f"{html.unescape(title.group(1)).strip() if title else 'a page with no title'}, its review "
+        f"form posting to {action.group(1) if action else 'no address'}"
+    )
+    missed: list[tuple[str, str]] = []
+    for name, value in fields.typed.items():
+        if name in boxes and (name, value) in fields:
+            continue
+        if name not in boxes and hidden.get(name) == value and (name, value) in fields:
+            continue
+        if name in boxes:
+            missed.append((name, "typing the post sends another value for"))
+        elif name.startswith("correct:") and name in hidden:
+            missed.append((name, "a closed card the test did not open"))
+        else:
+            missed.append((name, "a box the page does not offer"))
+    for name in fields.chosen:
+        subject = name.removeprefix("none:")
+        if name.startswith("none:") and name not in shown and f"correct:{subject}" in shown:
+            missed.append((name, "a closed card the test did not open"))
+    if missed:
+        pytest.fail(
+            "; ".join(
+                f"{name!r} does not reach the post it sends: {why}, on the page {page}"
+                for name, why in missed
+            ),
+            pytrace=False,
+        )
+
+
+def closed_cards(form: str, typed: Mapping[str, str], chosen: Iterable[str]) -> list[str]:
+    """The "Correct what was read" press of each closed card on this form that a post types into
+    or chooses in, in page order: a box the card carries hidden with another value typed into it,
+    or a "No assigned date was given" choice the form doesn't show. A closed card's carried boxes
+    sit before its press."""
+    presses = [
+        (found.start(), html.unescape(found.group(1)))
+        for found in re.finditer(r'name="press" value="(correct:[^"]+)"', form)
+    ]
+    shown = {attribute(tag, "name") or "" for tag in re.findall(r"<input [^>]*>", form)}
+    wanted = [
+        name
+        for name in chosen
+        if name.startswith("none:") and name not in shown and f"correct:{name[5:]}" in shown
+    ]
+    cards: list[str] = []
+    for found in re.finditer(r"<input [^>]*>", form):
+        tag = found.group(0)
+        name = attribute(tag, "name") or ""
+        if attribute(tag, "type") != "hidden" or not name.startswith("correct:"):
+            continue
+        typed_in = name in typed and typed[name] != (attribute(tag, "value") or "")
+        if not typed_in and f"none:{name.removeprefix('correct:')}" not in wanted:
+            continue
+        after = [press for start, press in presses if start > found.start()]
+        if after and after[0] not in cards:
+            cards.append(after[0])
+    return [press for _, press in presses if press in cards]
+
+
 def page_post(
     page: str,
     press: str,
@@ -209,11 +388,52 @@ def page_post(
     choose: Mapping[str, str] | None = None,
     tick: Sequence[str] = (),
     typed: Mapping[str, str] | None = None,
-) -> list[tuple[str, str]]:
+) -> Post:
     """The review form's fields as a browser sends them with scripts off: the hidden fields, the
     checked controls (or those chosen here), the text in its boxes and text areas, the groups
-    ticked, the button."""
+    ticked, the button. Typing or a choice in a closed card isn't in it: a test opens the card
+    by its own press first (``open_cards``), and ``carried`` fails the test otherwise."""
     choose, typed = dict(choose or {}), dict(typed or {})
+
+    def remade(other: str) -> Post:
+        return page_post(other, press, choose=choose, tick=tick, typed=typed)
+
+    fields = page_fields(page, press, choose, tick, typed)
+    return Post(fields, page, closed_cards(review_form(page), typed, choose), remade, typed, choose)
+
+
+def open_cards(browser: TestClient, draft_id: str, page: str, cards: Sequence[str]) -> str:
+    """The review after "Correct what was read" pressed on each of these cards (each by its
+    press's value), in turn, each from the page the one before returned, as the family presses
+    them: the page the last press returns. Each press carries the form as its page stands, as a
+    browser sends it with that button: the hidden fields, the boxes, every checked control and
+    every group box the page shows ticked. Each press writes nothing; one that doesn't come back
+    with the review form and 200 fails the test, naming the card."""
+    for card in cards:
+        ticked = [
+            attribute(tag, "value") or ""
+            for tag in re.findall(r"<input [^>]*>", review_form(page))
+            if attribute(tag, "name") == "unit" and " checked" in tag
+        ]
+        answer = posted(browser, draft_id, page_post(page, card, tick=ticked))
+        if answer.status_code != 200 or not has_review_form(answer.text):
+            pytest.fail(
+                f"Correct what was read on {card!r} came back {answer.status_code} with no "
+                f"review form: {page_text(answer.text)[:300]}",
+                pytrace=False,
+            )
+        page = answer.text
+    return page
+
+
+def page_fields(
+    page: str,
+    press: str,
+    choose: Mapping[str, str],
+    tick: Sequence[str],
+    typed: Mapping[str, str],
+) -> list[tuple[str, str]]:
+    """``page_post``'s fields as this page gives them."""
     fields: list[tuple[str, str]] = []
     form = review_form(page)
     for tag in re.findall(r"<input [^>]*>", form):
@@ -235,12 +455,37 @@ def page_post(
 
 
 def every_choice(
-    page: str, press: str, typed: Mapping[str, str] | None = None, *, none_ticked: bool = False
-) -> list[tuple[str, str]]:
+    page: str,
+    press: str,
+    typed: Mapping[str, str] | None = None,
+    *,
+    none_ticked: bool = False,
+    ticks: Sequence[str] | None = None,
+) -> Post:
     """The most a browser sends from this page: the hidden fields, the boxes, every checkbox, one
-    radio of each group as shown, a Type of Task, every group's tick, the button. Without a conflict
-    unless asked for: "None of these apply" and "No assigned date was given" stay unticked."""
+    radio of each group as shown, a Type of Task, every group's tick (or only the groups of
+    ``ticks``), the button. Without a conflict unless asked for: "None of these apply" and "No
+    assigned date was given" stay unticked. The typing, or a "No assigned date was given" asked
+    for, in a closed card isn't in it: a test opens the card by its own press first
+    (``open_cards``), and ``carried`` fails the test otherwise."""
     typed = dict(typed or {})
+
+    def remade(other: str) -> Post:
+        return every_choice(other, press, typed, none_ticked=none_ticked, ticks=ticks)
+
+    fields = every_field(page, press, typed, none_ticked, ticks)
+    nones = [f"none:{subject}" for subject in no_date_subjects(page)] if none_ticked else []
+    return Post(fields, page, closed_cards(review_form(page), typed, nones), remade, typed, nones)
+
+
+def every_field(
+    page: str,
+    press: str,
+    typed: Mapping[str, str],
+    none_ticked: bool,
+    ticks: Sequence[str] | None = None,
+) -> list[tuple[str, str]]:
+    """``every_choice``'s fields as this page gives them."""
     form = review_form(page)
     fields: list[tuple[str, str]] = []
     radios: dict[str, str] = {}
@@ -254,7 +499,8 @@ def every_choice(
             fields.append((name, typed.get(name, value)))
         elif kind == "checkbox":
             says_none = name.startswith("none:") or (is_instruction(name) and not value)
-            if none_ticked or not says_none:
+            chosen_group = ticks is None or name != "unit"
+            if chosen_group and (none_ticked or not says_none):
                 fields.append((name, value))
         elif kind == "radio" and (name not in radios or " checked" in tag):
             radios[name] = "TASK" if name.startswith("answer:kind:") else value
@@ -262,7 +508,7 @@ def every_choice(
         name = attribute(tag, "name") or ""
         shown = html.unescape(content)
         fields.append((name, typed.get(name, shown[1:] if shown.startswith("\n") else shown)))
-    return [*fields, *radios.items(), ("press", press)]
+    return [*fields, *radios.items(), *(("unit", tick) for tick in ticks or ()), ("press", press)]
 
 
 def is_instruction(name: str) -> bool:
@@ -271,7 +517,9 @@ def is_instruction(name: str) -> bool:
 
 def as_a_browser_sends(fields: Fields) -> bytes:
     """A form's fields serialized as a browser submits them: every line break in a name or a
-    value, CR, LF or CRLF, becomes CRLF, then the form is URL-encoded."""
+    value, CR, LF or CRLF, becomes CRLF, then the form is URL-encoded. A helper's post is checked
+    to carry what its test typed and chose first (``carried``)."""
+    carried(fields)
 
     def lines(text: str) -> str:
         return re.sub(r"\r\n|\r|\n", "\r\n", text)
@@ -279,10 +527,236 @@ def as_a_browser_sends(fields: Fields) -> bytes:
     return urlencode([(lines(name), lines(value)) for name, value in fields]).encode()
 
 
-def send(browser: TestClient, draft_id: str, fields: Fields) -> Answer:
+def posted(browser: TestClient, draft_id: str, fields: Fields) -> Answer:
     return browser.post(
         f"/parent/imports/{draft_id}/review", content=as_a_browser_sends(fields), headers=FORM
     )
+
+
+def every_card_open(browser: TestClient, draft_id: str, page: str) -> str:
+    """The review as the family sees it after pressing "Correct what was read" on each closed
+    card in turn, for a test that looks for a box or a choice inside a card: each press writes
+    nothing and carries the group boxes its page shows ticked, as ``open_cards`` does. The page as
+    given where a press doesn't come back with the review form."""
+    for card in every_press_to_correct(page):
+        ticked = [
+            attribute(tag, "value") or ""
+            for tag in re.findall(r"<input [^>]*>", review_form(page))
+            if attribute(tag, "name") == "unit" and " checked" in tag
+        ]
+        answer = posted(browser, draft_id, page_post(page, card, tick=ticked))
+        if answer.status_code != 200 or not has_review_form(answer.text):
+            return page
+        page = answer.text
+    return page
+
+
+def every_press_to_correct(page: str) -> list[str]:
+    """Each closed card's "Correct what was read" press on the review form, in page order."""
+    return [
+        html.unescape(press)
+        for press in re.findall(r'name="press" value="(correct:[^"]+)"', review_form(page))
+    ]
+
+
+def send(browser: TestClient, draft_id: str, fields: Fields) -> Answer:
+    """The post sent to the review exactly as given: no card opened and no press added. A
+    helper's post is checked to carry what its test typed and chose (``carried``)."""
+    return posted(browser, draft_id, fields)
+
+
+def unoffered_save(
+    browser: TestClient, draft_id: str, page: str, units: Sequence[str]
+) -> tuple[list[tuple[str, str]], Answer]:
+    """A Save this page does not offer (a card's boxes open on it), sent on purpose as a raw POST:
+    the page's own fields with nothing typed or chosen, these groups ticked and the press. The
+    test fails where the page offers a Save or the payload is anything else. The payload and the
+    answer come back for the test to assert."""
+    if not offers_review_changes(page):
+        pytest.fail("unoffered_save is for a page that offers no Save", pytrace=False)
+    payload = page_post(page, "save", tick=units)
+    assert [value for name, value in payload if name == "unit"] == list(units)
+    assert [value for name, value in payload if name == "press"] == ["save"]
+    assert payload[: -1 - len(units)] == page_fields(page, "save", {}, (), {})[:-1]
+    return list(payload), posted(browser, draft_id, payload)
+
+
+def unoffered(post: Fields) -> RawPost:
+    """A Save this post's page does not offer (a card's boxes open on it), sent on purpose as the
+    raw POST it is: the post as made, every value it typed or chose in it. The test fails where
+    the post isn't a helper's, its page offers a Save or the post presses anything else."""
+    if not isinstance(post, Post):
+        pytest.fail("unoffered is for a post a helper made from a page", pytrace=False)
+    if not offers_review_changes(post.page):
+        pytest.fail("unoffered is for a post whose page offers no Save", pytrace=False)
+    carried(post)
+    assert [value for name, value in post if name == "press"] == ["save"]
+    return RawPost(post)
+
+
+def raw_post(
+    fields: Fields,
+    replaced: Mapping[str, str] | None = None,
+    *,
+    removed: Iterable[str | tuple[str, str]] = (),
+    added: Iterable[tuple[str, str]] = (),
+) -> RawPost:
+    """A submission the page does not offer, altered or injected on purpose: this post, checked as
+    ``carried`` checks it, with exactly the changes stated here and nothing else. ``replaced``
+    gives a named field's value in place, ``removed`` takes out a name's every field or one
+    (name, value) field, and ``added`` puts fields at the end. The test fails where a change names
+    a field the post doesn't hold or leaves the post as it was."""
+    carried(fields)
+    replacing, taken = dict(replaced or {}), list(removed)
+    extra = list(added)
+    names = {name for name, _ in fields}
+    missing: list[str | tuple[str, str]] = [name for name in replacing if name not in names]
+    missing += [
+        item
+        for item in taken
+        if (item not in names if isinstance(item, str) else item not in fields)
+    ]
+    if missing:
+        pytest.fail(f"raw_post names fields the post doesn't hold: {missing}", pytrace=False)
+    same = [
+        name
+        for name, value in replacing.items()
+        if all(held == value for other, held in fields if other == name)
+    ]
+    if same or not (replacing or taken or extra):
+        pytest.fail(f"raw_post changes nothing in {same or 'the post'}", pytrace=False)
+    whole = {item for item in taken if isinstance(item, str)}
+    single = {item for item in taken if not isinstance(item, str)}
+    payload = [
+        (name, replacing.get(name, value))
+        for name, value in fields
+        if name not in whole and (name, value) not in single
+    ]
+    return RawPost([*payload, *extra])
+
+
+def carrying(post: Fields, typed: Mapping[str, str]) -> Fields:
+    """This post, made from the page Review changes returned, checked to carry this typing in its
+    hidden fields as a browser sends it (line breaks as CRLF): the typing reviewed on that page."""
+    sent = dict(post)
+    for name, value in typed.items():
+        lines = re.sub(r"\r\n|\r|\n", "\n", value)
+        if re.sub(r"\r\n|\r|\n", "\n", sent.get(name, "\0")) != lines:
+            pytest.fail(f"{name!r} is not carried as reviewed: {sent.get(name)!r}", pytrace=False)
+    return post
+
+
+def typed_beside_read(fields: Fields) -> bool:
+    """Whether a post carries a box whose value differs from the value read, as its ``read:``
+    mark gives it."""
+    reads = {
+        name.removeprefix("read:"): value for name, value in fields if name.startswith("read:")
+    }
+    return any(
+        name.startswith("correct:")
+        and name.removeprefix("correct:") in reads
+        and read_digest(value) != reads[name.removeprefix("correct:")]
+        for name, value in fields
+    )
+
+
+def newly_typed(post: "Post") -> bool:
+    """Whether a helper's post types into a box a value other than the one its page shows."""
+    shown = dict(page_fields(post.page, "save", {}, (), {}))
+    return any(name in shown and shown[name] != value for name, value in post.typed.items())
+
+
+def offers_review_changes(page: str) -> bool:
+    """Whether this page's review form offers Review changes as its action and no Save: a card's
+    boxes are open on it."""
+    form = review_form(page)
+    return 'name="press" value="review"' in form and 'name="press" value="save"' not in form
+
+
+def still_open(page: str) -> list[str]:
+    """Each card whose boxes are open on this page's review form, as the page names it, with the
+    lines its group and its boxes show."""
+
+    def text(part: str) -> str:
+        return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", part))).strip()
+
+    said: list[str] = []
+    form = review_form(page)
+    for unit in re.findall(r'<article class="assignment".*?</article>', form, re.S):
+        head = re.findall(r'<p class="note">(.*?)</p>', unit.split("<details", 1)[0], re.S)
+        for card in re.findall(r'<details class="steps" open>(.*?)</details>', unit, re.S):
+            about = re.search(r'<span class="visually-hidden"> for (.*?)</span>', card, re.S)
+            notes = re.findall(r'<p class="note">(.*?)</p>', card, re.S)
+            lines = [text(line) for line in (*head, *notes)]
+            name = text(about.group(1)) if about else "a card the page doesn't name"
+            said.append(f"{name}: {' '.join(lines) or 'no line'}")
+    return said or ["no open card found on the form"]
+
+
+def reviewed(browser: TestClient, draft_id: str, fields: Fields) -> Reviewed:
+    """The Review changes press the family makes before a Save, made now, for a test that then
+    arranges what the post itself meets: that Save is pressed as Review changes, the Save then
+    made from the page that returns, its corrections as reviewed and the same groups ticked. The
+    family presses Review changes where the page a helper's post is made from offers it as the
+    action for that post (a card's boxes open there, so Save isn't offered:
+    ``offers_review_changes``), whatever its boxes hold, and before a Save carrying newly typed
+    corrections. A correction is newly typed where a box differs from the value read, as its
+    ``read:`` mark gives it, and, for a helper's post, its typing differs from the value its page
+    shows (``newly_typed``): corrections the page carries, kept from an earlier press, are no new
+    typing, and that Save from a page offering Save goes as one press. No card is opened here: a
+    helper's post is checked to carry what its test typed and chose first (``carried``). Where
+    Review changes returns a page that offers no Save (a card's boxes still open there), the test
+    fails, naming each card still open and the lines it shows (``still_open``): no Save the page
+    doesn't offer is sent. Where Review changes is refused (an answer of 400 or more, such as 422
+    "A due date is needed."), the test fails, naming the refusal the page shows and each card
+    left open (the cards of the page the post was made from where no review form comes back): a
+    test that means to observe that refusal presses Review changes itself (``send``) and asserts
+    it, and no Save is sent. A raw post goes exactly as it stands, with no press before it, and
+    anything else, and a Save whose Review changes returns no review form with 200, is the post
+    as given."""
+    if isinstance(fields, Reviewed):
+        return fields
+    carried(fields)
+    if not isinstance(fields, Post):
+        return Reviewed(fields)
+    typing = newly_typed(fields)
+    sent = list(fields)
+    offered = offers_review_changes(fields.page)
+    if ("press", "save") not in sent or not (offered or (typing and typed_beside_read(sent))):
+        return Reviewed(fields)
+    answer = posted(browser, draft_id, raw_post(fields, {"press": "review"}))
+    if answer.status_code >= 400:
+        problem = re.search(r'<div class="problem"[^>]*>(.*?)</div>', answer.text, re.S)
+        refusal = (
+            re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", problem.group(1)))).strip()
+            if problem
+            else page_text(answer.text).strip()[:300]
+        )
+        cards = still_open(answer.text if has_review_form(answer.text) else fields.page)
+        pytest.fail(
+            f"Review changes was refused ({answer.status_code}), so no Save is sent after it: "
+            f"{refusal or 'no refusal line shown'}; " + "; ".join(cards),
+            pytrace=False,
+        )
+    if answer.status_code != 200 or not has_review_form(answer.text):
+        return Reviewed(fields)
+    if offers_review_changes(answer.text):
+        pytest.fail(
+            "Review changes came back with no Save to press, a card still open: "
+            + "; ".join(still_open(answer.text)),
+            pytrace=False,
+        )
+    ticks = [value for name, value in sent if name == "unit"]
+    return Reviewed(page_post(answer.text, "save", tick=ticks))
+
+
+def saved_with_corrections(browser: TestClient, draft_id: str, fields: Fields) -> Answer:
+    """The one call through which every test makes a Save on the review that carries typed
+    corrections (where that call also makes other presses, they go through it too), sent as the
+    family sends it (``reviewed``): a Save carrying a box whose value differs from the one read is
+    sent as Review changes first, then Save from the page that returns. Anything else is sent
+    exactly as ``send`` sends it."""
+    return posted(browser, draft_id, reviewed(browser, draft_id, fields))
 
 
 def followed(browser: TestClient, answer: Answer) -> str:
@@ -652,11 +1126,13 @@ def all_found_onto_one_row(
     drafts.keep_answers(student, draft_id, version=version, answers=[answer])
     page = browser.get(f"/parent/imports/{draft_id}").text
     for _ in range(2):
-        fields = [
-            (name, chosen if name.startswith("answer:destination:") else value)
-            for name, value in every_choice(page, "keep")
-        ]
-        kept = send(browser, draft_id, fields)
+        post = every_choice(page, "keep")
+        found_row = {
+            name: chosen
+            for name, value in post
+            if name.startswith("answer:destination:") and value != chosen
+        }
+        kept = send(browser, draft_id, raw_post(post, found_row) if found_row else post)
         assert kept.status_code == 200, page_text(kept.text)[:300]
         page = followed(browser, kept)
     [question] = fields_of(page, "answer:instructions:")
@@ -699,8 +1175,13 @@ def the_worst_page(
     as, so each carries that text beside its box: the review's id, and the post of every field that
     page can send."""
 
-    def not_dates(fields: Fields) -> list[tuple[str, str]]:
-        return [(name, "not a date" if is_date_box(name) else value) for name, value in fields]
+    def not_dates(fields: Fields) -> Fields:
+        typed = {
+            name: "not a date"
+            for name, value in fields
+            if is_date_box(name) and value != "not a date"
+        }
+        return raw_post(fields, typed) if typed else fields
 
     draft_id, page = saved_rows(browser, monkeypatch, shots, cards, read_again_unsure)
     for _ in range(2):
@@ -722,17 +1203,16 @@ BEYOND_THE_PLANE: Final = "\U0001f600"
 """A character of four bytes in UTF-8, twelve as sent."""
 
 
-def at_their_limits(fields: Fields, *field_starts: str) -> list[tuple[str, str]]:
-    """This post with each box whose field starts with one of these filled to its field's limit."""
-    made = []
-    for name, value in fields:
+def at_their_limits(fields: Fields, *field_starts: str) -> RawPost:
+    """This post with each box whose field starts with one of these filled to its field's limit,
+    sent as the raw post it is."""
+    filled = {}
+    for name, _ in fields:
         if name.startswith("correct:"):
             field = str(json.loads(name.removeprefix("correct:"))[1])
             if field.startswith(field_starts):
-                made.append((name, BEYOND_THE_PLANE * field_most(field)))
-                continue
-        made.append((name, value))
-    return made
+                filled[name] = BEYOND_THE_PLANE * field_most(field)
+    return raw_post(fields, filled)
 
 
 def every_box_at_its_limit(
@@ -795,11 +1275,12 @@ def every_box_at_its_limit(
     )
 
 
-def small_form_fields(form: str) -> list[tuple[str, str]]:
-    return [
+def small_form_fields(form: str) -> RawPost:
+    """A small form's own fields, as the page wrote them: sent exactly as they stand."""
+    return RawPost(
         (html.unescape(name), html.unescape(value))
         for name, value in re.findall(r'name="([^"]+)" value="([^"]*)"', form)
-    ]
+    )
 
 
 def an_offer_s_post(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> tuple[str, Fields]:
@@ -1043,7 +1524,7 @@ class Presses:
 
     def press(self, label: str, fields: Fields) -> str:
         """This post sent: the page it comes back with."""
-        answer = send(self.browser, self.draft_id, fields)
+        answer = saved_with_corrections(self.browser, self.draft_id, fields)
         assert answer.status_code != 400, f"{label}: {page_text(answer.text)[:200]}"
         page = followed(self.browser, answer)
         self.pressed.append(
@@ -1061,17 +1542,19 @@ class Presses:
         )
         return page
 
-    def keep_later_keep(self, page: str, words: str) -> str:
-        """Keep with the words typed, Keep from its page, Later from that, Keep from Later's: the
-        page the last comes back with."""
+    def opened_then_keep_later_keep(self, page: str, words: str) -> str:
+        """ "Correct what was read" pressed on the card of the box, then Keep with the words typed,
+        Keep from its page, Later from that, Keep from Later's: the page the last comes back
+        with."""
+        cards = closed_cards(review_form(page), {self.box: words}, ())
+        page = open_cards(self.browser, self.draft_id, page, cards)
         page = self.press("keep", every_choice(page, "keep", {self.box: words}))
         page = self.press("keep from the page keep returned", every_choice(page, "keep"))
         page = self.press("later from the page keep returned", every_choice(page, "later"))
         return self.press("keep from the page later returned", every_choice(page, "keep"))
 
     def save(self, page: str, ticks: Iterable[str], label: str = "save") -> str:
-        fields = [field for field in every_choice(page, "save") if field[0] != "unit"]
-        return self.press(label, [*fields, *(("unit", tick) for tick in ticks)])
+        return self.press(label, every_choice(page, "save", ticks=list(ticks)))
 
     def keep_and_later_after(self, page: str) -> None:
         page = self.press("keep from the page save returned", every_choice(page, "keep"))
@@ -1101,7 +1584,7 @@ def press_through(browser: TestClient, shape: str, monkeypatch: pytest.MonkeyPat
         return kept_presses(browser, draft_id, page)
     box = box_named(page, "title")
     presses = Presses(browser, draft_id, box)
-    page = presses.keep_later_keep(page, TYPED)
+    page = presses.opened_then_keep_later_keep(page, TYPED)
     row = row_of_box(box)
     if "every question on saved rows" in shape:
         for number in (2, 3):
@@ -1117,7 +1600,7 @@ def press_through(browser: TestClient, shape: str, monkeypatch: pytest.MonkeyPat
 def kept_presses(browser: TestClient, draft_id: str, page: str) -> Presses:
     """A one-card shape's presses, which end when Save finishes the review."""
     presses = Presses(browser, draft_id, box_named(page, "instruction"))
-    page = presses.keep_later_keep(page, TYPED_INSTRUCTION)
+    page = presses.opened_then_keep_later_keep(page, TYPED_INSTRUCTION)
     presses.kept_words = tuple(kept_words_on_record(browser).values())
     presses.answered = instructions_answered(browser, draft_id)
     [question] = fields_of(page, "answer:instructions:")
@@ -1209,11 +1692,9 @@ def a_list_of_exactly(asked: str, size: int) -> str:
     return list_of_stream(b"".join(parts))
 
 
-def signed_again(
-    browser: TestClient, draft_id: str, fields: Fields, asked: str
-) -> list[tuple[str, str]]:
+def signed_again(browser: TestClient, draft_id: str, fields: Fields, asked: str) -> RawPost:
     """This post with this signed list, signed with the review's own key: what only someone holding
-    that key can send."""
+    that key can send, sent as the raw post it is."""
     student = state_of(browser).project_state.student_id()
     key = state_of(browser).import_drafts.snapshot(student, draft_id).page_key
     changed = [(name, asked if name == "asked" else value) for name, value in fields]
@@ -1222,8 +1703,9 @@ def signed_again(
         for name, value in changed
         if name in screenshot_posts.SIGNED or name.startswith("digest:")
     ]
-    check = page_check(key, signed)
-    return [(name, check if name == "check" else value) for name, value in changed]
+    held = dict(fields)
+    made = {"asked": asked, "check": page_check(key, signed)}
+    return raw_post(fields, {name: value for name, value in made.items() if held[name] != value})
 
 
 def written_as_the_older_form(browser: TestClient, draft_id: str, page: str) -> str:
@@ -1294,20 +1776,21 @@ def press_over_socket(
 
 def body_of_fields(fields: Fields, count: int, total: int | None = None) -> bytes:
     """This post with fields nothing reads, up to this many fields, each of one length so the body
-    comes to exactly this many bytes, or as short as they can be."""
+    comes to exactly this many bytes, or as short as they can be. The fields one byte longer have
+    a name of their own, so no name is sent twice with different values."""
     body = as_a_browser_sends(fields)
     more = count - len(fields)
-    head = b"&read%3Azz="
+    head, longer = b"&read%3Azz=", b"&read%3Azy="
     if total is None:
         return body + (head + b"1") * more
     each, over = divmod(total - len(body) - more * len(head), more)
-    return body + (head + b"a" * each) * (more - over) + (head + b"a" * (each + 1)) * over
+    return body + (head + b"a" * each) * (more - over) + (longer + b"a" * (each + 1)) * over
 
 
 def body_with_a_paste(fields: Fields, box: str, typed: str, total: int) -> tuple[bytes, str]:
     """This post with this box holding as much of this character as makes the body exactly this many
     bytes, plain characters making up what's left: the body, and what the box holds."""
-    others = as_a_browser_sends([field for field in fields if field[0] != box])
+    others = as_a_browser_sends(raw_post(fields, removed=[box]))
     name = urlencode([(box, "")]).encode()
     as_sent = urlencode([("", typed)]).encode().removeprefix(b"=")
     room = total - len(others) - 1 - len(name)
@@ -1322,14 +1805,20 @@ def in_writes(body: bytes, size: int) -> Iterator[bytes]:
 
 def padded_to(body: bytes, total: int, *, each: int = 4 * 1024 * 1024) -> Iterator[bytes]:
     """This body, then fields nothing reads, up to exactly this many bytes as sent, none of them
-    past ``each``."""
-    head = b"&read%3Azz="
+    past ``each``. Each field has a name of its own, so no name is sent twice with different
+    values."""
+
+    def head(count: int) -> bytes:
+        return b"&read%3Azz" + str(count).encode() + b"="
+
     yield body
     left = total - len(body)
-    assert left > len(head)
+    assert left > len(head(0))
+    count = 0
     while left > 0:
         take = min(left, each)
-        if left - take and left - take <= len(head):
-            take -= len(head)
-        yield head + b"a" * (take - len(head))
+        if left - take and left - take <= len(head(count + 1)):
+            take -= len(head(count + 1))
+        yield head(count) + b"a" * (take - len(head(count)))
         left -= take
+        count += 1

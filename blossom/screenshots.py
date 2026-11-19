@@ -29,24 +29,56 @@ items' keys; a reading that doesn't decode is digested whole, text that can hold
 included. A digest is a hash of that text, not an anonymized form of it.
 ``homework_rows`` gives the draft store each row's key from the same assembly, so the rows
 the parent sees and the keys the store keeps can't disagree.
+
+A card with a course and words, no label and no due line, under a readable day heading in its
+own screenshot, is a teacher's note. Its words are its title, its instruction, or both, and it
+is read by the rules ``teacher_notes`` holds for a pasted note, with the note cards of one
+layer read together. A note's row takes its day from the heading above it in its own
+screenshot, as any card does, with one exception: the same words of the same class listed
+under several days, in this screenshot or another, are one task read from the earliest of
+those days, so another screenshot can change the day a note's weekday is read from. A task
+that joins exactly one card with a label in the same screenshots, as a pasted note joins a
+card (``intake.joins``), is that card's row; a task two such cards could take joins neither.
+The row keeps the task among its reading's joined notes, and its reading, key, cards and marks
+as its own cards give them: the claim of a deadline the note settles and, when they say more
+than the name and the deadline statement, the task's words as an instruction are added only
+for a joined note the family selects.
 """
 
 import dataclasses
+import functools
 import hashlib
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import UTC, date, datetime
 from typing import Annotated, Final, Literal, NamedTuple, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 from blossom.grades.draft import folded
-from blossom.intake import ANOTHER_OCCURRENCE, DAY_LINE, PortalCard, Reading, a_date, read_cards
+from blossom.intake import (
+    ANOTHER_OCCURRENCE,
+    DAY_LINE,
+    PORTAL_CONFIDENCE,
+    TEACHER_NOTE,
+    PortalCard,
+    Reading,
+    a_date,
+    claim,
+    deadline_in_reach,
+    is_shaped_as_structure,
+    joins,
+    note_reading,
+    read_cards,
+    says_more,
+    the_one,
+)
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionSeen, instruction_words
 from blossom.screenshot_prompt import PROMPT_VERSION, SCHEMA_VERSION
 from blossom.stores.import_drafts import DraftRow, StoredReading
+from blossom.teacher_notes import NoteBlock, NoteTask, read_notes
 
 NAME_MOST: Final = 100
 """The most characters of a student's name as read."""
@@ -335,10 +367,20 @@ class AssignedDay(NamedTuple):
     sources: tuple[CardPlace, ...]
 
 
+class JoinedSource(NamedTuple):
+    """Where a row's joined note was read: its ``note_tag``, the fields marked uncertain on its
+    note cards and day headings, and the places of those cards."""
+
+    tag: str
+    marks: frozenset[str]
+    places: tuple[CardPlace, ...]
+
+
 class ScreenshotRow(NamedTuple):
-    """One row the screenshots read as: its key (what it would write and its layer), the
-    reading it would write, the fields marked uncertain on any card it came from, the day
-    heading among them, and every distinct assigned date its assigned cards were read under.
+    """One row the screenshots read as: its key (what its own cards would write and its
+    layer), the reading it would write, the fields marked uncertain on any card it came from,
+    the day heading among them, and every distinct assigned date its assigned cards were read
+    under.
     ``layer`` and ``sources`` say which copy it is and where its cards were read; neither is
     in the key."""
 
@@ -351,6 +393,9 @@ class ScreenshotRow(NamedTuple):
     first copy, 1 for the second. For telling copies apart on the page, never for an id."""
     sources: tuple[CardPlace, ...]
     """Every card the row came from, by its image's SHA-256 and its place there, in order."""
+    joined: tuple["JoinedSource", ...] = ()
+    """Where each of its reading's joined notes was read, in their order, and the fields marked
+    uncertain on its cards; neither is in the key nor among ``sources`` and ``marks``."""
 
     @property
     def assigned_dates_disagree(self) -> bool:
@@ -363,9 +408,12 @@ ItemReason = Literal[
     "reading_unreadable", "card_unreadable", "incomplete", "clipped", "no_day", "repeated"
 ]
 """Why an item couldn't be read as a row. The first three say text couldn't be read: a whole
-reading, a card, or a card's label, course or title. ``clipped`` is a card partly cut off,
+reading, a card, or a card's label, course or title. A teacher's note card with a line shaped
+as a day, a Missing line, a card or a mail program's date line is ``card_unreadable`` too.
+``clipped`` is a card partly cut off,
 whether or not a whole copy is read elsewhere. ``no_day`` is a card read whole whose date
-can't be told: no due line of its own and no day heading above it in its screenshot.
+can't be told: no due line of its own and no day heading above it in its screenshot, or a
+teacher's note card with no readable day heading above it.
 ``repeated`` is a later row of one layer that would write what another row of that layer
 does."""
 
@@ -408,6 +456,15 @@ _Unit = tuple[tuple[object, ...], PortalCard, frozenset[str], CardPlace]
 as a portal card, its marks, and where it was read."""
 
 
+class _NoteSeen(NamedTuple):
+    """A teacher's note card under a readable day heading: the note as a block of its words
+    under that day, the card's marks, and where it was read."""
+
+    block: NoteBlock
+    marks: frozenset[str]
+    place: CardPlace
+
+
 def homework_rows(readings: Sequence[StoredReading]) -> tuple[DraftRow, ...]:
     """The homework rows function: every row key a draft's readings give, each a row or a
     "couldn't read" item. It reads nothing but the readings, and gives the same keys for the
@@ -438,9 +495,18 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     layer, and its occurrence follows a paste's rounds over the name's rows, met in the order
     of each row's first card's walk, then layer. A row keeps every date its assigned cards were
     read under, with their places; when the dates disagree it settles on none, keeps its
-    instructions once for each day, and its key holds the dates. Every other card stays a
-    visible item with its reason, never merged into another. ``now`` stamps the claims and is
-    in no key.
+    instructions once for each day, and its key holds the dates. A teacher's note card with a
+    line of its title or instruction shaped as a day, a Missing line, a card or a mail
+    program's date line is read as no task and is a card that couldn't be read. Any other
+    teacher's note card under a
+    readable day heading is read with the other note cards of its layer, its layer being how
+    many note cards above it in its screenshot have its class, words and day; each task they
+    read as is a row whose key holds its standing, unless it joins the one row read from cards
+    that ``_named_card`` finds: that row keeps the task among its reading's joined notes, with
+    the note's places and marks among its ``joined``, and keeps its reading, key, cards and
+    marks as read, so what the note adds waits until the family selects the note. Every other
+    card stays a visible item with its
+    reason, never merged into another. ``now`` stamps the claims and is in no key.
     """
     images: dict[str, tuple[str, HomeworkReading | None]] = {}
     for stored in readings:
@@ -455,9 +521,32 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
         elif not reading.wrong_kind:
             seen += _placed(sha, digest, reading)
     layers: dict[int, list[_Unit]] = {}
+    noted: dict[int, list[_NoteSeen]] = {}
     matching: dict[tuple[object, ...], int] = {}
+    matching_notes: dict[tuple[object, ...], int] = {}
     for item in sorted(seen, key=_top_down):
         card = item.card
+        day = None if item.heading is None else item.heading.day
+        if card is not None and day is not None and _is_note(card):
+            words = _note_words(card) or ""
+            block = NoteBlock(
+                subject=card.course or "",
+                day=day,
+                paragraphs=(words,),
+                line=0,
+                suspect=_has_structure(card),
+            )
+            if block.suspect:
+                found = _unread(item, "card_unreadable")
+                unread[found.key] = found
+                continue
+            same_note = (item.sha256, _fold(card.course), words, day)
+            note_layer = matching_notes.get(same_note, 0)
+            matching_notes[same_note] = note_layer + 1
+            noted.setdefault(note_layer, []).append(
+                _NoteSeen(block, _marks(card, item.heading), CardPlace(item.sha256, item.place))
+            )
+            continue
         portal = None if card is None or card.clipped else _portal(card, item.heading)
         if card is None or portal is None:
             found = _unread(item, _reason(card))
@@ -485,31 +574,57 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     rows: list[ScreenshotRow] = []
     rounds: dict[tuple[str, str], list[tuple[date, str | None]]] = {}
     taken: dict[int, dict[str, int]] = {}
+
+    def keep(row: ScreenshotRow) -> None:
+        in_layer = taken.setdefault(row.layer, {})
+        if row.key in in_layer:
+            # Two rows of one layer that would write the same: each later one shown as not
+            # read, never merged.
+            in_layer[row.key] += 1
+            count = in_layer[row.key]
+            repeat = _key({"repeated": row.key, "layer": row.layer, "count": count})
+            unread[repeat] = UnreadCard(repeat, "", None, None, "repeated")
+            return
+        in_layer[row.key] = 0
+        rows.append(row)
+
+    read_under: dict[str, frozenset[date]] = {}
     for _, layer, members in groups:
         assigned = _assigned_days(members)
         cards_read = read_cards([portal for _, portal, _, _ in members], now=now)
         marks_of: list[set[str]] = [set() for _ in cards_read.readings]
         places_of: list[set[CardPlace]] = [set() for _ in cards_read.readings]
-        for (_, _, marks, place), joined in zip(members, cards_read.joined, strict=True):
+        days_of: list[set[date]] = [set() for _ in cards_read.readings]
+        for (_, portal, marks, place), joined in zip(members, cards_read.joined, strict=True):
             marks_of[joined] |= marks
             places_of[joined].add(place)
-        in_layer = taken.setdefault(layer, {})
-        for read, marked, places in zip(cards_read.readings, marks_of, places_of, strict=True):
+            if portal.day is not None:
+                days_of[joined].add(portal.day)
+        for read, marked, places, days in zip(
+            cards_read.readings, marks_of, places_of, days_of, strict=True
+        ):
             written = _in_round(_unsettled(read, assigned, members), rounds)
             key = _key(_written(written, frozenset(marked), layer, assigned))
-            if key in in_layer:
-                # Two rows of one layer that would write the same: each later one shown as not
-                # read, never merged.
-                in_layer[key] += 1
-                repeat = _key({"repeated": key, "layer": layer, "count": in_layer[key]})
-                unread[repeat] = UnreadCard(repeat, "", None, None, "repeated")
-                continue
-            in_layer[key] = 0
-            rows.append(
+            read_under.setdefault(key, frozenset(days))
+            keep(
                 ScreenshotRow(
                     key, written, frozenset(marked), assigned, layer, tuple(sorted(places))
                 )
             )
+    for layer, sightings in sorted(noted.items()):
+        for task, note_marks, note_places in _note_tasks(sightings):
+            named = _named_card(rows, read_under, task)
+            if named is not None:
+                as_read = rows[named].reading
+                kept = dataclasses.replace(as_read, joined_notes=(*as_read.joined_notes, task))
+                source = JoinedSource(note_tag(task), note_marks, note_places)
+                rows[named] = rows[named]._replace(
+                    reading=kept, joined=(*rows[named].joined, source)
+                )
+                continue
+            noted_reading = _in_round(note_reading(task, now=now), rounds)
+            key = _key(_written(noted_reading, note_marks, layer, (), note=str(task.standing)))
+            keep(ScreenshotRow(key, noted_reading, note_marks, (), layer, note_places))
     return Assembly(
         rows=tuple(sorted(rows, key=lambda row: row.key)),
         unread=tuple(sorted(unread.values(), key=lambda item: item.key)),
@@ -695,14 +810,150 @@ def _walk_order(
 
 
 def _reason(card: Card | None) -> ItemReason:
-    """Why a card couldn't be read as a row."""
+    """Why a card couldn't be read as a row. A card shaped as a teacher's note is one with no
+    readable day heading above it."""
     if card is None:
         return "card_unreadable"
     if card.clipped:
         return "clipped"
+    if _is_note(card):
+        return "no_day"
     if not card.complete:
         return "incomplete"
     return "no_day"
+
+
+def _note_words(card: Card) -> str | None:
+    """The words of a teacher's note on a card: its title, then its instruction, each
+    single-spaced, joined by one space, as the reader may put a note in either field or split
+    it across both. When one equals the other or begins it at a word boundary, only the longer
+    is kept: "Essay" begins "Essay due Friday.", but "Study chapter 1" does not begin "Study
+    chapter 10.", so both of those are kept. ``None`` when neither has words."""
+    parts = [
+        folded(text) for text in (card.title, card.instruction) if text is not None and _words(text)
+    ]
+    if len(parts) == 2 and _begins(parts[0], parts[1]):
+        parts = [parts[1]]
+    elif len(parts) == 2 and _begins(parts[1], parts[0]):
+        parts = [parts[0]]
+    return " ".join(parts) or None
+
+
+def _begins(start: str, text: str) -> bool:
+    """Whether ``start`` is ``text`` or begins it at a word boundary: what follows it in
+    ``text`` is not a letter or a digit."""
+    return text.startswith(start) and not text[len(start) : len(start) + 1].isalnum()
+
+
+def _has_structure(card: Card) -> bool:
+    """Whether a line of a note card's title or instruction, as read, before its words are
+    single-spaced, is shaped as a day, a Missing line, a card or a mail program's date line,
+    as a line of a pasted note that makes it suspect is."""
+    return any(
+        is_shaped_as_structure(line.strip())
+        for text in (card.title, card.instruction)
+        if text is not None
+        for line in text.splitlines()
+    )
+
+
+def _is_note(card: Card) -> bool:
+    """Whether a card is shaped as a teacher's note: not clipped, no label and no due line, a
+    course with words, its label not marked uncertain, and words of a note."""
+    return (
+        not card.clipped
+        and card.badge is None
+        and not _words(card.footer)
+        and _words(card.course)
+        and "badge" not in card.uncertain_fields
+        and instruction_words(_note_words(card))
+    )
+
+
+def _note_tasks(
+    sightings: Sequence[_NoteSeen],
+) -> list[tuple[NoteTask, frozenset[str], tuple[CardPlace, ...]]]:
+    """The tasks one layer's note cards read as, in one reading of all of them, so a task is
+    read from the earliest school day it is listed under; each with the marks and places of
+    the cards it was read from. The cards are given in an order fixed by their content. A
+    deadline outside a school year of the task's first school day is named, not kept, as on a
+    pasted note (``deadline_in_reach``)."""
+    ordered = sorted(
+        sightings,
+        key=lambda seen: (
+            seen.block.day,
+            folded(seen.block.subject),
+            seen.block.paragraphs,
+            seen.block.subject,
+            seen.place,
+            tuple(sorted(seen.marks)),
+        ),
+    )
+    own = [{folded(task.words) for task in read_notes([seen.block])} for seen in ordered]
+    out: list[tuple[NoteTask, frozenset[str], tuple[CardPlace, ...]]] = []
+    for task in map(deadline_in_reach, read_notes([seen.block for seen in ordered])):
+        sources = [
+            seen
+            for seen, words in zip(ordered, own, strict=True)
+            if folded(seen.block.subject) == folded(task.subject)
+            and seen.block.day in task.seen_on
+            and folded(task.words) in words
+        ]
+        marks = frozenset(mark for seen in sources for mark in seen.marks)
+        out.append((task, marks, tuple(sorted(seen.place for seen in sources))))
+    return out
+
+
+def _named_card(
+    rows: Sequence[ScreenshotRow], read_under: dict[str, frozenset[date]], task: NoteTask
+) -> int | None:
+    """Where the row of the card a note's task joins is among ``rows``: the one row read from
+    cards that the task ``joins``, as a pasted note joins a card. ``read_under`` holds the
+    school days each card row's cards were read under, by row key, for card rows alone.
+    ``None`` when no row qualifies, or when several do."""
+    return the_one(
+        [
+            index
+            for index, row in enumerate(rows)
+            if row.key in read_under
+            and joins(row.reading, task, functools.partial(_under_any, read_under[row.key]))
+        ]
+    )
+
+
+def _under_any(read: frozenset[date], days: Collection[date]) -> bool:
+    """Whether one of the school days a card row's cards were read under is among ``days``."""
+    return not read.isdisjoint(days)
+
+
+def note_tag(task: NoteTask) -> str:
+    """A joined note's tag among its card's joined notes: the digest of its first school day
+    and its words, so a tick stays with its note whatever other notes join the card."""
+    return _key([task.first_day.isoformat(), task.words])[:16]
+
+
+def with_joined(reading: Reading, tags: Collection[str], now: datetime) -> Reading:
+    """The reading with what each joined note the family selected adds, by its ``note_tag``;
+    a tag none of its joined notes has is passed over. Its due date is never changed."""
+    for task in reading.joined_notes:
+        if note_tag(task) in tags:
+            reading = _with_note(reading, task, now)
+    return reading
+
+
+def _with_note(reading: Reading, task: NoteTask, now: datetime) -> Reading:
+    """A card's reading with what a note naming it adds, as a pasted note adds it: the claim of
+    a deadline the note settles, seen in the teacher's note, and the task's words as one more
+    instruction when they say more than the name and the deadline statement. A claim or an
+    instruction the reading has is not added twice."""
+    claims, instructions = reading.claims, reading.instructions
+    if task.deadline is not None:
+        noted = claim(SourceChannel.LMS, task.deadline, TEACHER_NOTE, now, PORTAL_CONFIDENCE)
+        if noted not in claims:
+            claims += (noted,)
+    if says_more(task) and all(seen.text != task.words for seen in instructions):
+        instructions += (InstructionSeen(task.words, SourceChannel.LMS, None, task.first_day),)
+    return dataclasses.replace(reading, claims=claims, instructions=instructions)
 
 
 def _as_item(item: _Seen) -> dict[str, object]:
@@ -726,7 +977,12 @@ def _unread(item: _Seen, reason: ItemReason) -> UnreadCard:
 
 
 def _written(
-    reading: Reading, marks: frozenset[str], layer: int, assigned: tuple[AssignedDay, ...]
+    reading: Reading,
+    marks: frozenset[str],
+    layer: int,
+    assigned: tuple[AssignedDay, ...],
+    *,
+    note: str | None = None,
 ) -> dict[str, object]:
     """Everything a row would write, as read, with its marks and its layer: never a name, a
     position, a correction or an instant. A round of a recurring name is told by its own
@@ -735,7 +991,9 @@ def _written(
     may tell rows apart by either; rows a week or more apart are never in one round.
     Its layer, how many matching cards are above its own in their screenshot, is kept, and no
     other screenshot changes it. Assigned dates that disagree are kept as their set of dates,
-    never their cards' places, so a new date gives a new key and a recapture doesn't."""
+    never their cards' places, so a new date gives a new key and a recapture doesn't. A row
+    read from a teacher's note keeps its standing as ``note``; a row read from cards has no
+    such entry."""
     written: dict[str, object] = {
         "course": _fold(reading.course),
         "title": _fold(reading.title),
@@ -755,6 +1013,8 @@ def _written(
     }
     if len(assigned) > 1:
         written["assigned_dates"] = [_day(found.day) for found in assigned]
+    if note is not None:
+        written["note"] = note
     return written
 
 

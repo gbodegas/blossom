@@ -846,6 +846,46 @@ like a day or a card that does not read as one, ``(Due:TBD)`` for instance,
 is listed there and never taken for a teacher's words, and it ends the card
 before it.
 
+What a teacher writes for a subject apart from its cards, under the subject
+and a hyphen, is the teacher's note, and each note is read as tasks: the
+words of each task, whether it is homework, may be homework, or is not an
+assignment, and a due date only where a "due" or "by" statement in its words
+settles one; the school day the note is listed under is never taken for a
+due date, and a January date with no year in a note listed in December is
+read in the following year. A task joins the one card of its class and
+title read under a school day of the task's week when the task settles no
+date, settles the card's due date, or was first listed on the card's day;
+the card then shows the note with its words, both dates where they differ,
+and a tick of its own, and adds the note's date and words only when that
+tick is selected. Every other task is a card of its own, with the note's
+words beside it and a tick; where a card of its name is in the same text,
+it asks whether it is the same assignment or new work, with both dates.
+Every note starts unselected, homework or not, unless it is saved already;
+the review says how many notes it read apart from how many are selected.
+Notes that are not read as homework sit under their own headings, "Notes
+that may be homework" and "Notes with no homework". A note's card left
+unselected saves nothing, and is not remembered: the next paste shows it as
+it first was.
+Each has a title to correct and one due date choice: the date as the note
+says, each date the note leaves open or names, "No due date yet", or another
+date. A date the family gives is saved as the family's entry, not the
+school's. A title or date changed on a selected note's card is written only
+from a review that shows it: Save comes back with the review updated and
+writes nothing, and "Review changes" does the same at any time; "Edit" and
+"Edit the text" keep the text and say that the selections, titles, and dates
+are not kept. A saved task keeps the note's words as one of the school's
+instructions under the school day it was first listed under, and the next
+paste of the same text finds it by its class, those words, and that day,
+whatever its title or due date, and says it is saved already. A note with a
+line only shaped like a day, a Missing line, a card, or a mail program's date
+line is read as no task and stays whole under text that needs review.
+Homework screenshots read a card
+with a class and words, no label and no due line, under a day heading, as a
+teacher's note by the same rules, with that review's own ticks, title and
+date corrections, and recognition by words and school day; its words are
+shown there and not edited, and one with no day heading above it is listed
+with the cards whose date couldn't be told.
+
 The teacher's instruction under a card is the school's, kept apart from
 anyone's note, line breaks and all, once for its assignment however many
 cards or pastes bring it: the same words under an Assigned card and a Due

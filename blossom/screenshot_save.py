@@ -15,13 +15,15 @@ failure closing the review, or any later step, leaves the save whole and is repo
 it, and a resent press replays the save by its acceptance id.
 """
 
+import contextlib
 import dataclasses
 import hashlib
+import itertools
 import json
 import logging
 import pathlib
 import sqlite3
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any, Final, cast
 
@@ -39,10 +41,11 @@ from blossom.intake import (
     changes_for,
     keep,
 )
-from blossom.reconciliation import SourceChannel
+from blossom.reconciliation import SourceChannel, SourceRecord
 from blossom.school_instructions import InstructionChoice
 from blossom.screenshot_review import (
     DATE_FIELDS,
+    JOINED,
     KINDS,
     PIECE_DATES,
     Corrections,
@@ -54,20 +57,31 @@ from blossom.screenshot_review import (
     SavedRow,
     Validation,
     answer_names,
+    assignment_of,
     date_target,
     dates_key,
     defaults,
     destination_kind,
     entries,
+    holds_note,
+    holds_words,
     instruction_field,
     instruction_index,
+    joined_of,
+    joined_subject,
+    piece_as_read,
     pieces_from,
     preview,
+    proposed_title,
+    saved_notes,
+    saved_under_another_title,
     slot_id,
     slot_occurrence,
     subject_for,
     subject_now,
+    title_key,
     typed_day,
+    typed_rename,
     unit_name,
     usable_correction,
     validate,
@@ -84,6 +98,7 @@ from blossom.screenshots import (
     ScreenshotRow,
     cards_placed,
     homework_rows,
+    note_tag,
 )
 from blossom.stores.failures import busy_file, failure_named
 from blossom.stores.gradebook import (
@@ -169,6 +184,15 @@ class SavePress:
     """The review's progress revision the page's post was typed against; a save compares it with
     the stored one."""
     role: str = "parent"
+    screenshot_answers: Mapping[tuple[str, str], tuple[str, str]] = dataclasses.field(
+        default_factory=dict
+    )
+    """The press's name and split answers, (kind, subject) to (value, digest). They describe the
+    screenshots, none is stored before the transaction, and the transaction stores them only
+    beside homework it adds or updates (``_answers_kept``)."""
+    screenshot_answers_withdrawn: frozenset[tuple[str, str]] = frozenset()
+    """The name and split answers the press left blank, by kind and subject, taken back on the same
+    terms."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -194,6 +218,14 @@ class Saved:
     by its key, field and text (``stored_corrections``). ``pairs`` says where pieces landed, not
     what they kept: a choice among dates or instructions can leave what was typed off an
     assignment it names."""
+    consumed: frozenset[tuple[str, str]] = frozenset()
+    """The answers, by kind and subject, this save's own transaction took off the review with the
+    pieces it saved: none of them stays stored."""
+    screenshot_answers_kept: frozenset[tuple[str, str]] = frozenset()
+    """The name and split answers, by kind and subject, this save's own transaction stored: each
+    one that differed from the answer the review held."""
+    screenshot_answers_withdrawn: frozenset[tuple[str, str]] = frozenset()
+    """The name and split answers, by kind and subject, this save's own transaction took back."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -262,6 +294,40 @@ def _view(store: ProjectStateStore, shown: str | None) -> ProjectStateStore:
     return cast("ProjectStateStore", OneTarget(store, shown))
 
 
+class ReadOnce:
+    """The record as one working out of a review reads it. While ``reading`` is open, every
+    assignment is read from the record once, at the first ask, and that read answers each ask
+    after it; before and after, each ask reads the record. Everything else is the store's own."""
+
+    def __init__(self, store: ProjectStateStore) -> None:
+        self._store = store
+        self._open = False
+        self._read: list[Assignment] | None = None
+
+    @contextlib.contextmanager
+    def reading(self) -> Iterator[ProjectStateStore]:
+        """One working out of the review, which writes nothing: the record its reads go through.
+        The read it keeps ends with it."""
+        self._open = True
+        try:
+            yield cast("ProjectStateStore", self)
+        finally:
+            self._open = False
+            self._read = None
+
+    def all_assignments(self) -> list[Assignment]:
+        """Every assignment on record: the one read while ``reading`` is open, else a read of its
+        own."""
+        if not self._open:
+            return self._store.all_assignments()
+        if self._read is None:
+            self._read = self._store.all_assignments()
+        return list(self._read)
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - the store's own members
+        return getattr(self._store, name)
+
+
 def chosen_answers(
     readings: tuple[Reading, ...],
     view: ProjectStateStore,
@@ -280,14 +346,40 @@ def chosen_answers(
     }
 
 
-def saved_rows(record: ProjectStateStore) -> dict[str, SavedRow]:
-    """Every saved assignment as the review compares pieces with it."""
+def saved_rows(record: ProjectStateStore, *, claims: bool = False) -> dict[str, SavedRow]:
+    """Every saved assignment as the review compares pieces with it; with ``claims``, the
+    due-date claims the record keeps under it as well, which a joined note and a card's
+    school dates are compared with."""
+    return rows_and_due_origins(record, claims=claims)[0]
+
+
+def rows_and_due_origins(
+    record: ProjectStateStore, *, claims: bool = False, strict: bool = True
+) -> tuple[dict[str, SavedRow], dict[str, SourceChannel]]:
+    """The saved rows ``saved_rows`` gives and, from the same read of the record, the channel
+    each one's due date came from, where the record keeps one. With ``strict``, a claim that
+    can't be read refuses the read (``UnreadableClaim``), as a joined note's comparison needs;
+    without it, such a claim is read around and logged, and its row is compared by the claims
+    that can be read."""
     everything = record.all_assignments()
-    readable = record.school_instruction_readings([a.assignment_id for a in everything]).readable
+    origins = {
+        item.assignment_id: channel
+        for item in everything
+        if (channel := item.origins.get("due_date")) is not None
+    }
+    names = [a.assignment_id for a in everything]
+    readable = record.school_instruction_readings(names).readable
+    if not claims:
+        claimed: Mapping[str, Sequence[SourceRecord]] = {}
+    elif strict:
+        claimed = record.deadline_records_by_assignment(names)
+    else:
+        claimed = record.read_claims(names).records
     out = {}
     for item in everything:
         standing = readable.get(item.assignment_id)
-        words = frozenset() if standing is None else frozenset(i.text for i in standing.kept)
+        kept = () if standing is None else standing.kept
+        words = frozenset(i.text for i in kept)
         current = () if standing is None else standing.texts
         out[item.assignment_id] = SavedRow(
             item.assignment_id,
@@ -299,13 +391,21 @@ def saved_rows(record: ProjectStateStore) -> dict[str, SavedRow]:
             current[0] if current else None,
             max(0, len(current) - 1),
             str(item.kind.value),
+            frozenset((" ".join(i.text.split()), i.card_day) for i in kept),
+            frozenset(
+                (said.channel, said.asserted_value, said.seen_in)
+                for said in claimed.get(item.assignment_id, [])
+            ),
         )
-    return out
+    return out, origins
 
 
 def earlier_picks(record: ProjectStateStore, pieces: Sequence[Piece]) -> list[EarlierPick]:
-    """The record's ``renamed`` decisions for the pieces' names."""
-    decided = record.intake_decisions({p.pair for p in pieces})
+    """The record's ``renamed`` decisions for the pieces' names, as they stand and as read."""
+    as_read = (piece_as_read(p) for p in pieces)
+    decided = record.intake_decisions(
+        {p.pair for p in pieces} | {read.pair for read in as_read if read is not None}
+    )
     return [
         EarlierPick(item.course, item.title, item.lands_on, item.sequence)
         for answers in decided.values()
@@ -638,6 +738,36 @@ class ReviewState:
     every_row: tuple[ScreenshotRow, ...] = dataclasses.field(default=(), compare=False)
     """Every row of the review, those set aside included, read only to name what a press typed and
     to compare a box it sent with the row's text as read."""
+    proven: frozenset[tuple[str, str]] = frozenset()
+    """Each joined note, by piece name and note tag, that the record shows saved on the row its
+    piece lands on (``saved_notes``): it starts ticked with no answer kept, and a press that
+    leaves it unticked keeps that as an answer."""
+    joined_previews: tuple[tuple[PreviewEntry, ...], ...] = ()
+    """Where a piece has a joined note, the preview with every joined note unticked, with every
+    one ticked, and with each one ticked alone and unticked alone, at the same destinations and
+    answers, so the group's check covers each joined note's selected and unselected effects
+    alike, alone or beside the others (``unit_digests``)."""
+    due_origins: Mapping[str, SourceChannel] = dataclasses.field(default_factory=dict)
+    """The channel each saved row's due date came from, by row, where the record keeps one,
+    read with ``rows``: the page names a saved date by it."""
+    answered_ways: Mapping[str, tuple[tuple[PreviewEntry, ...], ...]] = dataclasses.field(
+        default_factory=dict
+    )
+    """By unit name, where its destinations ask which due or assigned date applies, whether it is
+    homework or a task, or which instructions apply, the preview of the pieces its check reads
+    (``checked_beside``) with each combination of the
+    answers the date and kind questions offer, the instruction question counted as answered with
+    no choice held, at the joined notes' ticks the check covers too, the question answered or
+    not: the unit's check is those previews' digests (``unit_digests``), so each date typed for
+    one of its options is in them."""
+    ready_answered: frozenset[str] = frozenset()
+    """The units of ``answered_ways`` ready to save whichever of those answers is given: the page
+    offers each one's tick beside its questions."""
+    pieces_with: Callable[[Corrections], tuple[Piece, ...]] = dataclasses.field(
+        default=lambda _: (), compare=False
+    )
+    """These pieces worked out with other corrections, from the tables this state was read from,
+    with no further read of the record."""
 
     @property
     def by_name(self) -> dict[str, Piece]:
@@ -678,22 +808,149 @@ def review_state(
     now: datetime,
     corrections: Corrections,
     defaults_posted: Mapping[str, str] | None = None,
+    defaults_shown: Mapping[str, str] | None = None,
+    withheld: frozenset[str] = frozenset(),
 ) -> ReviewState:
     """The review's pieces, destinations, checks and preview from its tables and the record.
     A default the press posted, and its answers kept, still counts as the default it was. A
     piece a change of screenshots marked, or whose answer depended on a correction that wasn't
-    kept, is given no default: it waits for an answer."""
-    values = answer_values(tables.answers)
+    kept, is given no default: it waits for an answer. A joined note with no answer kept that
+    the record shows saved where its piece lands (``ReviewState.proven``) starts ticked, as
+    selecting it adds nothing; where ticking it would move its piece elsewhere, it starts
+    unticked. For a page that stores nothing, a destination its post sent as the page's default
+    (``defaults_shown``, by piece) where the corrections withdraw that default is worked out as
+    sent, and still a default: every question it raises is asked there, and it never becomes a
+    family answer. A piece in ``withheld``, whose page asked with nothing chosen, never starts on
+    a new slot; a title typed to name a saved assignment keeps that assignment's exact match."""
+    first = _review_state(
+        record,
+        tables,
+        now=now,
+        corrections=corrections,
+        defaults_posted=defaults_posted,
+        defaults_shown=defaults_shown,
+        withheld=withheld,
+    )
+    unanswered = frozenset(
+        found for found in first.proven if ("joined", joined_subject(*found)) not in first.values
+    )
+    if not unanswered:
+        return first
+    again = _review_state(
+        record,
+        tables,
+        now=now,
+        corrections=corrections,
+        defaults_posted=defaults_posted,
+        defaults_shown=defaults_shown,
+        ticked=unanswered,
+        withheld=withheld,
+    )
+    return again if unanswered <= again.proven else first
+
+
+def _answers_for_pieces(
+    values: Mapping[tuple[str, str], str],
+) -> tuple[dict[str, Any], dict[str, str], set[tuple[str, str]]]:
+    """The answers a review's pieces are worked out from: each split, each due date read and each
+    joined note ticked."""
     split = {
         subject: json.loads(value) for (kind, subject), value in values.items() if kind == "split"
     }
     due_read = {subject: value for (kind, subject), value in values.items() if kind == "due_read"}
+    joined = {
+        found
+        for (kind, subject), value in values.items()
+        if kind == "joined" and value == JOINED and (found := joined_of(subject)) is not None
+    }
+    return split, due_read, joined
+
+
+def checked_beside(
+    unit: Sequence[str],
+    pieces: Sequence[Piece],
+    checked: Validation,
+    mapping: Mapping[str, Destination],
+    rows: Mapping[str, SavedRow],
+    saved: Mapping[str, str],
+) -> tuple[Piece, ...]:
+    """The pieces a group's check and preview read, among ``pieces`` as ``checked`` groups them:
+    the group's own, and those of each other group its checks against other cards compare it
+    with, each group whole, so each destination keeps every card going there. A title typed to
+    rename a saved assignment is compared with every other title typed to rename one, and with
+    every new assignment, under the same class and title (``titles_given_twice``,
+    ``renames_beside_new``); a card bringing words its saved assignment lacks is compared with the
+    words of the cards saved or going to every other saved assignment of its name (``holders``).
+    No other card changes what the group's check or preview says."""
+    by_name = {p.name: p for p in pieces}
+    own = set(unit)
+    group_of = {name: found.unit for found in checked.units for name in found.unit}
+    renamed: set[tuple[str, str]] = set()
+    named: set[tuple[str, str]] = set()
+    for dest, names in checked.destinations.items():
+        if names[0] not in own or dest[0] == "new" or (row := rows.get(dest[1])) is None:
+            continue
+        members = [by_name[n] for n in names]
+        typed = typed_rename(members, row)
+        if typed is not None:
+            renamed.add(title_key(row.course, typed))
+        for member in members:
+            if not holds_words(member.words, row.words):
+                named.add(member.pair)
+    wanted = set(own)
+    for dest, names in checked.destinations.items():
+        members = [by_name[n] for n in names]
+        row = rows.get(dest[1]) if dest[0] != "new" else None
+        if renamed and (
+            (row is None and any(title_key(m.course, m.title) in renamed for m in members))
+            or (
+                row is not None
+                and (typed := typed_rename(members, row)) is not None
+                and title_key(row.course, typed) in renamed
+            )
+        ):
+            wanted.update(n for name in names for n in group_of[name])
+    for piece in pieces:
+        target = (
+            saved.get(piece.name)
+            if piece.name in saved
+            else assignment_of(mapping[piece.name])
+            if piece.name in mapping
+            else None
+        )
+        row = rows.get(target or "")
+        if row is not None and row.pair in named:
+            wanted.update(group_of.get(piece.name, (piece.name,)))
+    return tuple(p for p in pieces if p.name in wanted)
+
+
+def _review_state(
+    record: ProjectStateStore,
+    tables: DraftForSave,
+    *,
+    now: datetime,
+    corrections: Corrections,
+    defaults_posted: Mapping[str, str] | None = None,
+    defaults_shown: Mapping[str, str] | None = None,
+    ticked: frozenset[tuple[str, str]] = frozenset(),
+    withheld: frozenset[str] = frozenset(),
+) -> ReviewState:
+    """``review_state`` with each joined note in ``ticked``, by piece name and note tag, ticked
+    where no answer is kept for it."""
+    values = answer_values(tables.answers)
+    for name, tag in ticked:
+        values.setdefault(("joined", joined_subject(name, tag)), JOINED)
+    split, due_read, joined = _answers_for_pieces(values)
     pieces, asking, every_row = pieces_from(
-        tables.readings, split, tables.discards, now, corrections, due_read
+        tables.readings, split, tables.discards, now, corrections, due_read, joined
     )
     by_name = {p.name: p for p in pieces}
     saved = {name: target for name, target in tables.saved.items() if name in by_name}
-    rows = saved_rows(record)
+    rows, due_origins = rows_and_due_origins(
+        record,
+        claims=True,
+        strict=any(p.reading is not None and p.reading.joined_notes for p in pieces),
+    )
     picks = earlier_picks(record, pieces)
     stored: dict[str, Destination] = {}
     lost: set[str] = set()
@@ -715,8 +972,18 @@ def review_state(
     chosen = {
         name: value
         for name, value in defaults(open_pieces, groups, rows, picks, stored, check).items()
-        if name not in asks
+        if name not in asks and not (name in withheld and "new" in value)
     }
+    for name, value in (defaults_shown or {}).items():
+        if (
+            name in by_name
+            and name not in saved
+            and name not in asks
+            and name not in stored
+            and name not in withheld
+        ):
+            with contextlib.suppress(ValueError):
+                chosen.setdefault(name, value_of(value))
     mapping: dict[str, Destination] = {**chosen, **stored}
     defaulted = set(chosen)
     for name, value in (defaults_posted or {}).items():
@@ -737,11 +1004,19 @@ def review_state(
         chosen: Mapping[str, Destination],
         chosen_defaulted: Iterable[str],
         asked: dict[tuple[str, ...], Change | None],
+        pieces: Sequence[Piece] = pieces,
+        dated: Mapping[tuple[str, str], str] | None = None,
+        instructed: bool = False,
     ) -> tuple[Validation, tuple[PreviewEntry, ...]]:
+        """The checks and preview at these destinations and answers, with ``dated`` answering
+        date and kind questions; with ``instructed``, each question about which instructions
+        apply counts as answered and its preview holds no choice, whatever the answer."""
+        these_dates = {**dates, **(dated or {})}
+
         def instruction_ready(dest: tuple[str, ...], members: Sequence[Piece]) -> bool:
             change = instruction_question(record, dest, members)
             asked[dest] = change
-            if change is None:
+            if change is None or instructed:
                 return True
             names = [m.name for m in members]
             return (
@@ -755,19 +1030,21 @@ def review_state(
             change = asked.get(dest)
             if change is None:
                 return None, None
+            if instructed:
+                return change.instructions_revision, None
             names = [m.name for m in members]
             subject = instruction_subject(dest, names, change.instructions_revision)
             got = values.get(("instructions", subject))
             return change.instructions_revision, None if got is None else tuple(json.loads(got))
 
-        found = validate(pieces, chosen, rows, picks, saved, dates, instruction_ready, kinds)
+        found = validate(pieces, chosen, rows, picks, saved, these_dates, instruction_ready, kinds)
         return found, tuple(
             preview(
                 found,
                 pieces,
                 chosen,
                 rows,
-                dates,
+                these_dates,
                 chosen_defaulted,
                 entry_ids,
                 instructions,
@@ -779,11 +1056,107 @@ def review_state(
 
     asked: dict[tuple[str, ...], Change | None] = {}
     validation, shown = work(mapping, defaulted, asked)
+    every_note = frozenset(
+        (piece.name, note_tag(task))
+        for piece in pieces
+        if piece.reading is not None
+        for task in piece.reading.joined_notes
+    )
+
+    def previewed(
+        ticks: frozenset[tuple[str, str]],
+    ) -> tuple[Sequence[Piece], Validation, tuple[PreviewEntry, ...]]:
+        """The pieces, checks and preview at the same destinations and answers with exactly the
+        joined notes in ``ticks`` ticked."""
+        these, _, _ = pieces_from(
+            tables.readings, split, tables.discards, now, corrections, due_read, ticks
+        )
+        return (these, *work(mapping, defaulted, {}, these))
+
+    # A joined note's tick changed and pressed with Save keeps the check the page signed when
+    # saving does what the page showed either way: the check covers each note selected alone
+    # and unselected alone, as well as none and every one.
+    tick_sets = {frozenset(), every_note} if every_note else set()
+    for found in every_note:
+        tick_sets |= {frozenset({found}), every_note - {found}}
+    joined_worked = tuple(
+        previewed(ticks) for ticks in sorted(tick_sets, key=lambda ticks: sorted(ticks))
+    )
+    joined_previews = tuple(shown_there for _, _, shown_there in joined_worked)
+
+    def ways(
+        these: Sequence[Piece], checked: Validation, shown_there: tuple[PreviewEntry, ...]
+    ) -> dict[str, tuple[list[tuple[PreviewEntry, ...]], bool, bool]]:
+        """By unit name: the previews of these pieces with each combination of the answers its
+        date and kind questions offer where it asks any of those or which instructions apply,
+        that question counted as answered with no choice held (``instructed``), or as they stand
+        where it asks none; whether it is ready under each; and whether it asks any. Each
+        combination's preview is worked out over the pieces the unit's check and preview read
+        (``checked_beside``): its answers are the unit's own, so no other unit's entry is read
+        from it."""
+        out: dict[str, tuple[list[tuple[PreviewEntry, ...]], bool, bool]] = {}
+        for unit in checked.units:
+            name = unit_name(unit.unit)
+            instructs = any(
+                entry.instruction_revision is not None
+                for entry in shown_there
+                if unit_name(entry.unit) == name
+            )
+            if not unit.questions and not unit.kind_questions and not instructs:
+                out[name] = ([shown_there], unit.ready, False)
+                continue
+            beside = checked_beside(unit.unit, these, checked, mapping, rows, saved)
+            found: list[tuple[PreviewEntry, ...]] = []
+            ready_each = True
+            for days in itertools.product(*(q.options for q in unit.questions)):
+                for kinds_given in itertools.product(*(KINDS for _ in unit.kind_questions)):
+                    dated = {
+                        (q.kind, q.subject): day.isoformat()
+                        for q, (_, day) in zip(unit.questions, days, strict=True)
+                    } | {
+                        ("kind", q.subject): kind
+                        for q, kind in zip(unit.kind_questions, kinds_given, strict=True)
+                    }
+                    checked_way, shown_way = work(
+                        mapping, defaulted, {}, beside, dated, instructed=True
+                    )
+                    found.append(shown_way)
+                    ready_each = ready_each and checked_way.of(unit.unit[0]).ready
+            out[name] = (found, ready_each, True)
+        return out
+
+    # A group whose destinations ask which due or assigned date applies, whether it is homework
+    # or a task, or which instructions apply, is checked by the preview with each answer the date
+    # and kind questions offer, the instruction question counted as answered with no choice held
+    # (its answer writes exactly the instructions ticked among those it shows), at each joined
+    # note's ticks the check covers too, answered or not: the page that asks and a Save that
+    # answers sign and compare the same digests, and a date or words typed for the group are in
+    # each of them, so a Save carrying a value no review showed never matches what its page
+    # signed. Previews per group: the product of its date questions' option counts, times two
+    # per kind question, times the joined notes' tick sets; signed: one SHA-256 per group.
+    every_way = [ways(pieces, validation, shown), *(ways(*each) for each in joined_worked)]
+    asking_units = {name for each in every_way for name, (_, _, asks) in each.items() if asks}
+    answered_ways = {
+        name: tuple(way for each in every_way if name in each for way in each[name][0])
+        for name in sorted(asking_units)
+    }
+    ready_answered = frozenset(
+        name for name in asking_units if name in every_way[0] and every_way[0][name][1]
+    )
 
     def rework(other: Mapping[str, Destination]) -> tuple[Validation, tuple[PreviewEntry, ...]]:
         kept = {n for n in defaulted if n in other and other[n] == mapping.get(n)}
         return work(other, kept, {})
 
+    proven = frozenset(
+        (piece.name, tag)
+        for piece in pieces
+        if piece.reading is not None
+        and piece.reading.joined_notes
+        and piece.name in mapping
+        and (row := rows.get(assignment_of(mapping[piece.name]) or "")) is not None
+        for tag in saved_notes(piece.reading.joined_notes, row)
+    )
     return ReviewState(
         tuple(pieces),
         tuple(asking),
@@ -804,15 +1177,45 @@ def review_state(
         {key: value for key, (value, _) in tables.answers.items()},
         rework,
         tuple(every_row),
+        proven,
+        joined_previews,
+        due_origins,
+        answered_ways,
+        ready_answered,
+        lambda typed: tuple(
+            pieces_from(tables.readings, split, tables.discards, now, typed, due_read, joined)[0]
+        ),
     )
 
 
 def unit_digests(state: ReviewState) -> dict[str, tuple[str, ...]]:
-    """Each unit's preview digests, as a page signs them and a save compares them."""
+    """Each unit's preview digests, as a page signs them and a save compares them. Where a
+    piece has a joined note, a unit's digests also hold those of its ``joined_previews``, each
+    once, so a joined note's tick changed, alone or beside another, leaves them as they were
+    while saving does what the page showed for each. Where a unit's destinations ask which due or
+    assigned date applies, its digest is one SHA-256 of the digests of the preview with each
+    answer offered, at those joined notes' ticks too (``answered_ways``), each once, whether the
+    question is answered or not, so the page signs one value however many answers it offers."""
     out: dict[str, list[str]] = {}
     for entry in state.preview:
         out.setdefault(unit_name(entry.unit), []).append(entry.digest)
-    return {name: tuple(sorted(found)) for name, found in out.items()}
+    for name, found_ways in state.answered_ways.items():
+        if name in out:
+            each = sorted(
+                {
+                    entry.digest
+                    for way in found_ways
+                    for entry in way
+                    if unit_name(entry.unit) == name
+                }
+            )
+            out[name] = [hashlib.sha256(json.dumps(each).encode()).hexdigest()]
+    if not state.joined_previews and not state.answered_ways:
+        return {name: tuple(sorted(found)) for name, found in out.items()}
+    for entry in (each for other in state.joined_previews for each in other):
+        if unit_name(entry.unit) in out and unit_name(entry.unit) not in state.answered_ways:
+            out[unit_name(entry.unit)].append(entry.digest)
+    return {name: tuple(sorted(set(found))) for name, found in out.items()}
 
 
 # ------------------------------------------------------------------ the save
@@ -953,7 +1356,7 @@ def _homework_transaction(
         ready.append(unit.unit)
     if still_open:
         return NotSaved("open", tuple(still_open), tuple(already))
-    identity = _identity(state, ready, press.names, tables.answers)
+    identity = _identity(state, ready, press.names, _names_held(tables.answers, press))
     if isinstance(identity, NotSaved):
         return identity
     if not ready:
@@ -1015,7 +1418,15 @@ def _homework_transaction(
         return bool(about) and set(about) <= done
 
     consumed = [(kind, subject) for kind, subject in tables.answers if saved_with(kind, subject)]
-    left = _open_units(state, saved_now, tables.readings, tables.discards)
+    kept, withdrawn = _answers_kept(
+        press, tables.answers, _names_read(state, ready, press.names), bool(added or updated)
+    )
+    left = _open_units(
+        _with_splits_kept(state, tables, kept, now, press.corrections),
+        saved_now,
+        tables.readings,
+        tables.discards,
+    )
     corrected, confirmed = _correction_counts(
         state, written, tables.answers, press.corrections, tables.readings
     )
@@ -1046,6 +1457,7 @@ def _homework_transaction(
     if not record.transaction_open():
         raise GradeTransactionLost(TRANSACTION_ENDED)
     record.raise_progress_revision(press.draft_id)
+    record.keep_screenshot_answers(press.draft_id, kept, withdrawn)
     record.drop_saved_answers(press.draft_id, consumed)
     return Saved(
         press.acceptance_id,
@@ -1056,7 +1468,66 @@ def _homework_transaction(
         already_units=tuple(already),
         counts=(added, updated, unchanged, left),
         stored=stored_corrections(record, state, pairs, press.corrections, as_read=True),
+        consumed=frozenset(consumed),
+        screenshot_answers_kept=frozenset(kept),
+        screenshot_answers_withdrawn=withdrawn,
     )
+
+
+def _names_held(
+    answers: Mapping[tuple[str, str], tuple[str, str]], press: SavePress
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """The stored answers with the press's name answers held over them, in memory, for the check of
+    whose screenshots these are. A posted split isn't held: the page signed its groups with no
+    posted split applied."""
+    posted = {key: got for key, got in press.screenshot_answers.items() if key[0] == "name"}
+    left = {
+        key: got
+        for key, got in answers.items()
+        if key not in press.screenshot_answers_withdrawn or key in posted
+    }
+    return {**left, **posted}
+
+
+def _answers_kept(
+    press: SavePress,
+    answers: Mapping[tuple[str, str], tuple[str, str]],
+    names_read: Collection[tuple[str, str]],
+    homework_written: bool,
+) -> tuple[dict[tuple[str, str], tuple[str, str]], frozenset[tuple[str, str]]]:
+    """The name and split answers this transaction stores, each one that differs from the answer
+    stored, and those it takes back. Where it adds or updates an assignment (``homework_written``),
+    that is every one the press posted. Otherwise it is only the name answers the groups it accepts
+    read (``names_read``), which are those groups' own."""
+    kept = {
+        key: got
+        for key, got in press.screenshot_answers.items()
+        if (homework_written or key in names_read) and answers.get(key) != got
+    }
+    withdrawn = frozenset(
+        key
+        for key in press.screenshot_answers_withdrawn
+        if homework_written and key in answers and key not in press.screenshot_answers
+    )
+    return kept, withdrawn
+
+
+def _with_splits_kept(
+    state: ReviewState,
+    tables: DraftForSave,
+    kept: Mapping[tuple[str, str], tuple[str, str]],
+    now: datetime,
+    corrections: Corrections,
+) -> ReviewState:
+    """The review's pieces and rows waiting on a split, as they stand once these answers are
+    stored: ``state`` itself where none of them is a split."""
+    if not any(kind == "split" for kind, _ in kept):
+        return state
+    split, due_read, joined = _answers_for_pieces(answer_values({**tables.answers, **kept}))
+    pieces, asking, _ = pieces_from(
+        tables.readings, split, tables.discards, now, corrections, due_read, joined
+    )
+    return dataclasses.replace(state, pieces=tuple(pieces), asking=tuple(asking))
 
 
 def values_on_record(
@@ -1315,6 +1786,30 @@ def _unconfirmed(
     )
 
 
+def _screenshots_of(state: ReviewState, ready: Sequence[tuple[str, ...]]) -> dict[str, set[str]]:
+    """Each screenshot the units came from, by its SHA-256, with the units that drew on it."""
+    images: dict[str, set[str]] = {}
+    for unit in ready:
+        for name in unit:
+            piece = state.by_name[name]
+            for card in (*piece.cards, *piece.noted_cards):
+                images.setdefault(card.sha256, set()).add(unit_name(unit))
+    return images
+
+
+def _names_read(
+    state: ReviewState,
+    ready: Sequence[tuple[str, ...]],
+    names: Mapping[str, tuple[str, str | None]],
+) -> frozenset[tuple[str, str]]:
+    """The name answers, by kind and subject, ``_identity`` reads for these units: the one for each
+    unconfirmed name on their screenshots, and the one for a screenshot showing no name."""
+    seen = [names.get(sha, ("unknown", None)) for sha in _screenshots_of(state, ready)]
+    forms = {("name", str(form)) for status, form in seen if status in UNCONFIRMED}
+    missing = {("name", "missing")} if any(status == "missing" for status, _ in seen) else set()
+    return frozenset(forms | missing)
+
+
 def _identity(
     state: ReviewState,
     ready: Sequence[tuple[str, ...]],
@@ -1329,11 +1824,7 @@ def _identity(
     one unconfirmed name and screenshots with no name needs both answers, and carries the
     name's status, answer and form; a unit of unnamed screenshots alone, pressed beside it,
     is still refused."""
-    images: dict[str, set[str]] = {}
-    for unit in ready:
-        for name in unit:
-            for card in state.by_name[name].cards:
-                images.setdefault(card.sha256, set()).add(unit_name(unit))
+    images = _screenshots_of(state, ready)
     seen = {sha: names.get(sha, ("unknown", None)) for sha in images}
 
     def units_where(test: Callable[[tuple[str, str | None]], bool]) -> set[str]:
@@ -1378,9 +1869,12 @@ def _write(
     hooks: SaveHooks,
 ) -> str:
     """One destination's homework, through ``keep``: a new slot's row made under its id, or the
-    existing row updated, with the chosen dates, kind and instructions; then, for each class
-    and title of its cards that isn't the row's, the earlier-pick decision, unless one for that
-    name already lands there."""
+    existing row updated, with the chosen dates, kind and instructions, and the title the family
+    typed for it (``proposed_title``); then, for each class and title of its cards that isn't the
+    row's, the earlier-pick decision, unless one for that name already lands there, the row holds
+    the words and school day of the teacher's note it was read from, the row is one saved under
+    another title that the review asked about (``saved_under_another_title``), or the card's title
+    is the one this save gave the row."""
     by_name = state.by_name
     members = sorted((by_name[n] for n in names), key=lambda p: p.name)
     row = state.rows.get(dest[1]) if dest[0] != "new" else None
@@ -1423,10 +1917,21 @@ def _write(
     readings = tuple(landing(record, p.reading, target) for p in members if p.reading)
     dates = dict.fromkeys(range(len(readings)), (due, assigned))
     _keep(record, target, readings, choice, dates, kinds(len(readings)), now, today)
+    if due is None and row is not None and row.due is not None:
+        _cleared_due(record, target)
+    new_title = proposed_title(members, row, state.rows)
+    if new_title is not None:
+        _titled(record, target, new_title)
     hooks.after_keep(target)
     named = {p.pair: p for p in members if p.reading is not None}
     for pair, piece in sorted(named.items()):
-        if row is None or pair == row.pair:
+        if (
+            row is None
+            or pair == row.pair
+            or piece.title == new_title
+            or holds_note(piece, row)
+            or saved_under_another_title(piece, row)
+        ):
             continue
         if any(
             p.pair == pair and p.assignment_id == target for p in earlier_picks(record, [piece])
@@ -1450,6 +1955,23 @@ def _write(
         )
         hooks.after_renamed(target)
     return target
+
+
+def _titled(record: ProjectStateStore, target: str, title: str) -> None:
+    """The row ``target`` under the title the family typed for it, in the save's transaction."""
+    current = next(a for a in record.all_assignments() if a.assignment_id == target)
+    record.put_on_record([current.model_copy(update={"title": title})], {})
+
+
+def _cleared_due(record: ProjectStateStore, target: str) -> None:
+    """The row ``target`` with no due date and no origin for one, in the save's transaction:
+    the due date the family cleared on a teacher's note the row holds (``written_dates``).
+    The claims kept under it stay as they are."""
+    current = next(a for a in record.all_assignments() if a.assignment_id == target)
+    if current.due_date is None:
+        return
+    origins = {name: channel for name, channel in current.origins.items() if name != "due_date"}
+    record.put_on_record([current.model_copy(update={"due_date": None, "origins": origins})], {})
 
 
 def _keep(

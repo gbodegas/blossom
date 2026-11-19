@@ -44,6 +44,7 @@ from blossom.routes.inbox import (
     STORE_REFUSED,
     unsaved_on,
 )
+from blossom.routes.instruction_answers import paste_answers
 from blossom.routes.navigation import instructions_action_href, instructions_review_href
 from blossom.routes.note_details import choice_value
 from blossom.school_instructions import (
@@ -67,6 +68,7 @@ from tests.support import (
     store_of,
     whole_form,
 )
+from tests.test_note_review_page import homework_selected
 
 A = "Patterns, if-then statements, first proofs."
 B = "Patterns and if-then statements only."
@@ -721,7 +723,6 @@ def keep_as_sent(client: TestClient, fields: list[tuple[str, str]]) -> Answer:
         [("instructions-0", "1")],
         [("instruction-0-0", to_wire(A))],
         [("apply-0-1", "0")],
-        [("none-0", "1"), ("none-0", "1")],
         [("apply-0-7", "1")],
         [("apply-0", "1")],
         [("instruction-0-01", to_wire("Bring a calculator."))],
@@ -732,7 +733,6 @@ def keep_as_sent(client: TestClient, fields: list[tuple[str, str]]) -> Answer:
         "the-revision-twice",
         "the-words-twice",
         "a-box-twice",
-        "none-twice",
         "a-box-without-words",
         "a-name-the-page-never-writes",
         "a-padded-place",
@@ -758,6 +758,46 @@ def test_instruction_fields_the_page_did_not_write_refuse_the_whole_paste(
     assert answer.status_code == 422
     assert str(escape(INSTRUCTION_FORM_UNREADABLE)) in answer.text
     assert after == start
+
+
+@pytest.mark.parametrize("box", ["apply-0-1", "none-0"])
+def test_an_instruction_box_sent_twice_with_the_same_value_is_one_answer(
+    tmp_path: pathlib.Path, box: str
+) -> None:
+    """A box of the instruction question sent twice with the same value, an injected duplicate
+    submission, is the one answer it gives: the paste saves what that box sent once saves."""
+    with client_in(tmp_path) as client:
+        saved(client, ASSIGNED_WEEK)
+        page = client.post("/parent/inbox/read", data={"text": DUE_WEEK_CHANGED}).text
+        form = list(review_form(page).items())
+        before = tables(client)
+        answer = keep_as_sent(client, [*form, (box, "1"), (box, "1")])
+        after = tables(client)
+        found = standing(client)
+
+    assert answer.status_code == 303
+    assert after != before
+    assert found.texts == ((B,) if box == "apply-0-1" else ())
+
+
+def test_the_paste_reader_takes_a_box_sent_twice_with_the_same_value_as_one_answer() -> None:
+    """``paste_answers`` reads an ``apply`` or ``none`` box sent twice with the same value as
+    that one answer, and the same box sent with two values, or the words sent twice, as a form
+    the page did not make."""
+    shown = [("instructions-0", "3"), ("instruction-0-0", to_wire(A))]
+    applies = paste_answers([*shown, ("apply-0-0", "1"), ("apply-0-0", "1")])
+    none = paste_answers([*shown, ("none-0", "1"), ("none-0", "1")])
+    differ = paste_answers([*shown, ("apply-0-0", "1"), ("apply-0-0", "0")])
+    words = paste_answers([*shown, ("instruction-0-0", to_wire(A)), ("apply-0-0", "1")])
+
+    assert not applies.malformed
+    assert applies.answers[0].applies == frozenset({A})
+    assert not none.malformed
+    assert none.answers[0].none_applies
+    assert differ.malformed
+    assert differ.answers == {}
+    assert words.malformed
+    assert words.answers == {}
 
 
 def test_a_file_in_place_of_an_instructions_words_refuses_the_whole_paste(
@@ -2588,10 +2628,12 @@ def test_a_note_under_another_subject_is_never_saved_as_a_cards_instruction(
     tmp_path: pathlib.Path,
 ) -> None:
     """Through the review, the save and the same text read again: the words under another
-    subject's heading are shown as text that needs review and saved on no assignment, and the
-    card with its own instruction keeps it."""
+    subject's heading are homework of their own, each on a card of its subject with its
+    words, and once the family selects them each is saved as its own assignment. None of
+    them is on a card of the school's or saved as its instruction, and the card with its
+    own instruction keeps it."""
     with client_in(tmp_path) as client:
-        page = client.post("/parent/inbox/read", data={"text": NOTES_UNDER_SUBJECTS}).text
+        page = homework_selected(client, NOTES_UNDER_SUBJECTS)
         kept = client.post("/parent/inbox/keep", data=review_form(page))
         store = store_of(client)
         rows = {row.title: row for row in store.all_assignments()}
@@ -2601,25 +2643,39 @@ def test_a_note_under_another_subject_is_never_saved_as_a_cards_instruction(
         again = client.post("/parent/inbox/read", data={"text": NOTES_UNDER_SUBJECTS}).text
         rows_written = tables(client)["school_instructions"]
 
-    cards = page.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[1]
+    formal = ("Textbook page 12", "Oral quiz", "Short essay")
+    noted = {
+        "Study for the vocabulary quiz on Thursday": "Study for the vocabulary quiz on Thursday.",
+        "Map project": "Map project due on Wednesday.",
+        "Please bring a shoebox": "Please bring a shoebox by next Tuesday.",
+        "Reading log": "Reading log due today",
+    }
     assert kept.status_code == 303
-    assert kept.headers["location"].endswith("added=3&updated=0&unchanged=0")
-    assert set(rows) == {"Textbook page 12", "Oral quiz", "Short essay"}
+    assert kept.headers["location"].endswith("added=7&updated=0&unchanged=0")
+    assert set(rows) == {*formal, *noted}
     assert {
-        title: said[row.assignment_id].texts
-        for title, row in rows.items()
-        if row.assignment_id in said
+        title: said[rows[title].assignment_id].texts
+        for title in formal
+        if rows[title].assignment_id in said
     } == {"Short essay": ("Write 250 words on your question.",)}
-    assert len(rows_written) == 1
+    assert {title: said[rows[title].assignment_id].texts for title in noted} == {
+        title: (words,) for title, words in noted.items()
+    }
+    assert len(rows_written) == 5
     for text in (page, again):
-        review = text.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[0]
-        for line in ("Humanities -", "Art -", "Science -", "Reading log due today"):
-            assert line in html.unescape(review)
-    for words in ("Humanities", "vocabulary quiz", "shoebox", "Reading log"):
-        assert words not in html.unescape(cards)
-    assert "3 assignments across 2 weeks: 0 new, 0 updates, 3 already saved." in " ".join(
-        again.split()
-    )
+        assert 'id="needs-review"' not in text
+        for title, words in noted.items():
+            card = text.split(f"<h2>{title}</h2>", 1)[1].split("</article>", 1)[0]
+            assert f'From the school: <q class="authored-text">{words}</q>' in card
+            assert 'name="take-' in card
+        for title in formal:
+            card = html.unescape(text.split(f"<h2>{title}</h2>", 1)[1].split("</article>", 1)[0])
+            for words in ("Humanities", "vocabulary quiz", "shoebox", "Reading log"):
+                assert words not in card
+            assert 'name="take-' not in card
+    assert (
+        "7 assignments across 2 weeks, 2 with no due date yet: 0 new, 0 updates, 7 already saved."
+    ) in " ".join(again.split())
 
 
 A_DAY_THAT_IS_NO_DATE_IN_A_SHORT_PARAGRAPH = """Homework for Wren
@@ -2645,10 +2701,11 @@ def test_another_subjects_words_after_a_day_that_is_no_date_are_saved_on_no_card
     """Through the review, the save and the same text read again: a day line that names no
     date, kept in a card's short review paragraph, still says the summary's shape is in force,
     so the next subject's heading and words are shown as text that needs review and saved on
-    no assignment."""
+    no assignment. The note read under the day before it is homework of its own, on its own
+    card, and no card's instruction."""
     text = A_DAY_THAT_IS_NO_DATE_IN_A_SHORT_PARAGRAPH
     with client_in(tmp_path) as client:
-        page = client.post("/parent/inbox/read", data={"text": text}).text
+        page = homework_selected(client, text)
         kept = client.post("/parent/inbox/keep", data=review_form(page))
         store = store_of(client)
         rows = {row.title: row for row in store.all_assignments()}
@@ -2659,14 +2716,24 @@ def test_another_subjects_words_after_a_day_that_is_no_date_are_saved_on_no_card
         rows_written = tables(client)["school_instructions"]
 
     assert kept.status_code == 303
-    assert set(rows) == {"Sheet"}
-    taught = [said[row.assignment_id].texts for row in rows.values() if row.assignment_id in said]
-    assert taught == []
-    assert len(rows_written) == 0
+    assert set(rows) == {"Sheet", "Bring goggles"}
+    taught = {
+        title: said[row.assignment_id].texts
+        for title, row in rows.items()
+        if row.assignment_id in said
+    }
+    assert taught == {"Bring goggles": ("Bring goggles",)}
+    assert len(rows_written) == 1
     for shown in (page, again):
         review = shown.split('id="needs-review"', 1)[1].split(">Edit the text</button>", 1)[0]
         for line in ("Due: Orphan:", "13/45/2026 - Monday", "Art -", "Bring paint"):
             assert line in html.unescape(review)
+        for line in ("Science -", "Bring goggles"):
+            assert line not in html.unescape(review)
+        goggles = shown.split("<h2>Bring goggles</h2>", 1)[1].split("</article>", 1)[0]
+        sheet = shown.split("<h2>Sheet</h2>", 1)[1].split("</article>", 1)[0]
+        assert 'From the school: <q class="authored-text">Bring goggles</q>' in goggles
+        assert "Bring" not in sheet
 
 
 TWO_EMAILS = """Date: Tue, Sep 1, 2026

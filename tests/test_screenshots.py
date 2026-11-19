@@ -1517,11 +1517,6 @@ SCENARIOS: dict[
         [("U1 Quiz 3", "10-08")],
         [("U1 Quiz 3", "clipped")],
     ),
-    "two unlabeled cards with one name under one heading stay two items": (
-        [shot((THU, 150), card(PS, 200, badge=None), card(PS, 300, badge=None))],
-        [],
-        [("Practice set", "incomplete"), ("Practice set", "incomplete")],
-    ),
     "clips with one uncertain name in two screenshots stay two items": (
         [
             shot((THU, 150), card(("Ma", "Prac"), 920, clipped=True, uncertain=UNSURE_NAME)),
@@ -1564,6 +1559,25 @@ def test_cards_take_a_day_only_from_their_own_date_or_a_heading_above_them(name:
     shots, rows, items = SCENARIOS[name]
 
     assert in_every_order(name, shots) == {(tuple(rows), tuple(items))}
+
+
+def test_two_unlabeled_cards_with_one_name_under_one_heading_are_two_note_rows() -> None:
+    """A card with no label and no due line under a day heading is a teacher's note: two of
+    them with one name in one screenshot are two unclear rows, one for each layer."""
+    shots = [shot((THU, 150), card(PS, 200, badge=None), card(PS, 300, badge=None))]
+    images = [stored_homework(f"two-notes-{place}", answer) for place, answer in enumerate(shots)]
+    assembly = homework_assembly(images, now=NOW)
+
+    assert assembly.unread == ()
+    assert sorted(
+        (
+            row.layer,
+            row.reading.title,
+            row.reading.due_date,
+            None if row.reading.teacher_note is None else str(row.reading.teacher_note.standing),
+        )
+        for row in assembly.rows
+    ) == [(0, "Practice set", None, "unclear"), (1, "Practice set", None, "unclear")]
 
 
 Read = tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]
@@ -1770,9 +1784,10 @@ def test_an_assigned_card_elsewhere_joins_only_the_first_of_two_matching_due_car
     }
 
 
-def test_a_card_the_reader_missed_never_merges_two_cards_into_one_item() -> None:
-    """Monday holds two Reading log cards whose label wasn't read. One screenshot lists the
-    first; another shows both, but its reading lists only the second: two items, one each."""
+def test_a_note_card_listed_once_in_each_of_two_screenshots_is_one_note_row() -> None:
+    """Monday holds Reading log cards whose label wasn't read, so each is read as the teacher's
+    note under Monday. One screenshot lists one; another lists one lower down: the same words
+    under the same day in two screenshots are one note row with both cards as its sources."""
 
     def unlabeled(y_top: int) -> dict[str, object]:
         return card(RL, y_top, badge=None, instruction=LOG_WORDS)
@@ -1782,9 +1797,15 @@ def test_a_card_the_reader_missed_never_merges_two_cards_into_one_item() -> None
         shot((MON, 150), card(WS, 200), unlabeled(500)),
     ]
 
-    assert in_every_order("missed", shots) == {
-        ((("Worksheet 3", "10-05"),), (("Reading log", "incomplete"),) * 2)
-    }
+    assert in_every_order("missed", shots) == {((("Worksheet 3", "10-05"),), ())}
+    images = [stored_homework(f"missed-{place}", answer) for place, answer in enumerate(shots)]
+    notes = [
+        row
+        for row in homework_assembly(images, now=NOW).rows
+        if row.reading.teacher_note is not None
+    ]
+    assert [(row.reading.course, row.reading.due_date) for row in notes] == [("English 8", None)]
+    assert {place.sha256 for place in notes[0].sources} == {image.sha256 for image in images}
 
 
 def test_a_changed_reading_at_the_same_image_and_place_gives_new_item_keys() -> None:
