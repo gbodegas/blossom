@@ -274,7 +274,7 @@ def test_the_acceptance_list_is_whole() -> None:
         "test_fields_at_the_limit_are_read_and_one_past_it_are_not",
         "test_a_conflict_on_199900_kept_rows_comes_back_as_posted",
         "test_600_rows_of_290_kept_rows",
-        "test_a_page_whose_own_press_is_past_the_field_limit_is_not_read",
+        "test_the_200000_field_limit_reads_a_page_at_199808_fields_and_refuses_one_at_200408",
         "test_ticks_under_the_longest_name_up_to_137_mb",
         "test_a_paste_with_room_comes_back_whole_and_can_be_pressed",
         "test_a_paste_at_the_byte_limit_comes_back_on_a_page_whose_own_press_is_past_it",

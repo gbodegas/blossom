@@ -23,7 +23,7 @@ import json
 import logging
 import pathlib
 import sqlite3
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any, Final, cast
 
@@ -64,6 +64,7 @@ from blossom.screenshot_review import (
     destination_kind,
     entries,
     holds_note,
+    holds_words,
     instruction_field,
     instruction_index,
     joined_of,
@@ -78,7 +79,9 @@ from blossom.screenshot_review import (
     slot_occurrence,
     subject_for,
     subject_now,
+    title_key,
     typed_day,
+    typed_rename,
     unit_name,
     usable_correction,
     validate,
@@ -289,6 +292,40 @@ class OneTarget:
 def _view(store: ProjectStateStore, shown: str | None) -> ProjectStateStore:
     """The record as ``keep`` and ``changes_for`` read it, with one assignment shown."""
     return cast("ProjectStateStore", OneTarget(store, shown))
+
+
+class ReadOnce:
+    """The record as one working out of a review reads it. While ``reading`` is open, every
+    assignment is read from the record once, at the first ask, and that read answers each ask
+    after it; before and after, each ask reads the record. Everything else is the store's own."""
+
+    def __init__(self, store: ProjectStateStore) -> None:
+        self._store = store
+        self._open = False
+        self._read: list[Assignment] | None = None
+
+    @contextlib.contextmanager
+    def reading(self) -> Iterator[ProjectStateStore]:
+        """One working out of the review, which writes nothing: the record its reads go through.
+        The read it keeps ends with it."""
+        self._open = True
+        try:
+            yield cast("ProjectStateStore", self)
+        finally:
+            self._open = False
+            self._read = None
+
+    def all_assignments(self) -> list[Assignment]:
+        """Every assignment on record: the one read while ``reading`` is open, else a read of its
+        own."""
+        if not self._open:
+            return self._store.all_assignments()
+        if self._read is None:
+            self._read = self._store.all_assignments()
+        return list(self._read)
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - the store's own members
+        return getattr(self._store, name)
 
 
 def chosen_answers(
@@ -717,7 +754,8 @@ class ReviewState:
         default_factory=dict
     )
     """By unit name, where its destinations ask which due or assigned date applies, whether it is
-    homework or a task, or which instructions apply, the preview with each combination of the
+    homework or a task, or which instructions apply, the preview of the pieces its check reads
+    (``checked_beside``) with each combination of the
     answers the date and kind questions offer, the instruction question counted as answered with
     no choice held, at the joined notes' ticks the check covers too, the question answered or
     not: the unit's check is those previews' digests (``unit_digests``), so each date typed for
@@ -826,6 +864,64 @@ def _answers_for_pieces(
         if kind == "joined" and value == JOINED and (found := joined_of(subject)) is not None
     }
     return split, due_read, joined
+
+
+def checked_beside(
+    unit: Sequence[str],
+    pieces: Sequence[Piece],
+    checked: Validation,
+    mapping: Mapping[str, Destination],
+    rows: Mapping[str, SavedRow],
+    saved: Mapping[str, str],
+) -> tuple[Piece, ...]:
+    """The pieces a group's check and preview read, among ``pieces`` as ``checked`` groups them:
+    the group's own, and those of each other group its checks against other cards compare it
+    with, each group whole, so each destination keeps every card going there. A title typed to
+    rename a saved assignment is compared with every other title typed to rename one, and with
+    every new assignment, under the same class and title (``titles_given_twice``,
+    ``renames_beside_new``); a card bringing words its saved assignment lacks is compared with the
+    words of the cards saved or going to every other saved assignment of its name (``holders``).
+    No other card changes what the group's check or preview says."""
+    by_name = {p.name: p for p in pieces}
+    own = set(unit)
+    group_of = {name: found.unit for found in checked.units for name in found.unit}
+    renamed: set[tuple[str, str]] = set()
+    named: set[tuple[str, str]] = set()
+    for dest, names in checked.destinations.items():
+        if names[0] not in own or dest[0] == "new" or (row := rows.get(dest[1])) is None:
+            continue
+        members = [by_name[n] for n in names]
+        typed = typed_rename(members, row)
+        if typed is not None:
+            renamed.add(title_key(row.course, typed))
+        for member in members:
+            if not holds_words(member.words, row.words):
+                named.add(member.pair)
+    wanted = set(own)
+    for dest, names in checked.destinations.items():
+        members = [by_name[n] for n in names]
+        row = rows.get(dest[1]) if dest[0] != "new" else None
+        if renamed and (
+            (row is None and any(title_key(m.course, m.title) in renamed for m in members))
+            or (
+                row is not None
+                and (typed := typed_rename(members, row)) is not None
+                and title_key(row.course, typed) in renamed
+            )
+        ):
+            wanted.update(n for name in names for n in group_of[name])
+    for piece in pieces:
+        target = (
+            saved.get(piece.name)
+            if piece.name in saved
+            else assignment_of(mapping[piece.name])
+            if piece.name in mapping
+            else None
+        )
+        row = rows.get(target or "")
+        if row is not None and row.pair in named:
+            wanted.update(group_of.get(piece.name, (piece.name,)))
+    return tuple(p for p in pieces if p.name in wanted)
 
 
 def _review_state(
@@ -994,7 +1090,10 @@ def _review_state(
         """By unit name: the previews of these pieces with each combination of the answers its
         date and kind questions offer where it asks any of those or which instructions apply,
         that question counted as answered with no choice held (``instructed``), or as they stand
-        where it asks none; whether it is ready under each; and whether it asks any."""
+        where it asks none; whether it is ready under each; and whether it asks any. Each
+        combination's preview is worked out over the pieces the unit's check and preview read
+        (``checked_beside``): its answers are the unit's own, so no other unit's entry is read
+        from it."""
         out: dict[str, tuple[list[tuple[PreviewEntry, ...]], bool, bool]] = {}
         for unit in checked.units:
             name = unit_name(unit.unit)
@@ -1006,6 +1105,7 @@ def _review_state(
             if not unit.questions and not unit.kind_questions and not instructs:
                 out[name] = ([shown_there], unit.ready, False)
                 continue
+            beside = checked_beside(unit.unit, these, checked, mapping, rows, saved)
             found: list[tuple[PreviewEntry, ...]] = []
             ready_each = True
             for days in itertools.product(*(q.options for q in unit.questions)):
@@ -1018,7 +1118,7 @@ def _review_state(
                         for q, kind in zip(unit.kind_questions, kinds_given, strict=True)
                     }
                     checked_way, shown_way = work(
-                        mapping, defaulted, {}, these, dated, instructed=True
+                        mapping, defaulted, {}, beside, dated, instructed=True
                     )
                     found.append(shown_way)
                     ready_each = ready_each and checked_way.of(unit.unit[0]).ready

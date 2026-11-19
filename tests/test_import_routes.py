@@ -56012,3 +56012,57 @@ def test_a_destination_moved_and_moved_back_on_a_refused_press_is_not_held(
     alpha_stands(answer.text)
     assert digests
     assert group_signed(answer.text, piece)[:2] == (unit, digests)
+
+
+def chosen_on(page: str) -> dict[str, str]:
+    """Each card's destination the review form shows chosen, by its question."""
+    return {field: value for field, value, checked, _ in destinations_drawn(page) if checked}
+
+
+@pytest.mark.parametrize("both", [True, False], ids=["both ticked", "the ready card alone"])
+def test_a_moved_card_open_with_new_typing_beside_a_ready_card_waits_for_one_review_changes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, both: bool
+) -> None:
+    """Saved Alpha's card open, moved to a new slot and "Gamma" typed on its title beside a ready
+    new Beta, on a Review changes refused for its class cleared: 422 with every table and the
+    draft's answers as they were; the page offers Review changes alone and keeps every choice and
+    tick as sent. With the class typed back, one Review changes, then the Save it offers writes
+    Beta and, ticked, Gamma, each once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = moved_reached(browser, monkeypatch, "class cleared", "review", True)
+        choose, _, piece = moved_to_a_new_slot(page)
+        course = named_box(page, "course", 0)
+        class_read = import_review_cases.in_its_box(page, course) or ""
+        ticked = units_ticked(page)
+        typed = {course: "", title_box(page, 0): "Gamma"}
+        sent = page_post(page, "review", choose=choose, typed=typed, tick=ticked)
+        before = every_table_and_answer(browser, draft_id)
+        titles_before = every_title(browser)
+        answer = send(browser, draft_id, sent)
+        after = every_table_and_answer(browser, draft_id)
+        refused = answer.text
+        put_back = shown_post(refused, "review", typed={course: class_read})
+        reviewed = send(browser, draft_id, put_back)
+        moved = [unit for unit in units_ticked(reviewed.text) if piece in unit.split("+")]
+        drop = [] if both else [("unit", unit) for unit in moved]
+        saving = shown_post(reviewed.text, "save", drop=drop)
+        last = followed(browser, send(browser, draft_id, saving))
+        titles = every_title(browser)
+
+    said = import_review_cases.page_text(refused)
+    assert class_read, import_review_cases.page_text(page)
+    assert answer.status_code == 422, said
+    assert after == before
+    assert actions_of(refused) == ["review"], said
+    assert chosen_on(refused) == {**chosen_on(page), **choose}, said
+    assert sorted(units_ticked(refused)) == sorted(ticked), said
+    assert reviewed.status_code == 200, import_review_cases.page_text(reviewed.text)
+    assert "save" in actions_of(reviewed.text), import_review_cases.page_text(reviewed.text)
+    assert moved, import_review_cases.page_text(reviewed.text)
+    last_said = import_review_cases.page_text(last)
+    if both:
+        assert says(last, imports.counted(2, 0, 0, 0)), last_said
+        assert titles == sorted([*titles_before, "Beta", "Gamma"]), last_said
+    else:
+        assert says(last, imports.counted(1, 0, 0, 0)), last_said
+        assert titles == sorted([*titles_before, "Beta"]), last_said

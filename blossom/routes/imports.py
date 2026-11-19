@@ -102,6 +102,7 @@ from blossom.screenshot_review import (
 from blossom.screenshot_save import (
     AlreadySaved,
     NotSaved,
+    ReadOnce,
     Replayed,
     ReviewState,
     Saved,
@@ -1782,7 +1783,9 @@ async def state_of_review(
     sent unchanged are worked out as sent where its corrections withdraw them (``review_state``);
     the pieces in ``withheld`` never start on a new slot.
     Each read of the record is ``settled``: with a transaction left open it refuses
-    (``TransactionLeftOpen``), so that isn't taken for an empty or closed review."""
+    (``TransactionLeftOpen``), so that isn't taken for an empty or closed review. The working out
+    reads every assignment once, under that one hold of the store's lock, and gives that read back
+    to each of its asks (``ReadOnce``); once it returns, each ask reads the record."""
     record = state.project_state
     student = await asyncio.to_thread(record.student_id)
     tables = await asyncio.to_thread(
@@ -1792,16 +1795,17 @@ async def state_of_review(
         return None
     if posted is not None:
         tables = as_kept(tables, posted)
-    return await asyncio.to_thread(
-        record.settled,
-        review_state,
-        record,
-        tables,
-        now=state.real_clock.now(),
-        corrections=corrections,
-        defaults_shown=defaults_shown,
-        withheld=withheld,
-    )
+    with ReadOnce(record).reading() as once:
+        return await asyncio.to_thread(
+            record.settled,
+            review_state,
+            once,
+            tables,
+            now=state.real_clock.now(),
+            corrections=corrections,
+            defaults_shown=defaults_shown,
+            withheld=withheld,
+        )
 
 
 async def rows_of(
