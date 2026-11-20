@@ -68,6 +68,7 @@ from blossom.intake import (
     Reading,
     TaskAnswer,
     answers_to_no_question,
+    asked_as_said,
     by_hand,
     by_week,
     changes_for,
@@ -154,9 +155,15 @@ NAMED_TOO_FAR: Final = (
     "The note names {day}. It can't be saved as the due date because it's more than a year {way}."
 )
 """What a note card says of a date the note names that the due-date check refuses."""
-MILESTONE_CHOICE: Final = "{day}, the note's date for {words}"
-"""A due-date choice on a note card for the date one of the note's deadline statements
-settles, with the words that statement names before its cue."""
+MILESTONE_CHOICE: Final = "{day} (possible date for {words})"
+"""A due-date choice on a note card for a date one of the note's deadline statements could
+mean, with the words that statement names before its cue."""
+NAMED_CHOICE: Final = "{day}, named in the note"
+"""A due-date choice on a note card for a date the note mentions that is no milestone's."""
+MENTIONED: Final = "The note mentions {days}. The due date is unclear."
+"""What a note card says of the dates a note mentions where it settles no due date."""
+DEADLINE_CUE: Final = re.compile(r"\b(?:due|by)\b", re.IGNORECASE)
+"""The words a teacher's note states a deadline with, a denied or changed one included."""
 NOT_A_KIND: Final = "Choose Homework or Task."
 LOOK_AGAIN: Final = (
     "The saved assignments changed since this preview, and one of these needs your answer "
@@ -1031,15 +1038,15 @@ class NoteFields:
     """The title box and the due-date choices of one card read from a teacher's note: the
     title the box holds, each choice as a value, its words and whether it is chosen,
     whether another date is chosen, the date typed beside it, what the card says of each
-    date the note gives that can't be the due date, and the dates the note leaves open that
-    can, as said."""
+    date the note gives that can't be the due date, and, where the note settles no due date,
+    the dates it mentions that can be, as said."""
 
     title: str
     choices: list[tuple[str, str, bool]]
     other_chosen: bool
     other: str
     named_too_far: tuple[str, ...] = ()
-    left_open: tuple[str, ...] = ()
+    mentioned: tuple[str, ...] = ()
 
     @property
     def chosen(self) -> str:
@@ -1048,13 +1055,26 @@ class NoteFields:
             return ANOTHER_DATE
         return next((value for value, _, on in self.choices if on), "")
 
+    @property
+    def unclear(self) -> str:
+        """What the card says of the dates the note mentions where it settles no due date, or
+        empty where it says nothing of them."""
+        if not self.mentioned:
+            return ""
+        *before, last = self.mentioned
+        listed = f"{', '.join(before)} and {last}" if before else last
+        return MENTIONED.format(days=listed)
+
 
 def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int, NoteFields]:
     """The fields of each card read from a teacher's note, by its key. The choices are the
-    date as read, each date the note leaves open, each milestone's date labeled with its
-    words, each date it names, and no due date, each date once. Any of these dates that the
-    due-date check refuses, as of ``today``, is no choice: the card says it, with its year
-    and why it can't be the due date. A card whose
+    date as read, each date the note's statements could mean as a date named in the note,
+    each milestone's date labeled as a possible date for its words, each date it names, and
+    no due date, each date once. Any of these dates that the due-date check refuses, as of
+    ``today``, is no choice: the card says it, with its year and why it can't be the due
+    date. A card whose note settles no due date, holds a deadline statement (one its words
+    deny or change included) and offers a date the check accepts, with no milestone, says
+    each date it offers that is no choice refused. A card whose
     answers were sent shows them as typed. Otherwise the date as read is chosen, or no due
     date where none was read or the date as read is refused; on a card that lands on a row
     whose saved due date is none, or another than the one chosen so, nothing is chosen."""
@@ -1068,7 +1088,7 @@ def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int,
         if task.deadline is not None:
             given[task.deadline] = f"{spoken_day(task.deadline)}, as the note says"
         for day in task.choices:
-            given.setdefault(day, spoken_day(day))
+            given.setdefault(day, NAMED_CHOICE.format(day=spoken_day(day)))
         milestones: dict[date, list[str]] = {}
         for milestone in task.milestones:
             milestones.setdefault(milestone.day, []).append(milestone.words)
@@ -1077,9 +1097,21 @@ def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int,
                 day, MILESTONE_CHOICE.format(day=spoken_day(day), words=" and ".join(words))
             )
         for day in task.named:
-            given.setdefault(day, f"{spoken_day(day)}, named in the note")
+            given.setdefault(day, NAMED_CHOICE.format(day=spoken_day(day)))
         too_far = tuple(day for day in given if not within_a_school_year(day, today))
         dates = {day: words for day, words in given.items() if day not in too_far}
+        stated = bool(task.choices) or DEADLINE_CUE.search(task.words) is not None
+        unclear = (
+            task.deadline is None
+            and not milestones
+            and stated
+            and any(day not in too_far for day in (*task.choices, *task.named))
+        )
+        mentioned = tuple(
+            spoken_day(day)
+            for day in dict.fromkeys((*task.choices, *task.named))
+            if day in dates and unclear
+        )
         answer = sent.get(change.key)
         if answer is not None:
             title, when, other = answer.title, answer.when, answer.other
@@ -1108,7 +1140,7 @@ def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int,
                 NAMED_TOO_FAR.format(day=spoken_day(day), way="away" if day > today else "ago")
                 for day in too_far
             ),
-            tuple(spoken_day(day) for day in task.choices if day not in too_far),
+            mentioned,
         )
     return fields
 
@@ -3853,9 +3885,10 @@ async def keep_readings(request: Request, state: State) -> Response:
             notice = CHOOSE_ONE_TYPE
         elif held_back and not unanswered:
             notice = IDENTIFY_FIRST
-        elif open_questions <= asked_on(form) | set(joins):
+        elif open_questions <= asked_on(form) | set(joins) | asked_as_said(kept, page_made.tasks):
             # A question on a card whose joined tick changed is one the page said that tick
-            # asks, which the save checked, so it is put as the page's own.
+            # asks, which the save checked, so it is put as the page's own; so is the question
+            # of which homework a note is that the page signed for it when selected.
             notice = CHOOSE_INSTRUCTIONS if unanswered else NEEDS_ANSWER
         else:
             notice = LOOK_AGAIN

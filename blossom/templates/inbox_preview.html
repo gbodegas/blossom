@@ -207,7 +207,7 @@
               {# The title and due date as reviewed, with the press that opens them for editing; answers sent for them travel as sent, so the save writes what the page showed. #}
               <p class="source">Title: <span class="authored-text">{{ reading.title }}</span>. Due date: {% if reading.due_date %}{{ spoken_day(reading.due_date) }}{% else %}No due date yet{% endif %}.</p>
               {% for said in fields.named_too_far %}<p class="source">{{ said }}</p>
-              {% endfor %}{% if fields.left_open %}<p class="source">The note leaves the due date open: {{ fields.left_open|join(" or ") }}.</p>
+              {% endfor %}{% if fields.unclear %}<p class="source">{{ fields.unclear }}</p>
               {% endif %}{% if change.key in answered_tasks %}<input type="hidden" name="title-{{ change.key }}" value="{{ fields.title }}">{% if fields.chosen %}
               <input type="hidden" name="when-{{ change.key }}" value="{{ fields.chosen }}">{% endif %}
               <input type="hidden" name="when_other-{{ change.key }}" value="{{ fields.other }}">

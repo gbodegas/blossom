@@ -3338,6 +3338,23 @@ def _task_moved(change: Change, shown: str | None, answered: bool) -> bool:
     )
 
 
+def asked_as_said(changes: Sequence[Change], shown: Mapping[int, str]) -> frozenset[int]:
+    """The keys of the selected readings made from teachers' notes that ask which homework
+    they are where a review page showed them not selected and signed, for each when selected
+    (``shown``), exactly what the save finds: the same state, row, date written, additions
+    and questions (``task_said``). Such a question is the one the page said selecting the
+    note asks, so it is put as a question needing an answer, not as a change."""
+    keys: set[int] = set()
+    for change in changes:
+        said = shown.get(change.key)
+        if change.reading.teacher_note is None or change.left_out or said is None:
+            continue
+        ticked, _, when_selected = said.partition(":")
+        if change.identity_asked and ticked == "0" and when_selected == task_said(change):
+            keys.add(change.key)
+    return frozenset(keys)
+
+
 def tasks_moved(
     changes: Sequence[Change], shown: Mapping[int, str], answered: Collection[int]
 ) -> frozenset[int]:
@@ -3494,7 +3511,9 @@ def keep(
     ``shown_tasks`` holds what a signed page said each reading made from a teacher's note
     does when it is selected. When it's given, a selected note that would do something else,
     or one the page signed nothing for, leaves the whole text unsaved with what changed
-    handed back and those readings named.
+    handed back and those readings named. A note the page showed not selected whose question
+    of which homework it is the page signed for it when selected (``asked_as_said``) is no
+    question the page failed to show: nothing is written, and the question comes back open.
 
     ``shown_joins`` holds, for each card whose joined note's tick differs from what a signed
     page showed, what the page said saving does with that tick as sent (``join_effects``).
@@ -3543,8 +3562,12 @@ def keep(
         # question is put again, so a page returned never shows it as still made.
         if refused or any(change.instructions_stale or change.identity_stale for change in changes):
             return ChangedSinceShown(changes)
+        as_said = asked_as_said(changes, shown_tasks or {})
         if shown_identities is not None and any(
-            change.identity_asked and change.key not in shown_identities for change in changes
+            change.identity_asked
+            and change.key not in shown_identities
+            and change.key not in as_said
+            for change in changes
         ):
             return ChangedSinceShown(changes)
         if shown_notes is not None and any(

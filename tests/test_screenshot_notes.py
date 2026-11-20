@@ -436,8 +436,9 @@ def test_a_note_naming_a_card_of_another_day_stays_a_note_row() -> None:
 
 
 def test_a_note_that_says_more_is_kept_on_the_card_as_read() -> None:
-    """A note that joins its card adds nothing to it as read: its deadline claim and its words
-    wait in the card's joined notes until the family selects the note."""
+    """A note that joins its card adds nothing to it as read: its words wait in the card's
+    joined notes until the family selects the note, and, holding two sentences, it sets no
+    deadline."""
     found = assembled("more", shot(essay(), note("Religion 8", instruction=ESSAY_MORE, y_top=300)))
     alone = essay_alone("more")
 
@@ -453,7 +454,7 @@ def test_a_note_that_says_more_is_kept_on_the_card_as_read() -> None:
     assert row.reading.claims == alone.reading.claims
     assert row.reading.instructions == alone.reading.instructions
     assert [(task.words, task.deadline) for task in row.reading.joined_notes] == [
-        (ESSAY_MORE, date(2026, 11, 18))
+        (ESSAY_MORE, None)
     ]
     assert alone.reading.joined_notes == ()
 
@@ -892,3 +893,80 @@ def test_a_note_deadline_more_than_a_school_year_from_its_day_is_kept_for_review
     assert task is not None
     assert (task.deadline, task.named, task.words) == (deadline, named, words)
     assert row.reading.due_date == deadline
+
+
+# ------------------------------------------------------------------ what the card says of dates
+
+OPEN = "The note doesn't settle a due date."
+
+NOTE_DATE_LINES = [
+    pytest.param(
+        "Essay due Friday is optional.",
+        MONDAY,
+        ["The note mentions Friday, November 20. The due date is unclear."],
+        id="one-date",
+    ),
+    pytest.param(
+        "Postponed. Essay due Friday.",
+        MONDAY,
+        ["The note mentions Friday, November 20. The due date is unclear."],
+        id="one-date-postponed",
+    ),
+    pytest.param(
+        "Essay due January 8 is optional.",
+        "Monday 12/14/2026",
+        ["The note mentions Friday, January 8, 2027. The due date is unclear."],
+        id="one-date-next-year",
+    ),
+    pytest.param(
+        "Draft due Wednesday or Thursday and final copy due Friday.",
+        MONDAY,
+        [
+            OPEN,
+            "The note gives two possible dates for Draft: Wednesday, November 18 or Thursday, "
+            "November 19.",
+            "The note gives a possible date for final copy: Friday, November 20.",
+        ],
+        id="milestones-two-and-one",
+    ),
+    pytest.param(
+        "Draft due Wednesday, Thursday or Friday and final copy due November 30.",
+        MONDAY,
+        [
+            OPEN,
+            "The note gives possible dates for Draft: Wednesday, November 18, Thursday, "
+            "November 19 or Friday, November 20.",
+            "The note gives a possible date for final copy: Monday, November 30.",
+        ],
+        id="milestones-three-and-one",
+    ),
+    pytest.param(
+        "Essay due Wednesday or Thursday.",
+        MONDAY,
+        [OPEN, "It could mean Wednesday, November 18 or Thursday, November 19."],
+        id="two-dates",
+    ),
+    pytest.param("Essay due Friday.", MONDAY, [], id="sets"),
+]
+"""A note's words, the school day it is listed under, and what its card says of its dates
+after the line naming that day."""
+
+
+@pytest.mark.parametrize(("words", "day", "lines"), NOTE_DATE_LINES)
+def test_a_note_card_says_its_dates_as_text_in_the_words_for_how_many_it_gives(
+    words: str, day: str, lines: list[str]
+) -> None:
+    """A screenshot note's card says the dates of a note that settles no due date as text: one
+    date the note mentions in one line saying the due date is unclear, with its year only when
+    it is not the school day's; each milestone's dates in one line for its words; several
+    dates with the note's existing lines; and nothing for a note that settles its date."""
+    piece = note_piece("dates", shot(note("Language Arts 8", title=words), day=day))
+    task = piece.reading.teacher_note if piece.reading else None
+    assert task is not None
+
+    shown = screenshot_page.note_lines([piece])
+
+    assert shown[0] == screenshot_page.SAID["note_day"].format(
+        day=screenshot_page.long_day(task.first_day)
+    )
+    assert shown[1:] == lines

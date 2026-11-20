@@ -794,8 +794,9 @@ def test_a_joined_notes_tick_saves_its_claim_and_words_in_one_press(
     tmp_path: pathlib.Path,
 ) -> None:
     """A joined note that says more, ticked and pressed with Save on the page that showed it
-    unselected, writes in that one press its date as a claim and its words as the school's
-    instruction; nothing comes back to be saved again."""
+    unselected, writes in that one press its words as the school's instruction and no claim
+    of a date, since a note task of two sentences settles no due date; nothing comes back to
+    be saved again."""
     with client_in(tmp_path) as client:
         page = client.post("/parent/inbox/read", data={"text": ALONE}).text
         saved = client.post("/parent/inbox/keep", data=ticked_form(page) | {"join-1-0": "1"})
@@ -805,7 +806,7 @@ def test_a_joined_notes_tick_saves_its_claim_and_words_in_one_press(
     assert joined_ticks(card(page, "Short essay")) == {"join-1-0": False}
     assert "If selected: " in card(page, "Short essay")
     assert saved.status_code == 303
-    assert claimed["Short essay"] == ["2026-11-06"]
+    assert claimed["Short essay"] == []
     assert kept["Short essay"] == ["Short essay due Friday. Write it in ink."]
 
 
@@ -944,6 +945,70 @@ def test_a_joined_note_on_saved_homework_saves_in_one_press_without_scripts(
     assert after_again["date_claims"] == after["date_claims"]
 
 
+def summary_counts(page: str) -> str:
+    """The review's top summary line of counts, single-spaced."""
+    found = re.search(r'<p class="note review-summary" role="status">(.*?)</p>', page, re.S)
+    assert found is not None
+    return " ".join(html.unescape(found.group(1)).split())
+
+
+def week_counts(page: str) -> list[str]:
+    """Each week's line of counts, single-spaced, in the order shown."""
+    return [
+        " ".join(html.unescape(line).split())
+        for line in re.findall(
+            r'<section class="review-week">\s*<h2>[^<]*</h2>\s*<p class="note">(.*?)</p>',
+            page,
+            re.S,
+        )
+    ]
+
+
+JOINED_BESIDE_NEW = JOINED_ON_SAVED + "Math - Due: Worksheet 5:\nProblems 1 to 10.\n"
+"""The note joined to homework already saved, beside a new card of another class."""
+JOINED_BESIDE_NEW_NOTE = JOINED_ON_SAVED.replace(
+    "Short essay due Friday.\n", "Short essay due Friday.\nRead chapter 4 by Friday.\n"
+)
+"""The note joined to homework already saved, beside a new note task of the same note."""
+
+
+@pytest.mark.parametrize(
+    ("text", "new", "label", "first_new"),
+    [
+        (JOINED_ON_SAVED, 0, "Save 1 assignment", 0),
+        (JOINED_BESIDE_NEW, 1, "Save 2 assignments", 1),
+        (JOINED_BESIDE_NEW_NOTE, 1, "Save selected assignments", 0),
+    ],
+    ids=["alone", "beside-new", "beside-new-note"],
+)
+def test_a_selected_joined_note_that_adds_counts_its_card_as_updated_where_the_page_counts(
+    tmp_path: pathlib.Path, text: str, new: int, label: str, first_new: int
+) -> None:
+    """A note joined to homework already saved, its tick selected by Review changes, alone
+    or beside a new card or a new note task, each ticked: the joined card counts as updated,
+    not as one of the others that stay as they are, in the line beside Save, the top summary
+    and its week's line, and a Save label that counts counts it (a page with a note task
+    names no count). The first view, the ticks unselected, counts it as already saved."""
+    with client_in(tmp_path) as client:
+        page = read_again_once_saved(client, text)
+        notes = {f"take-{key}": "1" for key in numbers(page, r'name="offered-(\d+)"')}
+        form = ticked_form(page) | notes | {"join-0-0": "1", "recheck": "1"}
+        reviewed = client.post("/parent/inbox/find", data=form).text
+        kept = client.post("/parent/inbox/keep", data=ticked_form(reviewed))
+
+    counted = f"{new} new, 1 update, 0 already saved."
+    assert joined_ticks(reviewed) == {"join-0-0": True}
+    assert save_panel_line(reviewed) == (
+        f"Saving adds {new} and updates 1; the other 0 stay as they are."
+    )
+    assert counted in summary_counts(reviewed)
+    assert any(counted in line for line in week_counts(reviewed))
+    assert re.search(rf'<button type="submit" class="primary"[^>]*>{label}<', reviewed)
+    assert f"{first_new} new, 0 updates, 1 already saved." in summary_counts(page)
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith(f"added={new}&updated=1&unchanged=0")
+
+
 def test_a_press_with_nothing_ticked_beside_saved_homework_says_what_a_review_of_new_notes_says(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1030,7 +1095,7 @@ def test_a_joined_tick_whose_effect_asks_a_question_comes_back_asking_it(
     assert SELECTIONS_CHANGE not in asked.text
     assert rows == []
     assert saved.status_code == 303
-    assert claimed["Short essay"] == ["2026-11-06"]
+    assert claimed["Short essay"] == []
 
 
 INKED = NOTED.replace("Short essay Due.", "Short essay due Friday. Write it in ink.")
@@ -1071,7 +1136,7 @@ def test_a_saved_joined_note_read_again_shows_selected_and_saving_writes_nothing
         saved = client.post("/parent/inbox/keep", data=sent)
         after = record_counts(client)
 
-    assert claimed["Short essay"] == ["2026-11-06"]
+    assert claimed["Short essay"] == []
     assert joined_ticks(card(again, "Short essay")) == {"join-1-0": True}
     assert signed_joins(again) == [[1, 0, 1]]
     assert "If not selected: " in card(again, "Short essay")
@@ -1709,7 +1774,7 @@ def test_each_note_card_has_a_title_box_and_one_due_date_choice(tmp_path: pathli
     assert "Thursday, November 5, 2026, named in the note" in card(
         page, "Study for the vocabulary quiz on Thursday"
     )
-    assert ">Tuesday, November 10, 2026<" in card(page, "Online practice")
+    assert ">Tuesday, November 10, 2026, named in the note<" in card(page, "Online practice")
     assert 'type="text" name="title-' in card(noted, "Reading log")
     for title in ("Textbook page 12", "Short essay"):
         assert 'name="title-' not in card(noted, title)
@@ -2986,8 +3051,9 @@ def test_a_saved_note_read_under_a_later_week_is_new_work_not_already_saved(
 ) -> None:
     """A note saved under one Monday and read again under that Monday is already saved,
     selected, and its Save writes nothing. The same words, title and deadline read under the
-    next Monday are not that note: unselected, not already saved, asked nothing, and ticked
-    and saved they add new work beside the first."""
+    next Monday are not that note: unselected, not already saved, and asked nothing; ticked
+    and saved they ask whether it is the same homework, writing nothing, and answered as new
+    work, one Save adds them beside the first."""
     with client_in(tmp_path, today="2026-11-16") as client:
         first = client.post("/parent/inbox/read", data={"text": ESSAY_WEEK}).text
         saved = client.post("/parent/inbox/keep", data=ticked_form(first) | {"take-0": "1"})
@@ -2996,7 +3062,11 @@ def test_a_saved_note_read_under_a_later_week_is_new_work_not_already_saved(
         repeated = client.post("/parent/inbox/keep", data=ticked_form(repeat))
         after_repeat = record_counts(client)
         later = client.post("/parent/inbox/read", data={"text": ESSAY_NEXT_WEEK}).text
-        later_kept = client.post("/parent/inbox/keep", data=ticked_form(later) | {"take-0": "1"})
+        asked = client.post("/parent/inbox/keep", data=ticked_form(later) | {"take-0": "1"})
+        after_asked = record_counts(client)
+        later_kept = client.post(
+            "/parent/inbox/keep", data=ticked_form(asked.text) | {"identity-0": "different"}
+        )
         rows = sorted((row.title, row.due_date) for row in store_of(client).all_assignments())
 
     assert saved.status_code == 303
@@ -3010,9 +3080,215 @@ def test_a_saved_note_read_under_a_later_week_is_new_work_not_already_saved(
     assert ALREADY_SAVED not in card(later, "Essay")
     assert numbers(later, TICKED) == set()
     assert 'name="identity-0"' not in later
+    assert asked.status_code == 200
+    assert f"{SUMMARY}{NEEDS_ANSWER}{TO_THE_QUESTION}" in asked.text
+    assert HOMEWORK_CHANGED not in asked.text
+    assert 'name="identity-0" value="different"' in asked.text
+    assert after_asked == after_repeat
     assert later_kept.status_code == 303
     assert later_kept.headers["location"].endswith("added=1&updated=0&unchanged=0")
-    assert rows == [("Essay", datetime.date(2026, 11, 20))] * 2
+    assert rows == [("Essay", None)] * 2
+
+
+UNDATED_REPEATS = [
+    pytest.param(ESSAY_WEEK, id="two-sentences"),
+    pytest.param(
+        ESSAY_WEEK.replace(
+            "Essay due November 20. Write an outline.", "Essay due Friday is optional."
+        ),
+        id="one-sentence-with-a-tail",
+    ),
+]
+"""Notes that set no school date, each saved under Monday 11/09 and read again under 11/16."""
+
+HOMEWORK_CHANGED = "The saved homework or a note of hers changed since this review was shown"
+
+
+@pytest.mark.parametrize("week", UNDATED_REPEATS)
+def test_a_saved_undated_note_read_under_a_later_week_asks_then_saves_as_new_work(
+    tmp_path: pathlib.Path, week: str
+) -> None:
+    """A note that sets no school date, saved under one Monday and read again under the next,
+    is not already saved, starts unselected and asks nothing; ticked and saved, it asks
+    whether it is the same homework and writes nothing, and no page says the homework or a
+    note changed; answered as new work, one Save adds it with no due date."""
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first = client.post("/parent/inbox/read", data={"text": week}).text
+        saved = client.post("/parent/inbox/keep", data=ticked_form(first) | {"take-0": "1"})
+        before = record_counts(client)
+        later = client.post(
+            "/parent/inbox/read", data={"text": week.replace("11/09/2026", "11/16/2026")}
+        ).text
+        asked = client.post("/parent/inbox/keep", data=ticked_form(later) | {"take-0": "1"})
+        unwritten = record_counts(client)
+        later_kept = client.post(
+            "/parent/inbox/keep", data=ticked_form(asked.text) | {"identity-0": "different"}
+        )
+        rows = sorted((row.title, row.due_date) for row in store_of(client).all_assignments())
+
+    assert saved.status_code == 303
+    assert ALREADY_SAVED not in card(later, "Essay")
+    assert numbers(later, TICKED) == set()
+    assert 'name="identity-0"' not in later
+    assert asked.status_code == 200
+    assert f"{SUMMARY}{NEEDS_ANSWER}{TO_THE_QUESTION}" in asked.text
+    assert HOMEWORK_CHANGED not in asked.text
+    assert 'name="identity-0" value="different"' in asked.text
+    assert unwritten == before
+    assert HOMEWORK_CHANGED not in later_kept.text
+    assert later_kept.status_code == 303
+    assert later_kept.headers["location"].endswith("added=1&updated=0&unchanged=0")
+    assert rows == [("Essay", None)] * 2
+
+
+ESSAY_WORDS = "Essay due November 20. Write an outline."
+
+LATER_WEEK_REPEATS = [
+    pytest.param(ESSAY_WEEK, {}, ["None", "None"], id="two-sentences"),
+    pytest.param(
+        ESSAY_WEEK.replace(ESSAY_WORDS, "Essay due Friday is optional."),
+        {},
+        ["None", "None"],
+        id="one-sentence-with-a-tail",
+    ),
+    pytest.param(
+        ESSAY_WEEK,
+        {"when-0": "other", "when_other-0": "2026-11-20"},
+        ["2026-11-20", "None"],
+        id="dated-first-undated-repeat",
+    ),
+    pytest.param(
+        ESSAY_WEEK.replace(ESSAY_WORDS, "Essay due November 20."),
+        {"when-0": "none"},
+        ["2026-11-20", "None"],
+        id="undated-first-dated-repeat",
+    ),
+]
+"""A note saved under Monday 11/09 and read again under 11/16, with the due date typed and
+pressed with Review changes before its first Save, and the due dates of the two rows once
+the repeat is saved as new work: a note that sets no school date, saved as read; one saved
+with the family's date and read again with none; one that sets its date, saved with the date
+cleared and read again with it."""
+
+NEEDS_ANSWER = (
+    "A question above still needs your answer. Answer it, then save; what you chose on the "
+    "other cards is kept."
+)
+LOOK_AGAIN = "The saved assignments changed since this preview"
+TO_THE_QUESTION = ' <a href="#identity-question-0">Go to the question.</a></p>'
+
+
+def first_week_saved(client: TestClient, week: str, reviewed_with: dict[str, str]) -> None:
+    """The note of ``week`` ticked and saved, with the typing in ``reviewed_with`` pressed
+    with Review changes first when there is any, the Save made from the page it returns."""
+    page = client.post("/parent/inbox/read", data={"text": week}).text
+    form = ticked_form(page) | {"take-0": "1"}
+    if reviewed_with:
+        reviewed = client.post("/parent/inbox/find", data=form | reviewed_with | {"recheck": "1"})
+        assert reviewed.status_code == 200
+        form = ticked_form(reviewed.text)
+        for name, value in reviewed_with.items():
+            assert form[name] == value, name
+    saved = client.post("/parent/inbox/keep", data=form)
+    assert saved.status_code == 303
+    assert saved.headers["location"].endswith("added=1&updated=0&unchanged=0")
+
+
+@pytest.mark.parametrize(("week", "reviewed_with", "dates"), LATER_WEEK_REPEATS)
+def test_a_later_weeks_repeat_ticked_and_saved_asks_which_homework_and_writes_nothing(
+    tmp_path: pathlib.Path, week: str, reviewed_with: dict[str, str], dates: list[str]
+) -> None:
+    """The same words saved under one Monday and read under the next start unselected and
+    ask nothing; their tick pressed with Save writes nothing, and the review comes back asking
+    whether it is the same homework, its summary saying a question needs an answer, with a
+    link to it, and not that anything changed. Answered as new work, one Save adds it beside
+    the first."""
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first_week_saved(client, week, reviewed_with)
+        before = record_counts(client)
+        later = client.post(
+            "/parent/inbox/read", data={"text": week.replace("11/09/2026", "11/16/2026")}
+        ).text
+        asked = client.post("/parent/inbox/keep", data=ticked_form(later) | {"take-0": "1"})
+        unwritten = record_counts(client)
+        answered = client.post(
+            "/parent/inbox/keep", data=ticked_form(asked.text) | {"identity-0": "different"}
+        )
+        rows = sorted((row.title, str(row.due_date)) for row in store_of(client).all_assignments())
+
+    assert numbers(later, TICKED) == set()
+    assert 'name="identity-0"' not in later
+    assert asked.status_code == 200
+    assert f"{SUMMARY}{NEEDS_ANSWER}{TO_THE_QUESTION}" in asked.text
+    assert HOMEWORK_CHANGED not in asked.text
+    assert LOOK_AGAIN not in asked.text
+    assert 'name="identity-0" value="different"' in asked.text
+    assert numbers(asked.text, TICKED) == {0}
+    assert unwritten == before
+    assert answered.status_code == 303
+    assert answered.headers["location"].endswith("added=1&updated=0&unchanged=0")
+    assert rows == [("Essay", due) for due in dates]
+
+
+@pytest.mark.parametrize(("week", "reviewed_with", "dates"), LATER_WEEK_REPEATS)
+def test_a_later_weeks_repeat_ticked_and_reviewed_asks_which_homework_and_saves_once(
+    tmp_path: pathlib.Path, week: str, reviewed_with: dict[str, str], dates: list[str]
+) -> None:
+    """The same words saved under one Monday and read under the next, ticked and pressed with
+    Review changes: the review asks whether it is the same homework and writes nothing.
+    Answered as new work, one Save adds it beside the first, and the same Save sent again
+    writes nothing more."""
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first_week_saved(client, week, reviewed_with)
+        before = record_counts(client)
+        later = client.post(
+            "/parent/inbox/read", data={"text": week.replace("11/09/2026", "11/16/2026")}
+        ).text
+        reviewed = client.post(
+            "/parent/inbox/find", data=ticked_form(later) | {"take-0": "1", "recheck": "1"}
+        )
+        unwritten = record_counts(client)
+        form = ticked_form(reviewed.text) | {"identity-0": "different"}
+        saved = client.post("/parent/inbox/keep", data=form)
+        after = record_counts(client)
+        again = client.post("/parent/inbox/keep", data=form)
+        after_again = record_counts(client)
+        rows = sorted((row.title, str(row.due_date)) for row in store_of(client).all_assignments())
+
+    assert reviewed.status_code == 200
+    assert 'name="identity-0" value="different"' in reviewed.text
+    assert HOMEWORK_CHANGED not in reviewed.text
+    assert numbers(reviewed.text, TICKED) == {0}
+    assert unwritten == before
+    assert saved.status_code == 303
+    assert saved.headers["location"].endswith("added=1&updated=0&unchanged=0")
+    assert after[0] == before[0] + 1
+    assert again.status_code == 303
+    assert after_again == after
+    assert rows == [("Essay", due) for due in dates]
+
+
+def test_a_later_weeks_note_ticked_after_another_save_raised_its_question_says_it_changed(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The next Monday's note read while nothing is saved, so selecting it would add new work
+    and ask nothing; the first Monday's same words saved before its tick is pressed with Save:
+    nothing is written, and the review comes back asking whether it is the same homework,
+    saying the saved homework changed, not that a question was left unanswered."""
+    with client_in(tmp_path, today="2026-11-16") as client:
+        later = client.post("/parent/inbox/read", data={"text": ESSAY_NEXT_WEEK}).text
+        first_week_saved(client, ESSAY_WEEK, {})
+        before = record_counts(client)
+        changed = client.post("/parent/inbox/keep", data=ticked_form(later) | {"take-0": "1"})
+        after = record_counts(client)
+
+    assert numbers(later, TICKED) == set()
+    assert 'name="identity-0"' not in later
+    assert changed.status_code == 409
+    assert HOMEWORK_CHANGED in changed.text
+    assert NEEDS_ANSWER not in changed.text
+    assert 'name="identity-0" value="different"' in changed.text
+    assert after == before
 
 
 SENT_TWICE = (
@@ -3162,8 +3438,8 @@ def test_the_first_view_shows_each_notes_title_and_date_as_text_with_edit_detail
     )
     assert reviewed_line("Quiz on unit two", "No due date yet") in card(fields, "Quiz on unit two")
     assert (
-        '<p class="source">The note leaves the due date open: Tuesday, November 3, 2026 or '
-        "Tuesday, November 10, 2026.</p>"
+        '<p class="source">The note mentions Tuesday, November 3, 2026 and '
+        "Tuesday, November 10, 2026. The due date is unclear.</p>"
     ) in card(fields, "Online practice")
 
 
@@ -4524,10 +4800,12 @@ def said_for(head: str, sent: tuple[str, ...]) -> str:
 FOLDED_CARRIED = [
     pytest.param("take", "0", id="tick"),
     pytest.param("title", "Another title", id="title"),
-    pytest.param("when", "none", id="due-date"),
+    pytest.param("when", "2026-11-06", id="due-date"),
     pytest.param("when_other", "2026-11-05", id="date-box"),
 ]
-"""Each answer a folded note's card carries hidden, with another answer to inject beside it."""
+"""Each answer a folded note's card carries hidden, with another answer to inject beside it;
+the folded note sets no date, so its card carries no due date and the injected one is the
+Friday the note mentions."""
 
 
 @pytest.mark.parametrize("reverse", [False, True], ids=["carried-first", "carried-last"])
@@ -4772,8 +5050,9 @@ def test_a_note_whose_cue_is_negated_offers_no_date_and_saves_no_school_deadline
     tmp_path: pathlib.Path, words: str
 ) -> None:
     """A note whose "due" is negated right before it: its card, details opened, offers no
-    Friday, with No due date yet chosen; ticked and saved, its row has no due date and no
-    claim of one. The same text read again shows it saved, and a save adds nothing."""
+    Friday, with No due date yet chosen, and "finish it Monday" offers both Mondays it could
+    mean, neither chosen; ticked and saved, its row has no due date and no claim of one. The
+    same text read again shows it saved, and a save adds nothing."""
     text = one_note("Language Arts", words)
     with client_in(tmp_path, today="2026-11-16") as client:
         first = client.post("/parent/inbox/read", data={"text": text}).text
@@ -4789,7 +5068,8 @@ def test_a_note_whose_cue_is_negated_offers_no_date_and_saves_no_school_deadline
         after = saved_rows(client)
 
     body = card(page, title.group(1))
-    assert when_options(body, key) == [("none", True), ("other", False)]
+    mondays = [("2026-11-16", False), ("2026-11-23", False)] if "Monday" in words else []
+    assert when_options(body, key) == [*mondays, ("none", True), ("other", False)]
     assert "2026-11-20" not in body
     assert "November 20" not in body
     assert saved.status_code == 303
@@ -4812,8 +5092,9 @@ def card_of_key(page: str, key: int) -> str:
 def test_a_note_due_on_either_of_two_dates_offers_both_and_saves_the_chosen_one_as_the_familys(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A note "Essay due Wednesday or Thursday.": the card says the note leaves the due date
-    open, and, details opened, offers both dates with neither chosen and No due date yet chosen.
+    """A note "Essay due Wednesday or Thursday.": the card says the note mentions both dates
+    and the due date is unclear, and, details opened, offers both dates with neither chosen and
+    No due date yet chosen.
     Thursday chosen, reviewed and saved is the family's entry: the row is due that day from
     the parent's entry, its one claim the parent's. Read again, it is saved with that date,
     asks nothing, and a save adds nothing."""
@@ -4833,8 +5114,8 @@ def test_a_note_due_on_either_of_two_dates_offers_both_and_saves_the_chosen_one_
         after = saved_rows(client)
 
     assert (
-        "The note leaves the due date open: Wednesday, November 18, 2026 or Thursday, "
-        "November 19, 2026."
+        "The note mentions Wednesday, November 18, 2026 and Thursday, November 19, 2026. "
+        "The due date is unclear."
     ) in card(first, "Essay")
     assert when_options(card(shown, "Essay"), key) == [
         ("2026-11-18", False),
@@ -4916,8 +5197,8 @@ def test_milestones_are_date_choices_labeled_with_their_words_and_one_saves_as_t
         ("none", True),
         ("other", False),
     ]
-    assert "<span>Wednesday, November 18, 2026, the note's date for Draft</span>" in body
-    assert "<span>Friday, November 20, 2026, the note's date for final copy</span>" in body
+    assert "<span>Wednesday, November 18, 2026 (possible date for Draft)</span>" in body
+    assert "<span>Friday, November 20, 2026 (possible date for final copy)</span>" in body
     assert (reviewed.status_code, kept.status_code) == (200, 303)
     assert [(each.title, each.due_date, each.origins["due_date"]) for each in row] == [
         ("Draft", datetime.date(2026, 11, 20), SourceChannel.PARENT_ENTRY)
@@ -4971,6 +5252,245 @@ def test_two_milestones_that_share_a_date_are_one_choice_with_both_milestones_wo
         ("none", True),
         ("other", False),
     ]
-    label = "<span>Friday, November 20, 2026, the note's date for Draft and final copy</span>"
+    label = "<span>Friday, November 20, 2026 (possible date for Draft and final copy)</span>"
     assert body.count(label) == 1
-    assert body.count("the note's date for") == 1
+    assert body.count("possible date for") == 1
+
+
+FALLS_BACK = [
+    pytest.param(
+        "2026-11-17", "Essay due Friday. Actually now due Monday.", (20, 23), id="actually"
+    ),
+    pytest.param(
+        "2026-11-17", "Essay due Friday. Please note it is now due Monday.", (20, 23), id="note-it"
+    ),
+    pytest.param("2026-11-16", "Postponed. Essay due Friday.", (20,), id="postponed"),
+    pytest.param("2026-11-16", "Can't wait! Essay due Friday.", (20,), id="cant-wait"),
+    pytest.param(
+        "2026-11-16",
+        "Math practice - Reflections and Translations due Monday 11/16",
+        (16,),
+        id="hyphen",
+    ),
+    pytest.param("2026-11-16", "Essay due Friday. Write about your summer.", (20,), id="summer"),
+    pytest.param(
+        "2026-11-16", "Essay due Friday. Scratch that, more info soon.", (20,), id="scratch"
+    ),
+    pytest.param("2026-11-16", "Essay, optional for most, due Friday.", (20,), id="for-most"),
+    pytest.param(
+        "2026-11-16",
+        "Essay due Wednesday; anyone who doesn't finish can turn it in Thursday.",
+        (18, 19),
+        id="turn-in",
+    ),
+    pytest.param(
+        "2026-11-04",
+        "Review packet due 11/10- Solutions will be posted Tomorrow",
+        (10, 5),
+        id="packet",
+    ),
+]
+"""Notes whose one task sets no school date: the school day, the words and the November days
+the card offers."""
+
+
+def every_note_selected(client: TestClient, first: str) -> str:
+    """The review a Review changes press returns from a first view with the tick of every
+    note card set, those read as homework and those that may be, as a family sets them."""
+    keys = numbers(first, r'name="offered-(\d+)"')
+    form = ticked_form(first) | {f"take-{key}": "1" for key in keys} | {"recheck": "1"}
+    return client.post("/parent/inbox/find", data=form).text
+
+
+def school_day(today: str) -> str:
+    """The paste's heading for a school day given as year, month and day."""
+    day = datetime.date.fromisoformat(today)
+    return f"{day:%m/%d/%Y} - {day:%A}"
+
+
+def november(day: int) -> str:
+    """A November 2026 day as a note card says it."""
+    return f"{datetime.date(2026, 11, day):%A}, November {day}, 2026"
+
+
+def mentions(days: tuple[int, ...]) -> str:
+    """The first view's line for the November 2026 days a note mentions with no due date."""
+    said = [november(day) for day in days]
+    listed = said[0] if len(said) == 1 else f"{', '.join(said[:-1])} and {said[-1]}"
+    return f"The note mentions {listed}. The due date is unclear."
+
+
+@pytest.mark.parametrize("how", ["as-it-stands", "chosen"])
+@pytest.mark.parametrize(("today", "words", "days"), FALLS_BACK)
+def test_a_note_that_sets_no_school_date_offers_its_dates_unselected_and_saves_the_familys(
+    tmp_path: pathlib.Path, today: str, words: str, days: tuple[int, ...], how: str
+) -> None:
+    """A note task the reader leaves with no school date: the first view says the dates the
+    note mentions and that the due date is unclear; details opened, each date is a choice
+    labeled as named in the note, none chosen, No due date yet chosen. Ticked and saved as it
+    stands, the row has no due date and no claim from the teacher's note; a date chosen,
+    reviewed and saved is the family's entry. Read again, it is saved, asks nothing, and a
+    save adds nothing."""
+    text = one_note("Language Arts", words, school_day(today))
+    with client_in(tmp_path, today=today) as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+        page = every_note_selected(client, first)
+        key = only_key(page)
+        shown = opened(client, page, key).text
+        if how == "chosen":
+            form = ticked_form(shown) | {f"when-{key}": f"2026-11-{days[0]:02}", "recheck": "1"}
+            page = client.post("/parent/inbox/find", data=form).text
+        kept = client.post("/parent/inbox/keep", data=ticked_form(page))
+        rows = saved_rows(client)
+        records = due_records(client)
+        again = client.post("/parent/inbox/read", data={"text": text}).text
+        resaved = client.post("/parent/inbox/keep", data=ticked_form(again))
+        after = saved_rows(client)
+
+    body = html.unescape(shown)
+    assert mentions(days) in html.unescape(first)
+    assert when_options(shown, key) == [
+        *((f"2026-11-{day:02}", False) for day in days),
+        ("none", True),
+        ("other", False),
+    ]
+    for day in days:
+        assert f"<span>{november(day)}, named in the note</span>" in body
+    assert kept.status_code == 303
+    if how == "chosen":
+        assert [due for _, _, due in rows] == [datetime.date(2026, 11, days[0])]
+        assert [(channel, value) for _, channel, value, _ in records] == [
+            (SourceChannel.PARENT_ENTRY, f"2026-11-{days[0]:02}")
+        ]
+    else:
+        assert [due for _, _, due in rows] == [None]
+        assert all(channel is not SourceChannel.LMS for _, channel, _, _ in records)
+    assert '<span class="pill">Already saved</span>' in again
+    for asked in ("identity-question-", "occurrence-question-", "instructions-question-"):
+        assert asked not in again
+    assert resaved.status_code == 303
+    assert after == rows
+
+
+SETS = [
+    pytest.param("2026-11-16", "Optional essay due Friday.", (20,), id="optional"),
+    pytest.param("2026-11-16", "Essay for some students due Friday.", (20,), id="some-students"),
+    pytest.param("2026-11-16", "Worksheet No. 3 due Friday", (20,), id="no-3"),
+    pytest.param("2026-11-16", "Don't forget the essay is due Friday", (20,), id="dont-forget"),
+    pytest.param("2026-11-16", "Don't forget: essay due Friday.", (20,), id="dont-forget-colon"),
+    pytest.param("2026-11-16", "Essay due Friday, not Thursday.", (20,), id="not-thursday"),
+    pytest.param(
+        "2026-11-17", "Essay due Friday. Project now due Monday.", (20, 23), id="project-now"
+    ),
+]
+"""Notes whose every task sets the school's date: the school day, the words and each task's
+November day, in order."""
+
+
+@pytest.mark.parametrize(("today", "words", "days"), SETS)
+def test_a_note_that_sets_the_school_s_date_saves_it_as_the_teacher_s_note_says(
+    tmp_path: pathlib.Path, today: str, words: str, days: tuple[int, ...]
+) -> None:
+    """A note task whose deadline the note establishes: the first view says no date is
+    unclear, each task starts unticked, and each ticked by a Review changes press and saved
+    as it stands, each row is due
+    that day with the school's claim from the teacher's note. Read again, it is saved, and a
+    save adds nothing."""
+    text = one_note("Language Arts", words, school_day(today))
+    with client_in(tmp_path, today=today) as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+        page = every_note_selected(client, first)
+        kept = client.post("/parent/inbox/keep", data=ticked_form(page))
+        rows = saved_rows(client)
+        records = due_records(client)
+        again = client.post("/parent/inbox/read", data={"text": text}).text
+        resaved = client.post("/parent/inbox/keep", data=ticked_form(again))
+        after = saved_rows(client)
+
+    assert "The due date is unclear." not in first
+    assert len(numbers(first, r'<input type="checkbox" name="take-(\d+)" value="1">')) == len(days)
+    assert kept.status_code == 303
+    assert sorted(str(due) for _, _, due in rows) == [f"2026-11-{day:02}" for day in days]
+    assert sorted((value, channel, seen) for _, channel, value, seen in records) == [
+        (f"2026-11-{day:02}", SourceChannel.LMS, "the teacher's note") for day in days
+    ]
+    if "some students" in words:
+        assert "Essay for some students" in html.unescape(first)
+    assert again.count('<span class="pill">Already saved</span>') == len(days)
+    assert resaved.status_code == 303
+    assert after == rows
+
+
+MENTIONS_BY_STATEMENT = [
+    pytest.param("Essay is not due Friday; finish it Monday.", (16, 23), id="governed-statement"),
+    pytest.param("Essay isn't due Friday.", (), id="governed-no-date-offered"),
+    pytest.param("Online practice November 20th", (), id="no-statement-a-named-date"),
+    pytest.param("Vocabulary quiz on Thursday", (), id="no-statement-a-weekday"),
+]
+"""Notes under Monday 11/16 that set no due date, with the November days the first view says
+the note mentions: only a task holding a deadline statement, a governed one included, says
+the dates it offers."""
+
+
+@pytest.mark.parametrize(("words", "days"), MENTIONS_BY_STATEMENT)
+def test_the_mentions_line_is_said_only_for_a_task_holding_a_deadline_statement(
+    tmp_path: pathlib.Path, words: str, days: tuple[int, ...]
+) -> None:
+    """A note task with no deadline and no milestone that holds a deadline statement, a
+    governed one included, and offers a date within a school year: the first view says the
+    dates the note mentions and that the due date is unclear. A task with no statement, or
+    one offering no date, says no such line."""
+    text = one_note("Language Arts", words)
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+
+    if days:
+        assert mentions(days) in html.unescape(first)
+    else:
+        assert "The due date is unclear." not in first
+
+
+def test_milestone_dates_are_choices_labeled_as_possible_dates_in_order(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note "Draft due Wednesday or Thursday and final copy due Friday.": details opened,
+    each milestone date is a choice "{day} (possible date for {words})", Draft's two dates in
+    order, none chosen, and the first view says no "mentions" line."""
+    text = one_note("Art", "Draft due Wednesday or Thursday and final copy due Friday.")
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+        key = only_key(first)
+        shown = opened(client, first, key).text
+
+    body = html.unescape(shown)
+    assert when_options(shown, key) == [
+        ("2026-11-18", False),
+        ("2026-11-19", False),
+        ("2026-11-20", False),
+        ("none", True),
+        ("other", False),
+    ]
+    for label in (
+        "Wednesday, November 18, 2026 (possible date for Draft)",
+        "Thursday, November 19, 2026 (possible date for Draft)",
+        "Friday, November 20, 2026 (possible date for final copy)",
+    ):
+        assert f"<span>{label}</span>" in body
+    assert "The note mentions" not in html.unescape(first)
+
+
+def test_a_note_whose_only_offered_date_is_too_far_says_only_the_far_date_line(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note "Essay due January 8, 2028" with "please" on the next line, under Monday
+    11/16/2026: its one offered date is more than a year away, so the first view says the
+    far-date line and no "mentions" line."""
+    text = one_note("Language Arts", "Essay due January 8, 2028\nplease")
+    with client_in(tmp_path, today="2026-11-16") as client:
+        first = html.unescape(client.post("/parent/inbox/read", data={"text": text}).text)
+
+    assert (
+        "The note names Saturday, January 8, 2028. It can't be saved as the due date because "
+        "it's more than a year away."
+    ) in first
+    assert "The note mentions" not in first

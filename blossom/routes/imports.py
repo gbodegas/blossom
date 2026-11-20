@@ -2206,10 +2206,7 @@ PRESS_SAID: Final = {
         "Your corrections were not reviewed, so nothing was saved. Check them, then press "
         "Review changes."
     ),
-    "changed_after_review": (
-        "This homework changed after you reviewed your corrections. Your homework changes "
-        "weren't saved."
-    ),
+    "review_again": "Your homework changes weren't saved. Press Review changes, then Save.",
     "keep_invalid": (
         "Some of these questions changed before you answered, so none of these answers was "
         "kept. Answer them again."
@@ -3051,10 +3048,10 @@ class Unreviewed(NamedTuple):
     """The cards a Save at its page's version can't write as reviewed, by cause: ``never``, those
     carrying a correction no review showed (``unreviewed_words``, ``unreviewed_shown``), and
     ``moved``, those whose effect differs from the one their page signed (``unreviewed_effects``).
-    Where ``never`` is empty, every correction the Save carries is one a review showed, and an
-    effect that moved since is read as the homework changing after that review. The page signs
-    the destinations and ticks it shows, not every other answer, so an effect moved by anything
-    else the post carries is read the same way."""
+    Where ``never`` is empty, every correction the Save carries is one a review showed, and the
+    cause of an effect that moved since is not known: another tab's write or an answer this
+    page's post carries can move it, since the page signs the destinations and ticks it shows,
+    not every other answer."""
 
     never: frozenset[str]
     moved: frozenset[str]
@@ -4156,9 +4153,9 @@ async def save_press(
     if unreviewed.cards:
         # Checked before any store: no answer and no assignment is written for it, so the page
         # never says this attempt kept answers. Corrections a review showed whose effect moved
-        # since are said as the homework changing after that review; a correction no review
+        # since get the cause-neutral line, Review changes then Save; a correction no review
         # showed keeps the not-reviewed line.
-        why = "not_reviewed" if unreviewed.never else "changed_after_review"
+        why = "not_reviewed" if unreviewed.never else "review_again"
         return await with_typing(
             request,
             state,
@@ -5492,7 +5489,9 @@ MOST_WORDS: Final = 200
 async def find(request: Request, draft_id: str, state: State) -> Response:
     """Find under another name for one open card: saved assignments whose class and title hold
     every word typed, each a whole change posted as Keep these answers. The card and the words
-    come in the body, so the address holds only the review's id."""
+    come in the body, so the address holds only the review's id. A claim the record can't read
+    (``UnreadableClaim``) is answered as the review's address answers it: the review can't be
+    shown, and nothing is written."""
     found = await snapshot_or_page(request, state, draft_id)
     if isinstance(found, Response):
         return found
@@ -5519,6 +5518,9 @@ async def find(request: Request, draft_id: str, state: State) -> Response:
     except sqlite3.Error as error:
         noted(error)
         return unread_page(request, state, error)
+    except UnreadableClaim as error:
+        noted(error)
+        return said_page(request, marks_of(state), REVIEW_UNAVAILABLE, 503)
     piece = None if review is None else review.by_name.get(piece_name)
     if review is None or piece is None or piece.name in review.saved:
         return said_page(request, marks_of(state), FIND_SAID["gone"], 404)

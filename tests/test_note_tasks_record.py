@@ -440,9 +440,9 @@ def test_a_joined_note_adds_its_claim_and_words_on_save_only_when_selected(
     tmp_path: pathlib.Path, selected: bool
 ) -> None:
     """A card with a joined note that names a deadline and says more is saved as read while
-    the note is unselected: no claim of the note's and no instruction. Selected, the note's
-    deadline is one more claim, seen in the teacher's note, and its words are an
-    instruction of the row; the row's due date is the card's either way."""
+    the note is unselected: no claim of the note's and no instruction. Selected, its words
+    are an instruction of the row; the note holds a second sentence, so it sets no school
+    deadline and adds no claim; the row's due date is the card's either way."""
     text = JOINED_NOTE.format("Short essay due Friday. Write it in ink.")
     read = with_notes(read_text(text, now=NOW, today=TODAY), now=NOW)
     chosen = with_answers(
@@ -465,7 +465,7 @@ def test_a_joined_note_adds_its_claim_and_words_on_save_only_when_selected(
     assert kept == Kept(added=1, updated=0, unchanged=0)
     assert row.due_date == nov(3)
     noted = ("2026-11-06", TEACHER_NOTE) in {(each.asserted_value, each.seen_in) for each in claims}
-    assert noted is selected
+    assert noted is False
     assert ([] if readable is None else [each.text for each in readable.kept]) == (
         ["Short essay due Friday. Write it in ink."] if selected else []
     )
@@ -1755,8 +1755,8 @@ TWO_LATER_NOTES: Final = (
     AFTER_A_DUE_CARD
     + "11/05/2026 - Thursday\n08 Geometry -\nPractice set 4 due Friday. Show your work.\n\n"
 )
-"""The week, then two notes on two later days that name Practice set 4 in different words
-and settle the same date, Friday, November 6."""
+"""The week, then two notes on two later days that name Practice set 4 in different words:
+the first settles Friday, November 6; the second holds a second sentence and settles none."""
 
 BOTH_NEW: Final = {11: NEW_WORK, 12: NEW_WORK}
 """Each of the two later notes answered as new work."""
@@ -1766,18 +1766,18 @@ def two_later_notes() -> tuple[Reading, ...]:
     """The readings of the week with its two later notes: thirteen, the notes' last."""
     items = with_note_readings(read_text(TWO_LATER_NOTES, now=NOW, today=TODAY), now=NOW)
     assert [item.pair for item in items[11:]] == [("08 Geometry", "Practice set 4")] * 2
-    assert [item.due_date for item in items[11:]] == [nov(6), nov(6)]
+    assert [item.due_date for item in items[11:]] == [nov(6), None]
     return items
 
 
 def test_two_notes_of_one_name_and_date_said_to_be_new_work_are_two_rows(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Two notes that name a card's work and settle the same date, each answered as new
-    work, are a row each, with ids of their own beside the card's: each row keeps its own
-    note's words as its one instruction, and no choice of instructions is asked. The same
-    answers sent again write nothing, and the text read again is known, each note on its
-    own row."""
+    """Two notes that name a card's work, one settling Friday and one settling no date, each
+    answered as new work, are a row each, with ids of their own beside the card's: each row
+    keeps its own note's words as its one instruction and its own due date, and no choice of
+    instructions is asked. The same answers sent again write nothing, and the text read
+    again is known, each note on its own row."""
     items = two_later_notes()
     card = by_pair(items)["08 Geometry", "Practice set 4"][0]
     store = ProjectStateStore.open(tmp_path / "blossom.sqlite3", fixture_clock())
@@ -1802,7 +1802,7 @@ def test_two_notes_of_one_name_and_date_said_to_be_new_work_are_two_rows(
     assert len(saved) == 13
     assert [(saved[name].title, saved[name].due_date) for name in (one, other)] == [
         ("Practice set 4", nov(6)),
-        ("Practice set 4", nov(6)),
+        ("Practice set 4", None),
     ]
     assert saved[card.assignment_id].due_date == nov(3)
     assert {name: [each.text for each in words.readable[name].kept] for name in (one, other)} == {
@@ -1840,7 +1840,7 @@ def test_the_same_two_readings_made_from_no_note_are_saved_as_they_read(
     assert [change.assignment_id for change in changes] == [item.assignment_id for item in plain]
     assert plain[11].assignment_id != plain[12].assignment_id
     assert kept == Kept(added=13, updated=0, unchanged=0)
-    assert [saved[item.assignment_id] for item in plain[11:]] == [nov(6), nov(6)]
+    assert [saved[item.assignment_id] for item in plain[11:]] == [nov(6), None]
 
 
 def test_a_note_said_to_be_new_work_has_an_id_from_its_first_day_and_its_words(
