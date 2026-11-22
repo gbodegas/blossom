@@ -1006,6 +1006,58 @@ NOTE_DATE_LINES = [
         [OPEN, "It could mean Monday, November 16 or Monday, November 23."],
         id="two-dates-a-correction-after-a-superseded-date",
     ),
+    *(
+        pytest.param(
+            words,
+            MONDAY,
+            ["The note mentions Friday, November 20. The due date is unclear."],
+            id=f"one-date-{label}",
+        )
+        for label, words in [
+            ("pretty-sure-essays", "Pretty sure essays are due Friday."),
+            ("skip-essay", "Skip essay due Friday."),
+            ("forget-about", "Forget about the essay due Friday."),
+            ("looks-like-by", "Looks like the essay gets turned in by Friday."),
+            ("pretty-sure-collected", "Pretty sure the essay will be collected by Friday."),
+            ("needed-to", "Students needed to turn in the essay by Friday."),
+            ("did-have-to", "The essay did have to be turned in by Friday."),
+            ("supposedly", "The essay supposedly has to be in by Friday."),
+            ("what-you-want-to-be", "Essay on what you want to be due Friday."),
+            ("is-not-going-to-be", "Essay is not going to be due Friday."),
+        ]
+    ),
+    *(
+        pytest.param(words, MONDAY, [], id=f"sets-{label}")
+        for label, words in [
+            ("make-sure", "Make sure your essay is finished by Friday."),
+            ("read-the-assigned-chapter", "Read the assigned chapter by Friday."),
+            ("the-family-must", "The family must sign the form by Friday."),
+            ("skip-counting", "Skip counting worksheet due Friday."),
+            ("just-a-reminder-that", "Just a reminder that the essay is due Friday."),
+            ("the-limit-the-office-says", "The office says essays are due Friday."),
+            ("the-limit-students-finished", "Students finished the essay by Friday."),
+        ]
+    ),
+    *(
+        pytest.param(
+            f"Essay due Friday. {correction}",
+            TUESDAY,
+            [OPEN, "It could mean Friday, November 20 or Monday, November 23."],
+            id=f"two-dates-{label}",
+        )
+        for label, correction in [
+            ("correction-it-should-be", "Correction: it should be due Monday."),
+            ("update-turn-it-in", "Update: turn it in by Monday."),
+            ("update-essays-are", "Update: essays are due Monday."),
+            ("sorry-i-meant", "Sorry, I meant due Monday."),
+            ("essays-plural", "Essays are now due Monday."),
+            ("whoops", "Whoops: due Monday."),
+            ("changed", "Changed: due Monday."),
+            ("sorry-everyone", "Sorry everyone: due Monday."),
+            ("the-essay-is-actually", "The essay is actually due Monday."),
+            ("the-limit-sorry-letter", "Sorry letter: due Monday."),
+        ]
+    ),
 ]
 """A note's words, the school day it is listed under, and what its card says of its dates
 after the line naming that day."""
@@ -1114,8 +1166,8 @@ NOTE_ROWS = [
     pytest.param(
         "Pretty sure the essay will be collected by Friday.",
         MONDAY,
-        [("Pretty sure the essay will be collected", 20)],
-        id="the-documented-limit-by",
+        [("Pretty sure the essay will be collected", None)],
+        id="pretty-sure-collected",
     ),
     pytest.param(
         "Essay due Friday. Update: it is due Monday.", TUESDAY, [("Essay", None)], id="update"
@@ -1137,6 +1189,172 @@ NOTE_ROWS = [
         TUESDAY,
         [("Essay", 20), ("Science project", None)],
         id="science-project",
+    ),
+    *(
+        pytest.param(words, MONDAY, [(title, day)], id=label)
+        for label, words, title, day in [
+            (
+                "pretty-sure-essays",
+                "Pretty sure essays are due Friday.",
+                "Pretty sure essays",
+                None,
+            ),
+            ("skip-essay", "Skip essay due Friday.", "Skip essay", None),
+            (
+                "forget-about",
+                "Forget about the essay due Friday.",
+                "Forget about the essay",
+                None,
+            ),
+            (
+                "looks-like-by",
+                "Looks like the essay gets turned in by Friday.",
+                "Looks like the essay gets turned in",
+                None,
+            ),
+            (
+                "needed-to",
+                "Students needed to turn in the essay by Friday.",
+                "Students needed to turn in the essay",
+                None,
+            ),
+            (
+                "did-have-to",
+                "The essay did have to be turned in by Friday.",
+                "The essay did have to be turned in",
+                None,
+            ),
+            (
+                "supposedly",
+                "The essay supposedly has to be in by Friday.",
+                "The essay supposedly has to be in",
+                None,
+            ),
+            (
+                "make-sure",
+                "Make sure your essay is finished by Friday.",
+                "Make sure your essay is finished",
+                20,
+            ),
+            (
+                "read-the-assigned-chapter",
+                "Read the assigned chapter by Friday.",
+                "Read the assigned chapter",
+                20,
+            ),
+            (
+                "the-family-must",
+                "The family must sign the form by Friday.",
+                "The family must sign the form",
+                20,
+            ),
+            (
+                "skip-counting",
+                "Skip counting worksheet due Friday.",
+                "Skip counting worksheet",
+                20,
+            ),
+            (
+                "what-you-want-to-be",
+                "Essay on what you want to be due Friday.",
+                "Essay on what you want to be",
+                None,
+            ),
+            ("is-not-going-to-be", "Essay is not going to be due Friday.", "Essay", None),
+            (
+                "just-a-reminder-that",
+                "Just a reminder that the essay is due Friday.",
+                "Just a reminder that the essay",
+                20,
+            ),
+            (
+                "the-limit-the-office-says",
+                "The office says essays are due Friday.",
+                "The office says essays",
+                20,
+            ),
+            (
+                "the-limit-students-finished",
+                "Students finished the essay by Friday.",
+                "Students finished the essay",
+                20,
+            ),
+        ]
+    ),
+    *(
+        pytest.param(f"Essay due Friday. {rest}", TUESDAY, rows, id=label)
+        for label, rest, rows in [
+            ("correction-it-should-be", "Correction: it should be due Monday.", [("Essay", None)]),
+            ("update-turn-it-in", "Update: turn it in by Monday.", [("Essay", None)]),
+            ("update-essays-are", "Update: essays are due Monday.", [("Essay", None)]),
+            ("sorry-i-meant", "Sorry, I meant due Monday.", [("Essay", None)]),
+            ("essays-plural", "Essays are now due Monday.", [("Essay", None)]),
+            (
+                "update-the-essay-past-the-poster",
+                "Poster due Thursday. Update: the essay is due Monday.",
+                [("Essay", None), ("Poster", 19)],
+            ),
+            (
+                "update-the-poster",
+                "Update: the poster is due Monday.",
+                [("Essay", None), ("Update: the poster", None)],
+            ),
+            (
+                "reminder-the-poster",
+                "Reminder: the poster is due Monday.",
+                [("Essay", 20), ("Reminder: the poster", 23)],
+            ),
+            (
+                "update-the-map",
+                "Poster due Thursday. Update: the map is due Monday.",
+                [("Essay", 20), ("Poster", None), ("Update: the map", None)],
+            ),
+            ("whoops", "Whoops: due Monday.", [("Essay", None)]),
+            ("changed", "Changed: due Monday.", [("Essay", None)]),
+            (
+                "apology-letter",
+                "Apology letter due Monday.",
+                [("Apology letter", 23), ("Essay", 20)],
+            ),
+            (
+                "climate-change-essay",
+                "Climate change essay: due Monday.",
+                [("Climate change essay", 23), ("Essay", 20)],
+            ),
+            (
+                "reminder-the-photo-essay",
+                "Reminder: the photo essay is due Monday.",
+                [("Essay", 20), ("Reminder: the photo essay", 23)],
+            ),
+            (
+                "update-the-final-essay",
+                "Update: the final essay is due Monday.",
+                [("Essay", None), ("Update: the final essay", None)],
+            ),
+            ("sorry-everyone", "Sorry everyone: due Monday.", [("Essay", None)]),
+            (
+                "test-correction",
+                "Test correction: due Monday.",
+                [("Essay", None), ("Test correction", 23)],
+            ),
+            (
+                "update-both",
+                "Poster due Thursday. Update: both are due Monday.",
+                [("Essay", None), ("Poster", None)],
+            ),
+            ("the-essay-is-actually", "The essay is actually due Monday.", [("Essay", None)]),
+            ("the-limit-sorry-letter", "Sorry letter: due Monday.", [("Essay", None)]),
+            (
+                "the-limit-the-paper-is-actually",
+                "The paper is actually due Monday.",
+                [("Essay", 20), ("The paper is actually", None)],
+            ),
+            (
+                "the-limit-both-are",
+                "Poster due Thursday. Both are due Monday.",
+                [("Both", 23), ("Essay", 20), ("Poster", 19)],
+            ),
+        ]
     ),
 ]
 """A screenshot note's words, the school day it is listed under, and each row it gives: its

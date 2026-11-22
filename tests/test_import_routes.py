@@ -45966,6 +45966,19 @@ SHOT_FALLS_BACK = [
         id="pretty-sure-must",
     ),
     pytest.param("Monday 11/16/2026", "Bring the essay due Friday.", (20,), id="bring"),
+    *(
+        pytest.param("Monday 11/16/2026", words, (20,), id=label)
+        for label, words in [
+            ("pretty-sure-essays", "Pretty sure essays are due Friday."),
+            ("skip-essay", "Skip essay due Friday."),
+            ("forget-about", "Forget about the essay due Friday."),
+            ("looks-like-by", "Looks like the essay gets turned in by Friday."),
+            ("pretty-sure-collected", "Pretty sure the essay will be collected by Friday."),
+            ("needed-to", "Students needed to turn in the essay by Friday."),
+            ("did-have-to", "The essay did have to be turned in by Friday."),
+            ("supposedly", "The essay supposedly has to be in by Friday."),
+        ]
+    ),
 ]
 """Screenshot notes whose one task sets no school date: the school day heading, the words and
 the November days the card says as text."""
@@ -46101,6 +46114,10 @@ SHOT_SETS = [
     pytest.param("Multiply the fractions by Friday.", id="multiply"),
     pytest.param("Students must turn in the essay by Friday.", id="students-must"),
     pytest.param("Read the chapter by Friday.", id="read-the-chapter"),
+    pytest.param("Make sure your essay is finished by Friday.", id="make-sure"),
+    pytest.param("Read the assigned chapter by Friday.", id="read-the-assigned-chapter"),
+    pytest.param("The family must sign the form by Friday.", id="the-family-must"),
+    pytest.param("Skip counting worksheet due Friday.", id="skip-counting"),
 ]
 """Screenshot notes under Monday 11/16 whose one task sets Friday 11/20 as the school's."""
 
@@ -46222,6 +46239,13 @@ SHOT_LEAD_IN_CORRECTIONS = [
     pytest.param("Correction: due Monday.", id="correction"),
     pytest.param("Please note: it is due Monday.", id="please-note-it-is"),
     pytest.param("Sorry, it is due Monday.", id="sorry-it-is"),
+    pytest.param("Correction: it should be due Monday.", id="correction-it-should-be"),
+    pytest.param("Update: turn it in by Monday.", id="update-turn-it-in"),
+    pytest.param("Update: essays are due Monday.", id="update-essays-are"),
+    pytest.param("Sorry, I meant due Monday.", id="sorry-i-meant"),
+    pytest.param("Whoops: due Monday.", id="whoops"),
+    pytest.param("Changed: due Monday.", id="changed"),
+    pytest.param("Sorry everyone: due Monday.", id="sorry-everyone"),
 ]
 """Corrections behind a lead-in, each read after "Essay due Friday." under Tuesday 11/17."""
 
@@ -46320,6 +46344,25 @@ SHOT_CHOSEN = [
     ),
     pytest.param(
         "Monday 11/16/2026", "Bring the essay due Friday.", date(2026, 11, 20), id="bring"
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Correction: it should be due Monday.",
+        date(2026, 11, 23),
+        id="correction-it-should-be",
+    ),
+    *(
+        pytest.param("Monday 11/16/2026", words, date(2026, 11, 20), id=label)
+        for label, words in [
+            ("pretty-sure-essays", "Pretty sure essays are due Friday."),
+            ("skip-essay", "Skip essay due Friday."),
+            ("forget-about", "Forget about the essay due Friday."),
+            ("looks-like-by", "Looks like the essay gets turned in by Friday."),
+            ("pretty-sure-collected", "Pretty sure the essay will be collected by Friday."),
+            ("needed-to", "Students needed to turn in the essay by Friday."),
+            ("did-have-to", "The essay did have to be turned in by Friday."),
+            ("supposedly", "The essay supposedly has to be in by Friday."),
+        ]
     ),
 ]
 """Screenshot notes that set no school date: the school day heading, the words and the date
@@ -46456,11 +46499,6 @@ def test_a_screenshot_correction_after_a_date_the_note_replaces_is_one_essay_row
 
 SHOT_DOCUMENTED_LIMIT = [
     pytest.param("Rumored essay due Friday.", "Rumored essay", id="rumored"),
-    pytest.param(
-        "Pretty sure the essay will be collected by Friday.",
-        "Pretty sure the essay will be collected",
-        id="pretty-sure-collected",
-    ),
 ]
 """The reader's documented limit under Monday 11/16: a hedge inside the words before the cue
 that none of its fixed words or shapes catches, and the title its row takes."""
@@ -46575,6 +46613,314 @@ def test_a_hedged_note_naming_its_card_on_a_screenshot_joins_it_and_adds_only_it
     assert [value for value, _ in claims] == ["2026-10-09"]
     assert intake.TEACHER_NOTE not in {seen for _, seen in claims}
     assert words == ([HEDGED_ESSAY_NOTE] if selected else [])
+
+
+ShotRow = tuple[str, str, tuple[int, ...], int | None]
+"""A screenshot note's row as a table lists it: its title, the words its card shows, the
+November 2026 days its card says as text with the due date left open, and the November day it
+saves as the school's, if the note sets one."""
+SHOT_FRIDAY_ESSAY: Final[ShotRow] = ("Essay", "Essay due Friday.", (), 20)
+"""The Essay row of a note opening "Essay due Friday." under Tuesday 11/17, its date set."""
+SHOT_ASKED_ESSAY: Final[ShotRow] = ("Essay", "Essay due Friday.", (20,), None)
+"""The same row with Friday 11/20 said as text and the due date left open."""
+SHOT_THURSDAY_POSTER: Final[ShotRow] = ("Poster", "Poster due Thursday.", (), 19)
+"""The Poster row of a note whose second sentence is "Poster due Thursday.", its date set."""
+
+
+def card_headed(page: str, title: str) -> str:
+    """The markup of the one assignment card of a review headed with this title."""
+    articles: list[str] = re.findall(r'<article class="assignment".*?</article>', page, re.S)
+    [article] = [each for each in articles if f">{title}<" in each]
+    return article
+
+
+def each_row_as_listed(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    day: str,
+    words: str,
+    rows: list[ShotRow],
+) -> None:
+    """One screenshot note read into the rows listed, saved with every row ticked as it
+    stands, then read again and saved. Each row starts unticked under its own title and shows
+    its own words and no other row's. A row whose date the note leaves open says its dates as
+    text, never as a choice, and is saved with no due date and no claim; a row whose date the
+    note sets says no date as unclear and is due that day with the school's claim from the
+    teacher's note. Read again, every row is already saved, and a save adds nothing."""
+    with here(open_settings(tmp_path)) as browser:
+        page, saved, again, resaved = note_saved_and_read_again(
+            browser, monkeypatch, note_under(day, words)
+        )
+        found = english_rows(browser)
+
+    said = screenshot_page.SAID
+    assert html.unescape(review_form(again)).count(said["already"]) == len(rows)
+    assert UNIT_TICK.findall(review_form(page)) == [""] * len(rows)
+    assert not re.findall(r'type="radio"[^>]*value="20\d\d-', review_form(page))
+    for title, shown, offered, due in rows:
+        card = html.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", card_headed(page, title))))
+        assert unit_titled(page, title) in units_on(page)
+        assert shown in card, title
+        for other, other_words, _, _ in rows:
+            assert other == title or other_words not in card, (title, other)
+        if len(offered) == 1:
+            assert said["note_mentions"].format(day=november_day(offered[0])) in card, title
+            assert said["note_open"] not in card, title
+        elif offered:
+            days = " or ".join(november_day(each) for each in offered)
+            assert said["note_open"] in card, title
+            assert said["note_could_mean"].format(days=days) in card, title
+        else:
+            assert due is not None, title
+            assert "The due date is unclear." not in card, title
+            assert said["note_open"] not in card, title
+    assert says(saved, imports.counted(len(rows), 0, 0, 0))
+    assert found == {
+        title: (
+            (None, [])
+            if due is None
+            else (date(2026, 11, due), [(f"2026-11-{due:02}", intake.TEACHER_NOTE)])
+        )
+        for title, _, _, due in rows
+    }
+    assert says(resaved, imports.counted(0, 0, len(rows), 0))
+
+
+SHOT_NOTE_ROWS = [
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Essays are now due Monday.",
+        [("Essay", "Essay due Friday. Essays are now due Monday.", (20, 23), None)],
+        id="essays-plural",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Poster due Thursday. Update: the essay is due Monday.",
+        [
+            ("Essay", "Essay due Friday. Update: the essay is due Monday.", (20, 23), None),
+            SHOT_THURSDAY_POSTER,
+        ],
+        id="update-the-essay-past-the-poster",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Update: the poster is due Monday.",
+        [
+            SHOT_ASKED_ESSAY,
+            ("Update: the poster", "Update: the poster is due Monday.", (23,), None),
+        ],
+        id="update-the-poster",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Reminder: the poster is due Monday.",
+        [
+            SHOT_FRIDAY_ESSAY,
+            ("Reminder: the poster", "Reminder: the poster is due Monday.", (), 23),
+        ],
+        id="reminder-the-poster",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Poster due Thursday. Update: the map is due Monday.",
+        [
+            SHOT_FRIDAY_ESSAY,
+            ("Poster", "Poster due Thursday.", (19,), None),
+            ("Update: the map", "Update: the map is due Monday.", (23,), None),
+        ],
+        id="update-the-map",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Apology letter due Monday.",
+        [SHOT_FRIDAY_ESSAY, ("Apology letter", "Apology letter due Monday.", (), 23)],
+        id="apology-letter",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Climate change essay: due Monday.",
+        [
+            SHOT_FRIDAY_ESSAY,
+            ("Climate change essay", "Climate change essay: due Monday.", (), 23),
+        ],
+        id="climate-change-essay",
+    ),
+    pytest.param(
+        "Monday 11/16/2026",
+        "Essay on what you want to be due Friday.",
+        [("Essay on what you want to be", "Essay on what you want to be due Friday.", (20,), None)],
+        id="what-you-want-to-be",
+    ),
+    pytest.param(
+        "Monday 11/16/2026",
+        "Essay is not going to be due Friday.",
+        [("Essay", "Essay is not going to be due Friday.", (20,), None)],
+        id="is-not-going-to-be",
+    ),
+    pytest.param(
+        "Monday 11/16/2026",
+        "Just a reminder that the essay is due Friday.",
+        [
+            (
+                "Just a reminder that the essay",
+                "Just a reminder that the essay is due Friday.",
+                (),
+                20,
+            )
+        ],
+        id="just-a-reminder-that",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Reminder: the photo essay is due Monday.",
+        [
+            SHOT_FRIDAY_ESSAY,
+            ("Reminder: the photo essay", "Reminder: the photo essay is due Monday.", (), 23),
+        ],
+        id="reminder-the-photo-essay",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Update: the final essay is due Monday.",
+        [
+            SHOT_ASKED_ESSAY,
+            ("Update: the final essay", "Update: the final essay is due Monday.", (23,), None),
+        ],
+        id="update-the-final-essay",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Test correction: due Monday.",
+        [SHOT_ASKED_ESSAY, ("Test correction", "Test correction: due Monday.", (), 23)],
+        id="test-correction",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Poster due Thursday. Update: both are due Monday.",
+        [
+            SHOT_ASKED_ESSAY,
+            ("Poster", "Poster due Thursday. Update: both are due Monday.", (19, 23), None),
+        ],
+        id="update-both",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. The essay is actually due Monday.",
+        [("Essay", "Essay due Friday. The essay is actually due Monday.", (20, 23), None)],
+        id="the-essay-is-actually",
+    ),
+]
+"""Screenshot notes read into one row or several: the school day heading, the note's words
+and each row. A correction that names the Essay joins it, past another task where one stands
+between, with both dates left open; an update that names other work is a row of its own, and
+the task right before it leaves its date open; a reminder or a name of its own leaves each
+row its date; a title keeps the words of its name."""
+
+
+@pytest.mark.parametrize(("day", "words", "rows"), SHOT_NOTE_ROWS)
+def test_each_row_of_a_screenshot_note_shows_its_own_words_and_dates_and_saves_what_it_shows(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    day: str,
+    words: str,
+    rows: list[ShotRow],
+) -> None:
+    """A screenshot note read into the rows its table entry lists: each row has a tick of its
+    own, its own words and the dates it says or sets, and each is saved as its card shows, a
+    date the note sets as the school's from the teacher's note and no date where the card
+    leaves the due date open. Read again, every row is already saved."""
+    each_row_as_listed(tmp_path, monkeypatch, day, words, rows)
+
+
+SHOT_NOTE_ROW_LIMITS = [
+    pytest.param(
+        "Monday 11/16/2026",
+        "The office says essays are due Friday.",
+        [("The office says essays", "The office says essays are due Friday.", (), 20)],
+        id="the-office-says",
+    ),
+    pytest.param(
+        "Monday 11/16/2026",
+        "Students finished the essay by Friday.",
+        [("Students finished the essay", "Students finished the essay by Friday.", (), 20)],
+        id="students-finished",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Sorry letter: due Monday.",
+        [("Essay", "Essay due Friday. Sorry letter: due Monday.", (20, 23), None)],
+        id="sorry-letter",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. The paper is actually due Monday.",
+        [
+            SHOT_FRIDAY_ESSAY,
+            ("The paper is actually", "The paper is actually due Monday.", (23,), None),
+        ],
+        id="the-paper-is-actually",
+    ),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Poster due Thursday. Both are due Monday.",
+        [SHOT_FRIDAY_ESSAY, SHOT_THURSDAY_POSTER, ("Both", "Both are due Monday.", (), 23)],
+        id="both-are",
+    ),
+]
+"""The reader's documented limits as the screenshot review shows them: a deadline reported
+with its attribution and a statement of finished work each set Friday under a title holding
+the words; a name that opens with a correction word joins the Essay and has no row of its
+own; a correction that calls the essay "the paper" leaves Friday on the Essay; a plural
+correction with no update word leaves every earlier date."""
+
+
+@pytest.mark.parametrize(("day", "words", "rows"), SHOT_NOTE_ROW_LIMITS)
+def test_the_limit_a_screenshot_note_the_reader_misreads_saves_what_its_rows_show(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    day: str,
+    words: str,
+    rows: list[ShotRow],
+) -> None:
+    """The documented limits, pinned as limits: each screenshot note is read into the rows
+    its table entry lists, every row unticked with the teacher's words on it; saved ticked as
+    shown, a row that sets its date saves it as the school's from the teacher's note."""
+    each_row_as_listed(tmp_path, monkeypatch, day, words, rows)
+
+
+def test_friday_typed_on_the_essay_row_before_an_update_naming_other_work_is_the_familys_entry(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A screenshot note "Essay due Friday. Update: the poster is due Monday." under Tuesday
+    11/17: the Essay's card opened and Friday 11/20 typed in its due date box, reviewed and
+    saved with both rows ticked, the Essay is due that day from the parent's entry with no
+    claim from the teacher's note, and the update's row has no due date and no claim."""
+    from blossom.reconciliation import SourceChannel
+
+    answer = note_under("Tuesday 11/17/2026", "Essay due Friday. Update: the poster is due Monday.")
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, page)
+        [subject] = [
+            each
+            for each in fields_named(card_headed(page, "Essay"), "correct:")
+            if json.loads(each)[1] == "due"
+        ]
+        typed = {f"correct:{subject}": "2026-11-20"}
+        page = opened_for_typing(browser, draft_id, page, typed)
+        sent = page_post(page, "save", tick=units_on(page), typed=typed)
+        saved = followed(browser, saved_with_corrections(browser, draft_id, sent))
+        record = state_of(browser).project_state
+        [essay] = [a for a in record.all_assignments() if a.title == "Essay"]
+        rows = english_rows(browser)
+
+    assert says(saved, imports.counted(2, 0, 0, 0)), saved
+    assert (essay.due_date, essay.origins["due_date"]) == (
+        date(2026, 11, 20),
+        SourceChannel.PARENT_ENTRY,
+    )
+    assert all(seen != intake.TEACHER_NOTE for _, seen in rows["Essay"][1])
+    assert rows["Update: the poster"] == (None, [])
 
 
 @pytest.mark.parametrize("typed", ["2026-11-25", ""], ids=["set", "cleared"])

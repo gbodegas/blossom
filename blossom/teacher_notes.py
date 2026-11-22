@@ -38,9 +38,13 @@ between; a task that says no homework is read by the no-homework rule alone.
 A task's deadline is a date only when the task is one sentence, counted by sure
 sentence ends, with exactly one statement neither negated nor superseded, that
 statement means one date, and the sentence is, in order, only: an optional
-lead-in, which is a reminder opening ("don't forget", "do not forget",
-"remember", "please remember", "reminder", "please note" or "note that", with
-or without "that" and ":") and nothing else; a lead that passes the tests of
+lead-in, which is a reminder opening and nothing else ("don't forget", "do not
+forget", "remember", "please remember", "please note" or "note that", with or
+without "that" and ":"; or up to four words ending in "reminder", the words
+before it from just, a, an, this, is, quick, friendly, gentle, kind, final,
+one, more, another, as, here and "here's", with or without "that" and a colon
+or a comma: "Just a reminder that the essay is due Friday." sets its date and
+"Tentative reminder: essay due Friday." sets none); a lead that passes the tests of
 the next paragraph, with at most one clause mark, right before the cue, so any
 other opening clause ("Tentative:", "Extra credit:") leaves the deadline
 unset; the cue and the date; an optional clock time ("at" or "by" and a time of
@@ -58,14 +62,21 @@ tbd, likely, unlikely, unconfirmed, provisional, unsure, uncertain, and "may"
 not followed by a number. Right before the cue stand the assignment's words,
 "is", "are" or "will be", with at most one word of _WITH_WILL between "will"
 and "be": any other "be", "been" or "being" right before the cue fails the
-lead ("Essay seems to be due Friday." sets none). A possibility modal (can,
-could, would), "had to", "supposed to", "expected to", "going to" and an
-obligation modal followed by "have" each fail it. An obligation modal (must,
-should, shall, "have to", "has to", "need to", "needs to", "ought to") does
-not: the words before the first one are its subject, which is empty, one word,
-or words that open with a determiner or with all, every, each, any or both and
-are shaped as a name ("Students must turn in the essay by Friday." sets its
-date; "Pretty sure the essay must be done by Friday." sets none). A subject
+lead ("Essay seems to be due Friday." sets none). A lead that opens with
+"pretty sure", "skip", "forget about" or "looks like" fails before either cue
+("Skip essay due Friday." sets none), unless its second word is count, counts
+or counting ("Skip counting worksheet due Friday." sets its date). A
+possibility modal (can, could, would), "had to", "needed to", "did have to",
+"did need to", "supposed to", "expected to", "going to" and an obligation
+modal followed by "have" each fail it. An obligation modal (must, should,
+shall, "have to", "has to", "need to", "needs to", "ought to") does not: the
+words before the first one are its
+subject, which is empty, one word, or words that open with a determiner or
+with all, every, each, any or both and are shaped as a name, and whose last
+word does not end in "ly" unless it is a naming word or an instruction verb
+("Students must turn in the essay by Friday." sets its date; "Pretty sure the
+essay must be done by Friday." and "The essay supposedly has to be in by
+Friday." set none). A subject
 pronoun (I, we, you, he, she, they), alone or contracted with an ASCII or
 typographic apostrophe, followed by a word that is not a linking word fails
 the lead. A first word ending in "ly" fails it unless that word is the whole
@@ -82,9 +93,19 @@ our, his, her, their) that is neither its first word, nor after a joining word
 the workbook is due Friday." sets its date; "Bring the essay due Friday." and
 "It looks like the essay is due Friday." set none); "a" is a determiner only
 in small letters. Where the cue is "by", an instruction comes first and no
-name test runs ("Read the chapter by Friday." sets its date). A hedge, a
-retraction or reported speech that none of these words and shapes catch sets
-the date, with its words in the title ("Rumored essay due Friday.").
+name test runs ("Read the chapter by Friday." sets its date), with one
+exception: a lead that holds no obligation modal and holds a linking word
+("is", "are", or "will be" with at most one word of _WITH_WILL between) fails
+when a determiner before its first linking word is neither the lead's first
+word, nor its second, nor after a joining word, nor right before that linking
+word ("Pretty sure the essay will be collected by Friday." sets none). For
+that test alone "Make sure" or "Be sure" opening the lead, after "please" or
+not, with "to", "that" or a colon or not, is set aside ("Make sure your essay
+is finished by Friday." sets its date); neither is a reminder opening. A
+hedge, a retraction, reported speech or a statement about finished work that
+none of these words and shapes catch sets the date, with its words in the
+title ("Rumored essay due Friday.", "The office says essays are due Friday.",
+"Students finished the essay by Friday.").
 
 Any other task has no deadline and offers its dates unselected: as choices, the
 dates of its statements that are neither negated nor superseded and their
@@ -100,39 +121,109 @@ milestone per date. A task whose first statement is negated or superseded takes
 as its title that statement's clause words before its cue, less trailing
 linking, negation and supersession words, when one to eight words remain and
 none is a negation word. Any other title read from the words before a cue
-drops a final "be", then a "to" before it with the one word before that "to",
-then linking words, modals and the other words of _TITLE_VERBS; it stays whole
-when it does not end in "be" or nothing would remain ("Essay will be due
-Friday." and "Essay seems to be due Friday." are titled "Essay").
+that ends in "be" drops its verb phrase: "to be" with the word before it when
+that word is one of _BEFORE_TO_BE, or "to be" alone after a linking word; a
+"be" with no "to" after a modal, "will" or a word ending in "'ll", with at
+most one word of _WITH_WILL or one word ending in "ly" between, the "'ll" and
+the word ending in "ly" going with it; then the words of _TITLE_VERBS at its
+end, and "not" or a word ending in "n't" left there with the words of
+_TITLE_VERBS before it. Any other title stays whole, and so does one of which
+nothing would remain ("Essay will be due Friday.", "Essay seems to be due
+Friday." and "Essay is not going to be due Friday." are titled "Essay";
+"Essay on what you want to be due Friday." keeps "Essay on what you want to
+be").
 
 Within one note, a piece whose first such statement names no separate
-assignment joins the task before it. Its lead-in is its lead's words before
-the last clause mark. A lead-in is set aside when it is a remark (it opens
-with "please" or holds note, update, correction, reminder, sorry, oops, typo,
-fyi or edit) or one word that a pronoun, "now" or a linking word follows; a
-reminder opening is set aside the same way. The pronouns are it, this, that,
-they, these and those, with "'s", "'re" or "'ll" or not. After a set-aside
-lead-in the piece joins when the words left before its cue hold only
-pronouns, linking words, "now", words ending in "ly", determiners and the
-preceding task's title words ("Update: the essay is due Monday."). With or
-without a lead-in it joins when its lead, less a set-aside lead-in, holds
+assignment joins an earlier task. Its lead-in is its lead's words before the
+last clause mark; a lead that is the one word update, fyi or actually, right
+before the cue, is read as a lead-in too ("Update due Monday."). The remark
+words are note, update, correction, reminder, sorry, oops, whoops, typo, fyi,
+edit and actually; the correction cue words are the remark words other than
+note and reminder, with updated, apologies, change and changed. A lead-in is
+a remark when it opens with "please"; when it opens with a correction cue
+word other than updated, apologies, change and changed ("Sorry everyone:");
+when it ends in a remark word with no word before it or only words of
+_BEFORE_A_CUE (a, an, the, one, more, another, just, also, quick, small,
+important, final, last, minor, brief, new: "Quick update:"); or when it is
+the one word updated, apologies, change or changed. A piece behind a remark
+or a reminder opening, or with "now", "actually" or "instead" right before
+its cue or before linking words right before it, is read by the words left
+before its cue. It joins the task right before it when none are left; when
+they open with a pronoun (it, that, this, they, these, those, both), "all", a
+speaker (I, we) or a modal and only linking words, modals, "now", "say",
+"meant" and words ending in "ly" follow ("Correction: it should be due
+Monday."); when they hold "it" or "them" ("Update: turn it in by Monday.");
+or when they hold "that" or "this" with only such words after it. Otherwise
+its head is the last word left once linking words, modals, "now", the other
+words of _HEAD_DROPPED and words ending in "ly" are dropped from the end:
+with none left it joins the task right before it, and with one it joins the
+nearest earlier task of the note whose title holds the head, the two compared
+without a final "s", "es" or "'s" ("Update: essays are due Monday.", "The
+essay is actually due Monday."), unless the piece puts right before its head
+a word that title lacks ("Update: the final essay is due Monday." is a task
+of its own), or the piece and that title each put a different word right
+before it; a determiner, a joining word or all, every, each, any or both
+before the piece's head is not counted ("Update: turn in essays by Monday."
+joins). A task joined past another keeps its own sentences and the
+correction, in the note's order, without the sentences between.
+
+A correction signal is a remark holding a correction cue word, or "now",
+"actually" or "instead" before the cue as above. In a note with two or more
+earlier tasks, a joining piece with a signal leaves every earlier task with
+no deadline, its date offered unselected, when the words left open with both,
+they, these, those or all and only linking words, modals, "now", "say",
+"meant" and words ending in "ly" follow, or hold a title word of two earlier
+tasks, compared without a final "s", "es" or "'s", the words of _FILLER and
+joining words not counted ("Essay due Friday. Poster due Thursday. Update:
+both are due Monday." joins the Poster and the Essay offers Friday
+unselected). Behind a reminder opening with no signal such a piece is a task
+of its own and no earlier task changes. A piece that joins no task is a task
+of its own, its date read from its own wording. The task right before it
+sets no deadline and offers its date unselected when the piece stands behind
+a remark holding a correction cue word ("Update: the poster is due
+Monday."); when it has a signal, its head is a word of that task's title and
+the word right before its head, counted as above, is one the title lacks
+("The final essay is now due Monday."); or when its lead-in is no remark and
+holds a correction cue word other than updated, apologies, change and changed
+("Test correction: due Monday."). No task further back changes, and in every
+other case that task keeps its reading: "Reminder: the photo essay is due
+Monday.", "Field trip note: due Monday." and "Climate change essay: due
+Monday." leave the date before them set. A name whose first word makes its
+lead-in a remark joins as one ("Sorry letter: due Monday." has no task of
+its own), and "Both are due Monday." with no lead-in and none of the three
+words changes no earlier task.
+
+Three kinds of piece are read by the rules of this paragraph instead: one
+behind no remark and no reminder opening, with none of "now", "actually" and
+"instead" before its cue as above; one whose lead-in is one word that is no
+remark; and one whose lead-in is two or
+more words that are no remark and share no word with the preceding task's
+title. One word that is no remark, standing as the whole lead-in right before
+the cue, is an assignment's name, and the piece is a task of its own
+("Poster: due Monday."). A lead-in of two or more words that are no remark
+and share no word with the preceding task's title names an assignment of its
+own: the piece starts a task, titled by those words when a pronoun or "now"
+stands before its cue or only linking words are left, and its date is read
+from its own wording. A lead-in of one word that is no remark is set aside
+when a pronoun, "now" or a linking word follows it; the pronouns here are it,
+this, that, they, these and those, with "'s", "'re" or "'ll" or not. The
+piece joins the task before it when its lead, less a set-aside lead-in, holds
 only pronouns, linking words and "now"; when its subject is a pronoun, one
 standing right before the cue or before linking words, "now" and words ending
 in "ly" right before it, whatever words come before the pronoun ("Actually it
-is due Monday."); or when "now" stands right before its cue or before linking
-words right before it, and the words after the lead's last clause mark hold
-only determiners, linking words, "now", words ending in "ly" and the
-preceding task's title words. One word that is no remark, standing as the whole lead-in
-right before the cue, is an assignment's name, and the piece is a task of its
-own ("Poster: due Monday."). A lead-in of two or more words that are no
-remark and share no word with the preceding task's title names an assignment
-of its own: the piece starts a task, titled by those words when a pronoun or
-"now" stands before its cue or only linking words are left, and its date is
-read from its own wording. Title words alone, with no lead-in and no "now",
-do not join. A statement whose sentence says no homework never joins. A
-note's first piece holding such a statement joins the pieces before it the
-same way when the last of them holds a negated or superseded statement.
-Pieces with no statement before a note's first
+is due Monday."); when, after a set-aside lead-in or a reminder opening, the
+words left hold only pronouns, linking words, "now", words ending in "ly",
+determiners and the preceding task's title words; or when "now" stands right
+before its cue or before linking words right before it, and the words after
+the lead's last clause mark hold only determiners, linking words, "now",
+words ending in "ly" and the preceding task's title words. Title words alone,
+with no lead-in and no "now", do not join.
+
+A statement whose sentence says no homework never joins. A note's first piece
+holding such a statement joins the pieces before it the same way when the
+last of them holds a negated or superseded statement. A piece with no
+statement goes with the task of the piece before it. Pieces with no statement
+before a note's first
 piece holding one join that piece's task when they name no date, read on their
 own as unclear (neither homework nor a note that says no homework), and that
 piece does not say no homework; the title and standing are read from that
@@ -366,21 +457,38 @@ _SUPERSEDED_LEAD: Final = re.compile(
     rf"\b(?:was|were|originally|previous(?:ly)|had\s+been|used\s+to)(?:\s+{_LINK})*\s+\Z",
     re.IGNORECASE,
 )
+_BEFORE_REMINDER: Final = (
+    r"(?:just|a|an|this|is|quick|friendly|gentle|kind|final|one|more|another|as|here"
+    rf"|here[{_APOSTROPHES}]s)"
+)
+"""The words that may stand before "reminder" in a reminder opening."""
 _REMINDER: Final = re.compile(
-    rf"\s*(?:don[{_APOSTROPHES}]t\s+forget|do\s+not\s+forget|(?:please\s+)?remember|reminder"
-    r"|please\s+note|note(?=\s+that\b))(?:\s+that)?\b(?:\s*:)?",
+    rf"\s*(?:(?:{_BEFORE_REMINDER}\s+){{0,3}}reminder(?:\s+that)?\b(?:\s*[:,])?"
+    rf"|(?:don[{_APOSTROPHES}]t\s+forget|do\s+not\s+forget|(?:please\s+)?remember"
+    r"|please\s+note|note(?=\s+that\b))(?:\s+that)?\b(?:\s*:)?)",
     re.IGNORECASE,
 )
-"""A reminder opening: "don't forget", "do not forget", "remember", "please remember",
-"reminder", "please note" or "note that", with or without "that" and ":"."""
+"""A reminder opening: up to three words of _BEFORE_REMINDER and "reminder", with or without
+"that" and a colon or a comma; or "don't forget", "do not forget", "remember", "please
+remember", "please note" or "note that", with or without "that" and ":"."""
+_SURE_OPENING: Final = re.compile(
+    r"\s*(?:please\s+)?(?:make|be)\s+sure(?:\s+(?:that|to))?\b(?:\s*:)?", re.IGNORECASE
+)
+"""The opening "Make sure" or "Be sure", after "please" or not, with or without "to", "that"
+or a colon: set aside only where a statement with "by" is checked for a determiner out of
+place."""
+_CLOSED_OPENINGS: Final = (("pretty", "sure"), ("skip",), ("forget", "about"), ("looks", "like"))
+"""The four openings that fail a lead before either cue."""
 _BE_FORMS: Final = frozenset({"be", "been", "being"})
 _WITH_WILL: Final = frozenset({"now", "sti" + "ll", "also"})
 """The one word that may stand between "will" and "be" right before a cue."""
 _POSSIBILITY: Final = re.compile(
-    r"\b(?:can|could|would|(?:had|supposed|expected|going)\s+to)\b", re.IGNORECASE
+    r"\b(?:can|could|would|(?:had|supposed|expected|going|needed)\s+to"
+    r"|did\s+(?:have|need)\s+to)\b",
+    re.IGNORECASE,
 )
-"""A possibility modal, a past obligation or an expectation form: each fails a lead; "may" and
-"might" are hedge words."""
+"""A possibility modal, a past obligation ("had to", "needed to", "did have to", "did need
+to") or an expectation form: each fails a lead; "may" and "might" are hedge words."""
 _OBLIGATION_WORDS: Final = r"(?:must|should|shall|(?:have|has|need|needs|ought)\s+to)"
 _OBLIGATION: Final = re.compile(rf"\b{_OBLIGATION_WORDS}\b", re.IGNORECASE)
 """An obligation modal: the words before the first one in a lead are its subject."""
@@ -462,8 +570,54 @@ _FILLER: Final = frozenset(
 """Determiners, linking words and "now": no word of a lead that names an assignment."""
 _REMARK_WORDS: Final = frozenset(
     {"note", "update", "correction", "reminder", "sorry", "oops", "typo", "fyi", "edit"}
+    | {"whoops", "actually"}
 )
 """Words that make a lead-in a remark about the task before it and no assignment's name."""
+_SOLE_REMARK_WORDS: Final = frozenset({"updated", "apologies", "change", "changed"})
+"""Words that make a lead-in a remark only as its one word ("Changed: due Monday.")."""
+_BARE_CUES: Final = frozenset({"update", "fyi", "actually"})
+"""The remark words that, right before a cue with no punctuation after them, are read as a
+lead-in ("Update due Monday.")."""
+_CORRECTION_CUES: Final = frozenset(
+    {"update", "updated", "correction", "sorry", "oops", "whoops", "typo", "edit", "fyi"}
+    | {"actually", "change", "changed", "apologies"}
+)
+"""The remark words that mark a correction: behind a lead-in holding one, a piece that stays
+a task of its own leaves the task right before it with no deadline."""
+_OPENING_CUES: Final = _CORRECTION_CUES - _SOLE_REMARK_WORDS
+"""The correction cue words that make a lead-in a remark wherever they open it ("Sorry
+everyone:"). Inside a lead-in that is no remark they name a task of its own and leave the
+task right before it with no deadline ("Test correction:")."""
+_BEFORE_A_CUE: Final = frozenset(
+    {"a", "an", "the", "one", "more", "another", "just", "also", "quick", "small"}
+    | {"important", "final", "last", "minor", "brief", "new"}
+)
+"""The words that may stand before a remark word that ends a lead-in ("Quick update:")."""
+_PLURAL_SUBJECTS: Final = frozenset({"both", "they", "these", "those", "all"})
+"""The subjects with which a correction reaches every earlier task of its note."""
+_AS_NOW_CUE: Final = re.compile(rf"\b(?:now|actually|instead)(?:\s+{_LINK})*\s+\Z", re.IGNORECASE)
+""""now", "actually" or "instead" right before a cue, or right before linking words right
+before it."""
+_COUNT_WORDS: Final = frozenset({"count", "counts", "counting"})
+"""The second words after which a lead is not failed by its opening ("Skip counting")."""
+_MODALS: Final = frozenset(
+    {"can", "could", "may", "might", "would", "must", "should", "shall", "will"}
+)
+_VERB_WORDS: Final = _LINK_WORDS | _MODALS | {"now", "say", "meant"}
+"""Linking words, modals, "now", "say" and "meant": with words ending in "ly", the only words
+that may follow a pronoun, a speaker or a modal that opens a joining correction's lead."""
+_HEAD_DROPPED: Final = _LINK_WORDS | _MODALS | {"now", "sti" + "ll", "also", "instead"}
+"""The words dropped, with words ending in "ly", from the end of a correction's lead to find
+its head, the last word before its cue."""
+_JOINING_PRONOUNS: Final = frozenset({"it", "that", "this", "they", "these", "those", "both"})
+_JOINING_SPEAKERS: Final = frozenset({"i", "we"})
+_ENDING: Final = re.compile(r"'[a-z]+\Z")
+"""An apostrophe and letters at a word's end ("it's", "essay's")."""
+_BEFORE_TO_BE: Final = frozenset(
+    {"seems", "seemed", "appears", "supposed", "expected", "meant", "going", "likely", "unlikely"}
+    | {"said", "has", "have", "had", "needs", "need", "ought", "used", "scheduled", "set", "slated"}
+)
+"""The words a title drops together with a "to be" right after them."""
 _TITLE_VERBS: Final = frozenset(
     {"now", "sti" + "ll", "can", "could", "may", "might", "would", "must", "should", "shall"}
     | _LINK_WORDS
@@ -593,6 +747,9 @@ class _Unit:
     sentences by sure ends. ``joined`` says it joined the task before it with a
     statement of its own. ``heading`` is the title its lead-in gives where that
     lead-in names an assignment apart from the task before it, or empty.
+    ``unsettled`` says a later piece of the note leaves its task with no
+    deadline: a task of its own that corrects it by its wording, or a joined
+    correction that reaches every earlier task.
     """
 
     paragraph: int
@@ -607,6 +764,7 @@ class _Unit:
     sentences: int = 1
     joined: bool = False
     heading: str = ""
+    unsettled: bool = False
 
     @property
     def before(self) -> str:
@@ -930,6 +1088,38 @@ def _is_name(words: Sequence[str]) -> bool:
     return True
 
 
+def _misplaced_determiner(words: str) -> bool:
+    """Whether a lead before "by" that holds no obligation modal holds a linking word ("is",
+    "are", or "will be" with at most one word of _WITH_WILL between) and, before the first
+    one, a determiner that is neither its first word, nor its second, nor after a joining
+    word, nor right before that linking word. "Make sure" or "Be sure" that opens the lead,
+    with "please", "to", "that" or a colon or not, is set aside first, and then an opening
+    "please"; "a" is a determiner only in small letters."""
+    sure = _SURE_OPENING.match(words)
+    written = _TOKEN.findall(words[sure.end() :] if sure else words)
+    if written[:1] and written[0].lower() == "please":
+        del written[0]
+    low = [word.lower() for word in written]
+    first = None
+    for place, word in enumerate(low):
+        ahead = low[place + 1 : place + 3]
+        will_be = ahead[:1] == ["be"] or (
+            len(ahead) == 2 and ahead[0] in _WITH_WILL and ahead[1] == "be"
+        )
+        if word in ("is", "are") or (word == "will" and will_be):
+            first = place
+            break
+    if first is None:
+        return False
+    for place in range(2, first - 1):
+        word = low[place]
+        if word not in _DETERMINERS or (word == "a" and written[place] != "a"):
+            continue
+        if low[place - 1] not in _JOINING_WORDS:
+            return True
+    return False
+
+
 def _unshaped(words: str, *, due: bool) -> bool:
     """Whether a lead, after an optional "please" that opens it, has a shape the deadline
     test does not recognize. ``due`` says the cue is "due".
@@ -939,10 +1129,14 @@ def _unshaped(words: str, *, due: bool) -> bool:
     "ly" follows its last linking word; when it holds a possibility modal, a past obligation,
     an expectation form, an obligation modal followed by "have", or "nobody"; when the words
     before its first obligation modal are two or more and do not open with a determiner or
-    with all, every, each, any or both, or are not shaped as a name; when, before "due", it
-    is not shaped as a name; when a subject pronoun, alone or contracted, is followed by a
-    word that is no linking word; or when its first word ends in "ly", other words follow,
-    and that word is neither an instruction verb nor a naming word.
+    with all, every, each, any or both, or are not shaped as a name, or end in a word ending
+    in "ly" that is neither a naming word nor an instruction verb; when, before "by" with no
+    obligation modal, a determiner stands out of place before its first linking word; when,
+    before "due", it is not shaped as a name; when a subject pronoun, alone or contracted, is
+    followed by a word that is no linking word; when it opens with one of the four closed
+    openings and its second word is not count, counts or counting; or when its first word
+    ends in "ly", other words follow, and that word is neither an instruction verb nor a
+    naming word.
     """
     written = _TOKEN.findall(words)
     if written[:1] and written[0].lower() == "please":
@@ -950,6 +1144,9 @@ def _unshaped(words: str, *, due: bool) -> bool:
     low = [word.lower().replace("\N{RIGHT SINGLE QUOTATION MARK}", "'") for word in written]
     if not low:
         return False
+    closed = any(tuple(low[: len(opening)]) == opening for opening in _CLOSED_OPENINGS)
+    if closed and not (len(low) > 1 and low[1] in _COUNT_WORDS):
+        return True
     if low[-1] in _BE_FORMS:
         ahead = low[-3:-1] if len(low) > 2 and low[-2] in _WITH_WILL else low[-2:-1]
         if low[-1] != "be" or ahead[:1] != ["will"]:
@@ -966,6 +1163,11 @@ def _unshaped(words: str, *, due: bool) -> bool:
         plain = low[0] in _DETERMINERS | _SUBJECT_OPENERS and _is_name(subject)
         if len(subject) > 1 and not plain:
             return True
+        last = subject[-1].lower() if subject else ""
+        if last.endswith("ly") and last not in _NAMING_WORDS | _INSTRUCTION_VERBS:
+            return True
+    elif not due and _misplaced_determiner(words):
+        return True
     if due and not _is_name(written):
         return True
     if any(_SPEAKER.fullmatch(word) and after not in _LINK_WORDS for word, after in pairwise(low)):
@@ -1205,11 +1407,20 @@ def _units(paragraph: int, text: str, day: date) -> list[_Unit]:
 
 
 def _words(units: Sequence[_Unit], paragraphs: Sequence[str]) -> str:
-    """The words of a task as written: each paragraph's part, joined by a blank line."""
+    """The words of a task as written: each paragraph's part, joined by a blank line. Where
+    a sentence of another task stands between two of its pieces in a paragraph, the part is
+    its own sentences only, in the note's order, joined by a space."""
     parts: list[str] = []
     for paragraph in sorted({unit.paragraph for unit in units}):
         mine = [unit for unit in units if unit.paragraph == paragraph]
-        parts.append(paragraphs[paragraph][mine[0].start : mine[-1].end])
+        text = paragraphs[paragraph]
+        runs = [[mine[0]]]
+        for unit in mine[1:]:
+            if text[runs[-1][-1].end : unit.start].strip():
+                runs.append([unit])
+            else:
+                runs[-1].append(unit)
+        parts.append(" ".join(text[run[0].start : run[-1].end] for run in runs))
     return "\n\n".join(parts)
 
 
@@ -1250,18 +1461,55 @@ def _name(unit: _Unit) -> str:
 
 
 def _less_verb_phrase(name: str) -> str:
-    """A title without the verb phrase at its end: a final "be", then a "to" with the one
-    word before it, then linking words, modals and the words of _TITLE_VERBS. A title that
-    does not end in "be" stays whole, and so does one of which nothing would remain."""
+    """A title without the verb phrase at its end.
+
+    A final "to be" is dropped with the word before it when that word is one of
+    _BEFORE_TO_BE, and alone when that word is a linking word. A final "be" with no "to" is
+    dropped after a modal, "will" or a word ending in "'ll", with at most one word of
+    _WITH_WILL or one word ending in "ly" between; the "'ll" and the word ending in "ly" go
+    with it. Then the words of _TITLE_VERBS at the end are dropped, and after them "not" or
+    a word ending in "n't" with the words of _TITLE_VERBS before it. Any other title stays
+    whole, and so does one of which nothing would remain.
+    """
     words = name.split()
     if not words or words[-1].lower() != "be":
         return name
     kept = words[:-1]
-    if len(kept) > 1 and kept[-1].lower() == "to":
-        del kept[-2:]
+    low = [word.lower().replace("\N{RIGHT SINGLE QUOTATION MARK}", "'") for word in kept]
+    if low and low[-1] == "to":
+        before = low[-2] if len(low) > 1 else ""
+        if before in _BEFORE_TO_BE:
+            del kept[-2:]
+        elif before in _LINK_WORDS:
+            del kept[-1:]
+        else:
+            return name
+    else:
+        between = low[-1] if low else ""
+        adverb = between.endswith("ly") and between not in _WITH_WILL and len(low) > 1
+        ahead = low[:-1] if between in _WITH_WILL or adverb else low
+        if not ahead:
+            return name
+        if ahead[-1] in _MODALS:
+            if adverb:
+                kept.pop()
+        elif ahead[-1].endswith("'ll"):
+            kept = [*kept[: len(ahead) - 1], kept[len(ahead) - 1][:-3]]
+        else:
+            return name
     while kept and kept[-1].lower() in _TITLE_VERBS:
         kept.pop()
+    while kept and _negation_ending(kept[-1]):
+        kept.pop()
+        while kept and kept[-1].lower() in _TITLE_VERBS:
+            kept.pop()
     return " ".join(kept).rstrip(_TRAILING) if kept else name
+
+
+def _negation_ending(word: str) -> bool:
+    """Whether a word is "not" or ends in "n't", its apostrophe ASCII or typographic."""
+    low = word.lower().replace("\N{RIGHT SINGLE QUOTATION MARK}", "'")
+    return low == "not" or low.endswith("n't")
 
 
 def _says_none(units: Sequence[_Unit]) -> bool:
@@ -1275,7 +1523,8 @@ def _reading(units: Sequence[_Unit], paragraphs: Sequence[str]) -> _Reading:
     """One task from the pieces that make it up.
 
     A task that says no homework is read by the no-homework rule alone. Any other task sets
-    a deadline only when it is one complete affirmative sentence meaning one date; otherwise
+    a deadline only when it is one complete affirmative sentence meaning one date and no
+    later piece of the note leaves it unsettled; otherwise
     it offers its dates unselected, as milestones where every label is clean. Its standing is
     read from its first piece holding a statement by the no-homework rule's reading.
     """
@@ -1288,7 +1537,8 @@ def _reading(units: Sequence[_Unit], paragraphs: Sequence[str]) -> _Reading:
     only = statements[0] if len(statements) == 1 else None
     name = _name(units[holding])
     sentences = sum(unit.sentences for unit in units)
-    if only is not None and sentences == 1 and len(only.dates) == 1 and only.complete:
+    one = only is not None and sentences == 1 and not any(unit.unsettled for unit in units)
+    if only is not None and one and len(only.dates) == 1 and only.complete:
         named = {day for unit in units for day in unit.named} - set(only.control)
         return _Reading(
             name, words, noted.standing, only.dates[0], only.words, (), tuple(sorted(named))
@@ -1386,14 +1636,201 @@ def _title_words(before: Sequence[_Unit]) -> set[str]:
 
 def _remark(words: Sequence[str]) -> bool:
     """Whether a lead-in's words, in small letters, are a remark and no assignment's name:
-    they open with "please", or hold one of the remark words (note, update, correction,
-    reminder, sorry, oops, typo, fyi or edit)."""
-    return words[:1] == ["please"] or not _REMARK_WORDS.isdisjoint(words)
+    they open with "please" or with a word of _OPENING_CUES; they end in a remark word
+    (note, update, correction, reminder, sorry, oops, whoops, typo, fyi, edit or actually)
+    with no word before it or only words of _BEFORE_A_CUE; or they are one word of updated,
+    apologies, change and changed."""
+    if words[:1] == ["please"] or (words and words[0] in _OPENING_CUES):
+        return True
+    if words and words[-1] in _REMARK_WORDS and _BEFORE_A_CUE.issuperset(words[:-1]):
+        return True
+    return len(words) == 1 and words[0] in _SOLE_REMARK_WORDS
 
 
-def _correction(unit: _Unit, before: Sequence[_Unit]) -> tuple[bool, str]:
-    """Whether a piece with a statement of its own joins the task before it as a correction,
-    and, where it does not, the title its lead-in gives it, or empty.
+def _forms(word: str) -> set[str]:
+    """A word in small letters, and the word without a final "'s", "es" or "s"."""
+    low = word.lower().replace("\N{RIGHT SINGLE QUOTATION MARK}", "'")
+    found = {low}
+    for ending in ("'s", "es", "s"):
+        if low.endswith(ending) and len(low) > len(ending):
+            found.add(low[: -len(ending)])
+    return found
+
+
+def _verbs_only(words: Sequence[str]) -> bool:
+    """Whether the words, in small letters, are only linking words, modals, "now", "say",
+    "meant" and words ending in "ly"."""
+    return all(word in _VERB_WORDS or word.endswith("ly") for word in words)
+
+
+def _joined_task(lead: Sequence[str], tasks: Sequence[Sequence[_Unit]]) -> int | None:
+    """The place of the earlier task a correction joins, from the words of its lead after
+    its lead-in, or None where it names an assignment of its own.
+
+    It joins the task right before it when its lead is empty; when the lead opens with a
+    pronoun (it, that, this, they, these, those, both), "all", a speaker (I, we) or a modal
+    and only linking words, modals, "now", "say", "meant" and words ending in "ly" follow;
+    when it holds "it" or "them"; or when it holds "that" or "this" with only such words
+    after it. Otherwise it is read by its head (``_head``): with none it joins the task
+    right before it, and with one it joins the nearest earlier task whose title holds the
+    head, compared without a final "s", "es" or "'s", unless the piece puts right before
+    its head a word that title lacks, or the piece and that title each put a different word
+    right before it; a determiner, a joining word or all, every, each, any or both before
+    the piece's head is not counted.
+    """
+    low = [word.lower().replace("\N{RIGHT SINGLE QUOTATION MARK}", "'") for word in lead]
+    last = len(tasks) - 1
+    bare = [_ENDING.sub("", word) for word in low]
+    opening = _JOINING_PRONOUNS | _JOINING_SPEAKERS | _MODALS | {"all"}
+    if not bare or (bare[0] in opening and _verbs_only(bare[1:])):
+        return last
+    if "it" in bare or "them" in bare:
+        return last
+    for place, word in enumerate(bare):
+        if word in ("that", "this") and _verbs_only(bare[place + 1 :]):
+            return last
+    head, mine = _head(lead)
+    if not head:
+        return last
+    for place in range(last, -1, -1):
+        title = _title_list(tasks[place])
+        if mine and not any(_forms(mine) & _forms(word) for word in title):
+            continue
+        for at, word in enumerate(title):
+            if not _forms(head) & _forms(word):
+                continue
+            theirs = title[at - 1] if at else ""
+            if mine and theirs and not _forms(mine) & _forms(theirs):
+                continue
+            return place
+    return None
+
+
+def _title_list(before: Sequence[_Unit]) -> list[str]:
+    """The words of a task's title, in small letters and in order."""
+    return [word.lower() for word in _TOKEN.findall(_name(before[_holding(before)]))]
+
+
+def _head(lead: Sequence[str]) -> tuple[str, str]:
+    """A correction's head and the word it puts right before it, in small letters, from the
+    words of its lead. The head is the last word once linking words, modals, "now", the
+    other words of _HEAD_DROPPED and words ending in "ly" are dropped from the end, or empty
+    where none is left. The word before it is empty where there is none or it is a
+    determiner, a joining word or all, every, each, any or both."""
+    kept = [word.lower().replace("\N{RIGHT SINGLE QUOTATION MARK}", "'") for word in lead]
+    while kept and (kept[-1] in _HEAD_DROPPED or kept[-1].endswith("ly")):
+        kept.pop()
+    if not kept:
+        return "", ""
+    before = kept[-2] if len(kept) > 1 else ""
+    if before in _DETERMINERS | _JOINING_WORDS | _SUBJECT_OPENERS:
+        before = ""
+    return kept[-1], before
+
+
+def _apart_past_a_shared_head(lead: Sequence[str], before: Sequence[_Unit]) -> bool:
+    """Whether a piece's head is a word of the title of the task right before it while the
+    piece puts right before its head a word that title lacks, a determiner, a joining word
+    or all, every, each, any or both not counted; words compare without a final "s", "es"
+    or "'s"."""
+    head, mine = _head(lead)
+    if not head or not mine:
+        return False
+    title = _title_list(before)
+    shared = any(_forms(head) & _forms(word) for word in title)
+    return shared and not any(_forms(mine) & _forms(word) for word in title)
+
+
+def _reaches_every(lead: Sequence[str], tasks: Sequence[Sequence[_Unit]]) -> bool:
+    """Whether a piece's lead reaches every earlier task of a note that holds two or more:
+    it opens with both, they, these, those or all and only linking words, modals, "now",
+    "say", "meant" and words ending in "ly" follow, or it holds a title word of two of the
+    tasks, compared without a final "s", "es" or "'s", the words of _FILLER and joining
+    words not counted."""
+    if len(tasks) < 2:
+        return False
+    low = [word.lower().replace("\N{RIGHT SINGLE QUOTATION MARK}", "'") for word in lead]
+    bare = [_ENDING.sub("", word) for word in low]
+    if bare and bare[0] in _PLURAL_SUBJECTS and _verbs_only(bare[1:]):
+        return True
+    named = 0
+    for before in tasks:
+        title = _title_words(before) - _FILLER - _JOINING_WORDS
+        named += any(_forms(word) & _forms(each) for word in title for each in low)
+    return named > 1
+
+
+def _correction(
+    unit: _Unit, tasks: Sequence[Sequence[_Unit]]
+) -> tuple[int | None, str, bool, bool]:
+    """Where a piece with a statement of its own joins an earlier task of its note as a
+    correction: that task's place or None; where it joins none, the title its lead-in gives
+    it, or empty, and whether the task right before it is left with no deadline; and, where
+    it joins one, whether every earlier task of the note is left with no deadline.
+
+    A statement whose sentence says no homework before its cue never joins, and a piece
+    that is only a statement joins the task right before it. The lead-in is the lead's words
+    before its last clause mark; a lead that is one word of _BARE_CUES, right before the
+    cue, is read as a lead-in with nothing after it. Behind a lead-in that is a remark or a
+    reminder opening, or with "now", "actually" or "instead" right before its cue or before
+    linking words right before it, a piece joins the task ``_joined_task`` gives, unless
+    its lead-in is one word that is no remark or two or more words that are no remark and
+    share none with the title of the task right before it. Any other piece is read by
+    ``_adjacent``.
+
+    A correction signal is a lead-in that is a remark holding a correction cue word
+    (_CORRECTION_CUES), or one of those three words before the cue. A joining piece with a
+    signal whose lead reaches every earlier task (``_reaches_every``) leaves each of them
+    with no deadline. Behind a reminder opening with no signal, a piece whose lead reaches
+    every earlier task joins none and changes none. A piece that joins no task is a task of
+    its own, and the task right before it is left with no deadline when the piece stands
+    behind a remark holding a correction cue word, when it has a signal and names that
+    task's title past a word the title lacks (``_apart_past_a_shared_head``), or when its
+    lead-in is no remark and holds a word of _OPENING_CUES.
+    """
+    last = len(tasks) - 1
+    first = unit.statements[0]
+    if first.notice:
+        return None, "", False, False
+    if unit.only_statement:
+        return last, "", False, False
+    marks = list(_MARK.finditer(first.lead))
+    head = first.lead[: marks[-1].start()] if marks else ""
+    rest = first.lead[marks[-1].end() :] if marks else first.lead
+    named = [word.lower() for word in _TOKEN.findall(head)]
+    left = [word.lower() for word in _TOKEN.findall(rest)]
+    if not named and len(left) == 1 and left[0] in _BARE_CUES:
+        named, rest = left, ""
+    aside = bool(named) and _remark(named)
+    name = bool(named) and not aside
+    apart = name and len(named) > 1 and _title_words(tasks[-1]).isdisjoint(named)
+    lead = _TOKEN.findall(rest)
+    cued = aside and not _CORRECTION_CUES.isdisjoint(named)
+    signal = cued or _AS_NOW_CUE.search(rest) is not None
+    reach = signal and _reaches_every(lead, tasks)
+    falls = (
+        cued
+        or (signal and _apart_past_a_shared_head(lead, tasks[-1]))
+        or (name and not _OPENING_CUES.isdisjoint(named))
+    )
+    if (signal or aside or first.reminded) and not apart and not (name and len(named) == 1):
+        place = _joined_task(lead, tasks)
+        if place is None:
+            return None, "", falls, False
+        if first.reminded and not signal and _reaches_every(lead, tasks):
+            return None, "", False, False
+        return place, "", False, reach
+    joins, heading = _adjacent(unit, tasks[-1])
+    if joins:
+        return last, heading, False, reach
+    return None, heading, falls, False
+
+
+def _adjacent(unit: _Unit, before: Sequence[_Unit]) -> tuple[bool, str]:
+    """Whether a piece with a statement of its own, read with no set-aside lead-in and no
+    "now" before its cue, or behind a lead-in that names an assignment, joins the task
+    before it as a correction, and, where it does not, the title its lead-in gives it, or
+    empty.
 
     A statement whose sentence says no homework before its cue never joins. The lead-in is
     the lead's words before its last clause mark. A lead-in of one word that is no remark,
@@ -1458,8 +1895,11 @@ def _read_block(block: NoteBlock) -> list[_Reading]:
     """The tasks of one note, in the order it writes them.
 
     A piece with a deadline statement of its own starts a task, unless it is only a deadline
-    statement or joins the task before it as a correction. A piece with none joins the task
-    before it. Pieces with none at the head of a note join the task of its first piece
+    statement or joins an earlier task as a correction. Where it starts a task and
+    ``_correction`` says the task right before it falls back, that task is marked to set no
+    deadline; where it joins and reaches every earlier task, each of them is. A piece
+    with none goes with the task of the piece before it. Pieces with none at the head of a
+    note join the task of its first piece
     holding a statement when they name no date, read on their own as unclear, and that piece
     does not say no homework; otherwise they are the first task. A first such piece that is
     only a deadline statement, or that corrects a negated or superseded statement in the last
@@ -1474,11 +1914,13 @@ def _read_block(block: NoteBlock) -> list[_Reading]:
         return [_Reading(_headline(paragraphs[0]), words, Standing.UNCLEAR, None, None, (), ())]
     tasks: list[list[_Unit]] = []
     head: list[_Unit] = []
+    current = 0
     for paragraph, text in enumerate(paragraphs):
         for unit in _units(paragraph, text, block.day):
             if not tasks and not unit.statements:
                 head.append(unit)
-            elif not tasks:
+                continue
+            if not tasks:
                 if head and (unit.only_statement or _corrects(unit, head)):
                     tasks.append([*head, replace(unit, joined=True)])
                 elif head and _leads_in(head, paragraphs) and not _says_none([unit]):
@@ -1490,13 +1932,21 @@ def _read_block(block: NoteBlock) -> list[_Reading]:
                     tasks.append([unit])
                 head = []
             elif not unit.statements:
-                tasks[-1].append(unit)
+                tasks[current].append(unit)
+                continue
             else:
-                joins, heading = _correction(unit, tasks[-1])
-                if joins:
-                    tasks[-1].append(replace(unit, joined=True))
-                else:
-                    tasks.append([replace(unit, heading=heading)])
+                place, heading, falls, every = _correction(unit, tasks)
+                if place is not None:
+                    tasks[place].append(replace(unit, joined=True))
+                    current = place
+                    if every:
+                        for task in tasks:
+                            task[0] = replace(task[0], unsettled=True)
+                    continue
+                if falls:
+                    tasks[-1][0] = replace(tasks[-1][0], unsettled=True)
+                tasks.append([replace(unit, heading=heading)])
+            current = len(tasks) - 1
     if head:
         tasks.append(head)
     return [_reading(units, paragraphs) for units in tasks]
@@ -1507,7 +1957,9 @@ def _corrects(unit: _Unit, head: Sequence[_Unit]) -> bool:
     last of them holds a negated or superseded statement that says no homework nowhere, and
     the piece joins them as it would join any task."""
     last = head[-1].every
-    return bool(last) and not any(each.notice for each in last) and _correction(unit, head)[0]
+    if not last or any(each.notice for each in last):
+        return False
+    return _correction(unit, [head])[0] is not None
 
 
 def read_notes(blocks: Sequence[NoteBlock]) -> tuple[NoteTask, ...]:

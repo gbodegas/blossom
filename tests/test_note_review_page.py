@@ -5449,6 +5449,29 @@ FALLS_BACK = [
         "2026-11-16", "Pretty sure the essay must be done by Friday.", (20,), id="pretty-sure-must"
     ),
     pytest.param("2026-11-16", "Bring the essay due Friday.", (20,), id="bring"),
+    pytest.param(
+        "2026-11-16", "Pretty sure essays are due Friday.", (20,), id="pretty-sure-essays"
+    ),
+    pytest.param("2026-11-16", "Skip essay due Friday.", (20,), id="skip-essay"),
+    pytest.param("2026-11-16", "Forget about the essay due Friday.", (20,), id="forget-about"),
+    pytest.param(
+        "2026-11-16", "Looks like the essay gets turned in by Friday.", (20,), id="looks-like-by"
+    ),
+    pytest.param(
+        "2026-11-16",
+        "Pretty sure the essay will be collected by Friday.",
+        (20,),
+        id="pretty-sure-collected",
+    ),
+    pytest.param(
+        "2026-11-16", "Students needed to turn in the essay by Friday.", (20,), id="needed-to"
+    ),
+    pytest.param(
+        "2026-11-16", "The essay did have to be turned in by Friday.", (20,), id="did-have-to"
+    ),
+    pytest.param(
+        "2026-11-16", "The essay supposedly has to be in by Friday.", (20,), id="supposedly"
+    ),
 ]
 """Notes whose one task sets no school date: the school day, the words and the November days
 the card offers."""
@@ -5552,6 +5575,16 @@ SETS = [
     pytest.param(
         "2026-11-17", "Essay due Friday. Poster: due Monday.", (20, 23), id="poster-colon"
     ),
+    pytest.param(
+        "2026-11-16", "Make sure your essay is finished by Friday.", (20,), id="make-sure"
+    ),
+    pytest.param(
+        "2026-11-16", "Read the assigned chapter by Friday.", (20,), id="read-the-assigned-chapter"
+    ),
+    pytest.param(
+        "2026-11-16", "The family must sign the form by Friday.", (20,), id="the-family-must"
+    ),
+    pytest.param("2026-11-16", "Skip counting worksheet due Friday.", (20,), id="skip-counting"),
 ]
 """Notes whose every task sets the school's date: the school day, the words and each task's
 November day, in order."""
@@ -5814,6 +5847,13 @@ LEAD_IN_CORRECTIONS = [
     pytest.param("Correction: due Monday.", id="correction"),
     pytest.param("Please note: it is due Monday.", id="please-note-it-is"),
     pytest.param("Sorry, it is due Monday.", id="sorry-it-is"),
+    pytest.param("Correction: it should be due Monday.", id="correction-it-should-be"),
+    pytest.param("Update: turn it in by Monday.", id="update-turn-it-in"),
+    pytest.param("Update: essays are due Monday.", id="update-essays-are"),
+    pytest.param("Sorry, I meant due Monday.", id="sorry-i-meant"),
+    pytest.param("Whoops: due Monday.", id="whoops"),
+    pytest.param("Changed: due Monday.", id="changed"),
+    pytest.param("Sorry everyone: due Monday.", id="sorry-everyone"),
 ]
 """Corrections behind a lead-in, each read after "Essay due Friday." under Tuesday 11/17."""
 
@@ -6001,11 +6041,6 @@ def test_a_correction_after_a_date_the_note_replaces_joins_its_task_and_offers_b
 
 DOCUMENTED_LIMIT = [
     pytest.param("Rumored essay due Friday.", "Rumored essay", id="rumored"),
-    pytest.param(
-        "Pretty sure the essay will be collected by Friday.",
-        "Pretty sure the essay will be collected",
-        id="pretty-sure-collected",
-    ),
 ]
 """The reader's documented limit under Monday 11/16: a hedge inside the words before the cue
 that none of its fixed words or shapes catches, and the title its card shows."""
@@ -6111,3 +6146,320 @@ def test_a_hedged_note_naming_saved_homework_joins_its_card_and_adds_only_its_wo
     assert sorted(kept["Short essay"]) == sorted([HEDGED_NOTE, "Write 250 words on your question."])
     assert len(rows_after["assignments"]) == len(rows_before["assignments"])
     assert rows_after["date_claims"] == rows_before["date_claims"]
+
+
+ADD_THE_NOTES = "The assignments are already saved. Tick the notes you want to add, then save."
+"""The words beside Save where a paste's only new content is a note joined to saved homework."""
+ADDED_WHEN_SAVED = (
+    "Everything read is saved already; a teacher's note ticked above is added to its "
+    "assignment when saved."
+)
+"""A sentence the Save panel says on no view."""
+
+
+def test_a_paste_whose_only_new_content_is_a_joined_note_says_to_tick_the_notes_to_add(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A paste whose only new content is a note joined to homework already saved: beside a
+    Save labeled "Save the ticked notes", the first view says that the assignments are
+    already saved and to tick the notes to add, then save. With the note's tick reviewed, the
+    line counts its card as an update; with the tick taken off and reviewed, the line is the
+    first view's. No view says that a ticked note is added to its assignment when saved."""
+    with client_in(tmp_path) as client:
+        first = read_again_once_saved(client, JOINED_ON_SAVED)
+        form = ticked_form(first) | {"join-0-0": "1", "recheck": "1"}
+        ticked = client.post("/parent/inbox/find", data=form).text
+        form = {name: value for name, value in ticked_form(ticked).items() if name != "join-0-0"}
+        unticked = client.post("/parent/inbox/find", data=form | {"recheck": "1"}).text
+
+    said = f"{ADD_THE_NOTES} A type changed on a card can still be saved."
+    assert joined_ticks(first) == {"join-0-0": False}
+    assert save_panel_line(first) == said
+    assert re.search(r'<button type="submit" class="primary"[^>]*>Save the ticked notes<', first)
+    assert joined_ticks(ticked) == {"join-0-0": True}
+    assert save_panel_line(ticked) == "Saving adds 0 and updates 1; the other 0 stay as they are."
+    assert joined_ticks(unticked) == {"join-0-0": False}
+    assert save_panel_line(unticked) == said
+    for page in (first, ticked, unticked):
+        assert ADDED_WHEN_SAVED not in html.unescape(page)
+        assert "ticked above is added" not in html.unescape(page)
+
+
+NoteCard = tuple[str, str, tuple[int, ...], int | None]
+"""A note card as a table lists it: its title, the words it shows, the November 2026 days it
+offers unselected, and the November day it saves as the school's, if it sets one."""
+FRIDAY_ESSAY: NoteCard = ("Essay", "Essay due Friday.", (), 20)
+"""The Essay card of a note opening "Essay due Friday." under Tuesday 11/17, its date set."""
+ASKED_ESSAY: NoteCard = ("Essay", "Essay due Friday.", (20,), None)
+"""The same card with Friday 11/20 offered unselected."""
+THURSDAY_POSTER: NoteCard = ("Poster", "Poster due Thursday.", (), 19)
+"""The Poster card of a note whose second sentence is "Poster due Thursday.", its date set."""
+
+
+def each_card_as_listed(
+    tmp_path: pathlib.Path, today: str, words: str, cards: list[NoteCard]
+) -> None:
+    """One note read into the cards listed, every card ticked by a Review changes press and
+    saved as shown, then the same text read again and saved. Each card is titled as listed,
+    starts unticked with a tick of its own and shows its own words and no other card's. A
+    card that offers dates says them as mentioned with the due date unclear and, details
+    opened, offers each unselected with No due date yet chosen; its row is saved with no due
+    date and no claim. A card that sets its date says no date as unclear; its row is due that
+    day with the school's claim from the teacher's note. Read again, every card is saved, and
+    a save adds nothing."""
+    text = one_note("Language Arts", words, school_day(today))
+    choices: dict[str, list[tuple[str, bool]]] = {}
+    with client_in(tmp_path, today=today) as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+        page = every_note_selected(client, first)
+        for title, _, offered, _ in cards:
+            if offered:
+                key = key_of(page, title)
+                choices[title] = when_options(opened(client, page, key).text, key)
+        kept = client.post("/parent/inbox/keep", data=ticked_form(page))
+        rows = saved_rows(client)
+        records = due_records(client)
+        again = client.post("/parent/inbox/read", data={"text": text}).text
+        resaved = client.post("/parent/inbox/keep", data=ticked_form(again))
+        after = saved_rows(client)
+
+    assert sorted(titles(first)) == sorted(title for title, _, _, _ in cards)
+    assert re.findall(TICKED, first) == []
+    assert len(numbers(first, r'<input type="checkbox" name="take-(\d+)" value="1">')) == len(cards)
+    for title, shown, offered, due in cards:
+        body = html.unescape(card(first, title))
+        assert set(re.findall(r'<q class="authored-text">(.*?)</q>', body)) == {shown}, title
+        if offered:
+            assert mentions(offered) in body, title
+            assert choices[title] == [
+                *((f"2026-11-{day:02}", False) for day in offered),
+                ("none", True),
+                ("other", False),
+            ], title
+        else:
+            assert due is not None, title
+            assert "The due date is unclear." not in body, title
+    assert kept.status_code == 303
+    assert sorted((name, str(when)) for _, name, when in rows) == sorted(
+        (title, "None" if due is None else f"2026-11-{due:02}") for title, _, _, due in cards
+    )
+    assert sorted(records) == sorted(
+        (title, SourceChannel.LMS, f"2026-11-{due:02}", "the teacher's note")
+        for title, _, _, due in cards
+        if due is not None
+    )
+    assert again.count('<span class="pill">Already saved</span>') == len(cards)
+    assert resaved.status_code == 303
+    assert after == rows
+
+
+NOTE_CARDS = [
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Essays are now due Monday.",
+        [("Essay", "Essay due Friday. Essays are now due Monday.", (20, 23), None)],
+        id="essays-plural",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Poster due Thursday. Update: the essay is due Monday.",
+        [
+            ("Essay", "Essay due Friday. Update: the essay is due Monday.", (20, 23), None),
+            THURSDAY_POSTER,
+        ],
+        id="update-the-essay-past-the-poster",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Update: the poster is due Monday.",
+        [ASKED_ESSAY, ("Update: the poster", "Update: the poster is due Monday.", (23,), None)],
+        id="update-the-poster",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Reminder: the poster is due Monday.",
+        [FRIDAY_ESSAY, ("Reminder: the poster", "Reminder: the poster is due Monday.", (), 23)],
+        id="reminder-the-poster",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Poster due Thursday. Update: the map is due Monday.",
+        [
+            FRIDAY_ESSAY,
+            ("Poster", "Poster due Thursday.", (19,), None),
+            ("Update: the map", "Update: the map is due Monday.", (23,), None),
+        ],
+        id="update-the-map",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Apology letter due Monday.",
+        [FRIDAY_ESSAY, ("Apology letter", "Apology letter due Monday.", (), 23)],
+        id="apology-letter",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Climate change essay: due Monday.",
+        [FRIDAY_ESSAY, ("Climate change essay", "Climate change essay: due Monday.", (), 23)],
+        id="climate-change-essay",
+    ),
+    pytest.param(
+        "2026-11-16",
+        "Essay on what you want to be due Friday.",
+        [("Essay on what you want to be", "Essay on what you want to be due Friday.", (20,), None)],
+        id="what-you-want-to-be",
+    ),
+    pytest.param(
+        "2026-11-16",
+        "Essay is not going to be due Friday.",
+        [("Essay", "Essay is not going to be due Friday.", (20,), None)],
+        id="is-not-going-to-be",
+    ),
+    pytest.param(
+        "2026-11-16",
+        "Just a reminder that the essay is due Friday.",
+        [
+            (
+                "Just a reminder that the essay",
+                "Just a reminder that the essay is due Friday.",
+                (),
+                20,
+            )
+        ],
+        id="just-a-reminder-that",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Reminder: the photo essay is due Monday.",
+        [
+            FRIDAY_ESSAY,
+            ("Reminder: the photo essay", "Reminder: the photo essay is due Monday.", (), 23),
+        ],
+        id="reminder-the-photo-essay",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Update: the final essay is due Monday.",
+        [
+            ASKED_ESSAY,
+            ("Update: the final essay", "Update: the final essay is due Monday.", (23,), None),
+        ],
+        id="update-the-final-essay",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Test correction: due Monday.",
+        [ASKED_ESSAY, ("Test correction", "Test correction: due Monday.", (), 23)],
+        id="test-correction",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Poster due Thursday. Update: both are due Monday.",
+        [
+            ASKED_ESSAY,
+            ("Poster", "Poster due Thursday. Update: both are due Monday.", (19, 23), None),
+        ],
+        id="update-both",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. The essay is actually due Monday.",
+        [("Essay", "Essay due Friday. The essay is actually due Monday.", (20, 23), None)],
+        id="the-essay-is-actually",
+    ),
+]
+"""Notes read into one card or several: the school day, the note's words and each card. A
+correction that names the Essay joins it, past another task where one stands between, with
+both dates offered unselected; an update that names other work is a card of its own, and the
+task right before it offers its date unselected; a reminder or a name of its own leaves each
+card its date; a title keeps the words of its name."""
+
+
+@pytest.mark.parametrize(("today", "words", "cards"), NOTE_CARDS)
+def test_each_card_of_a_note_shows_its_own_words_and_dates_and_saves_what_it_shows(
+    tmp_path: pathlib.Path, today: str, words: str, cards: list[NoteCard]
+) -> None:
+    """A note read into the cards its table entry lists: each card has a tick of its own,
+    its own words and the dates it offers or sets, and each row is saved as its card shows,
+    a date the note sets as the school's from the teacher's note and no date where the card
+    offers its dates unselected. Read again, every card is saved, and a save adds nothing."""
+    each_card_as_listed(tmp_path, today, words, cards)
+
+
+NOTE_CARD_LIMITS = [
+    pytest.param(
+        "2026-11-16",
+        "The office says essays are due Friday.",
+        [("The office says essays", "The office says essays are due Friday.", (), 20)],
+        id="the-office-says",
+    ),
+    pytest.param(
+        "2026-11-16",
+        "Students finished the essay by Friday.",
+        [("Students finished the essay", "Students finished the essay by Friday.", (), 20)],
+        id="students-finished",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Sorry letter: due Monday.",
+        [("Essay", "Essay due Friday. Sorry letter: due Monday.", (20, 23), None)],
+        id="sorry-letter",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. The paper is actually due Monday.",
+        [FRIDAY_ESSAY, ("The paper is actually", "The paper is actually due Monday.", (23,), None)],
+        id="the-paper-is-actually",
+    ),
+    pytest.param(
+        "2026-11-17",
+        "Essay due Friday. Poster due Thursday. Both are due Monday.",
+        [FRIDAY_ESSAY, THURSDAY_POSTER, ("Both", "Both are due Monday.", (), 23)],
+        id="both-are",
+    ),
+]
+"""The reader's documented limits as the review shows them: a deadline reported with its
+attribution and a statement of finished work each set Friday under a title holding the words;
+a name that opens with a correction word joins the Essay and has no card of its own; a
+correction that calls the essay "the paper" leaves Friday on the Essay; a plural correction
+with no update word leaves every earlier date."""
+
+
+@pytest.mark.parametrize(("today", "words", "cards"), NOTE_CARD_LIMITS)
+def test_the_limit_a_note_the_reader_misreads_shows_its_words_and_saves_what_its_cards_show(
+    tmp_path: pathlib.Path, today: str, words: str, cards: list[NoteCard]
+) -> None:
+    """The documented limits, pinned as limits: each note is read into the cards its table
+    entry lists, every card unticked with the teacher's words on it; ticked and saved as
+    shown, a card that sets its date saves it as the school's from the teacher's note."""
+    each_card_as_listed(tmp_path, today, words, cards)
+
+
+def test_friday_chosen_on_the_essay_before_an_update_naming_other_work_is_the_familys_entry(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A note "Essay due Friday. Update: the poster is due Monday." under Tuesday 11/17, both
+    cards ticked: Friday 11/20 chosen on the Essay, reviewed and saved is the family's entry,
+    with no claim from the teacher's note; the update's card is saved with no due date."""
+    words = "Essay due Friday. Update: the poster is due Monday."
+    text = one_note("Language Arts", words, school_day("2026-11-17"))
+    with client_in(tmp_path, today="2026-11-17") as client:
+        first = client.post("/parent/inbox/read", data={"text": text}).text
+        page = every_note_selected(client, first)
+        key = key_of(page, "Essay")
+        shown = opened(client, page, key).text
+        form = ticked_form(shown) | {f"when-{key}": "2026-11-20", "recheck": "1"}
+        page = client.post("/parent/inbox/find", data=form).text
+        kept = client.post("/parent/inbox/keep", data=ticked_form(page))
+        rows = saved_rows(client)
+        records = due_records(client)
+
+    assert when_options(shown, key) == [("2026-11-20", False), ("none", True), ("other", False)]
+    assert kept.status_code == 303
+    assert sorted((name, str(when)) for _, name, when in rows) == [
+        ("Essay", "2026-11-20"),
+        ("Update: the poster", "None"),
+    ]
+    assert [(name, channel, value) for name, channel, value, _ in records] == [
+        ("Essay", SourceChannel.PARENT_ENTRY, "2026-11-20")
+    ]
