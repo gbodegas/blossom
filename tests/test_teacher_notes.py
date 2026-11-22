@@ -1320,10 +1320,12 @@ SETS = [
     ("Essay originally due Friday is now due Monday.", TUESDAY_17, nov(23)),
     ("Optional essay due Friday.", MONDAY_16, nov(20)),
     ("Reminder: essay due Friday.", MONDAY_16, nov(20)),
-    ("Extra credit: essay due Friday.", MONDAY_16, nov(20)),
     ("Bring a family photo by Friday.", MONDAY_16, nov(20)),
     ("Read the Early Republic chapter by Friday.", MONDAY_16, nov(20)),
     ("Essay for some students due Friday.", MONDAY_16, nov(20)),
+    ("Essay will be due Friday.", MONDAY_16, nov(20)),
+    ("Essay previous" + "ly due Friday, now due Monday.", TUESDAY_17, nov(23)),
+    ("Multiply the fractions by Friday.", MONDAY_16, nov(20)),
 ]
 
 
@@ -1399,6 +1401,16 @@ UNSET = [
     ("Optional for most! essay due Friday.", MONDAY_16, (20,)),
     ("Essay - optional for most due Friday", MONDAY_16, (20,)),
     ("Math practice - Reflections and Translations due Monday 11/16", MONDAY_16, (16,)),
+    ("Essay could be due Friday.", MONDAY_16, (20,)),
+    ("Essay would be due Friday.", MONDAY_16, (20,)),
+    ("Essay is supposed to be due Friday.", MONDAY_16, (20,)),
+    ("Essay is expected to be due Friday.", MONDAY_16, (20,)),
+    ("I think the essay is due Friday.", MONDAY_16, (20,)),
+    ("Hopefully the essay is due Friday.", MONDAY_16, (20,)),
+    ("Tentative: essay due Friday.", MONDAY_16, (20,)),
+    ("TBD: essay due Friday.", MONDAY_16, (20,)),
+    ("Possible: essay due Friday.", MONDAY_16, (20,)),
+    ("Extra credit: essay due Friday.", MONDAY_16, (20,)),
 ]
 
 
@@ -1425,6 +1437,10 @@ SAME_NOTE_CORRECTIONS = [
     "Essay due Friday. Sorry, now due Monday.",
     "Essay due Friday. Update - now due Monday.",
     "Essay due Friday. Update: the essay is now due Monday.",
+    "Essay due Friday. Update: it's now due Monday.",
+    "Essay due Friday. Correction: it's now due Monday.",
+    "Essay due Friday. Please note: it's now due Monday.",
+    "Essay due Friday. Quick update: it's now due Monday.",
 ]
 
 
@@ -1453,6 +1469,42 @@ def test_a_correction_naming_another_assignment_stays_its_own_task() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("correction", "name"),
+    [
+        ("Science project: it's now due Monday.", "Science project"),
+        ("The science project, it is now due Monday.", "The science project"),
+        ("Math worksheet: this is now due Monday.", "Math worksheet"),
+    ],
+)
+def test_a_correction_under_a_lead_in_naming_another_assignment_is_its_own_task(
+    correction: str, name: str
+) -> None:
+    """A piece whose pronoun follows a lead-in of two or more words sharing none with the
+    title of the task before it is a task of its own, titled by the lead-in: the first task
+    sets its date, and the second offers its own date unselected."""
+    essay, other = read_one(f"Essay due Friday. {correction}", TUESDAY_17)
+
+    assert (essay.name, essay.words, essay.deadline, offered(essay)) == (
+        "Essay",
+        "Essay due Friday.",
+        nov(20),
+        (),
+    )
+    assert (other.name, other.words, other.standing) == (name, correction, HOMEWORK)
+    assert (other.deadline, other.milestones, offered(other)) == (None, (), (nov(23),))
+
+
+def test_a_statement_after_used_to_is_superseded_and_titled_by_its_assignment() -> None:
+    """A cue after "used" then "to", with "be" or not, is superseded: the task has no
+    deadline, offers no date, keeps its words and is titled by the assignment's name."""
+    for words in ("Essay used " + "to be due Friday.", "Essay used " + "to due Friday."):
+        (task,) = read_one(words)
+
+        assert (task.name, task.words) == ("Essay", words)
+        assert (task.deadline, task.choices, task.named, task.milestones) == (None, (), (), ())
+
+
 @pytest.mark.parametrize("words", ["Postponed. Essay due Friday.", "Can't wait! Essay due Friday."])
 def test_a_sentence_before_the_first_deadline_sentence_joins_its_task(words: str) -> None:
     """A piece with no deadline statement before a note's first deadline sentence joins that
@@ -1477,6 +1529,9 @@ GOVERNED = [
     ("Essay is no " + "longer due Friday.", MONDAY_16, ()),
     ("The essay was due Friday but has been moved to Monday.", TUESDAY_17, (23,)),
     ("Essay due Friday has been moved.", MONDAY_16, ()),
+    ("Essay due Friday has been cancel" + "led.", MONDAY_16, ()),
+    ("Essay used " + "to be due Friday.", MONDAY_16, ()),
+    ("Essay cannot be due Friday.", MONDAY_16, ()),
 ]
 
 
@@ -1538,6 +1593,7 @@ def test_clean_labels_keep_every_date_of_their_statement_as_a_milestone(
         ("Essay is not due Friday; finish it Monday", "Essay"),
         ("Lab isn't due Friday.", "Lab"),
         ("Nothing is due Friday.", "Nothing"),
+        ("Essay cannot be due Friday.", "Essay"),
         ("Don't forget: essay due Friday.", "Don't forget: essay"),
     ],
 )

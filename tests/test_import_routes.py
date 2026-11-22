@@ -45469,7 +45469,7 @@ def test_a_save_with_no_group_ticked_writes_nothing_and_says_so(
 
 # ------------------------------------------------------------------ a note joined to its card
 
-ESSAY_NOTE: Final = "Short essay due Wednesday. Write 250 words on your question."
+ESSAY_NOTE: Final = "Short essay due Wednesday, 250 words."
 """Religion 8's note under Monday 10/5/2026: due Wednesday 10/7, two days before its card."""
 JOINED_TICK: Final = re.compile(
     r'<input type="checkbox" name="answer:joined:[^"]*" value="1"( checked)?>'
@@ -45508,9 +45508,8 @@ def essay_row(browser: TestClient) -> tuple[Any, set[tuple[str, str | None]], li
 def test_a_joined_note_has_a_tick_of_its_own_with_its_words_and_both_dates(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The note joins its card's group, unticked, with its words; it holds two sentences, so
-    it sets no date and the card says no date of the note's. The group itself starts ticked
-    and the note is no group of its own."""
+    """The note joins its card's group, unticked, with its words and both dates and where each
+    was read; the group itself starts ticked and the note is no group of its own."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
         page = answered(browser, draft_id, page)
@@ -45525,7 +45524,7 @@ def test_a_joined_note_has_a_tick_of_its_own_with_its_words_and_both_dates(
     assert (
         "Due date on this review: Friday, October 9, 2026. The teacher's note for October 5 "
         "says Wednesday, October 7, 2026."
-    ) not in shown
+    ) in shown
     assert "Add this note to the assignment" in shown
     assert shown.count(ESSAY_NOTE) == 1
 
@@ -45623,8 +45622,8 @@ def test_a_joined_notes_tick_sent_twice_with_different_answers_keeps_and_saves_n
 def test_a_joined_note_adds_its_claim_and_words_on_save_only_when_selected(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, selected: bool
 ) -> None:
-    """Saved unticked, the card is saved as read; ticked, the note's words are an instruction
-    and, the note holding two sentences, its date is no claim; the card's due date stays."""
+    """Saved unticked, the card is saved as read; ticked, the note's date is one more claim,
+    seen in the teacher's note, and its words an instruction; the card's due date stays."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
         page = answered(browser, draft_id, page)
@@ -45640,8 +45639,83 @@ def test_a_joined_note_adds_its_claim_and_words_on_save_only_when_selected(
 
     assert says(saved, imports.counted(1, 0, 0, 0))
     assert row.due_date == date(2026, 10, 9)
-    assert (("2026-10-07", intake.TEACHER_NOTE) in claims) is False
+    assert (("2026-10-07", intake.TEACHER_NOTE) in claims) is selected
     assert words == ([ESSAY_NOTE] if selected else [])
+
+
+ESSAY_NOTE_SAYING_MORE: Final = "Short essay due Wednesday. Write 250 words on your question."
+"""Religion 8's note under Monday 10/5/2026 in two sentences: it sets no due date and mentions
+Wednesday 10/7, two days before its card's."""
+MENTIONS_WEDNESDAY: Final = "The note mentions Wednesday, October 7, 2026. The due date is unclear."
+
+
+def essay_answer_saying_more() -> dict[str, object]:
+    """Religion 8's "Short essay" card, assigned Monday 10/5/2026 and due Friday 10/9, with
+    the two-sentence teacher's note for that day naming it."""
+    card = homework_card(
+        course="Religion 8",
+        title="Short essay",
+        instruction=None,
+        footer="Due (10/9/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    return homework_answer(cards=[card, note_card("Religion 8", ESSAY_NOTE_SAYING_MORE, 300)])
+
+
+def test_a_joined_note_that_sets_no_date_says_the_date_it_mentions_above_its_tick(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two-sentence note joins its card's group, unticked, with its words once and, after
+    them, one line saying it mentions Wednesday, October 7, 2026 and that the due date is
+    unclear. The card's due date, Friday 10/9, is not set beside a date read in the note."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer_saying_more()))
+        page = answered(browser, draft_id, page)
+
+    form = review_form(page)
+    shown = html.unescape(form)
+    said = f"The teacher's note for October 5 also says: {ESSAY_NOTE_SAYING_MORE}"
+    assert JOINED_TICK.findall(form) == [""]
+    assert len(units_on(page)) == 1
+    assert 'id="may-be-heading"' not in page
+    assert shown.count(said) == 1
+    assert shown.count(ESSAY_NOTE_SAYING_MORE) == 1
+    assert shown.count(MENTIONS_WEDNESDAY) == 1
+    assert shown.index(said) < shown.index(MENTIONS_WEDNESDAY)
+    assert "The teacher's note for October 5 says" not in shown
+    assert "Due date on this review" not in shown
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_a_joined_note_that_sets_no_date_adds_only_its_words_on_save_when_selected(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, selected: bool
+) -> None:
+    """Saved unticked, the card is saved as read. Ticked, the two-sentence note adds its words
+    once as an instruction and nothing else: the due date stays Friday 10/9, the row's date
+    claims are the card's one claim either way, and no date is claimed in a teacher's note.
+    The ticked review says the mentioned date once."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer_saying_more()))
+        page = answered(browser, draft_id, page)
+        if selected:
+            choose = {joined_field(page): "1"}
+            page = followed(
+                browser, send(browser, draft_id, page_post(page, "keep", choose=choose))
+            )
+        form = review_form(page)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        )
+        row, claims, words = essay_row(browser)
+
+    assert JOINED_TICK.findall(form) == [" checked" if selected else ""]
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert row.due_date == date(2026, 10, 9)
+    assert [value for value, _ in claims] == ["2026-10-09"]
+    assert intake.TEACHER_NOTE not in {seen for _, seen in claims}
+    assert words == ([ESSAY_NOTE_SAYING_MORE] if selected else [])
+    assert html.unescape(form).count(MENTIONS_WEDNESDAY) == 1
 
 
 def test_a_note_that_settles_no_due_date_says_so_with_its_dates_as_text(
@@ -45865,6 +45939,16 @@ SHOT_FALLS_BACK = [
         (10, 5),
         id="packet",
     ),
+    pytest.param("Monday 11/16/2026", "Essay could be due Friday.", (20,), id="could-be"),
+    pytest.param("Monday 11/16/2026", "I think the essay is due Friday.", (20,), id="i-think"),
+    pytest.param("Monday 11/16/2026", "Tentative: essay due Friday.", (20,), id="tentative"),
+    pytest.param("Monday 11/16/2026", "Extra credit: essay due Friday.", (20,), id="extra-credit"),
+    pytest.param(
+        "Tuesday 11/17/2026",
+        "Essay due Friday. Update: it's now due Monday.",
+        (20, 23),
+        id="update-it",
+    ),
 ]
 """Screenshot notes whose one task sets no school date: the school day heading, the words and
 the November days the card says as text."""
@@ -45909,21 +45993,42 @@ def test_a_screenshot_note_that_sets_no_school_date_says_its_dates_and_saves_non
     assert says(resaved, imports.counted(0, 0, 1, 0))
 
 
+@pytest.mark.parametrize(
+    ("day", "words", "chosen"),
+    [
+        pytest.param(
+            "Tuesday 11/17/2026",
+            "Essay due Friday. Actually now due Monday.",
+            date(2026, 11, 23),
+            id="actually",
+        ),
+        pytest.param(
+            "Monday 11/16/2026", "Essay could be due Friday.", date(2026, 11, 20), id="could-be"
+        ),
+        pytest.param(
+            "Tuesday 11/17/2026",
+            "Essay due Friday. Please note: it's now due Monday.",
+            date(2026, 11, 23),
+            id="please-note-colon",
+        ),
+    ],
+)
 def test_a_date_typed_on_a_screenshot_note_that_sets_none_is_the_familys_entry(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, day: str, words: str, chosen: date
 ) -> None:
-    """A note "Essay due Friday. Actually now due Monday." under Tuesday 11/17 on a
-    screenshot, its card opened and Monday 11/23 typed in its due date box, reviewed and
-    saved: the row is
-    due that day from the parent's entry, with no claim from the teacher's note. Read again,
-    it is already saved."""
+    """A note that sets no school date on a screenshot ("Essay due Friday. Actually now due
+    Monday." and "Essay due Friday. Please note: it's now due Monday." under Tuesday 11/17;
+    "Essay could be due Friday." under Monday 11/16), its card
+    opened and a date the note mentions typed in its due date box, reviewed and saved: the
+    row is due that day from the parent's entry, with no claim from the teacher's note. Read
+    again, it is already saved."""
     from blossom.reconciliation import SourceChannel
 
-    answer = note_under("Tuesday 11/17/2026", "Essay due Friday. Actually now due Monday.")
+    answer = note_under(day, words)
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, answer))
         page = answered(browser, draft_id, page)
-        typed = {f"correct:{box_subject(page, 'due')}": "2026-11-23"}
+        typed = {f"correct:{box_subject(page, 'due')}": chosen.isoformat()}
         page = opened_for_typing(browser, draft_id, page, typed)
         sent = page_post(page, "save", tick=units_on(page), typed=typed)
         saved = followed(browser, saved_with_corrections(browser, draft_id, sent))
@@ -45932,12 +46037,39 @@ def test_a_date_typed_on_a_screenshot_note_that_sets_none_is_the_familys_entry(
         again = answered(browser, again_id, again)
 
     assert says(saved, imports.counted(1, 0, 0, 0)), saved
-    assert (row.due_date, row.origins["due_date"]) == (
-        date(2026, 11, 23),
-        SourceChannel.PARENT_ENTRY,
-    )
+    assert (row.due_date, row.origins["due_date"]) == (chosen, SourceChannel.PARENT_ENTRY)
     assert all(seen != intake.TEACHER_NOTE for _, seen in claims)
     assert screenshot_page.SAID["already"] in html.unescape(review_form(again))
+
+
+@pytest.mark.parametrize(
+    "words",
+    ["Essay used " + "to be due Friday.", "Essay cannot be due Friday."],
+    ids=["used-to", "cannot"],
+)
+def test_a_screenshot_date_after_used_to_is_kept_in_the_words_and_said_nowhere(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, words: str
+) -> None:
+    """A screenshot note "Essay used" then "to be due Friday." or "Essay cannot be due
+    Friday.": its card keeps the words, says no Friday and no line about an unclear date,
+    with no date choice. Saved ticked, its row is titled Essay with no due date and no claim;
+    read again it is already saved, and a save adds nothing."""
+    with here(open_settings(tmp_path)) as browser:
+        page, saved, again, resaved = note_saved_and_read_again(
+            browser, monkeypatch, note_under("Monday 11/16/2026", words)
+        )
+        row, claims = english_row(browser)
+
+    shown = said_on(page)
+    assert words in shown
+    assert "November 20" not in shown
+    assert "The due date is unclear." not in shown
+    assert screenshot_page.SAID["note_open"] not in shown
+    assert not re.findall(r'type="radio"[^>]*value="20\d\d-', review_form(page))
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert (row.title, row.due_date, claims) == ("Essay", None, set())
+    assert screenshot_page.SAID["already"] in html.unescape(review_form(again))
+    assert says(resaved, imports.counted(0, 0, 1, 0))
 
 
 SHOT_SETS = [
@@ -45947,6 +46079,9 @@ SHOT_SETS = [
     pytest.param("Don't forget the essay is due Friday", id="dont-forget"),
     pytest.param("Don't forget: essay due Friday.", id="dont-forget-colon"),
     pytest.param("Essay due Friday, not Thursday.", id="not-thursday"),
+    pytest.param("Essay will be due Friday.", id="will-be"),
+    pytest.param("Reminder: essay due Friday.", id="reminder"),
+    pytest.param("Multiply the fractions by Friday.", id="multiply"),
 ]
 """Screenshot notes under Monday 11/16 whose one task sets Friday 11/20 as the school's."""
 
@@ -45995,6 +46130,71 @@ def test_a_screenshot_correction_naming_another_assignment_is_its_own_row_with_i
     assert sorted(str(a.due_date) for a in rows) == ["2026-11-20", "2026-11-23"]
     assert claims == [("2026-11-20", intake.TEACHER_NOTE), ("2026-11-23", intake.TEACHER_NOTE)]
     assert says(resaved, imports.counted(0, 0, 2, 0))
+
+
+def test_a_screenshot_correction_under_another_assignments_name_is_its_own_row(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A note "Essay due Friday. Science project: it's now due Monday." under Tuesday 11/17
+    on a screenshot: two rows, Essay and Science project. The review says Monday 11/23 once,
+    as a date the note mentions with the due date unclear, and no date choice. Saved ticked
+    as they stand, Essay is due Friday 11/20 with the school's claim from the teacher's note
+    and Science project has no due date and no claim; read again both are already saved."""
+    answer = note_under(
+        "Tuesday 11/17/2026", "Essay due Friday. Science project: it's now due Monday."
+    )
+    with here(open_settings(tmp_path)) as browser:
+        page, saved, again, resaved = note_saved_and_read_again(browser, monkeypatch, answer)
+        record = state_of(browser).project_state
+        english = [a for a in record.all_assignments() if a.course == "English 8"]
+        rows = {
+            a.title: (
+                a.due_date,
+                sorted(
+                    (c.asserted_value, c.seen_in) for c in record.deadline_records(a.assignment_id)
+                ),
+            )
+            for a in english
+        }
+
+    shown = said_on(page)
+    mentions = screenshot_page.SAID["note_mentions"].format(day=november_day(23))
+    assert shown.count(mentions) == 1
+    assert shown.count("The due date is unclear.") == 1
+    assert not re.findall(r'type="radio"[^>]*value="20\d\d-', review_form(page))
+    assert says(saved, imports.counted(2, 0, 0, 0))
+    assert rows == {
+        "Essay": (date(2026, 11, 20), [("2026-11-20", intake.TEACHER_NOTE)]),
+        "Science project": (None, []),
+    }
+    assert says(resaved, imports.counted(0, 0, 2, 0))
+
+
+def test_a_screenshot_correction_under_a_remark_with_a_colon_is_one_essay_row(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A note "Essay due Friday. Please note: it's now due Monday." under Tuesday 11/17 on a
+    screenshot: one row, titled Essay, with the teacher's whole wording. Its card says the
+    note doesn't settle a due date and Friday 11/20 and Monday 11/23 as text, with no date
+    choice. Saved ticked as it stands, the row has no due date and no claim; read again it is
+    already saved, and a save adds nothing."""
+    words = "Essay due Friday. Please note: it's now due Monday."
+    with here(open_settings(tmp_path)) as browser:
+        page, saved, again, resaved = note_saved_and_read_again(
+            browser, monkeypatch, note_under("Tuesday 11/17/2026", words)
+        )
+        row, claims = english_row(browser)
+
+    shown = said_on(page)
+    assert words in shown
+    assert screenshot_page.SAID["note_open"] in shown
+    for each in (20, 23):
+        assert november_day(each) in shown
+    assert not re.findall(r'type="radio"[^>]*value="20\d\d-', review_form(page))
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert (row.title, row.due_date, claims) == ("Essay", None, set())
+    assert screenshot_page.SAID["already"] in html.unescape(review_form(again))
+    assert says(resaved, imports.counted(0, 0, 1, 0))
 
 
 @pytest.mark.parametrize("typed", ["2026-11-25", ""], ids=["set", "cleared"])
@@ -46050,9 +46250,8 @@ def test_a_split_rows_joined_note_ticked_on_its_listing_days_piece_saves_there_o
 ) -> None:
     """Math 8's "Practice set" read under Monday 11/16 and Tuesday 11/17, split by the family,
     with its note listed on the Monday ticked on the Monday piece: the save puts the note's
-    words on the Monday row once, and the Tuesday row has none; the note holds two sentences,
-    so it sets no date and neither row has a claim of it."""
-    words = "Practice set due Friday. Show your work on every problem."
+    words and its claim on the Monday row once, and the Tuesday row has neither."""
+    words = "Practice set due Friday, 20 problems."
     monday = {"text": "Monday 11/16/2026", "y": 150, "uncertain": None}
     tuesday = {"text": "Tuesday 11/17/2026", "y": 150, "uncertain": None}
     shots = (
@@ -46101,7 +46300,7 @@ def test_a_split_rows_joined_note_ticked_on_its_listing_days_piece_saves_there_o
     assert set(rows) == {date(2026, 11, 16), date(2026, 11, 17)}
     assert kept[date(2026, 11, 16)].count(words) == 1
     assert words not in kept[date(2026, 11, 17)]
-    assert claims[date(2026, 11, 16)] == []
+    assert claims[date(2026, 11, 16)] == [("2026-11-20", intake.TEACHER_NOTE)]
     assert claims[date(2026, 11, 17)] == []
 
 
@@ -46110,9 +46309,9 @@ def test_a_card_date_correction_leaves_a_selected_joined_notes_claim_as_the_note
 ) -> None:
     """The essay card due Wednesday 11/18 under Monday 11/16, its note naming the same
     Wednesday, the note selected and the card's due date corrected to Friday 11/20: the save
-    keeps 11/20 as the family's entry, with the family's claim of it; the note holds two
-    sentences, so it sets no date and no claim is seen in the teacher's note, and the card's
-    own claim stays 11/18 as seen on its own line."""
+    keeps 11/20 as the family's entry, with the family's claim of it; the note's claim stays
+    11/18 as seen in the teacher's note, and the card's own claim stays 11/18 as seen on its
+    own line."""
     from blossom.reconciliation import SourceChannel
 
     card = homework_card(
@@ -46142,7 +46341,7 @@ def test_a_card_date_correction_leaves_a_selected_joined_notes_claim_as_the_note
     assert says(saved, imports.counted(1, 0, 0, 0)), saved
     assert row.due_date == date(2026, 11, 20)
     assert row.origins["due_date"] is SourceChannel.PARENT_ENTRY
-    assert ("2026-11-18", intake.TEACHER_NOTE) not in claims
+    assert ("2026-11-18", intake.TEACHER_NOTE) in claims
     assert ("2026-11-20", intake.TEACHER_NOTE) not in claims
     assert ("2026-11-18", intake.OWN_LINE) in claims
     assert ("2026-11-20", intake.OWN_LINE) not in claims
@@ -46297,8 +46496,8 @@ def test_a_familys_due_date_stays_when_a_selected_joined_note_is_saved(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The family's essay due Thursday 10/8, read again with its card and a selected joined
-    note: the save keeps the family's date and the family as where it came from; the note
-    holds two sentences, so its date is no claim beside it."""
+    note: the save keeps the family's date and the family as where it came from, with the
+    note's date one more claim beside it."""
     from blossom.reconciliation import SourceChannel
 
     typed_at = datetime(2026, 10, 5, 18, 0, tzinfo=UTC)
@@ -46329,7 +46528,7 @@ def test_a_familys_due_date_stays_when_a_selected_joined_note_is_saved(
     assert row.assignment_id == hers.assignment_id
     assert row.due_date == date(2026, 10, 8)
     assert row.origins["due_date"] is SourceChannel.PARENT_ENTRY
-    assert ("2026-10-07", intake.TEACHER_NOTE) not in claims
+    assert ("2026-10-07", intake.TEACHER_NOTE) in claims
 
 
 def test_a_joined_note_and_a_due_question_are_answered_and_saved_in_one_press(
@@ -46338,7 +46537,7 @@ def test_a_joined_note_and_a_due_question_are_answered_and_saved_in_one_press(
     """The family's essay due Thursday 10/8, read again with its card and a joined note, its
     saved assignment chosen: the page asks which due date applies and offers the group's tick
     beside the question and the note's own tick; the due date answered, the note ticked and one
-    Save write the family's date once; the note holds two sentences, so its date is no claim."""
+    Save write the family's date once, the note's date one more claim beside it."""
     from blossom.reconciliation import SourceChannel
 
     typed_at = datetime(2026, 10, 5, 18, 0, tzinfo=UTC)
@@ -46372,7 +46571,7 @@ def test_a_joined_note_and_a_due_question_are_answered_and_saved_in_one_press(
     assert row.assignment_id == hers.assignment_id
     assert row.due_date == date(2026, 10, 8)
     assert row.origins["due_date"] is SourceChannel.PARENT_ENTRY
-    assert ("2026-10-07", intake.TEACHER_NOTE) not in claims
+    assert ("2026-10-07", intake.TEACHER_NOTE) in claims
 
 
 def essay_counts(browser: TestClient) -> tuple[int, int, int]:
@@ -46492,8 +46691,7 @@ def test_a_joined_notes_tick_pressed_with_save_writes_its_claim_and_words_in_one
 ) -> None:
     """A joined note whose words say more, ticked on the review that showed it unticked and
     pressed with Save: the group's signed check covers the note either way, so that one press
-    writes the card with the note's words as an instruction; the note holds two sentences, so
-    its date is no claim."""
+    writes the card with the note's date as a claim and its words as an instruction."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, essay_answer()))
         page = answered(browser, draft_id, page)
@@ -46507,7 +46705,7 @@ def test_a_joined_notes_tick_pressed_with_save_writes_its_claim_and_words_in_one
     assert JOINED_TICK.findall(review_form(page)) == [""]
     assert says(saved, imports.counted(1, 0, 0, 0))
     assert row.due_date == date(2026, 10, 9)
-    assert ("2026-10-07", intake.TEACHER_NOTE) not in claims
+    assert ("2026-10-07", intake.TEACHER_NOTE) in claims
     assert words == [ESSAY_NOTE]
 
 
@@ -46745,8 +46943,7 @@ def test_either_or_both_joined_notes_of_one_card_ticked_and_saved_write_in_one_p
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ticked: tuple[str, ...]
 ) -> None:
     """Two joined notes on one card, shown unticked: either ticked alone, or both, and pressed
-    with Save writes the card once with what each ticked note adds and nothing of the other.
-    The essay note holds two sentences, so it sets no date and adds no claim."""
+    with Save writes the card once with what each ticked note adds and nothing of the other."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, two_notes_answer()))
         page = answered(browser, draft_id, page)
@@ -46760,7 +46957,7 @@ def test_either_or_both_joined_notes_of_one_card_ticked_and_saved_write_in_one_p
     assert JOINED_TICK.findall(review_form(page)) == ["", ""]
     assert says(saved, imports.counted(1, 0, 0, 0))
     assert row.due_date == date(2026, 10, 9)
-    assert ("2026-10-07", intake.TEACHER_NOTE) not in claims
+    assert (("2026-10-07", intake.TEACHER_NOTE) in claims) is (ESSAY_NOTE in ticked)
     assert sorted(words) == sorted(ticked)
 
 
@@ -46867,7 +47064,7 @@ def test_a_joined_note_from_a_screenshot_with_no_name_needs_that_confirmation_on
     if selected:
         assert between == (0, 0, 0)
         assert says(again, imports.counted(1, 0, 0, 0))
-        assert ("2026-10-07", intake.TEACHER_NOTE) not in claims
+        assert ("2026-10-07", intake.TEACHER_NOTE) in claims
         assert words == [ESSAY_NOTE]
     else:
         assert between[0] == 1
@@ -47581,7 +47778,7 @@ def test_a_family_answer_sent_twice_with_the_same_value_is_one_answer(
 OPEN_FAMILIES: Final = ["title", "due", "note-due", "assigned", "destination"]
 """The fields the unchanged retry and the explicit answer are pinned for: a formal card's title,
 due date and assigned date boxes, a note piece's due date box, and a destination answer."""
-NOTE_WORDS: Final = "Essay due November 20. Write about your favorite book."
+NOTE_WORDS: Final = "Essay due November 20."
 
 
 def open_field(
@@ -47941,9 +48138,7 @@ def test_save_review_for_later_keeps_a_field_sent_twice_open_until_it_is_answere
     elif path == "title":
         assert 'value="Typed answer"' in shown
     elif path in ("note-due", "typed-beside"):
-        # The note holds two sentences and reads with no due date, so the explicit "No due
-        # date" answer is its reading as read and keeps no due correction.
-        assert all("due" not in fields for fields in corrected.values())
+        assert any(fields.get("due", "") is None for fields in corrected.values())
     elif path == "assigned-none":
         assert any(fields.get("assigned", "") is None for fields in corrected.values())
     if other:

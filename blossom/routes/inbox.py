@@ -119,6 +119,7 @@ from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.intake_decisions import UnreadableDecision
 from blossom.stores.project_state import Assignment, AssignmentKind, UnreadableClaim
 from blossom.stores.school_instructions import UnreadableInstruction
+from blossom.teacher_notes import NoteTask
 from blossom.templating import page_templates
 
 logger = logging.getLogger(__name__)
@@ -1059,11 +1060,46 @@ class NoteFields:
     def unclear(self) -> str:
         """What the card says of the dates the note mentions where it settles no due date, or
         empty where it says nothing of them."""
-        if not self.mentioned:
-            return ""
-        *before, last = self.mentioned
-        listed = f"{', '.join(before)} and {last}" if before else last
-        return MENTIONED.format(days=listed)
+        return unclear_line(self.mentioned)
+
+
+def unclear_line(days: Sequence[str]) -> str:
+    """What a card says of the dates a note mentions where it settles no due date, each as
+    said, one, two with "and" or more with commas and "and"; empty for no date."""
+    if not days:
+        return ""
+    *before, last = days
+    listed = f"{', '.join(before)} and {last}" if before else last
+    return MENTIONED.format(days=listed)
+
+
+def mentioned_days(task: NoteTask, today: date) -> tuple[date, ...]:
+    """The dates a note task mentions where it settles no due date: for a task with no
+    deadline and no milestone that holds a deadline statement (one its words deny or change
+    included), each date it offers or names that the due-date check accepts as of ``today``,
+    once, in the note's order; none for any other task."""
+    stated = bool(task.choices) or DEADLINE_CUE.search(task.words) is not None
+    if task.deadline is not None or task.milestones or not stated:
+        return ()
+    return tuple(
+        day
+        for day in dict.fromkeys((*task.choices, *task.named))
+        if within_a_school_year(day, today)
+    )
+
+
+def joined_unclear(changes: Sequence[Change], today: date) -> dict[tuple[int, int], str]:
+    """For each note joined to a card that settles no due date and mentions a date, by the
+    card's key and the note's place: what the card says beside the note's words, in the
+    words a note card of its own says it (``mentioned_days``, ``unclear_line``), whatever
+    the card's own due date. The line is text only; a joined note offers no date choice."""
+    said: dict[tuple[int, int], str] = {}
+    for change in changes:
+        for place, task in enumerate(change.reading.joined_notes):
+            line = unclear_line([spoken_day(day) for day in mentioned_days(task, today)])
+            if line:
+                said[(change.key, place)] = line
+    return said
 
 
 def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int, NoteFields]:
@@ -1100,18 +1136,7 @@ def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int,
             given.setdefault(day, NAMED_CHOICE.format(day=spoken_day(day)))
         too_far = tuple(day for day in given if not within_a_school_year(day, today))
         dates = {day: words for day, words in given.items() if day not in too_far}
-        stated = bool(task.choices) or DEADLINE_CUE.search(task.words) is not None
-        unclear = (
-            task.deadline is None
-            and not milestones
-            and stated
-            and any(day not in too_far for day in (*task.choices, *task.named))
-        )
-        mentioned = tuple(
-            spoken_day(day)
-            for day in dict.fromkeys((*task.choices, *task.named))
-            if day in dates and unclear
-        )
+        mentioned = tuple(spoken_day(day) for day in mentioned_days(task, today))
         answer = sent.get(change.key)
         if answer is not None:
             title, when, other = answer.title, answer.when, answer.other
@@ -2157,6 +2182,7 @@ def preview_page(
                 ),
             ),
             "note_fields": note_fields(changes, read, moment_of(state, draft)[1]),
+            "join_unclear": joined_unclear(changes, moment_of(state, draft)[1]),
             "editing": opened,
             "twice_said": twice_said(twice or {}),
             "unresolved": unresolved_at(unresolved or {}),

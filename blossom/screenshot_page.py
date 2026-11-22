@@ -74,7 +74,7 @@ from blossom.screenshot_save import (
     unreadable_dates,
 )
 from blossom.screenshots import CardPlace, ScreenshotRow, UnreadCard, note_tag
-from blossom.teacher_notes import Milestone
+from blossom.teacher_notes import Milestone, NoteTask
 
 SAID: Final = {
     "status": (
@@ -438,13 +438,36 @@ def due_option(piece: Piece, day: date) -> str:
     return f"Due {day_text(day)}, as the {'due line' if lines else 'day heading'} says"
 
 
+def joined_mentions(task: NoteTask) -> str:
+    """The dates a joined note mentions where it settles no due date, as its tick says them:
+    for a note with no deadline and no milestone that holds a deadline statement, each date
+    it offers or names, once, in the note's order, each with its year, one, two with "and" or
+    more with commas and "and"; empty for any other note. A note holds a deadline statement
+    by the School text review's test: a date choice read from it, or that review's cue word
+    in its words. The cue is imported here, at the call, because that module's own imports
+    reach this one."""
+    from blossom.routes.inbox import DEADLINE_CUE
+
+    stated = bool(task.choices) or DEADLINE_CUE.search(task.words) is not None
+    if task.deadline is not None or task.milestones or not stated:
+        return ""
+    days = [spoken_day(day) for day in dict.fromkeys((*task.choices, *task.named))]
+    if not days:
+        return ""
+    *before, last = days
+    return f"{', '.join(before)} and {last}" if before else last
+
+
 def joined_questions(
     piece: Piece, values: Mapping[tuple[str, str], str], about: str
 ) -> list["Question"]:
     """A tick of its own for each note joined to the piece's card, unticked until the family
     ticks it: the note's words, and both dates with where each was read where the note's
-    deadline is not the piece's due date. Leaving it unticked is an answer, so it is never
-    still to answer. Two notes of one tag share one tick."""
+    deadline is not the piece's due date; where the note holds a deadline statement and
+    settles no due date, the dates it mentions and that the due date is unclear
+    (``joined_mentions``), whatever the piece's own due date. The tick is its only option:
+    no date is offered. Leaving it unticked is an
+    answer, so it is never still to answer. Two notes of one tag share one tick."""
     out: list[Question] = []
     seen: set[str] = set()
     for task in () if piece.reading is None else piece.reading.joined_notes:
@@ -463,6 +486,8 @@ def joined_questions(
                 else SAID["joined_dates"].format(due=spoken_day(piece.due), day=day, noted=noted)
             )
             notes = ((said, ""),)
+        elif mentioned := joined_mentions(task):
+            notes = ((SAID["note_mentions"].format(day=mentioned), ""),)
         out.append(
             Question(
                 answer_field("joined", subject),

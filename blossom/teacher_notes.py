@@ -22,12 +22,13 @@ line end; sure sentence ends bound every clause, and an unsure period is no
 clause mark. A statement is negated when a negation word (not, never, no,
 nothing, none, neither, "no" then "longer", a word ending in "n't" with an ASCII
 or typographic apostrophe, or isnt, arent, wasnt, werent, dont, doesnt, didnt,
-wont, cant) stands right before its cue or right before linking words (is, are,
+wont, cant, cannot) stands right before its cue or right before linking words (is, are,
 was, were, be, been, will) right before it, or when no, nothing, none or neither
 opens its clause with at most two words and linking words before the cue. It is
-superseded when one of the supersession words (_SUPERSESSION_WORDS, or "had
-been") stands the same way, or when a change word (moved, changed, postponed, rescheduled, extended,
-delayed, canceled in either spelling, pushed) follows its date in its own clause. A
+superseded when one of the supersession words (_SUPERSESSION_WORDS, "had been",
+or "used" then "to") stands the same way, or when a change word (moved, changed,
+postponed, rescheduled, extended, delayed, canceled in either spelling, pushed)
+follows its date in its own clause. A
 negated or superseded statement is never a deadline, offers no date, labels no
 milestone and counts as no statement for splitting. A statement whose sentence
 says no homework before its cue keeps the cue-only negation: not, never, "no"
@@ -37,18 +38,30 @@ between; a task that says no homework is read by the no-homework rule alone.
 A task's deadline is a date only when the task is one sentence, counted by sure
 sentence ends, with exactly one statement neither negated nor superseded, that
 statement means one date, and the sentence is, in order, only: an optional
-lead-in (a reminder opening, "don't forget", "do not forget" or "remember" with
-or without "that" and ":", or a first clause of one or two words ending with ":"
-or "!" that holds no negation, supersession, hedge, conditional or change word);
-a lead holding no such word (a change word counted there only as a verb about a
-date), no word ending in "ly" right before the cue or before linking words right
-before it unless it is the lead's first word, and at most one clause mark, right
-before the cue; the cue and the date; an optional clock time ("at" or "by" and a
+lead-in, which is a reminder opening ("don't forget", "do not forget",
+"remember" or "reminder", with or without "that" and ":") and nothing else; a
+lead holding no negation, supersession, hedge or conditional word, no change
+word used as a verb about a date, no modal or semi-modal verb other than "will"
+(can, could, must, shall, should, would, or ought, supposed, expected, going,
+have, has, had, need or needs before "to"), no subject pronoun (I, we, you, he,
+she, they) followed by a word that is not a linking word, no sentence adverb,
+no word ending in "ly" right before the cue or before linking words right
+before it other than the lead's first word ("Reply due Friday." sets its date;
+"Reading log is usually due Friday." sets none), and at most one clause mark,
+right before the cue, so any other opening clause ("Tentative:", "Extra
+credit:") leaves the deadline unset; the cue and the date; an optional clock
+time ("at" or "by" and a
 time of day, after a space) or count (a number and a counting noun, after a
 space, a comma or a line end); an optional control clause, ", not" and date
 expressions; and the sentence end, which is not "?". After a negated or
 superseded statement in the sentence the lead starts past it and the one clause
 mark right after it. The control clause's dates are neither offered nor named.
+A sentence adverb is a word ending in "ly" followed by a determiner (the, a, an,
+your, our, this, that, these, those), wherever it stands in the lead, the
+lead's first word included ("Hopefully the essay is due Friday." sets none);
+the one exception is a verb that opens a direct instruction (multiply, apply,
+supply, reply or comply) standing as the lead's first word ("Multiply the
+fractions by Friday." sets its date).
 
 Any other task has no deadline and offers its dates unselected: as choices, the
 dates of its statements that are neither negated nor superseded and their
@@ -74,7 +87,14 @@ right before it, whatever words come before the pronoun; or "now" stands
 right before its cue or before linking words right
 before it, and nothing is left of its lead once the lead-in, the words up to
 its last clause mark, determiners, linking words, "now", words ending in "ly"
-and the preceding task's title words are removed. A statement whose sentence
+and the preceding task's title words are removed. A piece does not join by its
+pronoun or "now" when the words of its lead before the last clause mark ahead
+of them are no remark, are two or more and share no word with the preceding
+task's title: they name an assignment of its own, the piece starts a task
+titled by those words, and its date is read from its own wording. Such words
+are a remark, and name nothing, when they open with "please" or hold note,
+update, correction, reminder or sorry ("Please note:", "Quick update:"). A
+statement whose sentence
 says no homework never joins. Pieces with no statement before a note's first
 piece holding one join that piece's task when they name no date, read on their
 own as unclear (neither homework nor a note that says no homework), and that
@@ -99,6 +119,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
+from itertools import pairwise
 from typing import Final
 
 NAME_LIMIT: Final = 200
@@ -266,11 +287,11 @@ _LINK_WORDS: Final = frozenset({"is", "are", "was", "were", "be", "been", "will"
 _LINK: Final = rf"(?:{'|'.join(sorted(_LINK_WORDS))})"
 _NEGATION_WORDS: Final = frozenset(
     {"not", "never", "no", "nothing", "none", "neither"}
-    | {"isnt", "arent", "wasnt", "werent", "dont", "doesnt", "didnt", "wont", "cant"}
+    | {"isnt", "arent", "wasnt", "werent", "dont", "doesnt", "didnt", "wont", "cant", "cannot"}
 )
 _SUPERSESSION_WORDS: Final = frozenset({"was", "were", "originally", "previous" + "ly"})
 _SUPERSESSION: Final = re.compile(
-    r"\b(?:was|were|originally|previous(?:ly)|had\s+been)\b", re.IGNORECASE
+    r"\b(?:was|were|originally|previous(?:ly)|had\s+been|used\s+to)\b", re.IGNORECASE
 )
 _HEDGE: Final = re.compile(
     r"\b(?:maybe|might|perhaps|probably|possibly|tentatively|likely|should\s+be)\b"
@@ -301,12 +322,29 @@ _NONE_OPENS: Final = re.compile(
     re.IGNORECASE,
 )
 _SUPERSEDED_LEAD: Final = re.compile(
-    rf"\b(?:was|were|originally|previous(?:ly)|had\s+been)(?:\s+{_LINK})*\s+\Z", re.IGNORECASE
-)
-_REMINDER: Final = re.compile(
-    rf"\s*(?:don[{_APOSTROPHES}]t\s+forget|do\s+not\s+forget|remember)(?:\s+that)?\b(?:\s*:)?",
+    rf"\b(?:was|were|originally|previous(?:ly)|had\s+been|used\s+to)(?:\s+{_LINK})*\s+\Z",
     re.IGNORECASE,
 )
+_REMINDER: Final = re.compile(
+    rf"\s*(?:don[{_APOSTROPHES}]t\s+forget|do\s+not\s+forget|remember|reminder)"
+    r"(?:\s+that)?\b(?:\s*:)?",
+    re.IGNORECASE,
+)
+_MODAL: Final = re.compile(
+    r"\b(?:can|could|must|shall|should|would"
+    r"|(?:ought|supposed|expected|going|have|has|had|need|needs)\s+to)\b",
+    re.IGNORECASE,
+)
+"""A modal or semi-modal verb other than "will"; "may" and "might" are hedge words."""
+_SUBJECT_PRONOUNS: Final = frozenset({"i", "we", "you", "he", "she", "they"})
+_DETERMINERS: Final = frozenset({"the", "a", "an", "your", "our", "this", "that", "these", "those"})
+_SENTENCE_ADVERB: Final = re.compile(
+    rf"\b([A-Za-z]+ly)\s+(?:{'|'.join(sorted(_DETERMINERS))})\b", re.IGNORECASE
+)
+"""A word ending in "ly" followed by a determiner ("Hopefully the essay")."""
+_INSTRUCTION_VERBS: Final = frozenset({"multiply", "apply", "supply", "reply", "comply"})
+"""Verbs ending in "ly" that open a direct instruction ("Multiply the fractions"): as a lead's
+first word, none of them is a sentence adverb."""
 _CLOCK: Final = r"(?:at|by)\s+(?:\d{1,2}(?::\d{2})?\s*(?:a\.m\.|p\.m\.|am|pm)?|noon|midnight)(?!\w)"
 _LEADING_CLOCK: Final = re.compile(_CLOCK, re.IGNORECASE)
 _AFTER_DATE: Final = re.compile(
@@ -356,6 +394,8 @@ _FILLER: Final = frozenset(
     {"the", "a", "an", "this", "that", "these", "those", "your", "our", "now"} | _LINK_WORDS
 )
 """Determiners, linking words and "now": no word of a lead that names an assignment."""
+_REMARK_WORDS: Final = frozenset({"note", "update", "correction", "reminder", "sorry"})
+"""Words that make a lead-in a remark about the task before it and no assignment's name."""
 
 
 class Standing(enum.StrEnum):
@@ -475,7 +515,8 @@ class _Unit:
     statement where each names one date, and ``mentioned`` every date any
     expression outside every statement could mean. ``sentences`` counts its
     sentences by sure ends. ``joined`` says it joined the task before it with a
-    statement of its own.
+    statement of its own. ``heading`` is the title its lead-in gives where that
+    lead-in names an assignment apart from the task before it, or empty.
     """
 
     paragraph: int
@@ -489,6 +530,7 @@ class _Unit:
     mentioned: tuple[date, ...] = ()
     sentences: int = 1
     joined: bool = False
+    heading: str = ""
 
     @property
     def before(self) -> str:
@@ -798,11 +840,29 @@ def _holds_negation(text: str) -> bool:
     return any(_negation(found[0], text[found.end() :]) for found in _TOKEN.finditer(text))
 
 
-def _listed(text: str) -> bool:
-    """Whether the words hold a negation, supersession, hedge, conditional or change word in
-    any form."""
-    return _holds_negation(text) or any(
-        pattern.search(text) for pattern in (_SUPERSESSION, _HEDGE, _CONDITIONAL, _CHANGE)
+def _sentence_adverb(words: str) -> bool:
+    """Whether a lead holds a sentence adverb: a word ending in "ly" followed by a determiner,
+    wherever it stands, other than an instruction verb (multiply, apply, supply, reply or
+    comply) that is the lead's first word."""
+    first = _TOKEN.search(words)
+    opening = -1 if first is None else first.start()
+    return any(
+        found.start() != opening or found[1].lower() not in _INSTRUCTION_VERBS
+        for found in _SENTENCE_ADVERB.finditer(words)
+    )
+
+
+def _unsettled(words: str) -> bool:
+    """Whether a lead holds more than an assignment's words and plain linking words: a modal
+    or semi-modal verb other than "will", a subject pronoun (I, we, you, he, she, they)
+    followed by a word that is not a linking word, or a sentence adverb (a word ending in
+    "ly" followed by a determiner, other than an instruction verb that is the lead's first
+    word)."""
+    if _MODAL.search(words) or _sentence_adverb(words):
+        return True
+    tokens = [token.lower() for token in _TOKEN.findall(words)]
+    return any(
+        token in _SUBJECT_PRONOUNS and after not in _LINK_WORDS for token, after in pairwise(tokens)
     )
 
 
@@ -826,17 +886,10 @@ def _governed(text: str, statement: _Statement, clause: int, end: int) -> bool:
 
 
 def _lead_in_end(text: str, start: int, cue: int) -> int:
-    """Where a sentence's lead-in ends: a reminder opening, or a first clause of one or two
-    words ending with ":" or "!" holding no listed word; with none, the sentence's start."""
+    """Where a sentence's lead-in ends: after its reminder opening; with none, the sentence's
+    start, so any other opening clause stays in the lead with its clause mark."""
     reminder = _REMINDER.match(text, start, cue)
-    if reminder is not None:
-        return reminder.end()
-    mark = _MARK.search(text, start, cue)
-    if mark is not None and mark[0] in ":!":
-        clause = text[start : mark.start()]
-        if 1 <= len(_TOKEN.findall(clause)) <= 2 and not _listed(clause):
-            return mark.end()
-    return start
+    return start if reminder is None else reminder.end()
 
 
 def _lead_start(text: str, statement: _Statement, every: Sequence[_Statement], start: int) -> int:
@@ -872,6 +925,8 @@ def _complete(
         return False, ()
     ly, first = _LY.search(words), _TOKEN.search(words)
     if ly is not None and first is not None and ly.start(1) != first.start():
+        return False, ()
+    if _unsettled(words):
         return False, ()
     sentence = text[:end]
     at = statement.end
@@ -954,8 +1009,11 @@ def _title(lead: str) -> str:
     words = _single(lead).rstrip(_TRAILING).split()
     while words:
         low = words[-1].lower()
-        no_longer = low == "longer" and len(words) > 1 and words[-2].lower() == "no"
-        if not (no_longer or low in _LINK_WORDS | _SUPERSESSION_WORDS | {"had"} or _negation(low)):
+        pair = (words[-2].lower(), low) if len(words) > 1 else None
+        if pair in {("no", "longer"), ("used", "to")}:
+            del words[-2:]
+            continue
+        if not (low in _LINK_WORDS | _SUPERSESSION_WORDS | {"had"} or _negation(low)):
             break
         words.pop()
     if not 1 <= len(words) <= 8 or any(_negation(word) for word in words):
@@ -1060,8 +1118,11 @@ def _holding(units: Sequence[_Unit]) -> int:
 
 
 def _name(unit: _Unit) -> str:
-    """A task's title from its first piece holding a statement: the title a negated or
+    """A task's title from its first piece holding a statement: the title its lead-in gives
+    where it names an assignment apart from the task before it, the title a negated or
     superseded first statement gives, or the plain name."""
+    if unit.heading:
+        return unit.heading
     first = unit.every[0] if unit.every else None
     if first is not None and first.governed and first.title:
         return first.title
@@ -1183,27 +1244,56 @@ def _correction_word(word: str) -> bool:
     return low == "now" or low in _LINK_WORDS or _CONTRACTED.sub("", low) in _PRONOUNS
 
 
+def _title_words(before: Sequence[_Unit]) -> set[str]:
+    """The words of a task's title, in small letters."""
+    return {word.lower() for word in _TOKEN.findall(_name(before[_holding(before)]))}
+
+
+def _remark(words: Sequence[str]) -> bool:
+    """Whether a lead-in's words, in small letters, are a remark and no assignment's name:
+    they open with "please", or hold note, update, correction, reminder or sorry."""
+    return words[:1] == ["please"] or not _REMARK_WORDS.isdisjoint(words)
+
+
+def _apart(unit: _Unit, before: Sequence[_Unit]) -> str:
+    """The title a piece's lead-in gives where it names an assignment apart from the task
+    before it: the lead's words before its last clause mark ahead of a pronoun or "now" that
+    stands before the cue, when they are no remark ("Please note:", "Quick update:"), are two
+    or more words and share none with that task's title; otherwise empty."""
+    lead = unit.statements[0].lead
+    cue = _PRONOUN_CUE.search(lead) or _NOW_CUE.search(lead)
+    marks = list(_MARK.finditer(lead, 0, cue.start())) if cue else []
+    if not marks:
+        return ""
+    words = [word.lower() for word in _TOKEN.findall(lead[: marks[-1].start()])]
+    if _remark(words) or len(words) < 2 or _title_words(before) & set(words):
+        return ""
+    return _cut(_single(lead[: marks[-1].start()]).strip(_TRAILING))
+
+
 def _joins(unit: _Unit, before: Sequence[_Unit]) -> bool:
     """Whether a piece with a statement of its own joins the task before it as a correction:
     its first statement's sentence says no homework nowhere before its cue, and its lead,
-    after any lead-in, holds only "now", the pronouns and linking words; or a pronoun stands
-    right before its cue, or right before linking words and "now" right before it, whatever
-    words come before the pronoun; or "now" stands right before its cue or before linking
-    words right before it, and nothing is left once the words up to the lead's last clause
-    mark, determiners, linking words, "now", words ending in "ly" and the words of the task's
-    title are removed."""
+    after any lead-in, holds only "now", the pronouns and linking words; or its lead-in names
+    no assignment apart from that task, and a pronoun stands right before its cue, or right
+    before linking words and "now" right before it, whatever words come before the pronoun;
+    or "now" stands right before its cue or before linking words right before it, and nothing
+    is left once the words up to the lead's last clause mark, determiners, linking words,
+    "now", words ending in "ly" and the words of the task's title are removed."""
     first = unit.statements[0]
     if first.notice:
         return False
     if unit.only_statement or all(_correction_word(each) for each in _TOKEN.findall(first.lead)):
         return True
+    if _apart(unit, before):
+        return False
     if _PRONOUN_CUE.search(first.lead) is not None:
         return True
     if _NOW_CUE.search(first.lead) is None:
         return False
     marks = list(_MARK.finditer(first.lead))
     rest = first.lead[marks[-1].end() :] if marks else first.lead
-    title = {word.lower() for word in _TOKEN.findall(_name(before[_holding(before)]))}
+    title = _title_words(before)
     return all(
         low in _FILLER or low.endswith("ly") or low in title
         for low in (word.lower() for word in _TOKEN.findall(rest))
@@ -1257,7 +1347,7 @@ def _read_block(block: NoteBlock) -> list[_Reading]:
             elif not unit.statements or _joins(unit, tasks[-1]):
                 tasks[-1].append(replace(unit, joined=bool(unit.statements)))
             else:
-                tasks.append([unit])
+                tasks.append([replace(unit, heading=_apart(unit, tasks[-1]))])
     if head:
         tasks.append(head)
     return [_reading(units, paragraphs) for units in tasks]

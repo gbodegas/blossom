@@ -407,7 +407,9 @@
               <p class="from-teacher">From the school: <q class="authored-text">{{ reading.teacher_note.words }}</q> <span class="source">Read in the school's note for {{ reading.teacher_note.first_day.strftime("%B") }} {{ reading.teacher_note.first_day.day }}.</span></p>{% endif %}{% for task in reading.joined_notes %}{% set place = loop.index0 %}{% if task.words not in (reading.instructions|map(attribute="text")|list) %}
               <p class="source">The teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} also says: <q class="authored-text">{{ task.words }}</q></p>{% endif %}{% if task.deadline and task.deadline != reading.due_date %}
               {# Both dates and where each was read, before anything is saved; a selected note's date is the school's evidence and never the card's due date. #}
-              <p class="source">{% if reading.due_date %}The card says due {{ spoken_day(reading.due_date) }}{% else %}The card gives no due date{% endif %}; the teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} says {{ spoken_day(task.deadline) }}.</p>{% endif %}
+              <p class="source">{% if reading.due_date %}The card says due {{ spoken_day(reading.due_date) }}{% else %}The card gives no due date{% endif %}; the teacher's note for {{ task.first_day.strftime("%B") }} {{ task.first_day.day }} says {{ spoken_day(task.deadline) }}.</p>{% endif %}{% if join_unclear.get((change.key, place)) %}
+              {# A joined note that settles no due date: the dates it mentions, as text beside its words and never as a choice, whatever the card's own due date. #}
+              <p class="source">{{ join_unclear[(change.key, place)] }}</p>{% endif %}
               {# A joined note adds nothing to the card until it is selected; the page signs its tick as shown. #}
               <div class="choice">{% set join_field = "join-" ~ change.key ~ "-" ~ place %}{% if join_field in unresolved %}
                 {# A joined note's tick sent twice with different answers, unanswered: the actual choice, neither side chosen, marked until it is answered. #}

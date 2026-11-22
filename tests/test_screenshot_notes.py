@@ -947,6 +947,32 @@ NOTE_DATE_LINES = [
         id="two-dates",
     ),
     pytest.param("Essay due Friday.", MONDAY, [], id="sets"),
+    pytest.param("Essay will be due Friday.", MONDAY, [], id="sets-will-be"),
+    pytest.param(
+        "Essay could be due Friday.",
+        MONDAY,
+        ["The note mentions Friday, November 20. The due date is unclear."],
+        id="one-date-could-be",
+    ),
+    pytest.param(
+        "I think the essay is due Friday.",
+        MONDAY,
+        ["The note mentions Friday, November 20. The due date is unclear."],
+        id="one-date-i-think",
+    ),
+    pytest.param(
+        "Tentative: essay due Friday.",
+        MONDAY,
+        ["The note mentions Friday, November 20. The due date is unclear."],
+        id="one-date-tentative",
+    ),
+    pytest.param(
+        "Extra credit: essay due Friday.",
+        MONDAY,
+        ["The note mentions Friday, November 20. The due date is unclear."],
+        id="one-date-extra-credit",
+    ),
+    pytest.param("Essay used " + "to be due Friday.", MONDAY, [], id="superseded-says-none"),
 ]
 """A note's words, the school day it is listed under, and what its card says of its dates
 after the line naming that day."""
@@ -970,3 +996,74 @@ def test_a_note_card_says_its_dates_as_text_in_the_words_for_how_many_it_gives(
         day=screenshot_page.long_day(task.first_day)
     )
     assert shown[1:] == lines
+
+
+JOINED_NOTE_LINES = [
+    pytest.param(
+        ESSAY_MORE,
+        ["The note mentions Wednesday, November 18, 2026. The due date is unclear."],
+        id="one-date-the-card-s-own",
+    ),
+    pytest.param(
+        "Short essay due Friday. Write it in ink.",
+        ["The note mentions Friday, November 20, 2026. The due date is unclear."],
+        id="one-date-another",
+    ),
+    pytest.param(
+        "Short essay due Thursday or Friday. Write it in ink.",
+        [
+            "The note mentions Thursday, November 19, 2026 and Friday, November 20, 2026. "
+            "The due date is unclear."
+        ],
+        id="two-dates",
+    ),
+    pytest.param(
+        "Short essay due Friday.",
+        [
+            "Due date on this review: Wednesday, November 18, 2026. The teacher's note for "
+            "November 16 says Friday, November 20, 2026."
+        ],
+        id="sets-another-date",
+    ),
+    pytest.param("Short essay due Wednesday.", [], id="sets-the-card-s-date"),
+]
+"""A note's words, joined to the essay card due Wednesday 11/18 under Monday 11/16, and the
+lines its tick says above it."""
+
+
+@pytest.mark.parametrize(("words", "lines"), JOINED_NOTE_LINES)
+def test_a_joined_note_says_the_dates_it_mentions_only_where_it_sets_none(
+    words: str, lines: list[str]
+) -> None:
+    """A note joined to its card that sets no due date says, above its tick, each date it
+    mentions with its year and that the due date is unclear, whatever the card's own due
+    date; a joined note that sets its date says both dates where they differ and nothing
+    where they agree. The tick is the question's only option either way: no date is offered."""
+    piece = note_piece("joined", shot(essay(), note("Religion 8", instruction=words, y_top=300)))
+    assert piece.reading is not None
+    assert [task.words for task in piece.reading.joined_notes] == [words]
+    assert piece.due == date(2026, 11, 18)
+
+    [question] = screenshot_page.joined_questions(piece, {}, "the essay")
+
+    assert [said for said, _ in question.notes] == lines
+    assert [label for _, label, _ in question.options] == [screenshot_page.SAID["joined_tick"]]
+    assert question.legend == f"The teacher's note for November 16 also says: {words}"
+
+
+def test_a_joined_note_naming_a_date_with_no_deadline_statement_says_no_mentioned_date() -> None:
+    """A note joined to its card that names a date and holds no deadline statement, neither
+    "due" nor "by" in its words and no date choice read from it, says no line of the dates it
+    mentions above its tick: its words and the tick only."""
+    words = "Short essay. Bring it Thursday."
+    piece = note_piece("joined", shot(essay(), note("Religion 8", instruction=words, y_top=300)))
+    assert piece.reading is not None
+    [task] = piece.reading.joined_notes
+    assert (task.words, task.deadline, task.choices) == (words, None, ())
+    assert task.named == (date(2026, 11, 19),)
+
+    [question] = screenshot_page.joined_questions(piece, {}, "the essay")
+
+    assert [said for said, _ in question.notes] == []
+    assert [label for _, label, _ in question.options] == [screenshot_page.SAID["joined_tick"]]
+    assert question.legend == f"The teacher's note for November 16 also says: {words}"
