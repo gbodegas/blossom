@@ -18,8 +18,8 @@
 {% macro question_fields(question) %}
   {% for text, target in question.notes %}<p class="note">{% if target %}<a href="#{{ target }}">{{ text }}</a>{% else %}{{ text }}{% endif %}</p>{% endfor %}
   {% for value, label, checked in question.options %}
-    <label><input type="{% if question.many or question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
-  {% endfor %}
+    <label><input type="{% if question.many or question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}{% if question.required %} required{% endif %}> <span>{{ label }}</span></label>
+  {% endfor %}{% for name, value in question.marks %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
   {% if question.unsaved %}<p class="note">{{ words.not_saved_yet }}</p>{% endif %}
   {% if question.helper %}<p class="helper">{{ question.helper }}</p>{% endif %}
   {% if question.fold %}<p class="helper">{{ words.correct_it }} <a href="#{{ question.fold }}">{{ words.fold }}</a></p>{% endif %}
@@ -46,24 +46,40 @@
 {{ box.value }}</textarea></label>
   {% else %}
   <label>{{ box.label }}<span class="visually-hidden"> for {{ about }}</span> <input type="{{ box.kind }}" name="{{ box.name }}" value="{{ box.value }}"{% if box.refused %} aria-invalid="true"{% endif %}></label>
-  {% endif %}
+  {% endif %}{% if box.marks %}{% if box.empty %}<div class="choice"><label><input type="checkbox" name="empty:{{ box.subject }}" value="empty"> <span>{{ box.empty }}<span class="visually-hidden"> for {{ about }}</span></span></label></div>{% endif %}{% for name, value in box.marks %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}{% endif %}
   {% if box.hint %}<p class="helper">{{ box.hint }}</p>{% endif %}
   {% if box.none %}<div class="choice"><label><input type="checkbox" name="{{ box.none[0] }}" value="none"{% if box.none[1] %} checked{% endif %}> <span>{{ words.no_assigned_given }}<span class="visually-hidden"> for {{ about }}</span></span></label></div>{% endif %}
   {% if box.carried %}<input type="hidden" name="{{ box.carried[0] }}" value="{{ box.carried[1] }}">{% endif %}
   {% if box.refused %}<p class="note">{{ box.refused }}</p>{% endif %}
   {% if box.mark %}<p class="note">{{ box.mark }}</p>{% endif %}
 {% endmacro %}
+{% macro carried_box(box) %}
+  <input type="hidden" name="read:{{ box.subject }}" value="{{ box.read }}">
+  <input type="hidden" name="{{ box.name }}" value="{{ box.value }}">
+  {% if box.none and box.none[1] %}<input type="hidden" name="{{ box.none[0] }}" value="none">{% endif %}
+  {% if box.carried %}<input type="hidden" name="{{ box.carried[0] }}" value="{{ box.carried[1] }}">{% endif %}
+{% endmacro %}
 {% macro card_of(card) %}
   <p class="source">{% for where, href, shot in card.sources %}{% if not loop.first %}; {% endif %}{{ where }}{% if loop.last and card.read_as %}, {{ card.read_as }}{% endif %}{% if href %} · <a href="{{ href }}">{{ words.view }}<span class="visually-hidden"> {{ shot }} for {{ card.about }}</span></a>{% endif %}{% endfor %}</p>
   {% for question in card.checks %}{{ asked(question) }}{% endfor %}
   {#
-    A question's link to the fold lands on its summary, which stays in the Tab order with the
-    fold's fields after it. Its tabindex makes it a place a page fetched again lands on.
+    An open card's boxes sit under "Correct what was read", whose summary a question's link
+    lands on, with the mark that keeps the card open on the page a press returns. A closed card
+    shows as text each value that differs from the one read and each value the press stored
+    nothing for (a box put back to its read value included), with "Not saved yet." beside the
+    latter, carries every box's value hidden, and offers Correct what was read, which opens its
+    boxes and writes nothing.
   #}
-  <details class="steps"{% if card.fold_open %} open{% endif %}>
+  {% if card.open %}
+  <details class="steps" open>
     <summary id="{{ card.fold }}" tabindex="0">{{ words.fold }}<span class="visually-hidden"> for {{ card.about }}</span></summary>
+    <input type="hidden" name="open:{{ card.name }}" value="open">
     {% for box in card.boxes %}{{ box_of(box, card.about) }}{% endfor %}
   </details>
+  {% else %}
+  {% for box in card.boxes %}{% if box.changed or box.mark %}<p class="source">{{ box.label }}: <span class="authored-text">{{ box.said }}</span></p>{% endif %}{% if box.mark %}<p class="note">{{ box.mark }}</p>{% endif %}{{ carried_box(box) }}{% endfor %}
+  <div class="actions"><button type="submit" class="secondary" id="{{ card.fold }}" name="press" value="correct:{{ card.name }}" formnovalidate aria-describedby="review-status">{{ words.fold }}<span class="visually-hidden"> for {{ card.about }}</span></button></div>
+  {% endif %}
   <details class="steps">
     <summary>{{ words.said_fold }}<span class="visually-hidden"> for {{ card.about }}</span></summary>
     {% for line in card.said %}<p class="note">{{ line }}</p>{% endfor %}
@@ -72,8 +88,8 @@
   <fieldset class="choice" id="{{ piece.anchor }}" tabindex="-1">
     <legend>{{ words.where }}<span class="visually-hidden"> for {{ card.about }}</span></legend>
     {% for choice in piece.choices %}
-      <label><input type="radio" name="answer:destination:{{ piece.name }}" value="{{ choice.value }}"{% if choice.checked %} checked{% endif %}> <span>{{ choice.label }}{% for fact in choice.facts %} <span class="source">{{ fact }}.</span>{% endfor %}</span></label>
-    {% endfor %}
+      <label><input type="radio" name="answer:destination:{{ piece.name }}" value="{{ choice.value }}"{% if choice.checked %} checked{% endif %}{% if piece.required %} required{% endif %}> <span>{{ choice.label }}{% for fact in choice.facts %} <span class="source">{{ fact }}.</span>{% endfor %}</span></label>
+    {% endfor %}{% for name, value in piece.marks %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
     {% if piece.unsaved %}<p class="note">{{ words.not_saved_yet }}</p>{% endif %}
     {% if piece.preselected %}<p class="note">{{ words.preselected }}</p>{% endif %}
     {% if piece.stale %}<p class="problem">{{ words.choose_again }}</p>{% endif %}
@@ -84,15 +100,17 @@
 {% endmacro %}
 <form method="post" action="/parent/imports/{{ draft_id }}/review" class="review-form" id="review-form">
   {% for name, value in rows.hidden %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  {#- On every page that shows a card, the form's first submit button, so Enter shows the review again with what was typed and chosen: Review changes, out of the tab order and hidden from assistive technology, which reach the visible one. #}
+  {% if rows.offers_review %}<button type="submit" class="visually-hidden" name="press" value="review" formnovalidate tabindex="-1" aria-hidden="true">Review changes</button>{% endif %}
   {% if rows.names %}
     <section class="panel" aria-labelledby="name-heading">
       <h2 id="name-heading">Student name</h2>
       {% for question in rows.names %}
         <fieldset class="choice" id="{{ question.anchor }}" tabindex="-1">
-          <legend>{{ question.said }}</legend>
+          <legend>{{ question.said }}</legend>{% for text in question.notes %}<p class="note">{{ text }}</p>{% endfor %}
           {% for value, label, checked in question.options %}
-            <label><input type="{% if question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}> <span>{{ label }}</span></label>
-          {% endfor %}
+            <label><input type="{% if question.options|length == 1 %}checkbox{% else %}radio{% endif %}" name="{{ question.field }}" value="{{ value }}"{% if checked %} checked{% endif %}{% if question.required %} required{% endif %}> <span>{{ label }}</span></label>
+          {% endfor %}{% for name, value in question.marks %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
           {% if question.unsaved %}<p class="note">{{ words.not_saved_yet }}</p>{% endif %}
         </fieldset>
       {% endfor %}
@@ -117,10 +135,23 @@
       {% endfor %}
     </section>
   {% endif %}
-  {% if rows.units %}
-    <section class="panel" aria-labelledby="saving-heading">
-      <h2 id="saving-heading">What saving adds</h2>
-      {% for unit in rows.units %}
+  {#
+    The groups of cards and of notes read as homework first, under "What saving adds"; then
+    the groups of notes that may be homework and of notes that say none is assigned, each kind
+    under its own heading with the School text review's words.
+  #}
+  {% set saving = rows.units|selectattr("note", "equalto", "")|list %}
+  {% set may_be = rows.units|selectattr("note", "equalto", "unclear")|list %}
+  {% set none_assigned = rows.units|selectattr("note", "equalto", "not_assignment")|list %}
+  {% for units, heading, helper, id in (
+    (saving, "What saving adds", "", "saving-heading"),
+    (may_be, words.may_be_homework, words.may_be_homework_helper, "may-be-heading"),
+    (none_assigned, words.no_homework, words.no_homework_helper, "no-homework-heading")
+  ) %}{% if units %}
+    <section class="panel" aria-labelledby="{{ id }}">
+      <h2 id="{{ id }}">{{ heading }}</h2>
+      {% if helper %}<p class="helper">{{ helper }}</p>{% endif %}
+      {% for unit in units %}
         <article class="assignment" id="{{ unit.anchor }}" tabindex="-1">
           {% for block in unit.blocks %}
             {{ head_of(block.head) }}
@@ -145,7 +176,7 @@
         </article>
       {% endfor %}
     </section>
-  {% endif %}
+  {% endif %}{% endfor %}
   {% if rows.saved %}
     <section class="panel" aria-labelledby="saved-heading">
       <h2 id="saved-heading">Saved</h2>
@@ -172,13 +203,14 @@
     <p class="note" id="review-status">{{ rows.status }}</p>
     <p class="helper" id="typing-lost">{{ words.typing_lost }}</p>
     <div class="actions">
-      <button type="submit" class="primary" name="press" value="save" aria-describedby="review-status">Save selected homework</button>
+      {% if rows.offers_save %}<button type="submit" class="primary" name="press" value="save" aria-describedby="review-status">Save selected homework</button>{% endif %}
+      {% if rows.offers_review %}<button type="submit" class="{% if rows.offers_save %}secondary{% else %}primary{% endif %}" name="press" value="review" formnovalidate aria-describedby="review-status">Review changes</button>{% endif %}
     </div>
     <details class="steps">
       <summary>Other choices</summary>
       <div class="actions">
-        <button type="submit" class="secondary" name="press" value="keep" aria-describedby="review-status">Keep these answers</button>
-        <button type="submit" class="secondary" name="press" value="later" aria-describedby="review-status">Save review for later</button>
+        <button type="submit" class="secondary" name="press" value="keep" formnovalidate aria-describedby="review-status">Keep these answers</button>
+        <button type="submit" class="secondary" name="press" value="later" formnovalidate aria-describedby="review-status">Save review for later</button>
         <button type="submit" class="secondary" form="finish" aria-describedby="typing-lost">Finish without the rest</button>
         <button type="submit" class="secondary" form="discard">Discard the review</button>
       </div>

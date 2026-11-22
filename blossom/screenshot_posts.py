@@ -19,17 +19,31 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Final, NamedTuple
 
 from blossom.screenshot_page import (
+    BASIS,
+    CHOSEN_SHOWN,
+    CORRECT_PRESS,
+    EMPTY,
     INSTRUCTIONS_ASKED,
+    OPEN_MARK,
+    READY_SHOWN,
+    SELECTION_SHOWN,
+    SHOWN,
+    TICKED_SHOWN,
+    UNRESOLVED,
     PostRefused,
+    answer_field,
     asks_read,
+    carried_digest,
     page_check,
     same_signature,
+    shown_digest,
     signed_option,
 )
 from blossom.screenshot_review import (
     OLD_DATES,
     PIECE_DATES,
     ROW_FIELDS,
+    UNJOINED,
     Corrections,
     Piece,
     answer_names,
@@ -38,6 +52,7 @@ from blossom.screenshot_review import (
     dest_kind,
     field_most,
     instruction_index,
+    joined_of,
     typed_day,
     usable_correction,
     value_json,
@@ -60,7 +75,9 @@ from blossom.screenshot_save import (
 )
 from blossom.stores.import_drafts import AnswerToKeep
 
-PRESSES: Final = frozenset({"keep", "save", "later"})
+PRESSES: Final = frozenset({"keep", "save", "later", "review"})
+"""The review form's presses by value, besides each card's Correct what was read
+(``CORRECT_PRESS`` and the card's piece name)."""
 ANSWER_KINDS: Final = frozenset(
     {
         "destination",
@@ -72,6 +89,7 @@ ANSWER_KINDS: Final = frozenset(
         "name",
         "confirm",
         "due_read",
+        "joined",
     }
 )
 SIGNED: Final = ("version", "progress_revision", "acceptance", "asked", "defaults", "identity")
@@ -124,17 +142,276 @@ class ReviewPost:
     held: Mapping[tuple[str, str], str] | None = None
     """The answers the review held, by kind and subject, at the press's latest read of it before
     its write; None where it made none."""
+    sent_twice: tuple[str, ...] = ()
+    """Each joined note's tick, by its field, posted more than once with different values: the
+    press is refused whole, and the tick goes back as the actual choice, neither side chosen,
+    whichever value came first."""
+    unanswered: tuple[str, ...] = ()
+    """Each joined note's tick, by its field, its page marked as sent twice (``UNRESOLVED``) and
+    this press left unanswered: the press is refused whole, and it goes back as it was."""
+    open_choices: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """Each tick in ``sent_twice`` or ``unanswered``, with the values sent, for the page to
+    offer and mark it until it is answered."""
+    twice: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """Each box, or answer of one value, posted more than once with different values, by its
+    field, with each value once in the order sent: the press is refused whole, neither value is
+    taken, and the page names both at that field."""
+    left_open: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """Each box, or answer of one value, by its field, its page marked as sent twice
+    (``UNRESOLVED``) and this press left unanswered, with the values the mark holds: a box left
+    empty with its explicit choice unchosen, or typed beside that choice, and an answer left
+    unchosen. The press is refused whole, the box isn't taken, and the page names it again."""
+    opened: tuple[str, ...] = ()
+    """The cards, by piece name, whose boxes the page showed open (``OPEN_MARK``), and the card
+    a Correct what was read press opens."""
+    carried: Mapping[tuple[str, str], str] = dataclasses.field(default_factory=dict)
+    """Each date Blossom couldn't read carried back beside its box, by key and field, as sent,
+    where its page didn't sign those words as shown: a family answer the page carries hidden,
+    checked by a Save against the saved progress before any store."""
+    unshown: Mapping[tuple[str, str], str | None] = dataclasses.field(default_factory=dict)
+    """Each correction, by key and field, as posted, where its page didn't sign it as shown on
+    the card: checked by a Save before any store, on any group, words the saved progress keeps
+    included, apart from words Blossom couldn't read as a date, which keep their own check."""
+    shown_signed: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """Each correction its page signed as shown on the card, by its box's subject, with the digests
+    signed: a page that signs this post's digests in place of its own signs these as they stand,
+    so words a review showed stay reviewed until a page signs its own."""
+    basis_signed: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    """Each correction its page signed as the basis of the choices it carries and not as shown
+    (``BASIS``: the words a plain load drew), by its box's subject, with the digests signed: a
+    page carrying this post's signatures carries these too."""
+    unbased: frozenset[tuple[str, str]] = frozenset()
+    """Each correction, by key and field, whose words its page signed neither as shown nor as the
+    basis of its choices: words changed since the page's choices were made."""
+    unchosen: frozenset[str] = frozenset()
+    """The cards, by piece name, whose destination its page asked with nothing chosen and no page
+    default, left unchosen by this press: the page it returns chooses nothing for them."""
+    retaken: frozenset[str] = frozenset()
+    """The cards, by piece name, whose destination this press's own typing left offered only
+    through the card as read: taken back from its answers, and asked again."""
+    chosen_here: frozenset[str] = frozenset()
+    """The cards, by piece name, whose posted destination differs from the one its page signed as
+    shown chosen, a card its page showed with none chosen included: the family's choice on this
+    press, never an answer restored or a default carried forward."""
+    left_off: frozenset[str] = frozenset()
+    """The cards, by piece name, of each group its page signed as shown ticked and this press did
+    not tick: the family's untick, which a destination chosen on the same press never overrides."""
+    ready_shown: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    """Each group its page signed as ready for Save, by name, with whether a question was open on
+    it (``READY_WHOLE`` or ``READY_ASKING``)."""
+    shown_chosen: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    """The destination its page signed as shown chosen, by piece name."""
+    held_back: frozenset[str] = frozenset()
+    """The cards, by piece name, of each group this Save selected and did not write, and each card
+    a destination was chosen for on this Save: nothing is written or stored for them, and the page
+    it returns shows them for Review changes."""
+    held_asking: frozenset[str] = frozenset()
+    """The cards in ``held_back`` of each group its page showed ready with a question open and
+    this Save left unanswered: the question is all that stops it, so the page it returns keeps
+    the group ready for the answer and one Save."""
+    selection_shown: str | None = None
+    """The signed selection a form that posts no ticks carried from its page (an offer or a found
+    row, ``SELECTION_SHOWN``); None where its form carried none."""
+    load_ticks: frozenset[str] | None = None
+    """The rows a plain load of the review ticks before this press stores anything, worked out from
+    the read its post was checked against; None for a post read without one."""
+    selection: frozenset[str] | None = None
+    """The rows an offer or a found row gives saved progress: the selection its page showed and
+    the rows of the cards it chose; for a Save that left rows open, the rows it selected. None for
+    any other press that posts its ticks, and for a form that carried no selection."""
 
     @property
     def refused(self) -> bool:
         """Whether the press is refused whole for what it posted: a box it can't take as posted, a
-        choice beside "None of these apply", or a kept row that isn't on the record."""
-        return bool(self.too_long or self.needed or self.both or self.conflicted or self.unresolved)
+        choice beside "None of these apply", a kept row that isn't on the record, a joined note's
+        tick posted twice with different values or marked so and left unanswered, or a box or
+        answer of one value posted twice with different values or marked so and left
+        unanswered."""
+        return bool(
+            self.too_long
+            or self.needed
+            or self.both
+            or self.conflicted
+            or self.unresolved
+            or self.sent_twice
+            or self.unanswered
+            or self.twice
+            or self.left_open
+        )
+
+    @property
+    def carries_its_page(self) -> bool:
+        """Whether this press, whichever it is, Save included, is refused whole before any store
+        (``refused``), so its page's signatures and digests travel on as signed: no word typed on
+        it is signed as shown, no destination is taken back, and a Save from the page it returns
+        with that typing is refused as not reviewed. What was chosen and reviewed stands, and the
+        next accepted press decides on the words it finds."""
+        return self.refused
 
 
-WITHDRAWABLE: Final = ("answer:confirm:", "answer:instructions:", "answer:name:missing")
+WITHDRAWABLE: Final = (
+    "answer:confirm:",
+    "answer:instructions:",
+    "answer:name:missing",
+    "answer:joined:",
+)
 """The answer fields, by prefix, a press takes back when it posts none of their boxes: each is
-a set of checkboxes, so a box left unticked sends nothing."""
+a set of checkboxes, so a box left unticked sends nothing. A joined note's tick is one."""
+DESTINATION_FIELD: Final = "answer:destination:"
+"""What starts the name of a card's destination field."""
+JOINED_PREFIX: Final = "answer:joined:"
+"""A joined note's tick's field, by prefix."""
+SEVERAL_PREFIXES: Final = ("answer:instructions:", JOINED_PREFIX)
+"""The answer fields, by prefix, that aren't read as one value: an instruction question holds
+several, and a joined note's tick is read on its own (``sent_twice``)."""
+
+
+def _one_value(name: str) -> bool:
+    """Whether a posted field is a box, or an answer that holds one value."""
+    return name.startswith(BOX_PREFIXES) or (
+        name.startswith("answer:") and not name.startswith(SEVERAL_PREFIXES)
+    )
+
+
+# ------------------------------------------------------------------ the review form's own fields
+
+ANSWER: Final = "answer"
+"""A family answer: a control the family sets, or such an answer the page carries hidden."""
+PAGE: Final = "page"
+"""A page field: a signed field, or a mark the page writes beside a box or an answer."""
+PRESS: Final = "press"
+"""A press: the name of a submit button."""
+VISIBLE: Final = "visible"
+HIDDEN: Final = "hidden"
+ONE: Final = "one"
+"""A field that carries one value: sent twice, it is one value or two."""
+SEVERAL: Final = "several"
+"""A field that carries several values, each once: the group ticks, and an instruction question's
+choices."""
+
+_TEXT: Final = r'"(?:[^"\\\x00-\x1f]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"'
+"""One JSON string as ``json.dumps`` writes it."""
+_PLACE: Final = "(?:0|[1-9][0-9]{0,3})"
+BOX_SUBJECT: Final = (
+    rf'\[{_TEXT},"(?:course|title|due|assigned|instruction:{_PLACE}'
+    rf'|instruction:[0-9a-f]{{64}}:{_PLACE})"\]'
+)
+"""A box's subject: its row key or its piece's dates key, and its field, as one JSON list."""
+_ROW: Final = "[0-9a-f]{64}"
+"""A row's key: the SHA-256 of the row in lowercase hex."""
+_PIECE: Final = rf"{_ROW}(?:\|(?:[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}|due|note-[0-9a-f]{{16}}))?"
+"""A piece's name: its row's key, alone or with an assigned day, ``due`` for the undated cards
+of a row split by day, or ``note-`` and a joined note's tag."""
+_UNIT: Final = rf"{_PIECE}(?:\+{_PIECE})*"
+"""A group's unit: its piece names joined by "+"."""
+_DESTINATION: Final = (
+    rf'\[\[(?:"id",{_TEXT}|"new","(?:0|[1-9][0-9]{{0,5}})")\],\["{_PIECE}"(?:,"{_PIECE}")*\]\]'
+)
+"""A destination's question subject as ``subject_for`` writes it: an assignment by its id or a
+new slot by its number, then its piece names."""
+_NAME: Final = "missing|[0-9a-f]{64}"
+"""The student-name question's subject: ``missing``, or the keyed form of a student line."""
+_PAIR: Final = rf"\[{_TEXT},{_TEXT}\]"
+_TEXTS: Final = rf"\[(?:{_TEXT}(?:,{_TEXT})*)?\]"
+ONE_ANSWER: Final = (
+    rf"answer:(?:(?:destination|due_read):{_PIECE}|split:{_ROW}|kind:(?:{_ROW}|{_DESTINATION})"
+    rf"|(?:due|assigned):{_DESTINATION}|name:(?:{_NAME})|(?:confirm|joined):{_PAIR})"
+)
+"""The grammar of an answer of one value: the kind, then its subject as the page writes it."""
+INSTRUCTIONS_ANSWER: Final = rf"answer:instructions:\[{_TEXTS},{_TEXTS},(?:0|[1-9][0-9]{{0,11}})\]"
+"""The grammar of an instruction question: its destination, its pieces and the revision shown."""
+
+
+@dataclasses.dataclass(frozen=True)
+class ReviewField:
+    """One family of the fields the screenshot review's own form posts (``read_review``): the
+    exact grammar of its names, how the page renders it (``visible``, ``hidden``, or ``press`` for
+    a submit button), its class (``answer``, ``page`` or ``press``) and its shape (``one`` or
+    ``several`` values). The forms beside it, an offer and a row found under another name
+    (``read_change``), Leave, Find under another name, Remove, Finish without the rest, Discard
+    the review, Not hers and Set aside, are outside it."""
+
+    grammar: str
+    rendering: str
+    role: str
+    shape: str = ONE
+
+
+REVIEW_FIELDS: Final = (
+    ReviewField("version|progress_revision|acceptance|asked|defaults|identity", HIDDEN, PAGE),
+    ReviewField(rf"digest:{_UNIT}", HIDDEN, PAGE),
+    ReviewField("check", HIDDEN, PAGE),
+    ReviewField(rf"read:{BOX_SUBJECT}", HIDDEN, PAGE),
+    ReviewField(rf"unresolved:(?:correct:{BOX_SUBJECT}|{ONE_ANSWER})", HIDDEN, PAGE),
+    ReviewField(rf"{OPEN_MARK}{_PIECE}", HIDDEN, PAGE),
+    ReviewField(rf"correct:{BOX_SUBJECT}", VISIBLE, ANSWER),
+    ReviewField(rf"(?:correct|none):{BOX_SUBJECT}", HIDDEN, ANSWER),
+    ReviewField(rf"refused:{BOX_SUBJECT}", HIDDEN, ANSWER),
+    ReviewField(rf"(?:none|empty):{BOX_SUBJECT}", VISIBLE, ANSWER),
+    ReviewField(ONE_ANSWER, VISIBLE, ANSWER),
+    ReviewField(INSTRUCTIONS_ANSWER, VISIBLE, ANSWER, SEVERAL),
+    ReviewField("unit", VISIBLE, ANSWER, SEVERAL),
+    ReviewField("press", PRESS, PRESS),
+)
+"""Every field of the screenshot review's own form, each family once per rendering: the signed
+fields, each group's digest and the signature; the mark beside each box of the value it shows,
+the mark of a box or an answer sent twice, and the mark of a card shown with its boxes open; the
+boxes, a closed card's reviewed values and its "No assigned date was given" (answers the page
+carries hidden), a date Blossom couldn't read carried beside its box (one more), "No assigned
+date was given" and a box's explicit empty choice; each answer of one value, an instruction
+question's several, the group ticks; and the press."""
+
+
+def review_field(name: str, rendering: str) -> ReviewField | None:
+    """The entry of ``REVIEW_FIELDS`` whose grammar matches the whole of ``name`` as rendered so,
+    or ``None``: no prefix of a name matches."""
+    return next(
+        (
+            entry
+            for entry in REVIEW_FIELDS
+            if entry.rendering == rendering and re.fullmatch(entry.grammar, name)
+        ),
+        None,
+    )
+
+
+def field_role(name: str, offered: Mapping[str, Collection[str]]) -> str | None:
+    """A posted field's class, taken from what its page signed: the signed fields and the marks
+    beside a box or an answer the signed list holds are page fields; a box, an answer or a box's
+    explicit choice the signed list holds, a date carried beside a box it holds, and a group tick
+    (checked against the signed digests) are family answers; the press is a press. A name its page
+    didn't sign, or carries beside nothing it signed, has none (``None``): its name alone never
+    gives it one."""
+    if name in SIGNED or name == "check" or name.startswith("digest:"):
+        return PAGE
+    if name == "press":
+        return PRESS
+    if name == "unit":
+        return ANSWER
+    if name.startswith(OPEN_MARK):
+        return PAGE if _shown_card(name.removeprefix(OPEN_MARK), offered) else None
+    if name.startswith(("read:", "refused:")):
+        if "correct:" + name.split(":", 1)[1] not in offered:
+            return None
+        return PAGE if name.startswith("read:") else ANSWER
+    if name.startswith(UNRESOLVED):
+        return PAGE if name.removeprefix(UNRESOLVED) in offered else None
+    return ANSWER if name in offered else None
+
+
+def _shown_card(piece: str, offered: Mapping[str, Collection[str]]) -> bool:
+    """Whether the page showed this card: its destination question is among those it signed."""
+    return answer_field("destination", piece) in offered
+
+
+def _a_press(value: str, offered: Mapping[str, Collection[str]]) -> bool:
+    """Whether a press's value is one of the review form's: a press of ``PRESSES``, or Correct
+    what was read on a card the page showed."""
+    if value in PRESSES:
+        return True
+    return value.startswith(CORRECT_PRESS) and _shown_card(
+        value.removeprefix(CORRECT_PRESS), offered
+    )
 
 
 def _row_of(state: ReviewState, kind: str, subject: str) -> str | None:
@@ -211,6 +488,7 @@ def read_change(
     if fields.pop("press", "") != "keep":
         raise PostRefused
     version = _number(fields.pop("version", ""))
+    selection_shown = fields.pop(SELECTION_SHOWN, None)
     answers = []
     for name, value in sorted(fields.items()):
         kind, subject = _field(name)
@@ -220,7 +498,20 @@ def read_change(
     if not answers:
         raise PostRefused
     typed = {key: dict(fields) for key, fields in corrections.items()}
-    return ReviewPost("keep", version, "", 0, tuple(answers), typed, (), {}, {}, ticked=False)
+    return ReviewPost(
+        "keep",
+        version,
+        "",
+        0,
+        tuple(answers),
+        typed,
+        (),
+        {},
+        {},
+        ticked=False,
+        chosen_here=frozenset(answer.subject for answer in answers),
+        selection_shown=selection_shown,
+    )
 
 
 def _number(text: str) -> int:
@@ -325,7 +616,25 @@ def read_review(
     kept as a correction only where it differs (``box_corrections``). A date Blossom couldn't read,
     carried back beside its empty date box, stays the box's correction until a date is chosen
     there. A correction longer than its field takes is named in ``too_long`` and kept as typed,
-    never cut, for the page to give back."""
+    never cut, for the page to give back. A joined note's tick the page offered, posted more than
+    once with different values, is named in ``sent_twice`` and taken as neither, so no value is
+    chosen by the order it came in; posted twice with one value, it is that one answer. A box, or
+    any other answer but an instruction question's, which holds several, is read the same way:
+    posted with different values, each one its page could send, it is named in ``twice`` and
+    taken as neither, and posted twice with one value, it is that one answer. A
+    tick its page marks as sent twice (``UNRESOLVED``) is answered by adding the note or by
+    leaving it out; left unanswered, it is named in ``unanswered`` and the press is refused. A
+    box its page marks so is answered by a typed value, or by the explicit choice beside it
+    (``EMPTY``, "No assigned date was given" for an assigned date) with the box left empty, which
+    is what the box left empty means; an answer its page marks so, by one of its options. A
+    marked box left empty with that choice unchosen, or typed beside it, and a marked answer left
+    unchosen, are named in ``left_open`` and the press is refused. Each field's class is taken
+    from what the page signed (``field_role``): a page field, a ``read:`` mark or an
+    ``UNRESOLVED`` mark among them, sent twice with different values refuses the whole post,
+    naming no field, and sent twice with one value it is that one value. The group ticks are a
+    family answer of several values: each group sent twice is one tick. The ``UNRESOLVED`` marks
+    a post carries are exactly the ones its page signed, each with the values signed; a mark
+    dropped, added or holding other values refuses the whole post, naming no field."""
     hidden = _signed_fields(items, page_key)
     offered, older = _signed_asks(hidden)
     try:
@@ -339,19 +648,76 @@ def read_review(
     }
     rest = [(n, v) for n, v in items if n not in hidden and n != "check"]
     presses = [v for n, v in rest if n == "press"]
-    if len(presses) != 1 or presses[0] not in PRESSES:
+    if len(presses) != 1 or not _a_press(presses[0], offered):
         raise PostRefused
-    units = tuple(v for n, v in rest if n == "unit")
-    if len(set(units)) != len(units) or any(u not in digests for u in units):
+    marked_cards = [n.removeprefix(OPEN_MARK) for n, _ in rest if n.startswith(OPEN_MARK)]
+    if any(not _shown_card(piece, offered) for piece in marked_cards):
+        raise PostRefused
+    pressed = presses[0].removeprefix(CORRECT_PRESS) if presses[0] not in PRESSES else None
+    opened = tuple(sorted({*marked_cards, *([pressed] if pressed else [])}))
+    units = tuple(dict.fromkeys(v for n, v in rest if n == "unit"))
+    if any(u not in digests for u in units):
+        raise PostRefused
+    sent_as: dict[str, set[str]] = {}
+    for name, value in rest:
+        sent_as.setdefault(name, set()).add(value)
+    if any(
+        len(values) > 1 and field_role(name, offered) not in (ANSWER, PRESS)
+        for name, values in sent_as.items()
+    ):
+        # A page field sent twice with different values: the whole post, naming no field.
+        raise PostRefused
+    if {
+        name: frozenset(values) for name, values in sent_as.items() if name.startswith(UNRESOLVED)
+    } != {name: values for name, values in offered.items() if name.startswith(UNRESOLVED)}:
+        # Marks other than the ones the page signed, one dropped, added or holding other
+        # values: the whole post, naming no field.
         raise PostRefused
     boxes: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
     none_given: set[str] = set()
     chosen: dict[str, list[str]] = {}
     rows_by_words: dict[str, dict[str, str]] = {}
+    joined_sent: dict[str, list[str]] = {}
+    marked: dict[str, tuple[str, ...]] = {}
+    marked_open: dict[str, tuple[str, ...]] = {}
+    emptied: set[str] = set()
+    declined: set[str] = set()
     for name, value in rest:
-        if name in ("press", "unit") or name.startswith(READ_PREFIX):
+        if name.startswith(JOINED_PREFIX) and name in offered:
+            sent = joined_sent.setdefault(name, [])
+            if value not in sent:
+                sent.append(value)
+        elif (
+            name.startswith(UNRESOLVED + JOINED_PREFIX) and name.removeprefix(UNRESOLVED) in offered
+        ):
+            marked[name.removeprefix(UNRESOLVED)] = _marked_values(value)
+        elif _marks_one_value(name, offered):
+            marked_open[name.removeprefix(UNRESOLVED)] = _marked_values(value)
+        elif name.startswith(EMPTY):
+            if name not in offered or value not in offered[name]:
+                raise PostRefused
+            emptied.add(f"correct:{name.removeprefix(EMPTY)}")
+    sent_twice = tuple(sorted(name for name, sent in joined_sent.items() if len(sent) > 1))
+    one_sent: dict[str, list[str]] = {}
+    for name, value in rest:
+        if _one_value(name):
+            sent = one_sent.setdefault(name, [])
+            if value not in sent:
+                sent.append(value)
+    twice = {name: tuple(sent) for name, sent in one_sent.items() if len(sent) > 1}
+    read_once: set[tuple[str, str]] = set()
+    for name, value in rest:
+        if name in ("press", "unit") or name.startswith(
+            (READ_PREFIX, UNRESOLVED, EMPTY, OPEN_MARK)
+        ):
             continue
+        if name in sent_twice:
+            continue
+        if name in one_sent:
+            if (name, value) in read_once:
+                continue
+            read_once.add((name, value))
         if name.startswith(BOX_PREFIXES):
             prefix = next(p for p in BOX_PREFIXES if name.startswith(p))
             signs = f"correct:{name.removeprefix(prefix)}" if prefix == "refused:" else name
@@ -365,8 +731,9 @@ def read_review(
             elif prefix == "refused:":
                 if field not in PIECE_DATES or (key, field) in carried:
                     raise PostRefused
-                carried[(key, field)] = value
-            else:
+                if name not in twice:
+                    carried[(key, field)] = value
+            elif name not in twice:
                 if (key, field) in boxes:
                     raise PostRefused
                 boxes[(key, field)] = value
@@ -375,6 +742,14 @@ def read_review(
         as_signed = value if older else signed_option(name, value)
         if name not in offered or as_signed not in offered[name]:
             raise PostRefused
+        if name in twice:
+            continue
+        if name in chosen and kind == "joined" and value in chosen[name]:
+            continue
+        if kind == "joined" and value == UNJOINED:
+            # Offered only beside a tick marked as sent twice: the family leaving the note out.
+            declined.add(name)
+            continue
         if name in chosen and kind != "instructions":
             raise PostRefused
         if older and kind == "instructions" and value:
@@ -385,6 +760,20 @@ def read_review(
     for name in none_confirms(state, none_given):
         if name in offered and "as_read" in offered[name]:
             chosen.setdefault(name, ["as_read"])
+    left_open: dict[str, tuple[str, ...]] = {}
+    for name, as_marked in marked_open.items():
+        if name in twice:
+            continue
+        if name.startswith("correct:"):
+            key, field = _box(name.removeprefix("correct:"))
+            typed = bool(boxes.get((key, field), "").strip())
+            chose = name in emptied or (field == "assigned" and key in none_given)
+            # A typed value or the explicit choice answers it; neither, or both, leaves it open.
+            if typed == chose:
+                left_open[name] = as_marked
+                boxes.pop((key, field), None)
+        elif name not in chosen:
+            left_open[name] = as_marked
     folded = box_corrections(state, boxes, carried, none_given)
     corrections = folded.corrections
     answers = []
@@ -409,11 +798,36 @@ def read_review(
         else:
             value = values[0]
         answers.append(_answer(state, kind, subject, value, corrections))
+    blank = [
+        _field(name)
+        for name in offered
+        if name not in chosen
+        and name not in sent_twice
+        and name not in twice
+        and name not in left_open
+        and name.startswith(WITHDRAWABLE)
+    ]
+    for kind, subject in blank:
+        if kind == "joined" and joined_of(subject) in state.proven:
+            answers.append(_answer(state, kind, subject, UNJOINED, corrections))
     withdrawn = tuple(
         sorted(
-            _field(name) for name in offered if name not in chosen and name.startswith(WITHDRAWABLE)
+            (kind, subject)
+            for kind, subject in blank
+            if not (kind == "joined" and joined_of(subject) in state.proven)
         )
     )
+    unanswered = tuple(
+        sorted(
+            name
+            for name in marked
+            if name not in sent_twice and name not in chosen and name not in declined
+        )
+    )
+    open_choices = {
+        **{name: tuple(joined_sent[name]) for name in sent_twice},
+        **{name: marked[name] for name in unanswered},
+    }
     return ReviewPost(
         presses[0],
         _number(hidden["version"]),
@@ -429,10 +843,104 @@ def read_review(
         needed=folded.needed,
         both=folded.both,
         conflicted=conflicted,
-        choices=_posted_choices(offered, chosen, rest),
+        choices={
+            **_posted_choices(offered, chosen, rest),
+            **{name: () for name in (*twice, *left_open) if name.startswith("answer:")},
+        },
         unresolved=tuple(unresolved),
         dropped=folded.dropped,
+        sent_twice=sent_twice,
+        unanswered=unanswered,
+        open_choices=open_choices,
+        twice=twice,
+        left_open=left_open,
+        opened=opened,
+        carried={
+            (key, field): words
+            for (key, field), words in carried.items()
+            if carried_digest(words)
+            not in offered.get("refused:" + json.dumps([key, field], separators=(",", ":")), ())
+        },
+        unshown={
+            (key, field): value
+            for key, fields in corrections.items()
+            for field, value in fields.items()
+            if shown_digest(value)
+            not in offered.get(SHOWN + json.dumps([key, field], separators=(",", ":")), ())
+        },
+        shown_signed={
+            name.removeprefix(SHOWN): tuple(sorted(values))
+            for name, values in offered.items()
+            if name.startswith(SHOWN)
+        },
+        basis_signed={
+            name.removeprefix(BASIS): tuple(sorted(values))
+            for name, values in offered.items()
+            if name.startswith(BASIS)
+        },
+        unbased=frozenset(
+            (key, field)
+            for key, fields in corrections.items()
+            for field, value in fields.items()
+            if shown_digest(value)
+            not in offered.get(SHOWN + _subject(key, field), frozenset())
+            | offered.get(BASIS + _subject(key, field), frozenset())
+        ),
+        unchosen=frozenset(
+            name.removeprefix(DESTINATION_FIELD)
+            for name in offered
+            if name.startswith(DESTINATION_FIELD)
+            and name not in chosen
+            and name.removeprefix(DESTINATION_FIELD) not in defaults
+        ),
+        chosen_here=frozenset(
+            answer.subject
+            for answer in answers
+            if answer.kind == "destination"
+            and answer.value not in offered.get(CHOSEN_SHOWN + answer.subject, ())
+        ),
+        left_off=frozenset(
+            piece
+            for name in offered
+            if name.startswith(TICKED_SHOWN) and name.removeprefix(TICKED_SHOWN) not in units
+            for piece in name.removeprefix(TICKED_SHOWN).split("+")
+        ),
+        ready_shown={
+            name.removeprefix(READY_SHOWN): min(values)
+            for name, values in offered.items()
+            if name.startswith(READY_SHOWN) and values
+        },
+        shown_chosen={
+            name.removeprefix(CHOSEN_SHOWN): min(values)
+            for name, values in offered.items()
+            if name.startswith(CHOSEN_SHOWN) and values
+        },
     )
+
+
+def _subject(key: str, field: str) -> str:
+    """A box's subject, as the signed list names it after ``SHOWN`` or ``BASIS``."""
+    return json.dumps([key, field], separators=(",", ":"))
+
+
+def _marks_one_value(name: str, offered: Mapping[str, frozenset[str]]) -> bool:
+    """Whether a posted field is an ``UNRESOLVED`` mark its page could carry for a box or an
+    answer of one value it offered."""
+    if not name.startswith(UNRESOLVED):
+        return False
+    field = name.removeprefix(UNRESOLVED)
+    return field.startswith(("correct:", "answer:")) and _one_value(field) and field in offered
+
+
+def _marked_values(value: str) -> tuple[str, ...]:
+    """The values a tick's ``UNRESOLVED`` mark holds, each once; none where it can't be read."""
+    try:
+        said = json.loads(value)
+    except (ValueError, RecursionError):
+        return ()
+    if not isinstance(said, list):
+        return ()
+    return tuple(dict.fromkeys(text for text in said if isinstance(text, str)))
 
 
 def _kept_of(subject: str, kept: Mapping[str, Mapping[str, str]]) -> Mapping[str, str]:
@@ -475,6 +983,16 @@ READ_PREFIX: Final = "read:"
 review that has gone gives its typing back (``typed_back``)."""
 
 
+def _read_marks(items: Sequence[tuple[str, str]]) -> dict[str, str]:
+    """Each ``read:`` mark a post sent, by the box it names. A mark sent twice with different
+    values is none, so neither is taken by the order it came in and the box counts as typed."""
+    sent: dict[str, set[str]] = {}
+    for name, value in items:
+        if name.startswith(READ_PREFIX):
+            sent.setdefault(name.removeprefix(READ_PREFIX), set()).add(value)
+    return {named: next(iter(values)) for named, values in sent.items() if len(values) == 1}
+
+
 def _box(subject: str) -> tuple[str, str]:
     """A box's key and field, from its subject: a row key with ``course``, ``title`` or an
     instruction text's field, or a piece's dates key with ``due`` or ``assigned``."""
@@ -506,7 +1024,8 @@ def box_corrections(
     """Each box kept as a correction exactly where it differs from its value with no
     correction, both stripped with line endings made line feeds and dates read as dates; the
     length check runs on corrections only. A cleared class, title or settled due date is
-    refused; a cleared instruction text is its removal (``None``); a cleared assigned date is
+    refused, except a due date cleared on a piece read from a teacher's note, which is none
+    (``None``); a cleared instruction text is its removal (``None``); a cleared assigned date is
     the date as read. "No assigned date was given" is none (``None``) where one was read, its
     box left empty or holding the date as read; beside any other date typed in the box it is
     refused. Ticked either way, text Blossom couldn't read carried beside that box is dropped, so
@@ -542,7 +1061,9 @@ def box_corrections(
             typed = value.strip() or carried.get((key, field), "").strip()
             day = typed_day(typed) if typed else None
             if not typed:
-                if field == "due" and read is not None:
+                if field == "due" and read is not None and _of_a_note(state, key):
+                    keep(key, field, None)
+                elif field == "due" and read is not None:
                     needed.add((key, field))
                     keep(key, field, "")
             elif len(typed) > field_most(field):
@@ -578,6 +1099,13 @@ def box_corrections(
         if text
     )
     return Folded(out, tuple(sorted(too_long)), tuple(sorted(needed)), tuple(sorted(both)), dropped)
+
+
+def _of_a_note(state: ReviewState, key: str) -> bool:
+    """Whether a piece's dates key names a piece read from a teacher's note."""
+    piece = state.by_name.get(key.removeprefix("date:"))
+    reading = None if piece is None else piece.reading
+    return reading is not None and reading.teacher_note is not None
 
 
 def none_confirms(state: ReviewState, none_given: Iterable[str]) -> list[str]:
@@ -629,11 +1157,7 @@ def typed_for(
     seen: set[tuple[str, str, str]] = set()
     typed_over: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
-    unchanged = {
-        name.removeprefix(READ_PREFIX): value
-        for name, value in items
-        if name.startswith(READ_PREFIX)
-    }
+    unchanged = _read_marks(items)
     for name, value in items:
         prefix = next((p for p in ("correct:", "refused:") if name.startswith(p)), None)
         if prefix is None:
@@ -693,11 +1217,7 @@ def typed_as_sent(items: Sequence[tuple[str, str]]) -> tuple[tuple[str, str, str
     boxes: dict[tuple[str, str], str] = {}
     carried: dict[tuple[str, str], str] = {}
     ticked: set[tuple[str, str]] = set()
-    unchanged = {
-        name.removeprefix(READ_PREFIX): value
-        for name, value in items
-        if name.startswith(READ_PREFIX)
-    }
+    unchanged = _read_marks(items)
     for name, value in items:
         prefix = next((p for p in ("correct:", "refused:", "none:") if name.startswith(p)), None)
         if prefix is None:
@@ -812,11 +1332,41 @@ def progress_text(corrected: Corrections, selected: Iterable[str]) -> str:
     )
 
 
+def answer_pieces(kind: str, subject: str, pieces: Iterable[str]) -> frozenset[str]:
+    """The pieces among ``pieces`` an answer is about, read from its kind and subject."""
+    if kind == "confirm":
+        owner = str(json.loads(subject)[0])
+        return frozenset(p for p in pieces if owner in (p, p.split("|")[0]))
+    if kind == "split" or (kind == "kind" and not subject.startswith("[")):
+        return frozenset(p for p in pieces if p.split("|")[0] == subject)
+    return frozenset(answer_names(kind, subject))
+
+
+def rows_of_units(units: Iterable[str]) -> frozenset[str]:
+    """The row keys of the groups named, read from their piece names, as saved progress keeps a
+    selection."""
+    return frozenset(name.split("|")[0] for unit in units for name in unit.split("+"))
+
+
+def selection_text(progress: str | None, selected: Iterable[str]) -> str | None:
+    """Saved progress with this selection, its corrections and shape left as they stand: new
+    progress where none is stored, and None where nothing is to be written, because it already
+    holds this selection or can't be read."""
+    chosen = sorted(set(selected))
+    if progress is None:
+        return progress_text({}, chosen)
+    read = progress_read(progress)
+    if read is None or read.selected == frozenset(chosen):
+        return None
+    return json.dumps({**json.loads(progress), "selected": chosen}, separators=(",", ":"))
+
+
 def _kept(shape: int, key: str, field: str, value: object) -> bool:
     """Whether one entry of saved progress is one its shape holds: text within its field's
     limit that isn't blank; in the new shape, under a piece's dates key its due or assigned
     date, under a row key its class, title, an instruction text or the words of a card read
-    with none, a removal (null) only for an instruction text or an assigned date."""
+    with none, a removal (null) only for an instruction text or a piece's due or assigned date
+    (a due date given as none is taken only on a piece read from a teacher's note)."""
     if shape == OLD_SHAPE:
         if field not in OLD_FIELDS:
             return False
@@ -830,7 +1380,7 @@ def _kept(shape: int, key: str, field: str, value: object) -> bool:
     ):
         return False
     if value is None:
-        return shape != OLD_SHAPE and (field == "assigned" or instruction_index(field) is not None)
+        return shape != OLD_SHAPE and (field in PIECE_DATES or instruction_index(field) is not None)
     return isinstance(value, str) and bool(value.strip()) and len(value) <= field_most(field)
 
 

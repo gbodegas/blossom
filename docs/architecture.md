@@ -40,7 +40,25 @@ into the teacher's instruction under each card, one observation per card
 with the card and its day, and into what the school reports about an
 assignment's status, a fact of its own kept with who reported it and the
 day. A line shaped like a card that does not read as one is text for review,
-never a teacher's words. The reader writes nothing. `blossom/routes/inbox.py`
+never a teacher's words. What a teacher writes for a subject apart from its
+cards is a note, read as tasks by `blossom/teacher_notes.py`, closed lists of
+deadline statements and opening words with no store and no clock: each task
+has its words, a standing (homework, not an assignment, or unclear), and a
+due date only where its words settle one. A task joins the one card of its
+class and title read under a day of its school week when it settles no date,
+settles the card's due date, or was first listed on the card's day, and adds
+the deadline it settles and its words where they say more only when the
+family selects the joined note; every other task is a reading of its own,
+its words kept as one of the school's instructions under the first school
+day it is listed under, with no card. The review offers each such reading
+with a tick, none selected from the start unless saved already, and a title
+and due date to correct before saving; a date the family gives is a parent's entry,
+not the school's claim. A saved task is found again by its class, its words,
+and that school day, never by its title alone, so a corrected title or date
+stands at the next paste. A homework screenshot's card with a class and words
+and no label, under a day heading, is read into the same tasks by the same
+rules, and its review corrects them in its own boxes and recognizes them the
+same way. The reader writes nothing. `blossom/routes/inbox.py`
 compares what was read with the record as it is, row by row, matched by
 course and title whatever the row's id, and shows the result week by week
 with what saving would do; the saving compares again and writes under the

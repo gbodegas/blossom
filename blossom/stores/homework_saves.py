@@ -281,6 +281,32 @@ class HomeworkSaveRecords:
         with self._lock, self._writing():
             self._connection.execute(RAISE_PROGRESS_REVISION, (draft_id,))
 
+    def keep_screenshot_answers(
+        self,
+        draft_id: str,
+        answers: Mapping[tuple[str, str], tuple[str, str]],
+        withdrawn: Collection[tuple[str, str]],
+    ) -> None:
+        """Store these name and split answers, (kind, subject) to (value, digest), and delete the
+        withdrawn ones, in the caller's transaction, with one raise of the review's version. The
+        caller names only answers that differ from those stored, so nothing named writes nothing
+        and raises nothing."""
+        if not answers and not withdrawn:
+            return
+        # The draft store's statements; imported here for the reason ``draft_for_save`` gives.
+        from blossom.stores.import_drafts import KEEP_ANSWER, RAISE_VERSION
+
+        with self._lock, self._writing():
+            for (kind, subject), (value, digest) in sorted(answers.items()):
+                self._connection.execute(KEEP_ANSWER, (draft_id, kind, subject, value, digest))
+            for kind, subject in sorted(withdrawn):
+                self._connection.execute(
+                    "DELETE FROM import_draft_answers "
+                    "WHERE draft_id = ? AND kind = ? AND subject = ?",
+                    (draft_id, kind, subject),
+                )
+            self._connection.execute(RAISE_VERSION, (draft_id,))
+
     def drop_saved_answers(self, draft_id: str, answers: Collection[tuple[str, str]]) -> int:
         """Delete the saved pieces' answers, in the caller's transaction; how many went."""
         with self._lock, self._writing():

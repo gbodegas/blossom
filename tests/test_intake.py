@@ -41,6 +41,7 @@ from blossom.intake import (
     changes_for,
     conflicting_choices,
     identity,
+    is_shaped_as_structure,
     keep,
     kind_of,
     read_cards,
@@ -1511,6 +1512,246 @@ What makes a rule fair?
         (6, "Why do people tell stories?"),
         (7, "What makes a rule fair?"),
     ]
+
+
+NOTE_HEAD = "Homework for Wren\n11/02/2026 - Monday\nScience -\nLab notes\n"
+"""The summary's opening, a day, and a subject's note of one line, on lines 3 and 4."""
+NOTE_DAY = date(2026, 11, 2)
+SCIENCE_NOTE = ("Science", NOTE_DAY, ("Lab notes",), 3, (3, 4), False)
+"""The block read from the note in ``NOTE_HEAD``, as ``blocks`` lists it."""
+
+
+def blocks(text: str) -> list[tuple[str, date, tuple[str, ...], int, tuple[int, ...], bool]]:
+    """Each subject's note read from a text, in the order the notes open: its subject, its
+    school day, its paragraphs, its heading's line, its lines, and whether it is suspect.
+
+    For every block it holds that each of its lines is also listed for review, that no line
+    belongs to two blocks, that its lines ascend from its heading's, and that its paragraphs
+    are the review text of its lines after the heading, in order."""
+    read = read_text(text, now=NOW, today=TODAY)
+    listed = {unread.line: unread.text for unread in read.unread}
+    in_blocks = [number for note in read.notes for number in note.lines]
+    assert set(in_blocks) <= set(listed)
+    assert len(in_blocks) == len(set(in_blocks))
+    for note in read.notes:
+        assert note.lines == tuple(sorted(note.lines))
+        assert note.lines[0] == note.block.line
+        assert [line for paragraph in note.block.paragraphs for line in paragraph.split("\n")] == [
+            listed[number] for number in note.lines[1:]
+        ]
+    return [
+        (
+            note.block.subject,
+            note.block.day,
+            note.block.paragraphs,
+            note.block.line,
+            note.lines,
+            note.block.suspect,
+        )
+        for note in read.notes
+    ]
+
+
+def test_each_subjects_note_in_a_week_is_handed_out_as_a_block() -> None:
+    """Each note of the week is one block: the subject without its hyphen, the school day
+    its heading is under, its paragraphs, its heading's line, and the lines of the heading
+    and of the note. A card and a card's own instruction are in no block, and none of these
+    plain notes is suspect."""
+    monday, tuesday = date(2026, 11, 2), date(2026, 11, 3)
+    study = "Study for the vocabulary quiz on Thursday. Map project due on Wednesday."
+    logs = ("Reading log due today", "Online practice due Tuesday")
+
+    assert blocks(NOTES_WEEK) == [
+        ("Humanities", monday, (study,), 5, (5, 6), False),
+        ("Science", monday, ("Lab notebook due Tuesday",), 8, (8, 9), False),
+        ("Art", monday, ("Please bring a shoebox by next Tuesday.",), 12, (12, 13), False),
+        ("08 Geometry", tuesday, ("Quiz on unit two", "Sections 2 and 3"), 16, (16, 17, 19), False),
+        ("Humanities", tuesday, (study,), 22, (22, 23), False),
+        ("Science", tuesday, logs, 28, (28, 29, 31), False),
+    ]
+
+
+def test_a_note_of_several_paragraphs_is_one_block_with_its_paragraphs_apart() -> None:
+    """A blank line in a note ends a paragraph, and several blank lines are one break. The
+    lines of a paragraph are joined by a line break, each as the reader reads it: without
+    the spaces around it and without the download's line-break mark. A blank line right
+    under the heading opens no paragraph."""
+    text = (
+        "Homework for Wren\n11/02/2026 - Monday\nScience -\n\n"
+        "Read chapter 4\\\n   and answer the questions.  \n\n\n"
+        "Bring your lab notebook.\n\nQuiz on Friday.\n"
+    )
+    paragraphs = (
+        "Read chapter 4\nand answer the questions.",
+        "Bring your lab notebook.",
+        "Quiz on Friday.",
+    )
+
+    assert blocks(text) == [("Science", NOTE_DAY, paragraphs, 3, (3, 5, 6, 9, 11), False)]
+
+
+@pytest.mark.parametrize(
+    "closing",
+    [
+        "11/03/2026 - Tuesday\n",
+        "Tuesday 11/3/2026\n",
+        "09/09 Math - A: Homework: Practice Grade: Missing\n",
+        "Math - Assigned: Sheet 3: (Due:11/06/2026)\n",
+        "Math - Due: Sheet 3:\n",
+        "Homework for Wren\n11/09/2026 - Monday\n",
+        "",
+    ],
+)
+def test_a_note_closes_where_the_reader_ends_it_and_the_closing_line_is_in_no_block(
+    closing: str,
+) -> None:
+    """A line that reads as a day in either shape, as a Missing line or as a card with its
+    course, the text's opening line before a day whose digits name a date, and the end of
+    the text each close a note. The closing line and the line after it are in no block."""
+    after = "After words\n" if closing else ""
+
+    assert blocks(NOTE_HEAD + closing + after) == [SCIENCE_NOTE]
+
+
+def test_a_heading_inside_a_note_closes_it_and_opens_the_next_subjects_block() -> None:
+    """A subject heading read inside a note ends that note and opens the next subject's,
+    with a blank line before it or with none. Each note is a block of its own, and the
+    heading is a line of the block it opens only."""
+    text = NOTE_HEAD + "Art -\nBring a shoebox.\n\n08 Geometry -\nQuiz on unit two\n"
+
+    assert blocks(text) == [
+        SCIENCE_NOTE,
+        ("Art", NOTE_DAY, ("Bring a shoebox.",), 5, (5, 6), False),
+        ("08 Geometry", NOTE_DAY, ("Quiz on unit two",), 8, (8, 9), False),
+    ]
+
+
+def test_a_heading_with_no_line_kept_under_it_makes_no_block() -> None:
+    """A heading followed at once by another heading, by a line that ends its note, or by
+    the end of the text has no note to hand out. No block is made for it, and the heading
+    is listed for review."""
+    text = NOTE_HEAD + "Art -\nMusic -\n\n11/03/2026 - Tuesday\nSpanish -\n"
+    read = read_text(text, now=NOW, today=TODAY)
+
+    assert blocks(text) == [SCIENCE_NOTE]
+    assert [(u.line, u.text) for u in read.unread][2:] == [
+        (5, "Art -"),
+        (6, "Music -"),
+        (9, "Spanish -"),
+    ]
+
+
+def test_a_cards_short_review_paragraph_is_a_block_only_from_a_heading_inside_it() -> None:
+    """The paragraph kept for review under a card's line with no course has no subject, so
+    no block is made for it. A subject heading inside it opens that subject's note, a block
+    like any other, which runs across the blank line; the paragraph's lines before the
+    heading are in no block."""
+    short = NOTE_HEAD + "Math - Assigned: Sheet 3: (Due:11/06/2026)\nDue: Orphan:\nClasses\n"
+
+    assert blocks(short + "\nPaint words\n") == [SCIENCE_NOTE]
+    assert blocks(short + "Art -\n\nPaint words\n") == [
+        SCIENCE_NOTE,
+        ("Art", NOTE_DAY, ("Paint words",), 8, (8, 10), False),
+    ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "13/45/2026 - Monday",
+        "Monday 13/45/2026",
+        "09/09 Math - A: Homework: Practice Grade: 95",
+        "Math - Assigned: Sheet 3: (Due:13/45/2026)",
+        "Math - Assigned: Sheet 3",
+        "Due: Orphan:",
+        "Assigned: Poster: (Due:11/09/2026)",
+        "Assigned: Poster: (Due:TBD)",
+        "Assigned: Poster",
+        "Assigned:",
+        "Assigned : Poster",
+    ],
+)
+def test_a_line_kept_in_a_note_only_because_it_did_not_read_makes_its_block_suspect(
+    line: str,
+) -> None:
+    """A day in either shape whose digits name no date, a Missing-shaped line with another
+    grade, a card with its course that does not read, a page card's line with no course, and
+    a line that begins with a card's label whatever follows it are kept in the note, in its
+    paragraph, and mark its block suspect. The block keeps the school day its heading was
+    read under."""
+    assert blocks(NOTE_HEAD + line + "\nMore words\n") == [
+        ("Science", NOTE_DAY, (f"Lab notes\n{line}\nMore words",), 3, (3, 4, 5, 6), True)
+    ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Poster assigned today, due Friday.",
+        "Assigned by: Ms. Lee",
+        "Assigned to: Wren",
+        "Due date: Friday",
+        "assigned: poster",
+        "Poster Assigned: today",
+    ],
+)
+def test_a_line_without_a_card_s_label_and_colon_at_its_start_is_not_shaped_as_a_card(
+    line: str,
+) -> None:
+    """A sentence that holds the words assigned and due, a label followed by another word
+    before its colon, a label in lower case, and a label after other words are a teacher's
+    words: none is shaped as a card, and a note holding one is not suspect."""
+    assert not is_shaped_as_structure(line)
+    assert blocks(NOTE_HEAD + line + "\n") == [
+        ("Science", NOTE_DAY, (f"Lab notes\n{line}",), 3, (3, 4, 5), False)
+    ]
+
+
+def test_a_heading_inside_a_note_that_is_also_shaped_as_a_card_opens_a_suspect_block() -> None:
+    """Inside a note a short line that ends in a hyphen set off by a space is a heading,
+    even when it is shaped as a card. The block it opens takes the line without its closing
+    hyphen as its subject and is suspect; the note before it is not."""
+    assert blocks(NOTE_HEAD + "Math - Due: Sheet -\nMore words\n") == [
+        SCIENCE_NOTE,
+        ("Math - Due: Sheet", NOTE_DAY, ("More words",), 5, (5, 6), True),
+    ]
+
+
+def test_a_heading_read_with_no_day_in_force_makes_no_block_and_stays_for_review() -> None:
+    """A heading read before any day, or after a day in a note whose digits name no date,
+    has no school day to be listed under. No block is made for its note, and the heading and
+    the note's lines are listed for review."""
+    before_any_day = "Homework for Wren\nScience -\nLab notes\n"
+    after_no_date = NOTE_HEAD + "13/45/2026 - Monday\nArt -\nPaint words\n"
+    first = read_text(before_any_day, now=NOW, today=TODAY)
+    second = read_text(after_no_date, now=NOW, today=TODAY)
+
+    assert first.notes == ()
+    assert [(u.line, u.text) for u in first.unread] == [(2, "Science -"), (3, "Lab notes")]
+    assert blocks(after_no_date) == [
+        ("Science", NOTE_DAY, ("Lab notes\n13/45/2026 - Monday",), 3, (3, 4, 5), True)
+    ]
+    assert [(u.line, u.text) for u in second.unread][-2:] == [(6, "Art -"), (7, "Paint words")]
+
+
+def test_nothing_under_a_homework_page_day_is_a_block() -> None:
+    """Under a day written as the homework page writes it no heading is read, so a line that
+    ends in a hyphen and the lines after it make no block, outside a card's short review
+    paragraph or inside one. A note read under the summary's day earlier in the same text is
+    a block all the same."""
+    page = "Tuesday 11/3/2026\nArt -\nPaint words\nDue: Orphan:\nMusic -\nSing words\n"
+
+    assert blocks(page) == []
+    assert blocks(NOTE_HEAD + page) == [SCIENCE_NOTE]
+
+
+def test_a_text_with_no_subject_heading_has_no_blocks() -> None:
+    """The summary, the homework page and the email with no subject heading in them, and a
+    card's line with no course in such a text, hand out no block."""
+    no_note = AFTER_A_NOTE_ENDED.format(note="")
+
+    for text in (THREE_WEEKS, PAGE, EMAIL, SAVED_WEEK, PORTAL_WEEK, no_note):
+        assert blocks(text) == []
 
 
 def test_the_missing_email_is_a_report_with_its_day_and_never_a_due_date() -> None:

@@ -16,6 +16,7 @@
     <p class="note">{{ card }}</p>
     <form method="post" action="/parent/imports/{{ draft_id }}/find">
       <input type="hidden" name="piece" value="{{ piece }}">
+      {% for name, value in carried %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
       <label for="find-words">Words of the class or title</label>
       <input type="text" id="find-words" name="words" value="{{ words }}" maxlength="200">
       <div class="actions"><button type="submit" class="primary">Find</button></div>

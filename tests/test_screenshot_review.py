@@ -17,6 +17,7 @@ import pytest
 
 from blossom import intake, screenshot_page
 from blossom import screenshot_review as review
+from blossom.reconciliation import SourceChannel
 from blossom.screenshot_review import EarlierPick, Piece, Refusal, SavedRow
 from blossom.screenshot_save import confirm_fields
 from blossom.screenshots import CardPlace, ScreenshotRow, homework_assembly
@@ -192,7 +193,7 @@ def test_also_saved_in_names_only_the_pieces_list() -> None:
     about = {f.about for f in review.facts(p, dest, rows, picks) if f.kind == "also_saved_in"}
     assert about == {near.assignment_id, other.assignment_id}
     alone = {f.about for f in review.facts(p, dest, rows) if f.kind == "also_saved_in"}
-    assert alone == {near.assignment_id}
+    assert alone == {near.assignment_id, other.assignment_id}
 
 
 # ------------------------------------------------------------------ defaults
@@ -232,6 +233,122 @@ def test_a_lone_piece_with_nothing_offered_starts_on_a_new_slot() -> None:
     linked = rows_of(row("t", WED, title=T))
     picks = [EarlierPick(C, Q, "t", 1)]
     assert review.defaults([p], groups_of(p), linked, picks, {}, nothing_writes) == {}
+
+
+def test_a_row_under_another_title_is_asked_by_words_or_school_dates_never_dates_alone() -> None:
+    """A saved row of the piece's class under another title, with the piece's dates: for a
+    wordless piece it is no candidate while only the family's claim names the due date, and,
+    the evidence too thin to tell the piece from it, the lone piece starts on no choice; with the
+    school's claim of that date it is listed and never preselected, and the lone piece starts on
+    no choice. A row holding the piece's words is a candidate whatever its claims."""
+    school = frozenset({(SourceChannel.LMS, TUE.isoformat(), "the assignment's own line")})
+    family = frozenset({(SourceChannel.PARENT_ENTRY, TUE.isoformat(), None)})
+    dated = dataclasses.replace(row("t", TUE, assigned=MON, title=T), claims=family)
+    claimed = dataclasses.replace(dated, claims=school)
+    wordless, worded = piece("p", TUE, assigned=MON), piece("p", TUE, [W1], MON)
+    held = dataclasses.replace(dated, words=frozenset({W1}))
+
+    assert not review.saved_under_another_title(wordless, dated)
+    assert review.listed(wordless, [dated]) == []
+    assert (
+        review.defaults([wordless], groups_of(wordless), rows_of(dated), [], {}, nothing_writes)
+        == {}
+    )
+    assert review.saved_under_another_title(wordless, claimed)
+    assert review.listed(wordless, [claimed]) == [claimed]
+    assert review.offerable(wordless, {"existing": "t"}, rows_of(claimed), [])
+    assert (
+        review.defaults([wordless], groups_of(wordless), rows_of(claimed), [], {}, nothing_writes)
+        == {}
+    )
+    assert review.saved_under_another_title(worded, held)
+    assert review.defaults([worded], groups_of(worded), rows_of(held), [], {}, nothing_writes) == {}
+
+
+def test_shared_words_suggest_a_row_under_another_title_only_within_seven_days() -> None:
+    """A row of the piece's class under another title holding the piece's words is suggested
+    only when its due date, or a due date the school gave it that the record keeps, is within
+    seven days of the piece's due date as read. One outside is not listed, and the lone piece
+    starts on no choice: outside the window never establishes new homework. A row the school's
+    claim keeps beside a far family date is suggested."""
+    worded = piece("p", TUE, [W1], MON)
+    inside = row("near", date(2026, 10, 20), [W1], MON, title=T)
+    outside = row("far", date(2026, 10, 21), [W1], MON, title=T)
+    school = frozenset({(SourceChannel.LMS, WED.isoformat(), "the assignment's own line")})
+    kept = dataclasses.replace(outside, assignment_id="kept", claims=school)
+
+    def starts(*rows: SavedRow) -> dict[str, dict[str, object]]:
+        return review.defaults([worded], groups_of(worded), rows_of(*rows), [], {}, nothing_writes)
+
+    assert review.listed(worded, [inside]) == [inside]
+    assert starts(inside) == {}
+    assert review.listed(worded, [outside]) == []
+    assert not review.offerable(worded, {"existing": "far"}, rows_of(outside), [])
+    assert starts(outside) == {}
+    assert review.listed(worded, [kept]) == [kept]
+
+
+def test_a_wordless_card_starts_on_no_choice_only_on_a_due_date_another_title_has() -> None:
+    """A wordless card piece starts on no choice, listing nothing new, when a row of its class
+    under another title has the piece's due date as read: as the row's current due date, or in a
+    claim from the school's channels kept under it. A row due on another date, however near, a
+    school claim of another date, a date only the family claimed, a row of another class or no
+    row leaves it on a new slot."""
+    wordless = piece("p", TUE, assigned=MON)
+    same = row("same", TUE, assigned=FRI, title=T)
+    near = row("near", WED, assigned=FRI, title=T)
+    far = row("far", date(2026, 10, 21), title=T)
+
+    def claiming(channel: SourceChannel, day: date) -> SavedRow:
+        claims = frozenset({(channel, day.isoformat(), None)})
+        return dataclasses.replace(far, assignment_id="claimed", claims=claims)
+
+    other_class = dataclasses.replace(same, assignment_id="other", course="Math 7")
+
+    def starts(*rows: SavedRow) -> dict[str, dict[str, object]]:
+        return review.defaults(
+            [wordless], groups_of(wordless), rows_of(*rows), [], {}, nothing_writes
+        )
+
+    lms, email = claiming(SourceChannel.LMS, TUE), claiming(SourceChannel.EMAIL, TUE)
+    assert review.listed(wordless, [same, lms, email]) == []
+    assert starts(same) == {}
+    assert starts(lms) == {}
+    assert starts(email) == {}
+    assert starts(near) == {"p": {"new": 1}}
+    assert starts(far) == {"p": {"new": 1}}
+    assert starts(claiming(SourceChannel.LMS, WED)) == {"p": {"new": 1}}
+    assert starts(claiming(SourceChannel.PARENT_ENTRY, TUE)) == {"p": {"new": 1}}
+    assert starts(other_class) == {"p": {"new": 1}}
+    assert starts() == {"p": {"new": 1}}
+
+
+def test_a_wordless_card_is_compared_by_its_due_date_as_read() -> None:
+    """A wordless card piece whose due box holds another date is compared by the due date it was
+    read with: a row due on the date as read keeps it on no choice, and a row due only on the
+    date in the box leaves it on a new slot."""
+    read = review.AsRead(C, Q, (), TUE, MON)
+    boxed = dataclasses.replace(piece("p", THU, assigned=MON), as_read=read)
+
+    def starts(*rows: SavedRow) -> dict[str, dict[str, object]]:
+        return review.defaults([boxed], groups_of(boxed), rows_of(*rows), [], {}, nothing_writes)
+
+    assert starts(row("as-read", TUE, assigned=FRI, title=T)) == {}
+    assert starts(row("in-the-box", THU, assigned=FRI, title=T)) == {"p": {"new": 1}}
+
+
+def test_two_missing_due_dates_are_no_match_for_a_wordless_card() -> None:
+    """A wordless card piece read with no due date starts on a new slot beside a row of its class
+    under another title with no due date, or with one: a missing date matches nothing."""
+    undated = piece("p", None, assigned=MON)
+
+    def starts(*rows: SavedRow) -> dict[str, dict[str, object]]:
+        return review.defaults(
+            [undated], groups_of(undated), rows_of(*rows), [], {}, nothing_writes
+        )
+
+    assert starts(row("none", None, assigned=FRI, title=T)) == {"p": {"new": 1}}
+    assert starts(row("dated", TUE, assigned=FRI, title=T)) == {"p": {"new": 1}}
 
 
 # ------------------------------------------------------------------ units
@@ -722,7 +839,11 @@ def test_typed_corrections_reach_the_piece() -> None:
     [p], _, _ = review.pieces_from(readings, {}, frozenset(), OBSERVED_AT, fixes)
     assert (p.title, p.words, p.due) == ("Vocab Quiz 2", frozenset({W1}), THU)
     assert p.reading is not None
-    assert {c.asserted_value for c in p.reading.claims} == {THU.isoformat()}
+    assert {(c.channel, c.asserted_value) for c in p.reading.claims} == {
+        (SourceChannel.LMS, WED.isoformat()),
+        (SourceChannel.PARENT_ENTRY, THU.isoformat()),
+    }
+    assert p.reading.origin_of("due_date") is SourceChannel.PARENT_ENTRY
 
 
 def test_a_typed_date_reads_iso_or_the_portals_form_and_nothing_else() -> None:
@@ -750,6 +871,7 @@ def test_the_draft_store_gets_each_rows_piece_names() -> None:
 class FakeReading:
     title: str
     occurrence: str | None = None
+    teacher_note: None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -811,6 +933,71 @@ def test_a_rows_set_aside_cards_carry_to_the_row_they_make() -> None:
     result = review.cleared(as_rows(old), as_rows(new), {}, frozenset({"k1"}))
     assert result.aside_insert == {"k1b"}
     assert result.notes == (("k1b", "aside_carried"),)
+
+
+def two_task_note() -> list[ScreenshotRow]:
+    """The two rows one teacher's note card reads as: Map project due Wednesday 11/18 and
+    Timeline poster due Thursday 11/19, from one card under Monday 11/16/2026."""
+    words = "Map project due Wednesday. Timeline poster due Thursday."
+    card = homework_card(
+        badge=None, course="Social Studies 8", title=None, instruction=words, footer=None
+    )
+    reading = shot("two-tasks", "Monday 11/16/2026", card)
+    rows = sorted(homework_assembly([reading], now=OBSERVED_AT).rows, key=lambda r: r.reading.title)
+    assert [r.reading.title for r in rows] == ["Map project", "Timeline poster"]
+    return rows
+
+
+def test_a_set_aside_note_row_carries_to_its_own_task_read_with_a_new_key() -> None:
+    map_project, timeline = two_task_note()
+    result = review.cleared(
+        [map_project, timeline],
+        [map_project._replace(key="map-again"), timeline],
+        {},
+        frozenset({map_project.key}),
+    )
+    assert result.aside_insert == {"map-again"}
+    assert result.notes == (("map-again", "aside_carried"),)
+
+
+def test_a_set_aside_note_row_never_carries_to_a_sibling_task_from_the_same_card() -> None:
+    map_project, timeline = two_task_note()
+    result = review.cleared(
+        [map_project, timeline],
+        [map_project, timeline._replace(key="timeline-again")],
+        {},
+        frozenset({map_project.key}),
+    )
+    assert result.aside_insert == frozenset()
+    assert result.notes == (("timeline-again", "asks_again"),)
+
+
+def test_an_undated_note_is_never_preselected_already_saved_by_its_name_and_words() -> None:
+    """An undated note's words with its class and title don't tell one week's note from the
+    next, so a saved row of that name holding those words is neither listed nor preselected:
+    the note is new work, on a new slot."""
+    note = homework_card(
+        badge=None, course="Math 8", title="Practice set", instruction=None, footer=None
+    )
+    reading = shot("practice", "Monday 11/16/2026", note)
+    [p], _, _ = review.pieces_from([reading], {}, frozenset(), OBSERVED_AT)
+    assert p.reading is not None
+    assert p.reading.teacher_note is not None
+    assert p.due is None
+    saved = SavedRow("assignment-practice-set", p.course, p.title, None, None, p.words)
+
+    assert review.listed(p, [saved]) == []
+    assert review.defaults([p], groups_of(p), rows_of(saved), [], {}, nothing_writes) == {
+        p.name: {"new": 1}
+    }
+
+
+def test_a_formal_undated_piece_is_preselected_already_saved() -> None:
+    p = piece("p", None, [W1])
+    rows = rows_of(row("r1", None, [W1]))
+    assert review.defaults([p], groups_of(p), rows, [], {}, nothing_writes) == {
+        "p": {"existing": "r1"}
+    }
 
 
 def test_a_destinations_kind_answer_clears_with_its_piece_and_a_rows_own_stays() -> None:
@@ -1046,9 +1233,16 @@ def test_an_assigned_date_edit_on_a_split_piece_moves_only_that_piece() -> None:
     assert moved[f"{row_.key}|due"] == (WED, None)
 
 
-def test_a_due_card_s_due_box_moves_its_due_date_and_claims() -> None:
-    """The probe of a due card joined to its assigned card, inverted: its due box moves the due
-    date, and the claims that asserted the date as read, and leaves the assigned date."""
+def said_of(reading: intake.Reading | None) -> set[tuple[SourceChannel, str, str | None]]:
+    """A reading's due-date claims: who gave each, the date it asserts and where it was seen."""
+    assert reading is not None
+    return {(c.channel, c.asserted_value, c.seen_in) for c in reading.claims}
+
+
+def test_a_due_card_s_due_box_is_the_familys_due_date_beside_the_schools_claims() -> None:
+    """The probe of a due card joined to its assigned card, inverted: its due box sets the due
+    date as the family's entry, with the family's claim of it, keeps every claim the school
+    gave at its own date, and leaves the assigned date."""
     readings = mon_wed_row()
     read = one_piece(readings)
     moved = one_piece(readings, {review.dates_key(read.name): {"due": THU.isoformat()}})
@@ -1058,10 +1252,56 @@ def test_a_due_card_s_due_box_moves_its_due_date_and_claims() -> None:
     assert read.reading is not None
     assert moved.reading is not None
     assert WED.isoformat() in {c.asserted_value for c in read.reading.claims}
-    assert WED.isoformat() not in {c.asserted_value for c in moved.reading.claims}
-    assert THU.isoformat() in {c.asserted_value for c in moved.reading.claims}
+    assert said_of(moved.reading) == said_of(read.reading) | {
+        (SourceChannel.PARENT_ENTRY, THU.isoformat(), None)
+    }
+    assert read.reading.origin_of("due_date") is SourceChannel.LMS
+    assert moved.reading.origin_of("due_date") is SourceChannel.PARENT_ENTRY
     assert moved.as_read is not None
     assert (moved.as_read.due, moved.as_read.assigned) == (WED, MON)
+
+
+def test_a_due_card_s_due_box_cleared_leaves_the_card_as_read() -> None:
+    """A due card's due box given as none is passed over: the due date, its claims and where it
+    came from are the school's, as read."""
+    readings = mon_wed_row()
+    read = one_piece(readings)
+    cleared = one_piece(readings, {review.dates_key(read.name): {"due": None}})
+
+    assert cleared.due == WED
+    assert cleared.reading is not None
+    assert said_of(cleared.reading) == said_of(read.reading)
+    assert cleared.reading.origin_of("due_date") is SourceChannel.LMS
+
+
+def test_the_familys_choice_between_a_due_line_and_a_day_heading_is_the_familys_entry() -> None:
+    """A due card whose due line says Wednesday under a Monday heading, the family choosing one:
+    the chosen date is the family's entry, with the family's claim of it, and both of the
+    school's claims stay at the dates the school gave."""
+    card = homework_card(
+        badge="DUE",
+        course=C,
+        title=Q,
+        instruction=W1,
+        footer="Due (10/14/2026)",
+        y_top=200,
+        y_bottom=280,
+    )
+    readings = [shot("mon", "Monday 10/12/2026", card)]
+    read = one_piece(readings)
+    assert set(read.due_choices) == {MON, WED}
+    school = said_of(read.reading)
+
+    for chosen in (MON, WED):
+        [settled], _, _ = review.pieces_from(
+            readings, {}, frozenset(), OBSERVED_AT, None, {read.name: chosen.isoformat()}
+        )
+        assert settled.due == chosen
+        assert settled.reading is not None
+        assert said_of(settled.reading) == school | {
+            (SourceChannel.PARENT_ENTRY, chosen.isoformat(), None)
+        }
+        assert settled.reading.origin_of("due_date") is SourceChannel.PARENT_ENTRY
 
 
 def test_an_assigned_date_can_be_set_where_none_was_read() -> None:
@@ -1231,3 +1471,13 @@ def test_a_new_slot_s_answers_are_named_by_its_slot_and_old_subjects_read_alike(
     assert review.subject_now(old) == review.subject_for(dest, names)
     assert review.subject_now(saved) == saved
     assert review.subject_now("not json") == "not json"
+
+
+def test_one_option_left_unchosen_is_asked() -> None:
+    """A destination control with one option and nothing chosen asks; with it chosen it doesn't."""
+    option = screenshot_page.Choice('{"new":1}', "A new Essay (1)")
+    asked = screenshot_page.PieceControl("a", (option,), "find-1", False, False)
+    chosen = dataclasses.replace(asked, choices=(dataclasses.replace(option, checked=True),))
+
+    assert asked.asks
+    assert not chosen.asks

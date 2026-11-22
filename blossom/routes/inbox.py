@@ -19,10 +19,11 @@ import asyncio
 import hmac
 import json
 import logging
+import re
 import secrets
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Annotated, Final
 
@@ -43,12 +44,15 @@ from blossom.homework_search import (
     terms_of,
 )
 from blossom.intake import (
+    ANOTHER_DATE,
     CLAIMED,
     DIFFERENT,
     FOLDED,
+    KEEP_DATE,
     KNOWN,
     NEW,
     NEW_WORK,
+    NO_DUE_DATE,
     NOTE_MAX_LENGTH,
     REVIEW,
     TEXT_MAX_LENGTH,
@@ -61,15 +65,28 @@ from blossom.intake import (
     NotOffered,
     Pick,
     Read,
+    Reading,
+    TaskAnswer,
     answers_to_no_question,
+    asked_as_said,
     by_hand,
     by_week,
     changes_for,
     conflicting_choices,
+    join_effects,
+    joins_moved_from,
     keep,
+    notes_apart,
     read_text,
+    saved_joined_notes,
     spoken_day,
     spoken_report,
+    task_said,
+    tasks_moved,
+    with_answers,
+    with_family_deadline,
+    with_joined,
+    with_notes,
     within_a_school_year,
 )
 from blossom.pairing import pair
@@ -102,6 +119,7 @@ from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.intake_decisions import UnreadableDecision
 from blossom.stores.project_state import Assignment, AssignmentKind, UnreadableClaim
 from blossom.stores.school_instructions import UnreadableInstruction
+from blossom.teacher_notes import NoteTask
 from blossom.templating import page_templates
 
 logger = logging.getLogger(__name__)
@@ -134,6 +152,19 @@ NOT_A_DUE_DATE: Final = "Check the due date. Enter it as year, month, and day."
 NOT_AN_ASSIGNED_DATE: Final = "Check the assigned date. Enter it as year, month, and day."
 FAR_DUE_DATE: Final = "Check the due-date year. Enter a date within one year of today."
 FAR_ASSIGNED_DATE: Final = "Check the assigned-date year. Enter a date within one year of today."
+NAMED_TOO_FAR: Final = (
+    "The note names {day}. It can't be saved as the due date because it's more than a year {way}."
+)
+"""What a note card says of a date the note names that the due-date check refuses."""
+MILESTONE_CHOICE: Final = "{day} (possible date for {words})"
+"""A due-date choice on a note card for a date one of the note's deadline statements could
+mean, with the words that statement names before its cue."""
+NAMED_CHOICE: Final = "{day}, named in the note"
+"""A due-date choice on a note card for a date the note mentions that is no milestone's."""
+MENTIONED: Final = "The note mentions {days}. The due date is unclear."
+"""What a note card says of the dates a note mentions where it settles no due date."""
+DEADLINE_CUE: Final = re.compile(r"\b(?:due|by)\b", re.IGNORECASE)
+"""The words a teacher's note states a deadline with, a denied or changed one included."""
 NOT_A_KIND: Final = "Choose Homework or Task."
 LOOK_AGAIN: Final = (
     "The saved assignments changed since this preview, and one of these needs your answer "
@@ -151,6 +182,58 @@ IDENTIFY_FIRST: Final = (
 HOMEWORK_CHANGED: Final = (
     "The saved homework or a note of hers changed since this review was shown, so nothing was "
     "saved. Look at it again before saving."
+)
+SELECTIONS_CHANGE: Final = (
+    "Your selections change what saving would do for a card below, so nothing was saved. "
+    "Check the review, then save."
+)
+REVIEW_NO_LONGER_MATCHES: Final = (
+    "This review does not match what saving would do, so nothing was saved. "
+    "Check the review, then save."
+)
+REVIEW_UNVERIFIED: Final = (
+    "This review could not be verified, so nothing was saved. Check it again, then save."
+)
+CHECK_THIS_ASSIGNMENT: Final = "Check this assignment"
+EDITS_IN_REVIEW: Final = (
+    "Your changes to a title or due date were not reviewed, so nothing was saved. "
+    "Check them, then press Review changes."
+)
+SENT_TWICE: Final = (
+    "A choice on this review was sent twice with different answers, so nothing was saved. "
+    "Choose it once, then save."
+)
+TICK_TWICE: Final = (
+    'The choice "Save this as homework" was sent twice with different answers. Choose one.'
+)
+JOIN_TWICE: Final = (
+    'The choice "Add this note to the assignment" was sent twice with different answers. '
+    "Choose one."
+)
+TITLE_TWICE: Final = "The title was sent twice with different answers: {values}. Type the title."
+WHEN_TWICE: Final = "The due date was sent twice with different answers: {values}. Choose one."
+OTHER_TWICE: Final = (
+    "The date beside Another date was sent twice with different answers: {values}. Choose one."
+)
+KIND_TWICE: Final = "The type was sent twice with different answers. Choose one."
+SEARCH_TWICE: Final = "The search words were sent twice with different answers. Type them again."
+OCCURRENCE_TWICE: Final = (
+    "The answer to which it is was sent twice with different answers. Choose one."
+)
+IDENTITY_TWICE: Final = (
+    "The answer to which homework this is was sent twice with different answers. Choose one."
+)
+LINK_TWICE: Final = 'The choice "Link her note" was sent twice with different answers. Choose one.'
+APPLY_TWICE: Final = (
+    "The choice for this instruction was sent twice with different answers. Choose one."
+)
+NONE_TWICE: Final = (
+    'The choice "No school instruction applies now" was sent twice with different answers. '
+    "Choose one."
+)
+UNANSWERED_TWICE: Final = (
+    "A choice sent twice with different answers needs your answer, so nothing was saved. "
+    "Choose it, then save."
 )
 IDENTITY_FORM_UNREADABLE: Final = (
     "The answers about which homework a card is could not be read, so nothing was saved. "
@@ -312,8 +395,9 @@ def moment_of(state: ApplicationState, draft: Mapping[str, str]) -> tuple[dateti
 MADE_WITH: Final = "made_with"
 """The field where a review page writes what it was made with, signed: the answers to which
 homework each card is, each question it asked about the school's instructions, each question
-it asked about which homework a card is about, and what it said a typed note would do, so a
-save can tell what the page asked and said from what a form claims."""
+it asked about which homework a card is about, what it said a typed note would do, and what
+it said each reading made from a teacher's note does when selected, so a save can tell what
+the page asked and said from what a form claims."""
 
 
 @dataclass(frozen=True)
@@ -355,6 +439,25 @@ class PageMade:
     unsaved_picks: dict[int, tuple[str, str]] = field(default_factory=dict)
     """Homework chosen on each card that wasn't taken, with why, as the page said it, so later
     pages say it again until the card takes a choice or an answer."""
+    tasks: dict[int, str] = field(default_factory=dict)
+    """For each reading made from a teacher's note, whether the page showed it ticked, then
+    what it does when selected, as ``task_said`` puts it."""
+    edits: dict[int, tuple[str, str]] = field(default_factory=dict)
+    """For each reading made from a teacher's note, the title and due date the page showed
+    for it, as ``edits_of`` puts them."""
+    joined: dict[tuple[int, int], bool] = field(default_factory=dict)
+    """For each note joined to a card, by the card's key and the note's place, whether the
+    page showed its tick ticked."""
+    join_effects: dict[tuple[int, int], tuple[str, str]] = field(default_factory=dict)
+    """For each note joined to a card, what the page said saving does with its tick as
+    shown, then with it the other way, as ``join_effects`` puts them."""
+    unresolved: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    """Each choice the page marked as sent twice with different answers (``UNRESOLVED``),
+    with the values its mark holds, so a form whose marks differ is not the page signed."""
+    verified: bool = field(default=True, compare=False)
+    """Whether the form carried this process's signature for its draft. A form without one,
+    such as a page made before the application started again, is read as a page that asked
+    and said nothing."""
 
 
 def made_with_field(
@@ -371,9 +474,19 @@ def made_with_field(
     query: tuple[int, str, int, tuple[int, ...]] | None = None,
     picks: Mapping[int, Pick] | None = None,
     unsaved_picks: Mapping[int, tuple[str, str]] | None = None,
+    tasks: Mapping[int, str] | None = None,
+    edits: Mapping[int, tuple[str, str]] | None = None,
+    joined: Mapping[tuple[int, int], bool] | None = None,
+    join_effects: Mapping[tuple[int, int], tuple[str, str]] | None = None,
+    unresolved: Mapping[str, tuple[str, ...]] | None = None,
 ) -> str:
     """What a page was made with, and a check signed with the running process's key that
-    ties it to the page's draft."""
+    ties it to the page's draft. What the page said of the readings made from teachers'
+    notes (``tasks``), and the title and due date it showed for each (``edits``), are
+    written only when there are such readings; whether each note joined to a card was shown
+    ticked (``joined``), and what saving does with its tick either way (``join_effects``),
+    only when there are such notes; each choice marked as sent twice and the values its mark
+    holds (``unresolved``), only when there are such marks."""
     answers = ",".join(f"{card}:{value}" for card, value in sorted((occurrences or {}).items()))
     context = {
         "asked": sorted([card, *question] for card, question in (asked or {}).items()),
@@ -398,6 +511,20 @@ def made_with_field(
             [card, target, why] for card, (target, why) in (unsaved_picks or {}).items()
         ),
     }
+    if tasks:
+        context["tasks"] = sorted([card, said] for card, said in tasks.items())
+        context["edits"] = sorted([card, *shown] for card, shown in (edits or {}).items())
+    if joined:
+        context["joined"] = sorted(
+            [card, place, int(ticked)] for (card, place), ticked in joined.items()
+        )
+        context["join_effects"] = sorted(
+            [card, place, *effects] for (card, place), effects in (join_effects or {}).items()
+        )
+    if unresolved:
+        context["unresolved"] = sorted(
+            [which, list(values)] for which, values in unresolved.items()
+        )
     made = f"{answers};{json.dumps(context, separators=(',', ':'))}"
     return f"{made}.{_made_with_check(key, draft, made)}"
 
@@ -409,7 +536,7 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
     made, _, check = form.get(MADE_WITH, "").rpartition(".")
     expected = _made_with_check(key, draft, made)
     if not hmac.compare_digest(check.encode("utf-8"), expected.encode("utf-8")):
-        return PageMade()
+        return PageMade(verified=False)
     answers, _, rest = made.partition(";")
     occurrences: dict[int, str] = {}
     for part in filter(None, answers.split(",")):
@@ -455,6 +582,19 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
     unsaved_picks = {
         int(card): (str(target), str(why)) for card, target, why in context.get("unsaved_picks", [])
     }
+    tasks = {int(card): str(said) for card, said in context.get("tasks", [])}
+    edits = {int(card): (str(title), str(due)) for card, title, due in context.get("edits", [])}
+    joined = {
+        (int(card), int(place)): bool(ticked) for card, place, ticked in context.get("joined", [])
+    }
+    join_effects = {
+        (int(card), int(place)): (str(shown), str(other))
+        for card, place, shown, other in context.get("join_effects", [])
+    }
+    unresolved = {
+        str(which): tuple(str(value) for value in values)
+        for which, values in context.get("unresolved", [])
+    }
     return PageMade(
         occurrences,
         asked,
@@ -467,6 +607,11 @@ def made_with(key: bytes, form: Mapping[str, str], draft: Mapping[str, str]) -> 
         query,
         picks,
         unsaved_picks,
+        tasks,
+        edits,
+        joined,
+        join_effects,
+        unresolved,
     )
 
 
@@ -491,21 +636,27 @@ def identity_answers(
     field as sent: each names a homework the signed question listed, or different homework,
     with the creation token the page made for that card. The second value says whether
     anything was sent that the page did not ask or give: an answer on a card it did not ask,
-    a homework it did not list, a token it did not make, or a field sent twice or as a
-    file, which leaves that card with no answer. Such a form is refused whole."""
+    a homework it did not list, a token it did not make, a token sent twice, or a field sent
+    as a file, which leaves that card with no answer. Such a form is refused whole. An answer
+    sent twice with the same value is that answer; sent twice with different values it leaves
+    the card with no answer, and ``sent_twice`` names it at its question."""
     answers: dict[int, IdentityAnswer] = {}
     unreadable = False
-    seen: set[str] = set()
+    seen: dict[str, str] = {}
     bent: set[int] = set()
     for name, value in fields:
         head, _, card = name.rpartition("-")
         if head not in ("identity", "creation") or not review_key(card):
             continue
+        if head == "identity" and name in seen and isinstance(value, str):
+            if value != seen[name]:
+                bent.add(int(card))
+            continue
         if name in seen or not isinstance(value, str):
             unreadable = True
             bent.add(int(card))
             continue
-        seen.add(name)
+        seen[name] = value
         question = page.identities.get(int(card))
         if question is None:
             unreadable = True
@@ -531,16 +682,21 @@ def link_answers(
     """The notes of hers ticked to link, as the page offered them, read from every field as
     sent: ``link-<card>-<place>`` names the note the page signed at that place on that
     card, with the homework the card landed on when the page was made, or ``None`` where
-    it asked which. The second value says whether anything was sent that the page did not
-    offer, a box sent as a file among them, or one note ticked more than once, by a box
-    sent twice or on more than one card, since repeated cards for one homework are shown
-    as one; either refuses the form whole."""
+    it asked which. A box sent twice with the same value is the one tick it gives. The second
+    value says whether anything was sent that the page did not offer, a box sent as a file
+    among them, or one note ticked on more than one card, since repeated cards for one
+    homework are shown as one; either refuses the form whole."""
     ticked: dict[int, list[tuple[str, int, str | None]]] = {}
     unreadable = False
+    seen: set[tuple[str, object]] = set()
     for name, value in fields:
         head, _, rest = name.partition("-")
         if head != "link":
             continue
+        if isinstance(value, str):
+            if (name, value) in seen:
+                continue
+            seen.add((name, value))
         card, _, place = rest.partition("-")
         offered = page.links.get(int(card), ()) if review_key(card) else ()
         if value != "1" or not review_key(place) or int(place) >= len(offered):
@@ -640,7 +796,7 @@ def answers_from(
         head, _, number = name.rpartition("-")
         if not review_key(number):
             continue
-        if head == "occurrence" and value in (UPDATE, NEW_WORK):
+        if head == "occurrence" and value in (UPDATE, NEW_WORK, KEEP_DATE):
             occurrences[int(number)] = value
         elif head == "folded" and review_key(value):
             folded[int(number)] = int(value)
@@ -687,20 +843,363 @@ def unasked_for(state: ApplicationState, read: Read) -> dict[int, set[Assignment
     page showed: what the page would show for it now, and what the reader suggests."""
     return {
         change.key: {change.kind, change.reading.kind}
-        for change in changes_for(read.items, state.project_state)
+        for change in changes_for(read.items, state.project_state, left_out=read.left_out)
     }
 
 
+MAY_BE_HOMEWORK: Final = "Notes that may be homework"
+MAY_BE_HOMEWORK_HELPER: Final = "These start unselected. Select any that are homework."
+NO_HOMEWORK: Final = "Notes with no homework"
+NO_HOMEWORK_HELPER: Final = (
+    "The school's note says no homework is assigned. These start unselected."
+)
+
+
+@dataclass(frozen=True)
+class NoteSection:
+    """The cards of one kind of teacher's note that the review shows apart from the weeks:
+    its heading, the line that says why none is selected from the start, and its cards."""
+
+    label: str
+    helper: str
+    changes: list[Change]
+
+    def count(self, state: str) -> int:
+        """How many of the section's changes are in one state."""
+        return sum(1 for change in self.changes if change.state == state)
+
+
+def selected(form: Mapping[str, str], read: Read) -> Read:
+    """What was read with the ticks a form sends for the readings made from teachers' notes.
+
+    The page sends ``offered-<key>`` beside each tick it shows and ``take-<key>`` for a
+    ticked one. A note reading the form says was offered is left out of the save unless
+    its tick came with it; one the form does not name keeps its place from the start. A
+    key that is no note reading's is ignored. A note joined to a card is selected when the
+    form sends ``join-<card>-<place>`` for it, ticked; a name that is no joined note's is
+    ignored.
+    """
+    left_out = set(read.left_out)
+    for name in form:
+        head, _, number = name.rpartition("-")
+        if head != "offered" or not review_key(number) or int(number) >= len(read.items):
+            continue
+        key = int(number)
+        if read.items[key].teacher_note is None:
+            continue
+        if form.get(f"take-{key}") == "1":
+            left_out.discard(key)
+        else:
+            left_out.add(key)
+    joined = frozenset(
+        (card, place)
+        for card, place in joins_sent(form)
+        if card < len(read.items) and place < len(read.items[card].joined_notes)
+    )
+    if left_out == read.left_out and joined == read.joined:
+        return read
+    return replace(read, left_out=frozenset(left_out), joined=joined)
+
+
+def joins_sent(form: Mapping[str, str]) -> set[tuple[int, int]]:
+    """Each joined note's tick a form sends ticked, ``join-<card>-<place>``, by the card's
+    key and the note's place, whatever the page showed."""
+    sent: set[tuple[int, int]] = set()
+    for name, value in form.items():
+        head, _, rest = name.partition("-")
+        card, _, place = rest.partition("-")
+        if head == "join" and value == "1" and review_key(card) and review_key(place):
+            sent.add((int(card), int(place)))
+    return sent
+
+
+def joins_moved(read: Read, page: PageMade) -> frozenset[int]:
+    """The keys of the cards with a joined note whose tick, as sent, is not the one the page
+    signed for it: ticked where the page showed it unticked or did not show it, or unticked
+    where the page showed it ticked. A form this process did not sign showed none ticked."""
+    signed = {join for join, ticked in page.joined.items() if ticked and page.verified}
+    return frozenset(card for card, _ in read.joined.symmetric_difference(signed))
+
+
+def joins_shown(read: Read, page: PageMade) -> dict[int, tuple[str, dict[tuple[int, int], str]]]:
+    """For each card whose joined notes' ticks, as sent, differ from what a signed page
+    showed, what the page said saving does with the ticks as it showed them, then, for each
+    note of that card whose tick changed, what it said saving does with that one tick the
+    other way: the ``join_effects`` it signed for that note."""
+    signed = {join for join, ticked in page.joined.items() if ticked}
+    changed = read.joined.symmetric_difference(signed)
+    shown: dict[int, tuple[str, dict[tuple[int, int], str]]] = {}
+    for card in sorted({card for card, _ in changed}):
+        here = sorted(join for join in changed if join[0] == card)
+        as_shown = page.join_effects.get(here[0], ("", ""))[0]
+        shown[card] = (as_shown, {join: page.join_effects.get(join, ("", ""))[1] for join in here})
+    return shown
+
+
+def joins_alone(
+    read: Read, joins: Mapping[int, tuple[str, Mapping[tuple[int, int], str]]], *, now: datetime
+) -> dict[int, list[tuple[tuple[Reading, ...], str]]]:
+    """For each card with more than one joined note's tick changed, each of those notes with
+    the readings as the save makes them with that one tick changed and the card's other
+    notes as the page showed them, and what the page said saving does with that tick."""
+    return {
+        card: [
+            (with_joined(read, read.joined ^ set(each) ^ {join}, now=now).items, said)
+            for join, said in each.items()
+        ]
+        for card, (_, each) in joins.items()
+        if len(each) > 1
+    }
+
+
+def joined_of(read: Read) -> dict[int, tuple[int, ...]]:
+    """For each card with a joined note selected, by its key, the places of those notes,
+    counted from one, as a page that reads no store says them."""
+    places: dict[int, list[int]] = {}
+    for card, place in sorted(read.joined):
+        places.setdefault(card, []).append(place + 1)
+    return {card: tuple(each) for card, each in places.items()}
+
+
+def ticks_of(read: Read) -> dict[int, bool]:
+    """For each reading made from a teacher's note, by its key, whether it is selected."""
+    return {
+        key: key not in read.left_out
+        for key, item in enumerate(read.items)
+        if item.teacher_note is not None
+    }
+
+
+def with_edits(form: Mapping[str, str], read: Read, *, now: datetime, today: date) -> Read:
+    """What was read with the title and due-date answers a form sends for the readings made
+    from teachers' notes applied, as ``with_answers`` applies them: ``title-<key>``,
+    ``when-<key>`` and ``when_other-<key>``. A note reading the form sends none of them for
+    stays as read; a key that is no note reading's is ignored."""
+    answers = [
+        TaskAnswer(
+            key,
+            form.get(f"title-{key}", ""),
+            form.get(f"when-{key}", ""),
+            form.get(f"when_other-{key}", ""),
+        )
+        for key, item in enumerate(read.items)
+        if item.teacher_note is not None
+        and any(f"{head}-{key}" in form for head in ("title", "when", "when_other"))
+    ]
+    return with_answers(read, answers, now=now, today=today)
+
+
+def edits_of(read: Read) -> dict[int, tuple[str, str]]:
+    """For each reading made from a teacher's note, by its key, the title and due date it
+    has, as a page shows and signs them: the date in year, month and day, or empty."""
+    return {
+        key: (item.title, "" if item.due_date is None else item.due_date.isoformat())
+        for key, item in enumerate(read.items)
+        if item.teacher_note is not None
+    }
+
+
+def edited(read: Read, page: PageMade) -> frozenset[int]:
+    """The keys of the selected readings made from teachers' notes whose title or due date,
+    with the form's answers applied, differs from what a signed page showed for them, or
+    whose due-date answer names no date a paste can mean. A reading left out of the save
+    writes nothing, so its edits give none. A form this process did not sign is checked
+    elsewhere, and gives none here."""
+    if not page.verified:
+        return frozenset()
+    return frozenset(
+        key
+        for key, shown in edits_of(read).items()
+        if key not in read.left_out and (key in read.dates_unread or page.edits.get(key) != shown)
+    )
+
+
+def typing_refused(read: Read) -> tuple[int, Problem] | None:
+    """The first selected reading made from a teacher's note, by key, whose typed title is
+    longer than a title may be or whose due-date answer names no date a paste can mean, with
+    the problem named by the field it is about and said in the entry form's own sentence:
+    one that is no date, an empty box among them, or one outside a school year. A reading
+    left out of the save writes nothing, so nothing typed on it is refused."""
+    for answer in sorted(read.answers, key=lambda answer: answer.key):
+        key = answer.key
+        if key in read.left_out:
+            continue
+        if len(" ".join(answer.title.split())) > TITLE_MAX_LENGTH:
+            return key, Problem(f"title-{key}", LONG_TITLE)
+        if key in read.dates_unread:
+            given = answer.other if answer.when == ANOTHER_DATE else answer.when
+            day = _a_date(given, Problem(f"when-{key}", NOT_A_DUE_DATE))
+            far = isinstance(day, date)
+            return key, Problem(f"when-{key}", FAR_DUE_DATE if far else NOT_A_DUE_DATE)
+    return None
+
+
+@dataclass(frozen=True)
+class NoteFields:
+    """The title box and the due-date choices of one card read from a teacher's note: the
+    title the box holds, each choice as a value, its words and whether it is chosen,
+    whether another date is chosen, the date typed beside it, what the card says of each
+    date the note gives that can't be the due date, and, where the note settles no due date,
+    the dates it mentions that can be, as said."""
+
+    title: str
+    choices: list[tuple[str, str, bool]]
+    other_chosen: bool
+    other: str
+    named_too_far: tuple[str, ...] = ()
+    mentioned: tuple[str, ...] = ()
+
+    @property
+    def chosen(self) -> str:
+        """The value of the due-date choice made, or empty for none."""
+        if self.other_chosen:
+            return ANOTHER_DATE
+        return next((value for value, _, on in self.choices if on), "")
+
+    @property
+    def unclear(self) -> str:
+        """What the card says of the dates the note mentions where it settles no due date, or
+        empty where it says nothing of them."""
+        return unclear_line(self.mentioned)
+
+
+def unclear_line(days: Sequence[str]) -> str:
+    """What a card says of the dates a note mentions where it settles no due date, each as
+    said, one, two with "and" or more with commas and "and"; empty for no date."""
+    if not days:
+        return ""
+    *before, last = days
+    listed = f"{', '.join(before)} and {last}" if before else last
+    return MENTIONED.format(days=listed)
+
+
+def mentioned_days(task: NoteTask, today: date) -> tuple[date, ...]:
+    """The dates a note task mentions where it settles no due date: for a task with no
+    deadline and no milestone that holds a deadline statement (one its words deny or change
+    included), each date it offers or names that the due-date check accepts as of ``today``,
+    once, in the note's order; none for any other task."""
+    stated = bool(task.choices) or DEADLINE_CUE.search(task.words) is not None
+    if task.deadline is not None or task.milestones or not stated:
+        return ()
+    return tuple(
+        day
+        for day in dict.fromkeys((*task.choices, *task.named))
+        if within_a_school_year(day, today)
+    )
+
+
+def joined_unclear(changes: Sequence[Change], today: date) -> dict[tuple[int, int], str]:
+    """For each note joined to a card that settles no due date and mentions a date, by the
+    card's key and the note's place: what the card says beside the note's words, in the
+    words a note card of its own says it (``mentioned_days``, ``unclear_line``), whatever
+    the card's own due date. The line is text only; a joined note offers no date choice."""
+    said: dict[tuple[int, int], str] = {}
+    for change in changes:
+        for place, task in enumerate(change.reading.joined_notes):
+            line = unclear_line([spoken_day(day) for day in mentioned_days(task, today)])
+            if line:
+                said[(change.key, place)] = line
+    return said
+
+
+def note_fields(changes: Sequence[Change], read: Read, today: date) -> dict[int, NoteFields]:
+    """The fields of each card read from a teacher's note, by its key. The choices are the
+    date as read, each date the note's statements could mean as a date named in the note,
+    each milestone's date labeled as a possible date for its words, each date it names, and
+    no due date, each date once. Any of these dates that the due-date check refuses, as of
+    ``today``, is no choice: the card says it, with its year and why it can't be the due
+    date. A card whose note settles no due date, holds a deadline statement (one its words
+    deny or change included) and offers a date the check accepts, with no milestone, says
+    each date it offers that is no choice refused. A card whose
+    answers were sent shows them as typed. Otherwise the date as read is chosen, or no due
+    date where none was read or the date as read is refused; on a card that lands on a row
+    whose saved due date is none, or another than the one chosen so, nothing is chosen."""
+    sent = {answer.key: answer for answer in read.answers}
+    fields: dict[int, NoteFields] = {}
+    for change in changes:
+        task = change.reading.teacher_note
+        if task is None:
+            continue
+        given: dict[date, str] = {}
+        if task.deadline is not None:
+            given[task.deadline] = f"{spoken_day(task.deadline)}, as the note says"
+        for day in task.choices:
+            given.setdefault(day, NAMED_CHOICE.format(day=spoken_day(day)))
+        milestones: dict[date, list[str]] = {}
+        for milestone in task.milestones:
+            milestones.setdefault(milestone.day, []).append(milestone.words)
+        for day, words in milestones.items():
+            given.setdefault(
+                day, MILESTONE_CHOICE.format(day=spoken_day(day), words=" and ".join(words))
+            )
+        for day in task.named:
+            given.setdefault(day, NAMED_CHOICE.format(day=spoken_day(day)))
+        too_far = tuple(day for day in given if not within_a_school_year(day, today))
+        dates = {day: words for day, words in given.items() if day not in too_far}
+        mentioned = tuple(spoken_day(day) for day in mentioned_days(task, today))
+        answer = sent.get(change.key)
+        if answer is not None:
+            title, when, other = answer.title, answer.when, answer.other
+        else:
+            title, other = read.items[change.key].title, ""
+            as_read = None if task.deadline in too_far else task.deadline
+            when = NO_DUE_DATE if as_read is None else as_read.isoformat()
+            row = change.on_record
+            if row is not None and (row.due_date is None or row.due_date != as_read):
+                when = ""
+        values = [day.isoformat() for day in dates]
+        if when and when not in (*values, NO_DUE_DATE, ANOTHER_DATE):
+            when, other = ANOTHER_DATE, when
+        fields[change.key] = NoteFields(
+            title,
+            [
+                *(
+                    (day.isoformat(), words, day.isoformat() == when)
+                    for day, words in dates.items()
+                ),
+                (NO_DUE_DATE, "No due date yet", when == NO_DUE_DATE),
+            ],
+            when == ANOTHER_DATE,
+            other,
+            tuple(
+                NAMED_TOO_FAR.format(day=spoken_day(day), way="away" if day > today else "ago")
+                for day in too_far
+            ),
+            mentioned,
+        )
+    return fields
+
+
 def read_draft(state: ApplicationState, draft: Mapping[str, str]) -> Read | Problem:
-    """Read what a draft holds: the pasted text, or the entry, the same way every time, as
-    of the moment it was first read."""
+    """Read what a draft holds: the pasted text, with its teachers' notes read as tasks, or
+    the entry, the same way every time, as of the moment it was first read. A deadline read
+    from a teacher's note that the due-date check refuses as of that moment leaves its
+    reading no due date (``far_deadlines_left``)."""
     now, today = moment_of(state, draft)
     text = draft.get("text", "")
     if text.strip():
         if len(text) > TEXT_MAX_LENGTH:
             return Problem("text", TOO_LONG)
-        return read_text(text, now=now, today=today)
+        read = with_notes(read_text(text, now=now, today=today), now=now)
+        return far_deadlines_left(read, now=now, today=today)
     return entry_from(draft, now=now, today=today)
+
+
+def far_deadlines_left(read: Read, *, now: datetime, today: date) -> Read:
+    """``read`` with each reading made from a teacher's note whose deadline as read the
+    due-date check refuses as of ``today`` given no due date, no claim seen in the note and
+    no origin for one, as ``with_family_deadline`` leaves a note's reading with none. The note
+    keeps its deadline, so its card says that date as the note's, with why it can't be the
+    due date, as it says a date the note names that can't be. Nothing is changed in place."""
+    items = tuple(
+        with_family_deadline(item, None, now=now)
+        if item.teacher_note is not None
+        and item.teacher_note.deadline is not None
+        and not within_a_school_year(item.teacher_note.deadline, today)
+        else item
+        for item in read.items
+    )
+    return read if items == read.items else replace(read, items=items)
 
 
 def problem_page(
@@ -751,6 +1250,34 @@ class AnswerKept:
     """Whether ``homework`` was found and chosen under another name."""
     unsaved_homework: str | None = None
     """The id of homework chosen on the card under another name that wasn't taken."""
+    selected: bool | None = None
+    """For a reading made from a teacher's note, whether it was selected to save; ``None``
+    for any other card."""
+    title: str | None = None
+    """For a reading made from a teacher's note, the title typed in its box, as sent;
+    ``None`` when none was sent."""
+    due: str | None = None
+    """For a reading made from a teacher's note, the due date chosen, or typed beside
+    another date, as sent; ``None`` when none was sent."""
+    undated: bool = False
+    """Whether no due date was chosen for a reading made from a teacher's note."""
+    joined: tuple[int, ...] = ()
+    """For a card, the places, counted from one, of the notes joined to it that were
+    selected to add to it."""
+
+
+TASK_FIELDS: Final = frozenset({"title", "when", "when_other"})
+"""The fields the review page writes on a card read from a teacher's note, under its key: the
+title box, the due-date choice, and the date typed beside another date."""
+
+
+def said_typed(answer: TaskAnswer) -> tuple[str | None, str | None, bool]:
+    """The title and due date an answer for a note's card was sent with, as a page that
+    reads no store says them: the title typed, or ``None`` for an empty box; the date
+    chosen, or typed beside another date, or ``None``; and whether no due date was chosen."""
+    undated = answer.when == NO_DUE_DATE
+    given = answer.other if answer.when == ANOTHER_DATE else answer.when
+    return answer.title or None, None if undated or not given else given, undated
 
 
 def answers_kept(
@@ -770,7 +1297,11 @@ def answers_kept(
     are read; anything else the form holds is no answer and takes nothing else down. Which
     homework each card is about and the notes ticked to link are the save's own reading of
     them (``identities``, ``linked``), made against what the page signed (``page``), so
-    only choices it offered, each sent once, are said back."""
+    only choices it offered, each sent once, are said back. A tick on a reading made from a
+    teacher's note is read from the two fields the page writes for it: the note it says it
+    offered is selected when its tick came with it. Its title and due date are read from
+    the three fields the page writes for them, under a key the page could have written. A
+    note joined to a card is selected when its tick came ticked."""
     safe: dict[str, str] = {}
     for name, value in form.items():
         head, _, key = name.rpartition("-")
@@ -784,6 +1315,26 @@ def answers_kept(
     occurrences, kinds = answers_from(safe, {})
     words = (page or PageMade()).words
     not_taken = still_unsaved(page, picks or {}, identities)
+    ticks = {
+        int(key): form.get(f"take-{key}") == "1"
+        for name in form
+        for head, _, key in [name.rpartition("-")]
+        if head == "offered" and review_key(key)
+    }
+    typed_tasks = {
+        int(key): TaskAnswer(
+            int(key),
+            form.get(f"title-{key}", ""),
+            form.get(f"when-{key}", ""),
+            form.get(f"when_other-{key}", ""),
+        )
+        for name in form
+        for head, _, key in [name.rpartition("-")]
+        if head in TASK_FIELDS and review_key(key)
+    }
+    joined: dict[int, list[int]] = {}
+    for card, place in sorted(joins_sent(form)):
+        joined.setdefault(card, []).append(place + 1)
     return answers_shown(
         occurrences,
         kinds,
@@ -795,6 +1346,9 @@ def answers_kept(
         words,
         picks,
         {key: target for key, (target, _) in not_taken.items()},
+        ticks,
+        typed_tasks,
+        {card: tuple(places) for card, places in joined.items()},
     )
 
 
@@ -839,6 +1393,9 @@ def answers_shown(
     words: Mapping[str, str] | None = None,
     picks: Mapping[int, Pick] | None = None,
     unsaved_picks: Mapping[int, str] | None = None,
+    ticks: Mapping[int, bool] | None = None,
+    typed_tasks: Mapping[int, TaskAnswer] | None = None,
+    joined: Mapping[int, tuple[int, ...]] | None = None,
 ) -> list[AnswerKept]:
     """The answers a review page was made with, in the same shape: an answer about the
     school's instructions by the words ticked, read off the wire before anything was
@@ -846,8 +1403,10 @@ def answers_shown(
     could not be read chose, the same way; an instruction ticked by reference to a row,
     counted; a choice a card carries from a page that showed it as not saved, every answer
     of it together; which homework the card was said to be about; her notes ticked to
-    link, in the words the page signed; and homework chosen under another name that wasn't
-    taken, by id."""
+    link, in the words the page signed; homework chosen under another name that wasn't
+    taken, by id; and for each reading made from a teacher's note, whether it was selected
+    to save (``ticks``) and the title and due date sent for it (``typed_tasks``); and for
+    each card, the notes joined to it that were selected to add to it (``joined``)."""
     made = {key: UnsavedChoice.of(answer) for key, answer in (instructions or {}).items()}
     made.update(unsaved or {})
     chosen = {
@@ -872,6 +1431,9 @@ def answers_shown(
     linked = linked or {}
     picks = picks or {}
     unsaved_picks = unsaved_picks or {}
+    ticks = ticks or {}
+    joined = joined or {}
+    as_typed = {key: said_typed(answer) for key, answer in (typed_tasks or {}).items()}
     keys = sorted(
         {
             *(occurrences or {}),
@@ -881,6 +1443,9 @@ def answers_shown(
             *linked,
             *picks,
             *unsaved_picks,
+            *ticks,
+            *as_typed,
+            *joined,
         }
     )
     return [
@@ -900,6 +1465,9 @@ def answers_shown(
             tuple((words or {}).get(name, "") for name, _, _ in linked.get(key, ())),
             key in picks,
             unsaved_picks.get(key),
+            ticks.get(key),
+            *as_typed.get(key, (None, None, False)),
+            joined.get(key, ()),
         )
         for key in keys
     ]
@@ -1108,11 +1676,32 @@ def first_review(
 ) -> HTMLResponse:
     """What a paste or an entry was read as, before any answer is given on its cards; when the
     household's records can't be read for its review, the page that reads no store, with the
-    text as pasted or the entry as typed."""
+    text as pasted or the entry as typed. A note left out from the start that is saved
+    already is shown selected, as it was saved."""
     try:
-        return preview_page(request, state, read, draft)
+        return preview_page(request, state, saved_selected(state, read), draft)
     except READ_REFUSALS as error:
         return read_refused(request, state, draft, [], error)
+
+
+def saved_selected(state: ApplicationState, read: Read) -> Read:
+    """What was read, with each reading made from a teacher's note that is left out from the
+    start but saved already selected: a paste read again shows a note the family selected
+    and saved as saved, and leaves out only the notes not saved. So does each note joined
+    to a card that the record shows saved where the card lands (``saved_joined_notes``),
+    which selecting adds nothing to. A record that cannot be read leaves the paste as it
+    is, for the review to answer."""
+    if not read.left_out and not any(item.joined_notes for item in read.items):
+        return read
+    try:
+        changes = changes_for(read.items, state.project_state, left_out=frozenset())
+        joined = saved_joined_notes(read.items, changes, state.project_state)
+    except (UnreadableClaim, UnreadableDecision, UnreadableInstruction):
+        return read
+    saved = {change.key for change in changes if change.state == KNOWN} & read.left_out
+    if not saved and joined <= read.joined:
+        return read
+    return replace(read, left_out=read.left_out - saved, joined=read.joined | joined)
 
 
 def preview_page(
@@ -1134,6 +1723,11 @@ def preview_page(
     typed: Mapping[int, str] | None = None,
     focus: str | None = None,
     refused: str | None = None,
+    check: Collection[int] | None = None,
+    typing: tuple[int, Problem] | None = None,
+    editing: Collection[int] = frozenset(),
+    twice: Mapping[str, tuple[str, ...]] | None = None,
+    unresolved: Mapping[str, tuple[str, ...]] | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -1144,6 +1738,14 @@ def preview_page(
     signed with (``made``), and an answer in ``identities`` that still holds lands its card
     and rides along to the save. A claim on record that cannot be read refuses the
     comparison, and the page that reads no store keeps the draft.
+
+    A reading made from a teacher's note carries a tick, set unless ``read.left_out`` holds
+    its key; so does each note joined to a card, set when ``read.joined`` holds it, and the
+    page signs each as shown. The notes that may be homework and the notes that say none is
+    assigned are shown after the weeks, each kind under its own heading, and every count is
+    of the selected readings only. A note not selected that would ask, once selected, whether it is
+    the same assignment as a card of its name in the text asks it on its card, with both
+    dates, and an answer given there stays chosen.
 
     ``refused`` says the page comes back for an answer about the school's
     instructions that was not saved: ``contradict``, ``malformed``, ``stale``,
@@ -1166,12 +1768,42 @@ def preview_page(
     made against a card or a homework that has changed since is said as not saved, with a
     way to choose it again where the card still offers it. The page signs each choice it
     says wasn't taken, and pages after it say it again until its card takes a choice or an
-    answer. ``focus`` names what takes the focus when no refusal is said first."""
+    answer. ``focus`` names what takes the focus when no refusal is said first.
+
+    ``check`` holds the cards a refusal is about when it is about what the page said of
+    the readings made from teachers' notes. The summary then links to no question; it
+    links to the card, with an id given to that card for it, only when there is exactly
+    one and the page shows it. ``typing`` holds the card and the problem of a title or due
+    date typed on a note that a refusal is about; the summary then links to that field
+    when the page shows its card.
+
+    Each note's card shows its title and due date as reviewed text, with an Edit details
+    press, unless ``editing`` holds its key: then the card shows its title box and due-date
+    choices, and the page offers Review changes and no Save. ``twice`` holds each field sent
+    twice with different answers, with the values sent: a note's tick, title box, due date or
+    joined note's tick says so at that field (``twice_said``), and a card with another of its
+    fields sent twice says so above its fields. ``unresolved`` holds each note field sent
+    twice and not answered since, with the values sent: its control offers the actual
+    choice with nothing chosen for the family, and the page carries a mark of it with those
+    values (``unresolved-<field>``) until it is answered. The page signs the title and
+    due date of the cards it shows as reviewed only, so a save sent from a page with details
+    open writes nothing until Review changes shows them."""
     picks = picks or {}
     held = still_unsaved(made, picks, identities)
     if search is not None and search.attempted is not None:
         held[search.key] = (search.attempted, "changed")
     not_taken = {key: target for key, (target, _) in held.items()}
+    joined_here = [
+        (key, place)
+        for key, item in enumerate(read.items)
+        for place in range(len(item.joined_notes))
+    ]
+    now = moment_of(state, draft)[0]
+    if joined_here:
+        # Each card carries exactly what its selected joined notes add, as the save applies it.
+        read = with_joined(read, read.joined, now=now)
+    join_said: dict[tuple[int, int], tuple[str, str]] = {}
+    join_labels: dict[tuple[int, int], str] = {}
     try:
         changes = changes_for(
             read.items,
@@ -1181,7 +1813,46 @@ def preview_page(
             instruction_answers=instruction_answers,
             identities=identities,
             picks=picks,
+            left_out=read.left_out,
         )
+        # What each note not selected does once it is selected is read from a second
+        # comparison with every note selected, so its card can say it and the page sign it.
+        # An answer given on a note not selected is left out of it, so the card that asks
+        # the question keeps asking it until the note is selected.
+        if_selected = changes
+        if read.left_out:
+            if_selected = changes_for(
+                read.items,
+                state.project_state,
+                occurrences={
+                    key: value
+                    for key, value in (occurrences or {}).items()
+                    if key not in read.left_out
+                },
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                identities=identities,
+                picks=picks,
+                left_out=frozenset(),
+            )
+        # What saving does with each joined note's tick the other way is read from one more
+        # comparison for each, so its card can say it and the page sign it beside the tick as
+        # shown: a tick changed and pressed with Save then saves in one press.
+        for join in joined_here:
+            other = changes_for(
+                with_joined(read, read.joined ^ {join}, now=now).items,
+                state.project_state,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                identities=identities,
+                picks=picks,
+                left_out=read.left_out,
+            )
+            join_said[join] = join_effects(changes, other, join[0])
+            join_labels[join] = next(
+                (change.label for change in other if change.key == join[0]), ""
+            )
     except UnreadableClaim:
         return intake_unavailable(
             request,
@@ -1198,6 +1869,9 @@ def preview_page(
                 (made or PageMade()).words,
                 picks,
                 not_taken,
+                ticks_of(read),
+                {answer.key: answer for answer in read.answers},
+                joined_of(read),
             ),
         )
     except UnreadableDecision:
@@ -1216,6 +1890,9 @@ def preview_page(
                 (made or PageMade()).words,
                 picks,
                 not_taken,
+                ticks_of(read),
+                {answer.key: answer for answer in read.answers},
+                joined_of(read),
             ),
             DECISION_UNREADABLE,
         )
@@ -1235,13 +1912,39 @@ def preview_page(
                 (made or PageMade()).words,
                 picks,
                 not_taken,
+                ticks_of(read),
+                {answer.key: answer for answer in read.answers},
+                joined_of(read),
             ),
             INSTRUCTION_UNREADABLE,
         )
+    when_selected = {change.key: change for change in if_selected}
+    # A note not selected that, once selected, asks whether it is the same assignment as a
+    # card of its name in this text puts that question on its card before it is selected,
+    # with both dates.
+    cards_here = {
+        change.reading.pair
+        for change in changes
+        if change.reading.teacher_note is None and not change.left_out
+    }
+    unselected_asks = {
+        change.key: when_selected[change.key]
+        for change in changes
+        if change.left_out
+        and change.reading.pair in cards_here
+        and when_selected[change.key].ambiguous
+        and when_selected[change.key].on_record is None
+    }
+    tasks = {
+        change.key: f"{0 if change.left_out else 1}:{task_said(would)}"
+        for change in changes
+        if change.reading.teacher_note is not None
+        for would in [when_selected[change.key] if change.left_out else change]
+    }
     said = unsaved_on(changes, unsaved or {}, carried)
     problem_target = None
     problem_link = None
-    if refused is not None:
+    if refused is not None and check is None and typing is None:
         stale = [change.key for change in changes if change.instructions_stale]
         asked = [change.key for change in changes if change.instructions_question]
         unanswered = [change.key for change in changes if change.instructions_asked]
@@ -1287,10 +1990,21 @@ def preview_page(
     if notice is None and conflicting_choices(changes):
         notice = CHOOSE_ONE_TYPE
     shown = [change for change in changes if change.state != FOLDED]
+    in_weeks, may_be, none_assigned = notes_apart(changes)
+    note_sections = (
+        NoteSection(MAY_BE_HOMEWORK, MAY_BE_HOMEWORK_HELPER, may_be),
+        NoteSection(NO_HOMEWORK, NO_HOMEWORK_HELPER, none_assigned),
+    )
     parent = parent_reads(request)
     view = None
     choosable: dict[int, list[FoundRow]] = {}
     cards = {change.key: change for change in shown}
+    check_card = None
+    if check is not None and len(check) == 1 and next(iter(check)) in cards:
+        check_card = next(iter(check))
+        problem_link = (f"card-{check_card}", CHECK_THIS_ASSIGNMENT)
+    if typing is not None and typing[0] in cards:
+        problem_link = (typing[1].field, CHECK_THIS_ASSIGNMENT)
     if search is not None and search.key in cards and cards[search.key].offers:
         view = found_view(state, cards[search.key], search, parent=parent)
         choosable[search.key] = list(view.rows)
@@ -1326,8 +2040,17 @@ def preview_page(
     # A card the parent folded carries that answer on the page; a report shown on another
     # card carries nothing.
     folded = [
-        change for change in changes if change.state == FOLDED and change.occurrence == UPDATE
+        change
+        for change in changes
+        if change.state == FOLDED and change.occurrence in (UPDATE, KEEP_DATE)
     ]
+    # The note cards whose details are open: shown cards only, as a folded card has none.
+    opened = frozenset(editing) & {
+        change.key
+        for change in changes
+        if change.reading.teacher_note is not None
+        and change.key not in {other.key for other in folded}
+    }
     counts = {
         "new": sum(1 for change in shown if change.state == NEW),
         "updated": sum(1 for change in shown if change.state == CLAIMED),
@@ -1368,7 +2091,11 @@ def preview_page(
         request,
         "inbox_preview.html",
         {
-            "weeks": by_week(changes),
+            "weeks": by_week([change for change in changes if not change.left_out]),
+            "sections": [
+                *by_week(in_weeks),
+                *(section for section in note_sections if section.changes),
+            ],
             "changes": shown,
             "folded": folded,
             "counts": counts,
@@ -1426,7 +2153,74 @@ def preview_page(
                 ),
                 picked,
                 wanted,
+                tasks,
+                {key: shown for key, shown in edits_of(read).items() if key not in opened},
+                {
+                    (change.key, place): (change.key, place) in read.joined
+                    for change in changes
+                    for place in range(len(change.reading.joined_notes))
+                },
+                join_said,
+                unresolved,
             ),
+            "joined_ticked": read.joined,
+            "join_labels": join_labels,
+            "note_tasks": bool(tasks),
+            # The notes read, told apart from the ones selected to save.
+            "notes_found": (
+                len(tasks) + sum(len(change.reading.joined_notes) for change in changes),
+                sum(
+                    1
+                    for change in changes
+                    if change.reading.teacher_note is not None and not change.left_out
+                )
+                + sum(
+                    1
+                    for change in changes
+                    for place in range(len(change.reading.joined_notes))
+                    if (change.key, place) in read.joined
+                ),
+            ),
+            "note_fields": note_fields(changes, read, moment_of(state, draft)[1]),
+            "join_unclear": joined_unclear(changes, moment_of(state, draft)[1]),
+            "editing": opened,
+            "twice_said": twice_said(twice or {}),
+            "unresolved": unresolved_at(unresolved or {}),
+            # A folded note's card with a carried answer sent twice is shown again so that
+            # field can be answered, the answer that folded it kept as given.
+            "folded_open": {change.key for change in folded}
+            & {
+                int(which.split("-")[1])
+                for which in unresolved or {}
+                if which.split("-")[0] in ("take", "join", *BOX_FIELDS)
+            },
+            # The answer to which it is of a note whose tick waits for the family's answer,
+            # carried as given, so the answer that folded it stays.
+            "occurrence_kept": {
+                key: value
+                for key, value in (occurrences or {}).items()
+                if f"take-{key}" in (unresolved or {}) and key in read.left_out
+            },
+            # The note cards whose title or due-date answers were sent, which a card shown as
+            # reviewed carries as sent.
+            "answered_tasks": frozenset(answer.key for answer in read.answers),
+            "title_max_length": TITLE_MAX_LENGTH,
+            "check_card": check_card,
+            "if_selected": {
+                change.key: when_selected[change.key].label for change in shown if change.left_out
+            },
+            # Whether a note not selected that is homework or may be homework would, once
+            # selected, be saved as a new assignment or ask a question first. A note that
+            # says no homework is assigned is not counted.
+            "new_notes_offered": any(
+                when_selected[change.key].state in (NEW, REVIEW)
+                for change in (*in_weeks, *may_be)
+                if change.left_out
+            ),
+            "unselected_asks": unselected_asks,
+            "occurrence_given": {
+                key: value for key, value in (occurrences or {}).items() if key in unselected_asks
+            },
             "creations": {card: question.creation for card, question in signed.items()},
             "answered": {
                 card: DIFFERENT if answer.choice is None else choice_value(answer.choice)
@@ -1483,6 +2277,11 @@ def preview_or_recovery(
     typed: Mapping[int, str] | None = None,
     focus: str | None = None,
     refused: str | None = None,
+    check: Collection[int] | None = None,
+    typing: tuple[int, Problem] | None = None,
+    editing: Collection[int] = frozenset(),
+    twice: Mapping[str, tuple[str, ...]] | None = None,
+    unresolved: Mapping[str, tuple[str, ...]] | None = None,
     notice: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
@@ -1508,6 +2307,11 @@ def preview_or_recovery(
             typed=typed,
             focus=focus,
             refused=refused,
+            check=check,
+            typing=typing,
+            editing=editing,
+            twice=twice,
+            unresolved=unresolved,
             notice=notice,
             status_code=status_code,
         )
@@ -1516,10 +2320,536 @@ def preview_or_recovery(
         return intake_unavailable(request, state, draft, kept_answers, STORE_REFUSED)
 
 
+TICK_FIELDS: Final = frozenset({"offered", "take", "join"})
+"""The fields a review sends for the ticks of readings made from teachers' notes: the note
+offered, its tick, and a joined note's tick."""
+
+BOX_FIELDS: Final = frozenset({"title", "when", "when_other"})
+"""The fields a review sends for the title and due date of a reading made from a teacher's
+note: its title box, its due-date choice, and the date beside Another date."""
+
+BOX_HEADS: Final = frozenset({"link", "apply", "none"})
+"""The heads of a card's boxes that their own readers read: a box to link her note
+(``link-<card>-<place>``), a box of an instruction that applies (``apply-<card>-<place>``),
+and the box that no instruction applies (``none-<card>``)."""
+
+CARD_FIELDS: Final = frozenset(
+    {
+        "occurrence",
+        "kind",
+        "suggested",
+        "shown",
+        "chosen",
+        "folded",
+        "asked",
+        "which",
+        "editing",
+        "search",
+        "unsaved_why",
+        "unsaved",
+        "unsaved_row",
+        "unsaved_unshown",
+        "unsaved_none",
+    }
+)
+"""The other fields a review sends once for a card, each one answer read as one value: the
+answer to which it is and its type, with what the page showed and suggested beside them, the
+card it is folded into, the marks of a question asked and of details open, the search words,
+and a choice said back as not saved."""
+
+PAGE_FIELDS: Final = frozenset({"text", *ENTRY_FIELDS, *STAMPS, "made_with"})
+"""The fields a review sends once for the whole page, each one answer: the draft, the day and
+moment it was first read, and the page's signature."""
+
+ANSWER: Final = "answer"
+"""A family answer: a control the family sets, or one such answer the page carries hidden."""
+PAGE: Final = "page"
+"""A page field: signed state, a technical field of a card, or a mark the page writes."""
+PRESS: Final = "press"
+"""A press: the name of a submit button."""
+VISIBLE: Final = "visible"
+HIDDEN: Final = "hidden"
+
+NUMBER: Final = "(?:0|[1-9][0-9]{0,5})"
+"""A key or a place as the page writes it, spelled as ``review_key`` reads it."""
+
+
+def _numbered(heads: str, places: int = 1) -> str:
+    """The exact grammar of a card's field: one of ``heads``, then that many numbers."""
+    return f"(?:{heads})" + f"-{NUMBER}" * places
+
+
+BOX_MARKS: Final = "|".join((_numbered("link|apply", 2), _numbered("none")))
+"""The grammar of a card's boxes that their own readers read (``BOX_HEADS``)."""
+
+MARKED: Final = "|".join(
+    (
+        _numbered("take|title|when|when_other|kind|occurrence|identity"),
+        _numbered("join", 2),
+        BOX_MARKS,
+    )
+)
+"""The grammar of the fields an ``unresolved-<field>`` mark names."""
+
+
+@dataclass(frozen=True)
+class ReviewField:
+    """One family of the fields the School text review's own form posts, to Save and to the
+    review's own presses: the exact grammar of its names, how the page renders it
+    (``visible``, ``hidden``, or ``press`` for a submit button), its class (``answer``,
+    ``page`` or ``press``), and its shape (``one``: each name carries one value)."""
+
+    grammar: str
+    rendering: str
+    role: str
+    shape: str = "one"
+
+
+REVIEW_FIELDS: Final = (
+    ReviewField("text", HIDDEN, PAGE),
+    ReviewField("|".join(ENTRY_FIELDS), HIDDEN, PAGE),
+    ReviewField("|".join(STAMPS), HIDDEN, PAGE),
+    ReviewField(MADE_WITH, HIDDEN, PAGE),
+    ReviewField(_numbered("offered"), HIDDEN, PAGE),
+    ReviewField(_numbered("take|title|when|when_other"), VISIBLE, ANSWER),
+    ReviewField(_numbered("take|title|when|when_other"), HIDDEN, ANSWER),
+    ReviewField(_numbered("join", 2), VISIBLE, ANSWER),
+    ReviewField(_numbered("join", 2), HIDDEN, ANSWER),
+    ReviewField(_numbered("editing"), HIDDEN, PAGE),
+    ReviewField(f"unresolved-(?:{MARKED})", HIDDEN, PAGE),
+    ReviewField(_numbered("occurrence|kind|search"), VISIBLE, ANSWER),
+    ReviewField(_numbered("occurrence|kind|search"), HIDDEN, PAGE),
+    ReviewField(_numbered("suggested|shown|chosen|folded|asked|which"), HIDDEN, PAGE),
+    ReviewField(_numbered("identity"), VISIBLE, ANSWER),
+    ReviewField(_numbered("identity"), HIDDEN, ANSWER),
+    ReviewField(_numbered("creation|picked|instructions|unsaved_why"), HIDDEN, PAGE),
+    ReviewField(_numbered("link|apply", 2), VISIBLE, ANSWER),
+    ReviewField(_numbered("none"), VISIBLE, ANSWER),
+    ReviewField(_numbered("row|instruction|unsaved_unshown|unsaved_none", 2), HIDDEN, PAGE),
+    ReviewField(_numbered("unsaved|unsaved_row", 3), HIDDEN, PAGE),
+    ReviewField("recheck|details|find|results_page|choose|remove", PRESS, PRESS),
+)
+"""Every field of the School text review's own form, each family once per rendering: the
+draft, the day and moment it was read, and the signature; a note's offered mark, its tick,
+title, due date and date box (answers where shown and where a closed or folded card carries
+them), a joined note's tick, the mark of details open and of a field sent twice; which it is,
+its type and its search words (answers where shown, page fields where carried); what the page
+showed and suggested beside them; which homework it is, shown or carried, with its signed
+token; homework chosen under another name; her notes to link; the school's instructions asked
+about and the choices said back as not saved; and the presses."""
+
+
+def review_field(name: str, rendering: str) -> ReviewField | None:
+    """The entry of ``REVIEW_FIELDS`` whose grammar matches the whole of ``name`` as rendered
+    so, or ``None``: no prefix of a name matches."""
+    return next(
+        (
+            entry
+            for entry in REVIEW_FIELDS
+            if entry.rendering == rendering and re.fullmatch(entry.grammar, name)
+        ),
+        None,
+    )
+
+
+@dataclass(frozen=True)
+class Shown:
+    """What a review showed of the fields a page renders as a control on one card and hidden
+    on another, worked out again from the read and the answers sent with it: the cards shown
+    with their Type select, and the cards that ask which it is."""
+
+    selects: frozenset[int]
+    asks: frozenset[int]
+
+
+def shown_of(changes: Sequence[Change], when_selected: Sequence[Change], read: Read) -> Shown:
+    """The cards a review shows with their Type select (selected and not folded) and those
+    that ask which it is: a card shown that asks, and a note not selected that asks once
+    selected beside a card of its name in the text."""
+    shown = [change for change in changes if change.state != FOLDED]
+    here = {
+        change.reading.pair
+        for change in shown
+        if change.reading.teacher_note is None and not change.left_out
+    }
+    return Shown(
+        frozenset(change.key for change in shown if not change.left_out),
+        frozenset(change.key for change in shown if not change.left_out and change.ambiguous)
+        | frozenset(
+            change.key
+            for change in when_selected
+            if change.key in read.left_out
+            and change.reading.pair in here
+            and change.ambiguous
+            and change.on_record is None
+        ),
+    )
+
+
+def field_role(name: str, read: Read, made: PageMade, shown: Shown) -> str | None:
+    """The class the server takes for a field a form sent, from the page it signed or worked
+    out again from the read, never from the name alone: ``answer``, ``page``, ``press``, or
+    ``None`` for a name outside ``REVIEW_FIELDS``. A note's tick, title and due date are
+    answers on a note's card, shown or carried; a card's type is one where the card shows its
+    select, its answer to which it is where it asks and the signed page carries no answer
+    for it, its search words where the signed page offered the search, its answer to which
+    homework it is where the signed page asked or carried it, a box to link her note where
+    the signed page offered that note at that place, and a box of the instructions where the
+    signed page asked which apply. Any of these anywhere else is a page field."""
+    roles = {entry.role for entry in REVIEW_FIELDS if re.fullmatch(entry.grammar, name)}
+    if not roles:
+        return None
+    head, _, rest = name.partition("-")
+    if not rest or head not in {"take", "join", *BOX_FIELDS, *MARKED_HEADS, *BOX_HEADS, "search"}:
+        return next(iter(roles)) if len(roles) == 1 else PAGE
+    numbers = [int(number) for number in rest.split("-")]
+    key = numbers[0]
+    if head in ("take", *BOX_FIELDS):
+        on_note = key < len(read.items) and read.items[key].teacher_note is not None
+        return ANSWER if on_note else PAGE
+    if head == "join":
+        joined = key < len(read.items) and numbers[1] < len(read.items[key].joined_notes)
+        return ANSWER if joined else PAGE
+    if head == KIND_FIELD:
+        return ANSWER if key in shown.selects else PAGE
+    if head == "occurrence":
+        carried = key in made.occurrences and key not in read.left_out
+        return ANSWER if not carried and key in shown.asks else PAGE
+    if head == "search":
+        return ANSWER if key in made.offers else PAGE
+    if head == "identity":
+        return ANSWER if key in made.identities else PAGE
+    if head == "link":
+        offered = made.links.get(key, ())
+        return ANSWER if len(numbers) == 2 and numbers[1] < len(offered) else PAGE
+    if head in ("apply", "none"):
+        return ANSWER if key in made.asked else PAGE
+    return next(iter(roles)) if len(roles) == 1 else PAGE
+
+
+def twice_roles(
+    state: ApplicationState,
+    read: Read,
+    made: PageMade,
+    twice: Mapping[str, int],
+    *,
+    occurrences: Mapping[int, str],
+    kinds: Mapping[int, AssignmentKind],
+    identities: Mapping[int, IdentityAnswer],
+    picks: Mapping[int, Pick],
+) -> dict[str, str | None]:
+    """The class the server takes for each field ``sent_twice`` found (``field_role``). The
+    review is compared with the record again only when a card's type or its answer to which
+    it is was sent twice, as only those take their class from what the review shows."""
+    shown = Shown(frozenset(), frozenset())
+    if any(name.partition("-")[0] in (KIND_FIELD, "occurrence") for name in twice):
+        store = state.project_state
+        changes = changes_for(
+            read.items,
+            store,
+            occurrences=occurrences,
+            kinds=kinds,
+            identities=identities,
+            picks=picks,
+            left_out=read.left_out,
+        )
+        when_selected = changes
+        if read.left_out:
+            when_selected = changes_for(
+                read.items,
+                store,
+                occurrences={
+                    key: value for key, value in occurrences.items() if key not in read.left_out
+                },
+                kinds=kinds,
+                identities=identities,
+                picks=picks,
+                left_out=frozenset(),
+            )
+        shown = shown_of(changes, when_selected, read)
+    return {name: field_role(name, read, made, shown) for name in twice}
+
+
+TWICE_HEADS: Final = TICK_FIELDS | BOX_FIELDS | CARD_FIELDS | BOX_HEADS | {"identity"}
+"""The heads of the fields of a card ``sent_twice`` reads, beside the marks of them."""
+
+
+def sent_twice(fields: Iterable[tuple[str, object]]) -> dict[str, int]:
+    """Each field a form sends once for a card that came more than once with different
+    values, read from every field as sent, with the key of the card it is on: the ticks
+    ``offered-<key>``, ``take-<key>`` and ``join-<card>-<place>``, the note boxes
+    ``title-<key>``, ``when-<key>`` and ``when_other-<key>``, the ``CARD_FIELDS``, the answer
+    ``identity-<key>``, the boxes of ``BOX_HEADS``, and the mark ``unresolved-<field>`` of any
+    of them. A value sent as a file differs from every text. The same value sent twice is one
+    answer."""
+    values: dict[str, set[str | None]] = {}
+    keys: dict[str, int] = {}
+    for name, value in fields:
+        head, _, rest = name.partition("-")
+        if head == UNRESOLVED:
+            head, _, rest = rest.partition("-")
+        card = rest.partition("-")[0]
+        if head in TWICE_HEADS and review_key(card):
+            values.setdefault(name, set()).add(value if isinstance(value, str) else None)
+            keys[name] = int(card)
+    return {name: keys[name] for name, sent in values.items() if len(sent) > 1}
+
+
+def boxes_as_read(fields: Sequence[tuple[str, object]]) -> list[tuple[str, object]]:
+    """The fields the readers of the boxes of ``BOX_HEADS`` take: without a box sent twice
+    with different answers (``sent_twice``), which the review asks again, and without a box
+    a mark names (``unresolved-<box>``) answered ``0``, which is that box left unticked."""
+    twice = sent_twice(fields)
+    marked = {
+        name.partition("-")[2]
+        for name, _ in fields
+        if name.partition("-")[0] == UNRESOLVED
+        and re.fullmatch(BOX_MARKS, name.partition("-")[2]) is not None
+    }
+    return [
+        (name, value)
+        for name, value in fields
+        if re.fullmatch(BOX_MARKS, name) is None
+        or not (name in twice or (name in marked and value == "0"))
+    ]
+
+
+def twice_notice(twice: Mapping[str, int]) -> str:
+    """What the summary says of a review sent back for choices sent twice: that a choice needs
+    an answer when none was sent twice this time, that the answers about the school's
+    instructions could not be read when only their boxes were, and otherwise that a choice
+    was sent twice."""
+    if not twice:
+        return UNANSWERED_TWICE
+    if all(name.partition("-")[0] in ("apply", "none") for name in twice):
+        return INSTRUCTION_FORM_UNREADABLE
+    return SENT_TWICE
+
+
+def page_twice(fields: Iterable[tuple[str, object]]) -> frozenset[str]:
+    """Each of the ``PAGE_FIELDS`` a form sends more than once with different values, a
+    value sent as a file differing from every text."""
+    values: dict[str, set[str | None]] = {}
+    for name, value in fields:
+        if name in PAGE_FIELDS:
+            values.setdefault(name, set()).add(value if isinstance(value, str) else None)
+    return frozenset(name for name, sent in values.items() if len(sent) > 1)
+
+
+def boxes_twice(twice: Mapping[str, int]) -> frozenset[int]:
+    """The keys of the cards whose title box, due-date choice or date box ``sent_twice``
+    found sent twice with different answers."""
+    return frozenset(key for name, key in twice.items() if name.partition("-")[0] in BOX_FIELDS)
+
+
+def twice_values(
+    fields: Iterable[tuple[str, object]], twice: Mapping[str, int]
+) -> dict[str, tuple[str, ...]]:
+    """For each field ``sent_twice`` found, the values it came with, each once, in the order
+    sent; a value sent as a file is said as empty."""
+    values: dict[str, list[str]] = {name: [] for name in twice}
+    for name, value in fields:
+        text = value if isinstance(value, str) else ""
+        if name in values and text not in values[name]:
+            values[name].append(text)
+    return {name: tuple(sent) for name, sent in values.items()}
+
+
+def said_date(value: str) -> str:
+    """A due-date answer as the card says it: a date as its day, no due date and another date
+    in the choice's words, anything else in quotes as sent."""
+    if value == NO_DUE_DATE:
+        return "No due date yet"
+    if value == ANOTHER_DATE:
+        return "Another date"
+    try:
+        return spoken_day(date.fromisoformat(value))
+    except ValueError:
+        return f'"{value}"'
+
+
+FIELD_TWICE: Final = {
+    "join": JOIN_TWICE,
+    "kind": KIND_TWICE,
+    "search": SEARCH_TWICE,
+    "occurrence": OCCURRENCE_TWICE,
+    "identity": IDENTITY_TWICE,
+    "link": LINK_TWICE,
+    "apply": APPLY_TWICE,
+    "none": NONE_TWICE,
+}
+"""What a joined note's tick, a card's type, its search words, its answer to which it is, its
+answer to which homework it is, a box to link her note, a box of an instruction and the box
+that none applies say at their field when sent twice with different answers."""
+
+
+def twice_said(twice: Mapping[str, tuple[str, ...]]) -> dict[str, list[str]]:
+    """For each family answer sent twice with different answers, the lines said at the field
+    they sit at: ``take-<key>`` beside the note's tick, ``title-<key>`` in the title's label,
+    ``when-<key>`` in the due date's fieldset, ``join-<card>-<place>`` beside a joined note's
+    tick, ``kind-<key>`` in the type's label, ``search-<key>`` above the search box, and
+    ``occurrence-<key>`` and ``identity-<key>`` in their question, and each box of
+    ``BOX_HEADS`` at the box. Each line says which choice it is and, for a title or a date,
+    each value sent."""
+    said: dict[str, list[str]] = {}
+    for name, values in sorted(twice.items()):
+        head, _, rest = name.partition("-")
+        if head == "take":
+            at, line = name, TICK_TWICE
+        elif head in FIELD_TWICE:
+            at, line = name, FIELD_TWICE[head]
+        elif head == "title":
+            at = name
+            line = TITLE_TWICE.format(values=" and ".join(f'"{value}"' for value in values))
+        elif head in ("when", "when_other"):
+            at = f"when-{rest}"
+            line = (WHEN_TWICE if head == "when" else OTHER_TWICE).format(
+                values=" and ".join(said_date(value) for value in values)
+            )
+        else:
+            continue
+        if line not in said.get(at, []):
+            said.setdefault(at, []).append(line)
+    return said
+
+
+UNRESOLVED: Final = "unresolved"
+"""The head of the field a returned review carries for each choice sent twice with different
+answers, ``unresolved-<field>``, holding the values sent, until the family answers it: a
+note's tick, a joined note's tick, a title box, a due-date choice, a date box, a card's type,
+its answer to which it is, its answer to which homework it is, or a box of ``BOX_HEADS``."""
+
+KIND_FIELD: Final = "kind"
+"""The field of a card's Homework or Task choice, which a conflict leaves open until the
+family chooses one, on any card."""
+
+MARKED_HEADS: Final = frozenset({KIND_FIELD, "occurrence", "identity"})
+"""The answers of any card, beside a note's fields, that a conflict leaves marked until the
+family answers them."""
+
+
+def unresolved_from(twice: Mapping[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
+    """The family answers among those sent twice that the family answers again on the page,
+    with the values sent: the note fields, a card's type, its answer to which it is, its
+    answer to which homework it is, and the boxes of ``BOX_HEADS``."""
+    found: dict[str, tuple[str, ...]] = {}
+    for name, values in twice.items():
+        head = name.partition("-")[0]
+        if head in {"take", "join", *BOX_FIELDS, *MARKED_HEADS, *BOX_HEADS}:
+            found[name] = values
+    return found
+
+
+def unresolved_of(fields: Iterable[tuple[str, object]], read: Read) -> dict[str, tuple[str, ...]]:
+    """The choices a form marks as sent twice with different answers (``UNRESOLVED``), each
+    with the values the marks hold: a note field, a card's type, answer to which it is or
+    answer to which homework it is, or a box of ``BOX_HEADS`` on a card of this read; a mark
+    on no such field of this read, or sent as a file, is ignored, and values that cannot be
+    read are none."""
+    notes = {key for key, item in enumerate(read.items) if item.teacher_note is not None}
+    joined = {
+        f"join-{key}-{place}"
+        for key, item in enumerate(read.items)
+        for place in range(len(item.joined_notes))
+    }
+    typed = {f"{head}-{key}" for head in MARKED_HEADS for key in range(len(read.items))}
+    marked: dict[str, list[str]] = {}
+    for name, value in fields:
+        head, _, which = name.partition("-")
+        kind, _, key = which.partition("-")
+        on_note = kind in ("take", *BOX_FIELDS) and review_key(key) and int(key) in notes
+        on_box = re.fullmatch(BOX_MARKS, which) is not None and int(which.split("-")[1]) < len(
+            read.items
+        )
+        on_card = on_note or on_box or which in joined or which in typed
+        if head != UNRESOLVED or not isinstance(value, str) or not on_card:
+            continue
+        try:
+            said = json.loads(value)
+        except ValueError:
+            said = []
+        values = marked.setdefault(which, [])
+        if isinstance(said, list):
+            values.extend(text for text in said if isinstance(text, str) and text not in values)
+    return {which: tuple(values) for which, values in marked.items()}
+
+
+def answered(form: Mapping[str, str], which: str) -> bool:
+    """Whether a form answers a choice marked as sent twice: a tick by either choice, a title
+    box by a title, a due date by a choice, another date with its date, a card's type by
+    Homework or Task, its answer to which it is by one of its choices, and its answer to
+    which homework it is by any answer, which the save then checks against the question, and a
+    box of ``BOX_HEADS`` by either choice."""
+    head, _, key = which.partition("-")
+    if head in ("take", "join", *BOX_HEADS):
+        return form.get(which) in ("1", "0")
+    if head == KIND_FIELD:
+        return form.get(which) in dict(KIND_CHOICES)
+    if head == "occurrence":
+        return form.get(which) in (UPDATE, NEW_WORK, KEEP_DATE)
+    if head == "identity":
+        return bool(form.get(which))
+    if head == "title":
+        return bool(form.get(which, "").strip())
+    when = form.get(f"when-{key}", "")
+    return bool(when) and (when != ANOTHER_DATE or bool(form.get(f"when_other-{key}", "").strip()))
+
+
+def unanswered_marks(
+    form: Mapping[str, str], fields: Iterable[tuple[str, object]], read: Read
+) -> dict[str, tuple[str, ...]]:
+    """The choices a form marks as sent twice that it does not answer."""
+    return {
+        which: values
+        for which, values in unresolved_of(fields, read).items()
+        if not answered(form, which)
+    }
+
+
+def marks_unsigned(made: PageMade, fields: Iterable[tuple[str, object]], read: Read) -> bool:
+    """Whether a form's marks of choices sent twice (``UNRESOLVED``) differ from the ones its
+    page signed: a mark dropped, added, or holding other values. A page that cannot be verified
+    (made before the application started again) keeps every mark as posted, since a mark only
+    ever asks for an answer."""
+    return made.verified and unresolved_of(fields, read) != made.unresolved
+
+
+def unresolved_cards(unresolved: Mapping[str, object]) -> frozenset[int]:
+    """The keys of the cards with an unresolved choice, a joined note's by its card."""
+    return frozenset(int(which.split("-")[1]) for which in unresolved)
+
+
+def unresolved_boxes(unresolved: Mapping[str, object]) -> frozenset[int]:
+    """The keys of the cards whose unresolved field is a title box or a due date, whose
+    details are open for it."""
+    return frozenset(
+        int(which.split("-")[1]) for which in unresolved if which.split("-")[0] in BOX_FIELDS
+    )
+
+
+def unresolved_at(unresolved: Mapping[str, tuple[str, ...]]) -> dict[str, list[tuple[str, str]]]:
+    """For each control an unresolved note field is answered with (a date box by its due
+    date), the marks it carries: each field's name and the values sent, as the page writes
+    them."""
+    at: dict[str, list[tuple[str, str]]] = {}
+    for which, values in sorted(unresolved.items()):
+        head, _, rest = which.partition("-")
+        anchor = f"when-{rest}" if head == "when_other" else which
+        at.setdefault(anchor, []).append((which, json.dumps(list(values))))
+    return at
+
+
 async def submitted(request: Request) -> dict[str, str]:
-    """The form as submitted, every value as text."""
+    """The form as submitted, every value as text. A field sent once for a card or for the
+    page that came more than once with different values is left out (``sent_twice``,
+    ``page_twice``), so no answer is taken by the order the values came in."""
     form = await form_of(request)
-    return {name: str(value) for name, value in form.items() if isinstance(value, str)}
+    twice = {*sent_twice(form.multi_items()), *page_twice(form.multi_items())}
+    return {
+        name: str(value)
+        for name, value in form.items()
+        if isinstance(value, str) and name not in twice
+    }
 
 
 @router.post("/read", response_class=HTMLResponse, include_in_schema=False)
@@ -1569,8 +2899,23 @@ async def edit_draft(request: Request, state: State) -> Response:
         return await asyncio.to_thread(read_refused, request, state, draft, answers, error)
 
 
-SEARCH_PRESSES: Final = ("find", "results_page", "choose", "remove")
-"""The presses that change only the review: Find, Next and Previous, Choose, and Remove."""
+SEARCH_PRESSES: Final = ("find", "results_page", "choose", "remove", "recheck", "details")
+"""The presses that change only the review: Find, Next and Previous, Choose, Remove, Review
+changes, and Edit details."""
+
+EDITING: Final = "editing"
+"""The field a note card with its details open sends, so the presses after it keep them
+open until Review changes shows them as reviewed."""
+
+
+def details_open(form: Mapping[str, str], read: Read) -> frozenset[int]:
+    """The keys of the readings made from teachers' notes whose details a form says are
+    open (``editing-<key>``)."""
+    return frozenset(
+        key
+        for key, item in enumerate(read.items)
+        if item.teacher_note is not None and f"{EDITING}-{key}" in form
+    )
 
 
 def one_press(fields: Iterable[tuple[str, object]]) -> tuple[str, str] | None:
@@ -1590,8 +2935,11 @@ def card_of(value: str) -> int | None:
 @router.post("/find", response_class=HTMLResponse, include_in_schema=False)
 async def search_review(request: Request, state: State) -> Response:
     """Find homework already here under another name for one card, page through what was
-    found, choose one, or take a choice back, and show the review again. Nothing is written:
-    Save is the one press that saves. The draft and every answer on the cards come back as
+    found, choose one, or take a choice back, and show the review again; or, for Review
+    changes, show it again with the selections as sent and every note card's details as
+    reviewed; or, for Edit details, with that card's title box and due-date choices open.
+    Details open stay open through the other presses. Nothing is written: Save is the one
+    press that saves. The draft and every answer on the cards come back as
     sent, questions still open among them, and a choice made on a card stays until Remove,
     whatever is searched. Choose takes only homework the page showed for that card, and holds
     it to the row as shown; a press the page didn't offer changes nothing. The answers carried
@@ -1605,8 +2953,10 @@ async def search_review(request: Request, state: State) -> Response:
     if isinstance(read, Problem):
         answers = answers_sent(state, form, (await form_of(request)).multi_items(), draft)
         return await asyncio.to_thread(problem_page, request, state, draft, read, answers)
+    now, today = moment_of(state, draft)
+    read = with_edits(form, selected(form, read), now=now, today=today)
     fields = (await form_of(request)).multi_items()
-    read_answers = paste_answers(fields)
+    read_answers = paste_answers(boxes_as_read(fields))
     instruction_answers = read_answers.answers
     made = {key: UnsavedChoice.of(answer) for key, answer in instruction_answers.items()}
     chosen = {key for key, answer in {**made, **read_answers.unsaved}.items() if answer.chooses}
@@ -1615,7 +2965,7 @@ async def search_review(request: Request, state: State) -> Response:
     }
     page_made = made_with(state.result_key, form, draft)
     identities, _ = identity_answers(fields, page_made)
-    linked, link_unreadable = link_answers(fields, page_made)
+    linked, link_unreadable = link_answers(boxes_as_read(fields), page_made)
     if link_unreadable:
         linked = {}
     picks = dict(page_made.picks)
@@ -1648,6 +2998,7 @@ async def search_review(request: Request, state: State) -> Response:
 
     pressed = one_press(fields)
     action, value = pressed if pressed is not None else ("", "")
+    editing = details_open(form, read)
     try:
         occurrences, kinds = answers_from(form, await asyncio.to_thread(unasked_for, state, read))
         # An answer about the school's instructions is held to the question the page asked,
@@ -1661,6 +3012,7 @@ async def search_review(request: Request, state: State) -> Response:
                 kinds=kinds,
                 identities=identities,
                 picks=page_made.picks,
+                left_out=read.left_out,
             ),
             instruction_answers,
             page_made.asked,
@@ -1672,6 +3024,91 @@ async def search_review(request: Request, state: State) -> Response:
         instruction_answers = {
             key: answer for key, answer in instruction_answers.items() if key not in never_put
         }
+        twice = sent_twice(fields)
+        unmet = unanswered_marks(form, fields, read)
+        roles = await asyncio.to_thread(
+            twice_roles,
+            state,
+            read,
+            page_made,
+            twice,
+            occurrences=occurrences,
+            kinds=kinds,
+            identities=identities,
+            picks=page_made.picks,
+        )
+        unsigned = marks_unsigned(page_made, fields, read)
+        if unsigned or page_twice(fields) or any(role != ANSWER for role in roles.values()):
+            # A page field sent twice with different answers, or marks other than the ones the
+            # page signed, are no form the page wrote: the whole press is refused as a review
+            # that could not be verified, before any press is taken, naming no field, the
+            # marks of unanswered choices kept, every mark the page signed where its marks
+            # differ.
+            if unsigned:
+                unmet = {**unmet, **page_made.unresolved}
+            shown = page_made.query
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=page_made.picks,
+                search=None if shown is None else SearchShown(shown[0], shown[1], shown[2]),
+                typed=typed,
+                refused="stale",
+                check=frozenset(),
+                twice=unmet,
+                unresolved=unmet,
+                editing=editing | unresolved_boxes(unmet),
+                notice=REVIEW_UNVERIFIED,
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        if twice or unmet:
+            # A family answer sent once for a card that came twice with different answers, or
+            # one marked as sent twice and not answered since: before any press is taken, no
+            # answer is taken by the order its values came in, and the review comes back
+            # saying so at each field, as Save does, each offering its actual choice with
+            # nothing chosen and marked until it is answered, the details of a note box
+            # concerned open.
+            sent = twice_values(fields, twice)
+            unresolved = {**unmet, **unresolved_from(sent)}
+            shown = page_made.query
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=page_made.picks,
+                search=None if shown is None else SearchShown(shown[0], shown[1], shown[2]),
+                typed=typed,
+                refused="malformed",
+                check=frozenset(twice.values()) | unresolved_cards(unresolved),
+                twice={**unmet, **sent},
+                unresolved=unresolved,
+                editing=editing | boxes_twice(twice) | unresolved_boxes(unresolved),
+                notice=twice_notice(twice),
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
         if action == "find":
             key = card_of(value)
             if key is None or key not in page_made.offers:
@@ -1727,6 +3164,25 @@ async def search_review(request: Request, state: State) -> Response:
                 del picks[key]
                 focus = f"rename-{key}"
                 search = searched(key)
+        elif action == "recheck":
+            # Review changes: the review again with the selections as sent and the search
+            # the page showed.
+            shown = page_made.query
+            if value != "1":
+                refused = True
+            elif shown is not None:
+                search = SearchShown(shown[0], shown[1], shown[2])
+        elif action == "details":
+            # Edit details: the review again with that card's title box and due-date
+            # choices open, and those of any card open already, the search kept.
+            key = card_of(value)
+            if key is None or key >= len(read.items) or read.items[key].teacher_note is None:
+                refused = True
+            else:
+                editing |= {key}
+                shown = page_made.query
+                if shown is not None:
+                    search = SearchShown(shown[0], shown[1], shown[2])
         else:
             refused = True
         if refused:
@@ -1750,9 +3206,41 @@ async def search_review(request: Request, state: State) -> Response:
                 search=None if shown is None else SearchShown(shown[0], shown[1], shown[2]),
                 typed=typed,
                 refused="malformed",
+                editing=details_open(form, read),
                 notice=PRESS_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
+        typing = typing_refused(read) if action == "recheck" else None
+        if typing is not None:
+            # Review changes with a title or due date typed on a selected note that cannot
+            # be taken: the review again, said why, with everything as typed and the details
+            # concerned open.
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="typed",
+                typing=typing,
+                editing=editing | {typing[0]} | edited(read, page_made),
+                notice=typing[1].message,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        # Review changes shows every card's details as reviewed; any other press keeps open
+        # the details that were open.
         return await asyncio.to_thread(
             preview_or_recovery,
             request,
@@ -1772,6 +3260,7 @@ async def search_review(request: Request, state: State) -> Response:
             search=search,
             typed=typed,
             focus=focus,
+            editing=frozenset() if action == "recheck" else editing,
         )
     except UnreadableClaim:
         return await asyncio.to_thread(intake_unavailable, request, state, draft, kept_answers)
@@ -1800,7 +3289,8 @@ async def keep_readings(request: Request, state: State) -> Response:
     """Read the draft again, save what is new against the record as it is, and say what
     was added, updated, and unchanged; or show the review again if a question is open,
     saying whether the question is one the page put and the parent left, or one the record
-    raised since. Whatever was chosen on the cards comes back chosen.
+    raised since. A save with no reading selected writes nothing and shows the review again,
+    which says no assignment is selected. Whatever was chosen on the cards comes back chosen.
 
     The saving runs under the decision lock, as a signal does: a plan's
     approval checks the week the plan was made from against the week as it
@@ -1814,11 +3304,14 @@ async def keep_readings(request: Request, state: State) -> Response:
     if isinstance(read, Problem):
         answers = answers_sent(state, form, (await form_of(request)).multi_items(), draft)
         return await asyncio.to_thread(problem_page, request, state, draft, read, answers)
+    now, today = moment_of(state, draft)
+    ticked = selected(form, read)
+    read = with_edits(form, ticked, now=now, today=today)
     # Every answer about the school's instructions is read from the fields as sent, before
     # any is collapsed, and kept, contradictions included, in words a page that reads no
     # store can show: all of it before anything touches the store.
     fields = (await form_of(request)).multi_items()
-    read_answers = paste_answers(fields)
+    read_answers = paste_answers(boxes_as_read(fields))
     instruction_answers = read_answers.answers
     # A choice the page showed as not saved is shown again until a new one is ticked.
     made = {key: UnsavedChoice.of(answer) for key, answer in instruction_answers.items()}
@@ -1831,7 +3324,7 @@ async def keep_readings(request: Request, state: State) -> Response:
     # a field sent twice or as a file is no answer, for the save or for a page that says the
     # answers back.
     identities, identity_unreadable = identity_answers(fields, page_made)
-    linked, link_unreadable = link_answers(fields, page_made)
+    linked, link_unreadable = link_answers(boxes_as_read(fields), page_made)
     picks, pick_unreadable = pick_answers(fields, page_made)
     # The words typed in each card's search, and the search the page showed, come back with
     # every page the save hands back, so a refusal never costs the parent their search.
@@ -1845,6 +3338,9 @@ async def keep_readings(request: Request, state: State) -> Response:
     search = (
         None if shown_query is None else SearchShown(shown_query[0], shown_query[1], shown_query[2])
     )
+    # The note cards whose details the form says are open stay open on every page the save
+    # hands back, with what was typed in them.
+    held_open = details_open(form, read)
     kept_answers = answers_kept(
         form,
         instruction_answers,
@@ -1860,8 +3356,93 @@ async def keep_readings(request: Request, state: State) -> Response:
     # answer reads no store and keeps the draft and the answers given on the cards, which
     # homework each was said to be and the notes ticked among them; so does a write the
     # file refuses, which is never tried again.
+    joins: dict[int, tuple[str, dict[tuple[int, int], str]]] = {}
     try:
         occurrences, kinds = answers_from(form, await asyncio.to_thread(unasked_for, state, read))
+        twice = sent_twice(fields)
+        unmet = unanswered_marks(form, fields, read)
+        roles = await asyncio.to_thread(
+            twice_roles,
+            state,
+            read,
+            page_made,
+            twice,
+            occurrences=occurrences,
+            kinds=kinds,
+            identities=identities,
+            picks=picks,
+        )
+        unsigned = marks_unsigned(page_made, fields, read)
+        if unsigned or page_twice(fields) or any(role != ANSWER for role in roles.values()):
+            # A page field sent twice with different answers, or marks other than the ones the
+            # page signed, are no form the page wrote: before any other refusal, nothing is
+            # written, and the whole form is refused as a review that could not be verified,
+            # naming no field, the marks of unanswered choices kept, with every mark
+            # the page signed where its marks differ.
+            if unsigned:
+                unmet = {**unmet, **page_made.unresolved}
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=read_answers.unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=page_made.picks if pick_unreadable else picks,
+                search=search,
+                typed=typed,
+                refused="stale",
+                check=frozenset(),
+                twice=unmet,
+                unresolved=unmet,
+                editing=held_open | unresolved_boxes(unmet),
+                notice=REVIEW_UNVERIFIED,
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        if twice or unmet:
+            # A family answer sent once for a card that came twice with different answers is
+            # no form the page wrote, and no answer is taken by the order its values came in;
+            # nor is one marked as sent twice and not answered since: before any other
+            # refusal, nothing is written, and the review comes back with every other answer
+            # and the typing as sent, that field saying so where it is, a note field offering
+            # its actual choice with nothing chosen and marked until it is answered, the
+            # details of a note box concerned open, and a link to its card where there is one
+            # card.
+            sent = twice_values(fields, twice)
+            unresolved = {**unmet, **unresolved_from(sent)}
+            return await asyncio.to_thread(
+                preview_page,
+                request,
+                state,
+                read,
+                draft,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=read_answers.unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=page_made.picks if pick_unreadable else picks,
+                search=search,
+                typed=typed,
+                refused="malformed",
+                check=frozenset(twice.values()) | unresolved_cards(unresolved),
+                twice={**unmet, **sent},
+                unresolved=unresolved,
+                notice=twice_notice(twice),
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                editing=held_open | boxes_twice(twice) | unresolved_boxes(unresolved),
+            )
         if identity_unreadable:
             # An answer about which homework a card is that the page did not ask, a homework
             # or token it did not give, or one sent twice, is no form the page wrote. The
@@ -1886,6 +3467,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 refused="malformed",
                 notice=IDENTITY_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                editing=held_open,
             )
         if link_unreadable:
             # A box the page did not offer, a box sent twice, as a file, or with another value,
@@ -1911,6 +3493,7 @@ async def keep_readings(request: Request, state: State) -> Response:
                 refused="malformed",
                 notice=LINK_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                editing=held_open,
             )
         if pick_unreadable:
             # A choice of homework under another name the page did not show, or one changed,
@@ -1936,6 +3519,31 @@ async def keep_readings(request: Request, state: State) -> Response:
                 refused="malformed",
                 notice=PICK_FORM_UNREADABLE,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                editing=held_open,
+            )
+        if read.items and len(read.left_out) == len(read.items):
+            # Nothing is selected to save: nothing is written, and the review comes back
+            # saying no assignment is selected, with the ticks and the typing as sent, so it
+            # never reads as a reading that failed or found nothing.
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                unsaved=read_answers.unsaved,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                editing=held_open,
             )
         # An answer where the page puts no such question is no form the page wrote. The
         # questions the page signed say where it asked, at which revision, and about which
@@ -1948,6 +3556,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             kinds=kinds,
             identities=identities,
             picks=picks,
+            left_out=read.left_out,
         )
         never_put = answers_to_no_question(changes, instruction_answers, page_made.asked)
         unreadable = read_answers.malformed or bool(never_put)
@@ -1982,8 +3591,92 @@ async def keep_readings(request: Request, state: State) -> Response:
                 refused="malformed" if unreadable else "contradict",
                 notice=INSTRUCTION_FORM_UNREADABLE if unreadable else INSTRUCTIONS_CONTRADICT,
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                editing=held_open,
             )
-        now, today = moment_of(state, draft)
+        typing = typing_refused(read)
+        if typing is not None:
+            # A title or due date typed on a selected note that cannot be taken: nothing is
+            # written, and the review comes back saying why, with everything as typed.
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="typed",
+                typing=typing,
+                editing=held_open | edited(read, page_made) | {typing[0]},
+                notice=typing[1].message,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        changed = edited(read, page_made)
+        if changed:
+            # A title or due date no review showed, typed by hand or sent from a page with
+            # details open: nothing is written, and the review comes back with those details
+            # open as typed, for Review changes to show them.
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="edited",
+                check=changed,
+                editing=held_open | changed,
+                notice=EDITS_IN_REVIEW,
+            )
+        joins_changed = joins_moved(read, page_made)
+        # A joined note ticked or unticked other than the page showed saves in this press
+        # when it does what the page said it does that way; the save checks it as it writes.
+        joins = joins_shown(read, page_made) if page_made.verified else {}
+        if joins_changed and not page_made.verified:
+            # A page this process did not sign said nothing of what a tick does, so nothing
+            # is written, and the review comes back with the ticks as sent, signed.
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="stale",
+                check=frozenset(),
+                notice=REVIEW_UNVERIFIED,
+                status_code=status.HTTP_409_CONFLICT,
+                editing=held_open,
+            )
 
         def saved() -> Kept | ChangedSinceShown | NotAsked | NotOffered | list[Change]:
             return keep(
@@ -1996,9 +3689,18 @@ async def keep_readings(request: Request, state: State) -> Response:
                 identities=identities,
                 shown_identities=set(page_made.identities),
                 shown_notes=page_made.notes,
-                links=linked,
+                # A note of hers ticked on a reading left out of the save is linked nowhere.
+                links={key: notes for key, notes in linked.items() if key not in read.left_out},
                 picks=picks,
                 offered=page_made.offers,
+                left_out=read.left_out,
+                shown_tasks=page_made.tasks,
+                shown_joins={
+                    card: next(iter(each.values()))
+                    for card, (_, each) in joins.items()
+                    if len(each) == 1
+                },
+                joins_each=joins_alone(read, joins, now=now),
                 imported_by="parent" if viewer_of(request) == "parent" else "household",
                 now=now,
                 today=today,
@@ -2054,6 +3756,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             refused="malformed",
             notice=PICK_FORM_UNREADABLE,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            editing=held_open,
         )
     if isinstance(kept, NotAsked):
         # The same check as above, made again where the save writes: another connection's
@@ -2084,9 +3787,100 @@ async def keep_readings(request: Request, state: State) -> Response:
             refused="malformed",
             notice=INSTRUCTION_FORM_UNREADABLE,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            editing=held_open,
         )
     if isinstance(kept, ChangedSinceShown):
         instructions_moved = any(change.instructions_stale for change in kept.changes)
+        if kept.moved:
+            # A selected note would do something other than the page said for it. A form
+            # this process did not sign says nothing of that, so the review is checked
+            # again. Otherwise the selections are named only when they are established as
+            # the cause: with the ticks as the page signed them every note does what the
+            # page said. Any other mismatch is said without a cause. A title or date typed on
+            # a note left out writes nothing, so the comparison takes each note's title and
+            # date as the page signed them.
+            answered = {*occurrences, *identities, *picks, *instruction_answers}
+            as_shown = with_answers(
+                ticked,
+                [
+                    TaskAnswer(key, title, due or NO_DUE_DATE)
+                    for key, (title, due) in page_made.edits.items()
+                ],
+                now=now,
+                today=today,
+            )
+
+            def by_the_selections() -> bool:
+                as_signed = frozenset(
+                    key for key, said in page_made.tasks.items() if not said.startswith("1:")
+                )
+                # The joined notes as the page showed them ticked; each card whose joined
+                # tick was changed must then do exactly what the page said, with no retry.
+                joined_signed = frozenset(
+                    join for join, ticked in page_made.joined.items() if ticked
+                )
+                if as_signed == read.left_out and joined_signed == read.joined:
+                    return False
+                try:
+                    before = changes_for(
+                        with_joined(as_shown, joined_signed, now=now).items,
+                        state.project_state,
+                        occurrences=occurrences,
+                        kinds=kinds,
+                        instruction_answers=instruction_answers,
+                        identities=identities,
+                        picks=picks,
+                        left_out=as_signed,
+                    )
+                except (
+                    UnreadableClaim,
+                    UnreadableDecision,
+                    UnreadableInstruction,
+                    UnreadableCapture,
+                    sqlite3.Error,
+                ):
+                    return False
+                return not tasks_moved(before, page_made.tasks, answered) and not (
+                    joins_moved_from(
+                        before,
+                        {card: as_shown for card, (as_shown, _) in joins.items()},
+                        retry=False,
+                    )
+                )
+
+            if not page_made.verified:
+                notice, code, about = REVIEW_UNVERIFIED, status.HTTP_409_CONFLICT, frozenset[int]()
+            elif await asyncio.to_thread(by_the_selections):
+                notice, code, about = SELECTIONS_CHANGE, status.HTTP_200_OK, kept.moved
+            else:
+                notice, code, about = (
+                    REVIEW_NO_LONGER_MATCHES,
+                    status.HTTP_409_CONFLICT,
+                    kept.moved,
+                )
+            return await asyncio.to_thread(
+                preview_or_recovery,
+                request,
+                state,
+                read,
+                draft,
+                kept_answers,
+                occurrences=occurrences,
+                kinds=kinds,
+                instruction_answers=instruction_answers,
+                carried=carried,
+                made=page_made,
+                identities=identities,
+                linked=linked,
+                picks=picks,
+                search=search,
+                typed=typed,
+                refused="stale",
+                check=about,
+                notice=notice,
+                status_code=code,
+                editing=held_open,
+            )
         return await asyncio.to_thread(
             preview_or_recovery,
             request,
@@ -2107,6 +3901,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             refused="stale",
             notice=CHANGED_SINCE_SHOWN if instructions_moved else HOMEWORK_CHANGED,
             status_code=status.HTTP_409_CONFLICT,
+            editing=held_open,
         )
     if not isinstance(kept, Kept):
         open_questions = {change.key for change in kept if change.state == REVIEW}
@@ -2124,7 +3919,10 @@ async def keep_readings(request: Request, state: State) -> Response:
             notice = CHOOSE_ONE_TYPE
         elif held_back and not unanswered:
             notice = IDENTIFY_FIRST
-        elif open_questions <= asked_on(form):
+        elif open_questions <= asked_on(form) | set(joins) | asked_as_said(kept, page_made.tasks):
+            # A question on a card whose joined tick changed is one the page said that tick
+            # asks, which the save checked, so it is put as the page's own; so is the question
+            # of which homework a note is that the page signed for it when selected.
             notice = CHOOSE_INSTRUCTIONS if unanswered else NEEDS_ANSWER
         else:
             notice = LOOK_AGAIN
@@ -2154,6 +3952,7 @@ async def keep_readings(request: Request, state: State) -> Response:
             typed=typed,
             refused=refused,
             notice=notice,
+            editing=held_open,
         )
     note = "&kept_note=1" if kept.kept_notes else ""
     note += f"&linked={kept.linked}" if kept.linked else ""

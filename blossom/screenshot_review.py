@@ -17,14 +17,14 @@ import dataclasses
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date, datetime
 from typing import Any, Final, NamedTuple
 
 import blossom.intake as intake
 from blossom.grades.draft import folded
 from blossom.intake import Reading
-from blossom.reconciliation import SourceChannel
+from blossom.reconciliation import SCHOOL_CHANNELS, SourceChannel
 from blossom.school_instructions import InstructionSeen, instruction_words
 from blossom.screenshots import (
     INSTRUCTION_MOST,
@@ -33,12 +33,16 @@ from blossom.screenshots import (
     TITLE_MOST,
     CardPlace,
     HomeworkReading,
+    JoinedSource,
     PlacedCard,
     ScreenshotRow,
     cards_placed,
     homework_assembly,
+    note_tag,
+    with_joined,
 )
 from blossom.stores.import_drafts import Carry, StoredReading
+from blossom.teacher_notes import NoteTask
 
 WINDOW_DAYS: Final = 7
 """A saved assignment is listed for a piece when due within this many days of it, either side."""
@@ -69,6 +73,12 @@ class SavedRow:
     first_words: str | None = None
     more_words: int = 0
     kind: str | None = None
+    noted: frozenset[tuple[str, date | None]] = frozenset()
+    """Every school instruction kept under it, by its words, single-spaced, and the school
+    day it was first read under, as the record recognizes a teacher's note."""
+    claims: frozenset[tuple[SourceChannel, str, str | None]] = frozenset()
+    """Every due-date claim the record keeps under it, by its channel, the date it asserts and
+    where it was seen."""
 
     @property
     def pair(self) -> tuple[str, str]:
@@ -127,6 +137,17 @@ class Piece:
     the parent gave settles which one Blossom uses."""
     as_read: AsRead | None = dataclasses.field(default=None, compare=False, repr=False)
     """Its fields with no correction, which a box is compared with."""
+    noted_cards: tuple[CardPlace, ...] = dataclasses.field(default=(), compare=False)
+    """The note cards of each joined note the family selected, whose screenshots count in the
+    name check beside its own cards'; their uncertain fields are among ``uncertain``."""
+    noted: tuple[JoinedSource, ...] = dataclasses.field(default=(), compare=False)
+    """Each joined note the family selected, as its row holds it: its tag, the fields marked
+    uncertain on its cards and day headings, and its cards' places. Only "Confirm as read"
+    answers a field one of them marks, never a correction, under a subject that names them
+    (``screenshot_save.noting``, ``screenshot_save.confirm_of``)."""
+    own_uncertain: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
+    """Beside ``noted``: the fields its own cards mark uncertain, which ``uncertain`` holds
+    together with the notes'. Empty where no joined note is selected."""
 
     @property
     def due_choices(self) -> tuple[date, ...]:
@@ -285,9 +306,157 @@ class ListEntry:
     slot: int | None = None
 
 
+def note_of(piece: Piece) -> tuple[str, date | None] | None:
+    """The words, single-spaced, and the first school day of the teacher's note task a piece
+    was read from, as the record recognizes it; ``None`` for a piece read from cards."""
+    task = None if piece.reading is None else piece.reading.teacher_note
+    return None if task is None else (" ".join(task.words.split()), task.first_day)
+
+
+def holds_note(piece: Piece, row: SavedRow) -> bool:
+    """Whether a saved assignment of the piece's class holds the words of the teacher's note
+    task it was read from, kept under the school day the task was first listed under,
+    whatever the assignment's title or due date."""
+    noted = note_of(piece)
+    return noted is not None and row.pair[0] == piece.pair[0] and noted in row.noted
+
+
+def same_name_in_window(piece: Piece, row: SavedRow) -> bool:
+    """Whether a saved assignment is the piece's by class, title and due date: never for a
+    piece read from a teacher's note, which only its words and school day recognize
+    (``holds_note``), so a later week's identical note is new work."""
+    return note_of(piece) is None and row.pair == piece.pair and in_window(piece.due, row.due)
+
+
+def school_dated(piece: Piece, row: SavedRow) -> bool:
+    """Whether a saved assignment keeps the piece's dates as read as the school gave them: a
+    claim from the school's channels kept under it names the piece's due date as read, and its
+    assigned date is the piece's as read. The record keeps no claim for an assigned date, so
+    the row's own assigned date is the one compared."""
+    read = piece.as_read
+    due, assigned = (piece.due, piece.assigned) if read is None else (read.due, read.assigned)
+    if due is None:
+        return False
+    return row.assigned == assigned and any(
+        channel in SCHOOL_CHANNELS and asserted == due.isoformat()
+        for channel, asserted, _ in row.claims
+    )
+
+
+def _due_days(row: SavedRow) -> set[date | None]:
+    """A saved assignment's due date and each due date a claim from the school's channels kept
+    under it names."""
+    days: set[date | None] = {row.due}
+    for channel, asserted, _ in row.claims:
+        if channel in SCHOOL_CHANNELS:
+            try:
+                days.add(date.fromisoformat(asserted))
+            except ValueError:
+                continue
+    return days
+
+
+def near_as_read(piece: Piece, row: SavedRow) -> bool:
+    """Whether one of a saved assignment's dates, its due date or a due date a claim from the
+    school's channels kept under it names, is within the window of the piece's due date as read
+    (``in_window``), so a date the family changed never hides the school's."""
+    read = piece.as_read
+    due = piece.due if read is None else read.due
+    return any(in_window(due, day) for day in _due_days(row))
+
+
+def due_matches_as_read(piece: Piece, row: SavedRow) -> bool:
+    """Whether the piece's due date as read is a saved assignment's due date or a due date a claim
+    from the school's channels kept under it names. Two missing dates are no match: a piece read
+    with no due date matches no row."""
+    read = piece.as_read
+    due = piece.due if read is None else read.due
+    return due is not None and due in _due_days(row)
+
+
+def _another_card_title(piece: Piece, row: SavedRow) -> bool:
+    """Whether a row is of a card piece's class under another title, the piece's class and
+    title as read and the piece not read from a teacher's note."""
+    read = piece.as_read
+    if read is not None and intake.pair(read.course, read.title) != piece.pair:
+        return False
+    return note_of(piece) is None and row.pair[0] == piece.pair[0] and row.pair != piece.pair
+
+
+def saved_under_another_title(piece: Piece, row: SavedRow) -> bool:
+    """Whether a saved assignment of a card piece's class, under a title other than the one
+    read, may be the piece's: it holds the piece's words, where the piece has any, and one of
+    its dates is near the piece's due date as read (``near_as_read``), or it keeps the piece's
+    dates as read as the school gave them (``school_dated``), whatever the window. Such a row is
+    a candidate to ask about, never a match: it is listed and offered, never preselected. Only
+    for a card piece whose class and title are as read: a card the family retitled is asked
+    about such a row through the card as read (``piece_as_read``). Never for a piece read from a
+    teacher's note, which only its words and school day recognize (``holds_note``)."""
+    if not _another_card_title(piece, row):
+        return False
+    held = bool(piece.words and holds_words(piece.words, row.words))
+    return (held and near_as_read(piece, row)) or school_dated(piece, row)
+
+
+def piece_as_read(piece: Piece) -> Piece | None:
+    """The card as it was read, with no correction of its class, title, words or dates; ``None``
+    for a piece with no record of how it was read, or with none of those corrected."""
+    read = piece.as_read
+    if read is None:
+        return None
+    found = dataclasses.replace(
+        piece,
+        course=read.course,
+        title=read.title,
+        due=read.due,
+        assigned=read.assigned,
+        words=frozenset(read.texts),
+    )
+    same = (found.pair, found.due, found.assigned, found.words) == (
+        piece.pair,
+        piece.due,
+        piece.assigned,
+        piece.words,
+    )
+    return None if same else found
+
+
+def unsure(piece: Piece, rows: Iterable[SavedRow]) -> bool:
+    """Whether the evidence the record keeps is too thin to tell a card piece, as it stands or as
+    it was read, from saved homework of its class under another title: a row holding the piece's
+    non-empty words with no date near the piece's due date as read (``near_as_read``), or, for a
+    piece read with no words, a row with that very due date (``due_matches_as_read``). Such a
+    piece lists no row it doesn't otherwise list and never starts on a new slot: the family
+    chooses."""
+    found = list(rows)
+    read = piece_as_read(piece)
+    for card in (piece,) if read is None else (piece, read):
+        for row in found:
+            if not _another_card_title(card, row):
+                continue
+            if card.words:
+                if holds_words(card.words, row.words) and not near_as_read(card, row):
+                    return True
+            elif due_matches_as_read(card, row):
+                return True
+    return False
+
+
+def lists_row(piece: Piece, row: SavedRow) -> bool:
+    """Whether a saved assignment is listed for the piece on its own fields: by class, title and
+    due date, by a teacher's note's words and school day, or as saved under another title."""
+    return (
+        same_name_in_window(piece, row)
+        or holds_note(piece, row)
+        or saved_under_another_title(piece, row)
+    )
+
+
 def listed(piece: Piece, rows: Iterable[SavedRow]) -> list[SavedRow]:
-    """The saved assignments of the piece's class and title in its window, in a fixed order."""
-    found = [r for r in rows if r.pair == piece.pair and in_window(piece.due, r.due)]
+    """The saved assignments the piece lists as it stands or as it was read (``lists_row``), in a
+    fixed order: typing on a card never takes away a row listed for the card as read."""
+    read = piece_as_read(piece)
+    found = [r for r in rows if lists_row(piece, r) or (read is not None and lists_row(read, r))]
     return sorted(
         found,
         key=lambda r: (
@@ -300,10 +469,11 @@ def listed(piece: Piece, rows: Iterable[SavedRow]) -> list[SavedRow]:
     )
 
 
-def linked(
+def linked_by_name(
     piece: Piece, picks: Iterable[EarlierPick], rows: Mapping[str, SavedRow]
 ) -> list[SavedRow]:
-    """Each distinct row an earlier pick linked to the piece's name, newest decision first."""
+    """Each distinct row an earlier pick linked to the piece's own class and title, newest
+    decision first."""
     out: list[SavedRow] = []
     seen: set[str] = set()
     for pick in sorted(picks, key=lambda p: -p.sequence):
@@ -316,6 +486,24 @@ def linked(
             row = rows[pick.assignment_id]
             if row.pair != piece.pair:
                 out.append(row)
+    return out
+
+
+def linked(
+    piece: Piece, picks: Iterable[EarlierPick], rows: Mapping[str, SavedRow]
+) -> list[SavedRow]:
+    """Each distinct row an earlier pick linked to the piece's name as it stands, then to its name
+    as it was read, so typing on a card never takes away a link the card as read lists."""
+    picks = list(picks)
+    read = piece_as_read(piece)
+    out = linked_by_name(piece, picks, rows)
+    if read is not None:
+        seen = {row.assignment_id for row in out}
+        out += [
+            row
+            for row in linked_by_name(read, picks, rows)
+            if row.assignment_id not in seen and row.pair != piece.pair
+        ]
     return out
 
 
@@ -380,11 +568,27 @@ def offerable(
     if target not in rows:
         return False
     if kind == "existing":
-        row = rows[target]
-        return row.pair == piece.pair and in_window(piece.due, row.due)
+        return any(r.assignment_id == target for r in listed(piece, [rows[target]]))
     if kind == "linked":
         return any(r.assignment_id == target for r in linked(piece, picks, rows))
     return True
+
+
+def offered_as_it_stands(
+    piece: Piece, value: Destination, rows: Mapping[str, SavedRow], picks: Iterable[EarlierPick]
+) -> bool:
+    """Whether a destination can be offered to the piece on its fields as they stand, leaving out
+    what only the card as read lists: a choice this holds for is unaffected by what was typed on
+    the card, and any other is asked again before it is held."""
+    kind = dest_kind(value)
+    if kind not in ("existing", "linked"):
+        return offerable(piece, value, rows, picks)
+    target = str(value[kind])
+    if target not in rows:
+        return False
+    if kind == "existing":
+        return lists_row(piece, rows[target])
+    return any(r.assignment_id == target for r in linked_by_name(piece, picks, rows))
 
 
 # ------------------------------------------------------------------ facts beside each entry
@@ -421,9 +625,11 @@ def in_list(
 def facts(
     piece: Piece, row: SavedRow, rows: Mapping[str, SavedRow], picks: Iterable[EarlierPick] = ()
 ) -> list[EntryFact]:
-    """The facts beside one entry. "Also saved in" names only assignments in the piece's list
-    due on another date."""
-    out = [EntryFact("has_words" if holds_words(piece.words, row.words) else "lacks_words")]
+    """The facts beside one entry: a card with no words says nothing of the entry's words. "Also
+    saved in" names only assignments in the piece's list due on another date."""
+    out: list[EntryFact] = []
+    if piece.words:
+        out.append(EntryFact("has_words" if holds_words(piece.words, row.words) else "lacks_words"))
     if row.due != piece.due:
         out.append(EntryFact("due_differs", row.due, piece.due))
     if row.assigned is not None and piece.assigned is not None and row.assigned != piece.assigned:
@@ -452,13 +658,27 @@ def defaults(
 ) -> dict[str, dict[str, Any]]:
     """The two preselections for pieces with no stored destination: "Already saved" for one exact
     match landing on which writes nothing, and a lone piece with nothing listed or linked on new
-    slot 1. Two pieces never start on one assignment."""
+    slot 1. Two pieces never start on one assignment. A piece read from a teacher's note is
+    preselected "Already saved" only on the one assignment holding its words and school day;
+    with none it is never preselected "Already saved": its class, title, due date and words
+    don't tell one week's note from another's. An assignment listed only as saved under another
+    title (``saved_under_another_title``), or only for the card as it was read (``listed``), is
+    never preselected, and a lone piece with one listed starts on no choice: the family answers
+    same or new. A lone piece the evidence can't tell from saved homework (``unsure``) starts on
+    no choice too."""
     picks = list(picks)
     candidates: dict[str, str] = {}
     for piece in pieces:
         if piece.name in stored:
             continue
-        options = listed(piece, rows.values()) + linked(piece, picks, rows)
+        if note_of(piece) is not None:
+            noted = sorted(r.assignment_id for r in rows.values() if holds_note(piece, r))
+            if len(noted) == 1 and writes_nothing(piece, noted[0]):
+                candidates[piece.name] = noted[0]
+            continue
+        options = [
+            r for r in rows.values() if same_name_in_window(piece, r) or holds_note(piece, r)
+        ] + linked_by_name(piece, picks, rows)
         exact = sorted(
             {
                 r.assignment_id
@@ -479,14 +699,19 @@ def defaults(
         if len(names) == 1 and target not in taken:
             [name] = names
             piece = next(p for p in pieces if p.name == name)
-            out[name] = {("existing" if rows[target].pair == piece.pair else "linked"): target}
+            same = rows[target].pair == piece.pair or holds_note(piece, rows[target])
+            out[name] = {("existing" if same else "linked"): target}
     for group in groups.values():
         if len(group) != 1:
             continue
         [piece] = group
         if piece.name in stored or piece.name in out:
             continue
-        if not listed(piece, rows.values()) and not linked(piece, picks, rows):
+        if (
+            not listed(piece, rows.values())
+            and not linked(piece, picks, rows)
+            and not unsure(piece, rows.values())
+        ):
             out[piece.name] = {"new": 1}
     return out
 
@@ -571,11 +796,15 @@ def date_questions(
     dest: tuple[str, ...], members: Sequence[Piece], row: SavedRow | None
 ) -> list[DateQuestion]:
     """The due date asked where the pieces differ or differ from the saved one, and the assigned
-    date asked where a saved one differs from a piece's or the pieces differ."""
+    date asked where a saved one differs from a piece's or the pieces differ. A piece read from
+    a teacher's note the saved one holds by its words and school day asks no due date: the
+    saved one's stands."""
     out: list[DateQuestion] = []
     names = tuple(sorted(p.name for p in members))
     subject = subject_for(dest, names)
-    dues = sorted({p.due for p in members if p.due is not None})
+    dues = sorted(
+        {p.due for p in members if p.due is not None and (row is None or not holds_note(p, row))}
+    )
     if row is not None and row.due is not None and dues and (len(dues) > 1 or dues[0] != row.due):
         due_options = (("as_saved", row.due), *(("piece_date", d) for d in dues if d != row.due))
         out.append(DateQuestion("due", subject, due_options, names))
@@ -605,6 +834,13 @@ def date_answered(question: DateQuestion, answers: Mapping[tuple[str, str], Any]
     return any(day.isoformat() == got for _, day in question.options)
 
 
+def family_dated(piece: Piece) -> bool:
+    """Whether a piece read from a teacher's note has a due date the family set or cleared:
+    one other than the deadline the note settles, none where it settles one included."""
+    task = None if piece.reading is None else piece.reading.teacher_note
+    return task is not None and piece.due != task.deadline
+
+
 def written_dates(
     members: Sequence[Piece],
     row: SavedRow | None,
@@ -612,13 +848,20 @@ def written_dates(
     answers: Mapping[tuple[str, str], Any],
 ) -> tuple[date | None, date | None, bool]:
     """The due and assigned dates saving writes, and whether every date question is answered;
-    an unanswered due date counts as the saved one."""
+    an unanswered due date counts as the saved one. Where every piece was read from a teacher's
+    note the saved one holds by its words and school day, the due date is the saved one, none
+    included, unless the family set or cleared one on a piece (``family_dated``): then it is
+    the family's."""
     ready = True
-    due = (
-        row.due
-        if row is not None and row.due is not None
-        else (members[0].due if members else None)
-    )
+    if row is not None and members and all(holds_note(p, row) for p in members):
+        given = [p.due for p in members if family_dated(p)]
+        due = given[0] if given else row.due
+    else:
+        due = (
+            row.due
+            if row is not None and row.due is not None
+            else (members[0].due if members else None)
+        )
     assigned = (
         row.assigned
         if row is not None and row.assigned is not None
@@ -634,6 +877,139 @@ def written_dates(
         else:
             assigned = chosen
     return due, assigned, ready
+
+
+def typed_titles(members: Iterable[Piece]) -> tuple[str, ...]:
+    """Each different title the family typed on these pieces: a piece's title where it isn't the
+    title as read. A card matched with no title typed adds none."""
+    return tuple(
+        sorted(
+            {
+                piece.title
+                for piece in members
+                if piece.as_read is not None and piece.title != piece.as_read.title
+            }
+        )
+    )
+
+
+def title_key(course: str, title: str) -> tuple[str, str]:
+    """A class and title as the title questions alone compare them: as the record matches names
+    (``intake.pair``), the title's case set aside. Matching itself keeps the case."""
+    named, words = intake.pair(course, title)
+    return named, words.casefold()
+
+
+def typed_rename(members: Sequence[Piece], row: SavedRow | None) -> str | None:
+    """The one title typed on the cards going to the saved assignment ``row``, where saving would
+    change that assignment's title, a change of case included. None for a new assignment, with no
+    title or two titles typed, and for a typed title identical to ``row``'s own."""
+    typed = typed_titles(members)
+    if row is None or len(typed) != 1 or intake.pair(row.course, typed[0]) == row.pair:
+        return None
+    return typed[0]
+
+
+def title_holder(
+    members: Sequence[Piece], row: SavedRow | None, rows: Mapping[str, SavedRow]
+) -> SavedRow | None:
+    """The different saved assignment of its class that holds the title typed to rename the saved
+    assignment ``row`` (``typed_rename``), whatever its dates and the title's case."""
+    typed = typed_rename(members, row)
+    if row is None or typed is None:
+        return None
+    named = title_key(row.course, typed)
+    return next(
+        (
+            other
+            for _, other in sorted(rows.items(), key=lambda item: item[0])
+            if other.assignment_id != row.assignment_id
+            and title_key(other.course, other.title) == named
+        ),
+        None,
+    )
+
+
+def title_taken(
+    members: Sequence[Piece], row: SavedRow | None, rows: Mapping[str, SavedRow]
+) -> bool:
+    """Whether a different saved assignment of its class holds the title typed for ``row``
+    (``title_holder``)."""
+    return title_holder(members, row, rows) is not None
+
+
+def titles_given_twice(
+    destinations: Iterable[tuple[tuple[str, ...], Sequence[Piece]]], rows: Mapping[str, SavedRow]
+) -> frozenset[str]:
+    """The saved assignments, by id, that share a class and are each renamed to the same title by
+    the cards going to them (``typed_rename``), the title's case set aside: saving both would leave
+    two assignments under that title."""
+    named: dict[tuple[str, str], set[str]] = {}
+    for dest, members in destinations:
+        row = rows.get(dest[1]) if dest[0] != "new" else None
+        typed = typed_rename(members, row)
+        if row is not None and typed is not None:
+            named.setdefault(title_key(row.course, typed), set()).add(row.assignment_id)
+    return frozenset(found for ids in named.values() if len(ids) > 1 for found in ids)
+
+
+def renames_beside_new(
+    destinations: Iterable[tuple[tuple[str, ...], Sequence[Piece]]],
+    rows: Mapping[str, SavedRow],
+    answers: Mapping[tuple[str, str], Any],
+) -> frozenset[str]:
+    """The saved assignments, by id, that the title typed to rename them (``typed_rename``) would
+    leave with the class, title, due date and assigned date of a new assignment among these
+    destinations, the title's case set aside."""
+    given = list(destinations)
+
+    def left(
+        dest: tuple[str, ...], members: Sequence[Piece], row: SavedRow | None, title: str
+    ) -> tuple[str, str, date | None, date | None]:
+        asked = date_questions(dest, members, row)
+        due, assigned, _ = written_dates(members, row, asked, answers)
+        return (*title_key(members[0].course if row is None else row.course, title), due, assigned)
+
+    new = {
+        left(dest, members, None, members[0].title) for dest, members in given if dest[0] == "new"
+    }
+    found: set[str] = set()
+    for dest, members in given:
+        row = rows.get(dest[1]) if dest[0] != "new" else None
+        typed = typed_rename(members, row)
+        if row is not None and typed is not None and left(dest, members, row, typed) in new:
+            found.add(row.assignment_id)
+    return frozenset(found)
+
+
+def proposed_title(
+    members: Sequence[Piece],
+    row: SavedRow | None,
+    rows: Mapping[str, SavedRow],
+    twice: frozenset[str] = frozenset(),
+) -> str | None:
+    """The title saving gives the saved assignment ``row``: the one title typed on the cards going
+    there, where it names something other than the saved title (``typed_rename``). None for a new
+    assignment, with no title typed, and for what is asked instead (``titles_asked``)."""
+    typed = typed_rename(members, row)
+    return None if typed is None or titles_asked(members, row, rows, twice) else typed
+
+
+def titles_asked(
+    members: Sequence[Piece],
+    row: SavedRow | None,
+    rows: Mapping[str, SavedRow],
+    twice: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether the title of the saved assignment ``row`` is asked, with nothing written: the cards
+    going there carry two different typed titles, one that another saved assignment holds, or one
+    ``twice`` names: the same post gives it another saved assignment of its class
+    (``titles_given_twice``) or a new assignment of its dates (``renames_beside_new``)."""
+    return row is not None and (
+        len(typed_titles(members)) > 1
+        or title_taken(members, row, rows)
+        or row.assignment_id in twice
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -673,6 +1049,25 @@ def destination_kind(
         return (next(iter(chosen)) if chosen else None), True
     got = answers.get(("kind", question.subject))
     return (got if got in KINDS else None), got in KINDS
+
+
+def kind_left(
+    dest: tuple[str, ...],
+    members: Sequence[Piece],
+    row: SavedRow | None,
+    kinds: Mapping[str, str],
+    answers: Mapping[tuple[str, str], Any],
+) -> str | None:
+    """The kind the assignment has once saving there is done: the kind chosen, else the saved
+    assignment's own, else on a new assignment the kind its lead card's title reads as. None while
+    its kind question waits. An answer equal to the kind shown leaves it unchanged."""
+    written, answered = destination_kind(dest, members, row, kinds, answers)
+    if written is not None or not answered:
+        return written
+    if row is not None:
+        return row.kind
+    lead = min(members, key=lambda piece: piece.name)
+    return None if lead.reading is None else lead.reading.kind.value
 
 
 # ------------------------------------------------------------------ copies from another assignment
@@ -785,6 +1180,8 @@ def validate(
     dests: dict[tuple[str, ...], list[str]] = {}
     for name, value in sorted(live.items()):
         dests.setdefault(dest_key(by_name[name], value), []).append(name)
+    given = [(dest, [by_name[n] for n in names]) for dest, names in dests.items()]
+    twice = titles_given_twice(given, rows) | renames_beside_new(given, rows, answers)
     results = []
     for unit in units(open_pieces, live):
         refusals: list[Refusal] = []
@@ -811,6 +1208,7 @@ def validate(
                 kind_questions.append(kind_asked)
                 ready = ready and answers.get(("kind", kind_asked.subject)) in KINDS
             ready = ready and instruction_ready(dest, members)
+            ready = ready and not titles_asked(members, row, rows, twice)
             if row is not None:
                 for member in sorted(members, key=lambda p: p.name):
                     if holds_words(member.words, row.words):
@@ -971,6 +1369,12 @@ class PreviewEntry:
     digest: str
     written_kind: str | None = None
     kind_from: str | None = None
+    new_title: str | None = None
+    """The title saving gives the saved assignment (``proposed_title``); None where it keeps its
+    own."""
+    beside_new: bool = False
+    """Whether its typed title is asked because a new assignment of this review would share it
+    (``renames_beside_new``)."""
 
 
 def digest_of(fields: Mapping[str, Any]) -> str:
@@ -995,14 +1399,19 @@ def preview(
     writes_nothing: Callable[[Piece, str], bool] = lambda p, t: True,
 ) -> list[PreviewEntry]:
     """One entry per chosen destination. "Nothing new" holds only when saving writes nothing at
-    all there: no words, no date moved or filled, no kind, no open question. Its digest holds
-    everything its lines read: the dates, words and kind it writes, and of the saved row it
-    lands on, the dates, words, kind, class and title its lines name, and whether saving writes
-    nothing there, so a saved row changed elsewhere since the page makes the save ask again."""
+    all there: no words, no date moved or filled, no kind, no title, no open question. Its digest
+    holds everything its lines read: the dates, words and proposed title it writes, the kind the
+    assignment is left with (``kind_left``), and of the saved row it lands on, the dates, words,
+    kind, class and title its lines name, and whether
+    saving writes nothing there, so a saved row changed elsewhere since the page makes the save
+    ask again."""
     picks = list(picks)
     kinds = dict(kinds or {})
     by_name = {p.name: p for p in pieces}
     defaulted = set(defaulted)
+    given = [(dest, [by_name[n] for n in names]) for dest, names in validation.destinations.items()]
+    beside_new = renames_beside_new(given, rows, answers)
+    twice = titles_given_twice(given, rows) | beside_new
     out = []
     for dest, names in sorted(validation.destinations.items()):
         members = [by_name[n] for n in names]
@@ -1020,12 +1429,16 @@ def preview(
         open_questions = tuple(q.kind for q in asked if not date_answered(q, answers))
         if kind_asked is not None and answers.get(("kind", kind_asked.subject)) not in KINDS:
             open_questions += ("kind",)
+        if titles_asked(members, row, rows, twice):
+            open_questions += ("title",)
+        new_title = proposed_title(members, row, rows, twice)
         nothing_new = (
             row is not None
             and not adds
             and due == row.due
             and assigned == row.assigned
             and not kind_change
+            and new_title is None
             and not open_questions
             and not (revision is not None and choice is None)
             and all(writes_nothing(m, row.assignment_id) for m in members)
@@ -1057,9 +1470,11 @@ def preview(
             "revision": revision,
             "choice": None if choice is None else sorted(choice),
             "defaulted": [[n, list(ids)] for n, ids in defaults_here],
-            "kind": written_kind,
+            "kind": kind_left(dest, members, row, kinds, answers),
             "kind_asked": kind_asked is not None,
         }
+        if new_title is not None:
+            fields["new_title"] = new_title
         out.append(
             PreviewEntry(
                 unit.unit,
@@ -1079,6 +1494,8 @@ def preview(
                 digest_of(fields),
                 written_kind,
                 None if row is None else row.kind,
+                new_title,
+                row is not None and row.assignment_id in beside_new,
             )
         )
     return out
@@ -1260,6 +1677,8 @@ def corrected(
     dates: Mapping[str, str | None] | None = None,
     texts: Sequence[str] = (),
     wordless: Sequence[CardPlace] = (),
+    *,
+    now: datetime,
 ) -> Reading:
     """The reading with the parent's corrections: its row's class and title, the kind its
     corrected title suggests, each instruction text replaced or removed by its index among
@@ -1267,7 +1686,12 @@ def corrected(
     each text once, and its own due and assigned dates, the assigned date set to none where she
     said none was given. In saved progress of shape 3, an instruction correction replaces
     every text, or is added where none was read, and the due line and day heading set the
-    dates ``date_target`` names. A correction Blossom can't use is passed over."""
+    dates ``date_target`` names. A correction Blossom can't use is passed over. A due date
+    other than the one read is the family's entry, made at ``now``: on a reading made from a
+    teacher's note through ``intake.with_family_deadline``, which also takes none where its
+    own date is given as none; on any other reading through ``intake.family_due``, every
+    claim the school gave kept at its own date and source. A due date given as none on a
+    reading made from no note is passed over."""
     fields, dates = fields or {}, dates or {}
     if not fields and not dates:
         return reading
@@ -1330,15 +1754,18 @@ def corrected(
             change["assigned_on"] = None
         elif usable_correction("assigned", own_assigned):
             change["assigned_on"] = typed_day(own_assigned)
-    if due is not None and due != reading.due_date:
-        before = None if reading.due_date is None else reading.due_date.isoformat()
-        change["due_date"] = due
-        change["claims"] = tuple(
-            c.model_copy(update={"asserted_value": due.isoformat()})
-            if c.asserted_value == before
-            else c
-            for c in reading.claims
-        )
+    if reading.teacher_note is not None:
+        cleared = "due" in dates and dates["due"] is None
+        if cleared or (due is not None and due != reading.due_date):
+            given = intake.with_family_deadline(reading, None if cleared else due, now=now)
+            change["due_date"] = given.due_date
+            change["claims"] = given.claims
+            change["field_origins"] = given.field_origins
+    elif due is not None and due != reading.due_date:
+        given = intake.family_due(reading, due, now=now)
+        change["due_date"] = given.due_date
+        change["claims"] = given.claims
+        change["field_origins"] = given.field_origins
     return dataclasses.replace(reading, **change) if change else reading
 
 
@@ -1374,11 +1801,16 @@ def pieces_from(
     now: datetime,
     corrections: Corrections | None = None,
     due_read: Mapping[str, str] | None = None,
+    joined: Collection[tuple[str, str]] = (),
 ) -> tuple[list[Piece], list[ScreenshotRow], list[ScreenshotRow]]:
     """The review's pieces, the rows still asking the split question, and every row. A row
     answered "These are different assignments" gives one piece per assigned day and one for its
     undated cards, each read from its own cards and dated by them alone. Each piece keeps its
-    fields with no correction beside the corrected ones."""
+    fields with no correction beside the corrected ones. A piece takes what each joined note
+    the family selected adds, by piece name and note tag in ``joined`` (``with_joined``), before
+    its corrections, so the page, a refusal and the save read one reading; with it, the places
+    of those notes' cards (``Piece.noted_cards``) and their uncertain fields, and the notes
+    themselves beside its own cards' marks (``Piece.noted``, ``Piece.own_uncertain``)."""
     rows = list(homework_assembly(list(readings), now=now).rows)
     placed = cards_placed(readings)
     corrections = corrections or {}
@@ -1399,8 +1831,14 @@ def pieces_from(
         fields = corrections.get(row.key) or {}
         carried = tuple(c for c in bare if usable_correction(f := wordless_field(c), fields.get(f)))
         mine = [card for card in (*wordless, *carried) if card in cards]
+        tags = {tag for piece_name, tag in joined if piece_name == name}
         fixed = corrected(
-            reading, corrections.get(row.key), corrections.get(dates_key(name)), texts, mine
+            with_joined(reading, tags, now) if tags else reading,
+            corrections.get(row.key),
+            corrections.get(dates_key(name)),
+            texts,
+            mine,
+            now=now,
         )
         read = AsRead(
             row.reading.course,
@@ -1413,16 +1851,77 @@ def pieces_from(
             bare,
             carried,
         )
-        return _piece(name, row.key, fixed, cards, is_split, marks, read)
+        mine_noted = tags & {note_tag(task) for task in reading.joined_notes}
+        selected = tuple(found for found in row.joined if found.tag in mine_noted)
+        noted_marks = frozenset(mark for found in selected for mark in found.marks)
+        piece = _piece(name, row.key, fixed, cards, is_split, marks | noted_marks, read)
+        places = tuple(dict.fromkeys(place for found in selected for place in found.places))
+        if not selected:
+            return piece
+        return dataclasses.replace(
+            piece, noted_cards=places, noted=selected, own_uncertain=frozenset(marks)
+        )
 
-    def own(
-        row: ScreenshotRow, cards: Sequence[CardPlace], name: str, is_split: bool, day: date | None
-    ) -> Piece:
+    def own(cards: Sequence[CardPlace], day: date | None) -> tuple[Reading, frozenset[str]]:
         mine = [r for r in readings if r.sha256 in {c.sha256 for c in cards}]
         found = [r for r in homework_assembly(mine, now=now).rows if set(cards) & set(r.sources)]
         best = max(found, key=lambda r: len(set(cards) & set(r.sources)))
-        reading = dataclasses.replace(best.reading, assigned_on=day)
-        return made(row, name, reading, cards, is_split, best.marks)
+        return dataclasses.replace(best.reading, assigned_on=day, joined_notes=()), best.marks
+
+    def split_up(row: ScreenshotRow) -> list[Piece]:
+        """The pieces of a row answered "These are different assignments": one per assigned
+        day and one for its undated cards, each read from its own cards; each of the row's
+        joined notes joins the one piece it ``joins`` under the school days that piece's cards
+        were read under, and where none or several qualify it is a note reading of its own."""
+        parts: list[tuple[str, tuple[CardPlace, ...], bool, date | None]] = [
+            (f"{row.key}|{day.day.isoformat()}", day.sources, True, day.day) for day in row.assigned
+        ]
+        dated = {c for day in row.assigned for c in day.sources}
+        undated = tuple(c for c in row.sources if c not in dated)
+        if undated:
+            parts.append((f"{row.key}|due", undated, False, None))
+        read = [own(cards, day) for _, cards, _, day in parts]
+        days = [
+            frozenset(
+                day
+                for c in cards
+                if (seen := placed.get(c)) is not None
+                and seen.heading is not None
+                and (day := seen.heading.day) is not None
+            )
+            for _, cards, _, _ in parts
+        ]
+        sources = {source.tag: source for source in row.joined}
+        alone: list[NoteTask] = []
+        for task in row.reading.joined_notes:
+            index = intake.the_one(
+                [
+                    at
+                    for at, (reading, _) in enumerate(read)
+                    if intake.joins(reading, task, _read_under(days[at]))
+                ]
+            )
+            if index is None:
+                alone.append(task)
+                continue
+            reading, marks = read[index]
+            read[index] = (
+                dataclasses.replace(reading, joined_notes=(*reading.joined_notes, task)),
+                marks,
+            )
+        out = [
+            made(row, name, reading, cards, is_split, marks)
+            for (name, cards, is_split, _), (reading, marks) in zip(parts, read, strict=True)
+        ]
+        for task in alone:
+            source = sources.get(note_tag(task))
+            places = () if source is None else source.places
+            marks = frozenset() if source is None else source.marks
+            noted = intake.note_reading(task, now=now)
+            as_note = row._replace(reading=noted, marks=marks, assigned=(), sources=places)
+            name = f"{row.key}|note-{note_tag(task)}"
+            out.append(made(as_note, name, noted, places, False, marks))
+        return out
 
     for row in rows:
         if row.key in aside:
@@ -1434,18 +1933,18 @@ def pieces_from(
         if answer is None:
             asking.append(row)
         elif answer == "split":
-            for day in row.assigned:
-                out.append(own(row, day.sources, f"{row.key}|{day.day.isoformat()}", True, day.day))
-            dated = {c for day in row.assigned for c in day.sources}
-            undated = [c for c in row.sources if c not in dated]
-            if undated:
-                out.append(own(row, undated, f"{row.key}|due", False, None))
+            out += split_up(row)
         else:
             chosen = date.fromisoformat(answer[1])
             reading = dataclasses.replace(row.reading, assigned_on=chosen)
             out.append(made(row, row.key, reading, row.sources, False, row.marks))
-    settled = [_settled(piece, readings, corrections, due_read or {}) for piece in out]
+    settled = [_settled(piece, readings, corrections, due_read or {}, now) for piece in out]
     return sorted(settled, key=lambda p: p.name), asking, rows
+
+
+def _read_under(days: frozenset[date]) -> Callable[[Collection[date]], bool]:
+    """Whether one of the school days a piece's cards were read under is among those given."""
+    return lambda given: not days.isdisjoint(given)
 
 
 def _settled(
@@ -1453,12 +1952,14 @@ def _settled(
     readings: Sequence[StoredReading],
     corrections: Corrections,
     due_read: Mapping[str, str],
+    now: datetime,
 ) -> Piece:
     """A piece with what its cards said of their dates. Where a due card's due line and day
     heading name different dates, the parent's answer of which one Blossom uses sets the due
-    date, as a correction that sets the due date does; until one of them is given the piece
-    isn't settled, and with no correction it has no due date. A correction of the assigned
-    date answers nothing of it. The row's key is never touched."""
+    date as the family's entry, made at ``now`` (``intake.family_due``), as a correction that
+    sets the due date does; the school's claims keep their dates. Until one of them is given
+    the piece isn't settled, and with no correction it has no due date. A correction of the
+    assigned date answers nothing of it. The row's key is never touched."""
     seen = dates_seen(readings, piece.cards)
     with_seen = dataclasses.replace(piece, seen=seen)
     choices = with_seen.due_choices
@@ -1472,17 +1973,7 @@ def _settled(
         return with_seen
     if chosen is None or piece.reading is None:
         return dataclasses.replace(with_seen, due_resolved=False)
-    before = None if piece.due is None else piece.due.isoformat()
-    reading = dataclasses.replace(
-        piece.reading,
-        due_date=chosen,
-        claims=tuple(
-            c.model_copy(update={"asserted_value": chosen.isoformat()})
-            if c.asserted_value == before
-            else c
-            for c in piece.reading.claims
-        ),
-    )
+    reading = intake.family_due(piece.reading, chosen, now=now)
     return dataclasses.replace(with_seen, due=chosen, reading=reading)
 
 
@@ -1533,7 +2024,52 @@ def answer_names(kind: str, subject: str) -> list[str]:
         return [subject]
     if kind in ("due", "assigned", "instructions"):
         return list(json.loads(subject)[1])
+    if kind == "joined":
+        found = joined_of(subject)
+        return [] if found is None else [found[0]]
     return []
+
+
+JOINED: Final = "1"
+"""The value of a ticked joined note: the one option of its question."""
+UNJOINED: Final = "0"
+"""The value kept for a joined note the family left unticked where it starts ticked as saved
+(``saved_notes``), so it stays unticked; it adds nothing and removes nothing."""
+
+
+def saved_notes(tasks: Iterable[NoteTask], row: SavedRow) -> frozenset[str]:
+    """The ``note_tag`` of each joined note that ``row`` shows saved, so selecting it adds
+    nothing there: the row keeps the note's words, single-spaced, as a school instruction under
+    the note's first school day and, where the note settles a date, a claim of that date seen in
+    a teacher's note. Changed words, another school day's occurrence, a date the family changed
+    or cleared when the note was saved, and a note whose words were never kept as an
+    instruction, such as one that added only a date claim, are not shown saved. A tag is shown
+    saved only when every note of it is."""
+    shown: set[str] = set()
+    unproven: set[str] = set()
+    for task in tasks:
+        held = (" ".join(task.words.split()), task.first_day) in row.noted and (
+            task.deadline is None
+            or (SourceChannel.LMS, task.deadline.isoformat(), intake.TEACHER_NOTE) in row.claims
+        )
+        (shown if held else unproven).add(note_tag(task))
+    return frozenset(shown - unproven)
+
+
+def joined_subject(name: str, tag: str) -> str:
+    """The subject of a joined note's tick: its piece's name and the note's ``note_tag``."""
+    return json.dumps([name, tag], separators=(",", ":"))
+
+
+def joined_of(subject: str) -> tuple[str, str] | None:
+    """A joined note's tick's piece name and note tag, or None for a subject no page writes."""
+    try:
+        found = json.loads(subject)
+    except ValueError:
+        return None
+    if not isinstance(found, list) or len(found) != 2 or not all(isinstance(x, str) for x in found):
+        return None
+    return found[0], found[1]
 
 
 def unnamed(readings: Sequence[StoredReading]) -> frozenset[tuple[str, str]]:
@@ -1600,7 +2136,7 @@ def cleared(
                 delete.add((kind, subject))
                 marks.add(subject)
         elif (
-            kind in ("due", "assigned", "instructions")
+            kind in ("due", "assigned", "instructions", "joined")
             or (kind == "kind" and subject.startswith("["))
         ) and any(hit(name) for name in answer_names(kind, subject)):
             delete.add((kind, subject))
@@ -1611,11 +2147,15 @@ def cleared(
     carried: set[str] = set()
     asked: set[str] = set()
     aside_cards = {c for r in old_rows if r.key in aside for c in r.sources}
+    aside_notes = {_task_of(r) for r in old_rows if r.key in aside and _task_of(r) is not None}
     for row in new_rows:
         if row.key in old_keys and row.key not in touched:
             continue
         cards = set(row.sources)
-        if cards and cards <= aside_cards:
+        # One note card can read as several tasks: a set-aside task carries only to a row of
+        # the same task, never to another task of its card.
+        sibling = _task_of(row) is not None and _task_of(row) not in aside_notes
+        if cards and cards <= aside_cards and not sibling:
             if row.key not in aside:
                 carried.add(row.key)
             notes.append((row.key, "aside_carried"))
@@ -1632,6 +2172,13 @@ def cleared(
         frozenset(named),
         ("name", "missing") in delete,
     )
+
+
+def _task_of(row: ScreenshotRow) -> tuple[str, str] | None:
+    """The class and words, single-spaced, of the teacher's note task a row was read from, or
+    ``None`` for a row read from cards."""
+    task = row.reading.teacher_note
+    return None if task is None else (folded(task.subject), folded(task.words))
 
 
 def carry(
@@ -1699,7 +2246,7 @@ def change_told(
         key, _, part = name.partition("|")
         if key not in old or (part and key in result.named):
             continue
-        day = date.fromisoformat(part) if part and part != "due" else None
+        day = date.fromisoformat(part) if part[:1].isdigit() else None
         row = ClearedRow(old[key].reading.title, day, copy_group(old[key]) in shown)
         if row not in rows:
             rows.append(row)
