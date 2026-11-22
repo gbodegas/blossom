@@ -45106,6 +45106,117 @@ def test_a_note_with_no_day_heading_is_listed_under_words_true_for_a_note(
     )
 
 
+LABEL_LINE: Final = "Assigned: Poster: (Due:TBD)"
+"""A line that begins with a card's label and has no due date the reader can read."""
+PLAIN_LINE: Final = "Study the vocabulary on page 12."
+"""An ordinary teacher's note."""
+
+
+def words_card(words: str) -> dict[str, object]:
+    """An English 8 card with no label and no due line under the default list's two cards,
+    these words its instruction."""
+    return homework_card(
+        badge=None,
+        course="English 8",
+        title=None,
+        instruction=words,
+        footer=None,
+        y_top=450,
+        y_bottom=520,
+    )
+
+
+def saved_with_words(browser: TestClient) -> list[tuple[str, str, date | None, list[str]]]:
+    """Each saved English 8 and Science 8 row as its class, title and due date, with the
+    words of the school instructions kept under it."""
+    record = state_of(browser).project_state
+    rows = [a for a in record.all_assignments() if a.course in ("English 8", "Science 8")]
+    readable = record.school_instruction_readings([a.assignment_id for a in rows]).readable
+    return sorted(
+        (
+            (
+                a.course,
+                a.title,
+                a.due_date,
+                [each.text for each in readable[a.assignment_id].kept]
+                if a.assignment_id in readable
+                else [],
+            )
+            for a in rows
+        ),
+        key=lambda row: row[:2],
+    )
+
+
+def test_a_note_card_that_begins_with_a_card_s_label_is_text_that_couldn_t_be_read_and_never_saved(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card with no label whose words begin with a card's label and hold no due date the
+    reader can read is no note to check: its words are listed whole under "Couldn't read" with
+    no tick, and Save selected homework with the ticks the page draws writes the formal cards'
+    rows alone."""
+    answer = with_notes(words_card(LABEL_LINE))
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, read)
+        ticked = ticked_on(page)
+        saved = send(browser, draft_id, page_post(page, "save", tick=ticked))
+        after = followed(browser, saved)
+        rows = saved_with_words(browser)
+
+    assert lines_in(TOLD.search(read)) == ["1 screenshot read: 2 assignments found."]
+    assert page.count('<h2 id="unread-heading">') == 1
+    unread = html.unescape(section_of(page, "unread-heading"))
+    assert unread.startswith("Couldn't read</h2>")
+    assert "<h3>Screenshot 1: Text Blossom couldn't read</h3>" in unread
+    assert (
+        '<p class="note">Look at the screenshot and enter it by hand if it\'s homework.</p>'
+        in unread
+    )
+    assert f"<li><p>Card 3: English 8 · {LABEL_LINE}</p>" in unread
+    assert UNIT_TICK.findall(unread) == []
+    assert UNIT_TICK.findall(review_form(page)) == [" checked", " checked"]
+    assert "Poster" not in section_of(page, "saving-heading")
+    assert 'id="may-be-heading"' not in page
+    assert 'id="no-homework-heading"' not in page
+    assert actions_of(page) == ["save"]
+    assert len(ticked) == 2
+    assert says(after, imports.counted(2, 0, 0, 1))
+    assert f"Card 3: English 8 · {LABEL_LINE}" in html.unescape(after)
+    assert rows == [
+        ("English 8", "Sentence Composing", date(2026, 10, 8), ["Complete pages 12 to 14."]),
+        ("Science 8", "Chains Reading Guide 6", date(2026, 10, 5), []),
+    ]
+
+
+def test_an_ordinary_note_card_in_the_same_place_is_offered_unticked_and_saves_when_ticked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ordinary teacher's note in the place of the words that begin with a card's label is
+    a note to check, its group unticked beside the formal cards' ticked groups. With every
+    group ticked, Save selected homework writes its row with no due date and its words."""
+    answer = with_notes(words_card(PLAIN_LINE))
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = her_name_answered(browser, draft_id, read)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = saved_with_words(browser)
+
+    assert lines_in(TOLD.search(read)) == [
+        "1 screenshot read: 2 assignments found, 1 note to check."
+    ]
+    assert 'id="unread-heading"' not in page
+    assert "Study the vocabulary on page 12" in section_of(page, "saving-heading")
+    assert UNIT_TICK.findall(review_form(page)) == [" checked", " checked", ""]
+    assert says(after, imports.counted(3, 0, 0, 0))
+    assert rows == [
+        ("English 8", "Sentence Composing", date(2026, 10, 8), ["Complete pages 12 to 14."]),
+        ("English 8", "Study the vocabulary on page 12", None, [PLAIN_LINE]),
+        ("Science 8", "Chains Reading Guide 6", date(2026, 10, 5), []),
+    ]
+
+
 # ------------------------------------------------------------------ corrections to a note
 
 PROJECT_NOTE: Final = "The class project is due today."

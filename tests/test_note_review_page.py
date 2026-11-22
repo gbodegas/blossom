@@ -6743,3 +6743,138 @@ def test_friday_chosen_on_the_essay_before_an_update_naming_other_work_is_the_fa
     assert [(name, channel, value) for name, channel, value, _ in records] == [
         ("Essay", SourceChannel.PARENT_ENTRY, "2026-11-20")
     ]
+
+
+LABEL_LINE = "Assigned: Poster: (Due:TBD)"
+"""A line that begins with a card's label and has no due date the reader can read."""
+PLAIN_LINE = "Study the vocabulary on page 12."
+"""An ordinary teacher's note."""
+REVIEW_SAID = (
+    "These lines were not read as assignments, so nothing from them will be saved. "
+    "Edit the text to fix a line, or save the rest and enter the assignment by hand."
+)
+SAVE_BUTTON = r'<button type="submit" class="primary"[^>]*>([^<]*)</button>'
+
+
+def under_english(line: str, *, with_a_card: bool = True) -> str:
+    """A Monday of the weekly summary with this line under the heading "English 8 -", after
+    a Geometry card or with no card."""
+    card_line = "08 Geometry - Due: Textbook page 12:\n" if with_a_card else ""
+    return f"Homework for Wren\n11/02/2026 - Monday\n{card_line}English 8 -\n{line}\n"
+
+
+def listed_for_review(page: str) -> tuple[str, str, list[tuple[int, str]], bool]:
+    """The section "Text that needs review" as shown: its heading, its sentences, each line
+    with its number, and whether it holds the button "Edit the text"."""
+    assert page.count('<section class="panel needs-review"') == 1, "no text that needs review"
+    section = page.split('<section class="panel needs-review"', 1)[1].split("</section>", 1)[0]
+    [heading] = re.findall(r'<h2 id="needs-review">([^<]*)</h2>', section)
+    [said] = re.findall(r'<p class="note">([^<]*)</p>', section)
+    lines = re.findall(
+        r'<li><span class="line-number">Line (\d+):</span> <code>([^<]*)</code></li>', section
+    )
+    return (
+        html.unescape(heading),
+        " ".join(html.unescape(said).split()),
+        [(int(number), html.unescape(line)) for number, line in lines],
+        ">Edit the text</button>" in section,
+    )
+
+
+def saved_with_words(
+    client: TestClient,
+) -> tuple[list[tuple[str, str, datetime.date | None]], dict[str, list[str]]]:
+    """Each saved row as its class, title and due date, and the school's instructions kept."""
+    rows = sorted(
+        ((row.course, row.title, row.due_date) for row in store_of(client).all_assignments()),
+        key=lambda row: row[:2],
+    )
+    return rows, instruction_texts(client)
+
+
+def test_a_line_that_begins_with_a_card_s_label_is_listed_for_review_and_never_saved(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Under a subject heading, a line that begins with a card's label and has no due date
+    the reader can read is listed whole under "Text that needs review" with its heading, each
+    with its line number, beside the button "Edit the text". Nothing of it is a card or has a
+    tick, and the Save the page offers writes the formal card's row alone. With no formal card
+    the page offers no Save, and a post of its form sent anyway writes nothing."""
+    for folder in ("card", "alone"):
+        (tmp_path / folder).mkdir()
+    with client_in(tmp_path / "card") as client:
+        page = client.post("/parent/inbox/read", data={"text": under_english(LABEL_LINE)}).text
+        kept = client.post("/parent/inbox/keep", data=ticked_form(page))
+        rows, words = saved_with_words(client)
+    with client_in(tmp_path / "alone") as client:
+        text = under_english(LABEL_LINE, with_a_card=False)
+        alone = client.post("/parent/inbox/read", data={"text": text}).text
+        not_offered = ticked_form(alone)
+        sent = client.post("/parent/inbox/keep", data=not_offered)
+        alone_rows, alone_words = saved_with_words(client)
+
+    assert listed_for_review(page) == (
+        "Text that needs review",
+        REVIEW_SAID,
+        [(4, "English 8 -"), (5, LABEL_LINE)],
+        True,
+    )
+    assert 'type="checkbox"' not in page
+    assert "offered-" not in page
+    assert "take-" not in page
+    assert 'id="notes-found"' not in page
+    assert titles(page) == ["Textbook page 12"]
+    assert "From the school" not in page
+    assert re.findall(SAVE_BUTTON, page) == ["Save 1 assignment"]
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=1&updated=0&unchanged=0")
+    assert rows == [("08 Geometry", "Textbook page 12", datetime.date(2026, 11, 2))]
+    assert words == {}
+
+    assert listed_for_review(alone) == (
+        "Text that needs review",
+        REVIEW_SAID,
+        [(3, "English 8 -"), (4, LABEL_LINE)],
+        True,
+    )
+    assert '<p class="empty">Nothing in the text was read as an assignment.</p>' in alone
+    assert 'type="checkbox"' not in alone
+    assert titles(alone) == []
+    assert re.findall(SAVE_BUTTON, alone) == []
+    assert sorted(not_offered) == ["made_with", "read_at", "read_on", "text"]
+    assert not_offered["text"] == text
+    assert sent.status_code == 303
+    assert sent.headers["location"].endswith("added=0&updated=0&unchanged=0")
+    assert (alone_rows, alone_words) == ([], {})
+
+
+def test_an_ordinary_note_under_a_subject_heading_is_offered_unticked_and_saves_when_ticked(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An ordinary teacher's note in the place of the line that begins with a card's label is
+    a card with its tick unset and its words, with no text that needs review. Ticked by
+    Review changes and saved, it is written with the formal card, its words kept as the
+    school's instruction."""
+    with client_in(tmp_path) as client:
+        page = client.post("/parent/inbox/read", data={"text": under_english(PLAIN_LINE)}).text
+        key = key_of(page, "Study the vocabulary on page 12")
+        form = ticked_form(page) | {f"take-{key}": "1", "recheck": "1"}
+        chosen = client.post("/parent/inbox/find", data=form)
+        kept = client.post("/parent/inbox/keep", data=ticked_form(chosen.text))
+        rows, words = saved_with_words(client)
+
+    shown = card(page, "Study the vocabulary on page 12")
+    assert 'id="needs-review"' not in page
+    assert found_line(page) == "Found 1 item in the teacher's notes; none is selected yet."
+    assert numbers(page, r'<input type="checkbox" name="take-(\d+)" value="1"') == {key}
+    assert numbers(page, TICKED) == set()
+    assert f'From the school: <q class="authored-text">{PLAIN_LINE}</q>' in shown
+    assert chosen.status_code == 200
+    assert numbers(chosen.text, TICKED) == {key}
+    assert kept.status_code == 303
+    assert kept.headers["location"].endswith("added=2&updated=0&unchanged=0")
+    assert rows == [
+        ("08 Geometry", "Textbook page 12", datetime.date(2026, 11, 2)),
+        ("English 8", "Study the vocabulary on page 12", None),
+    ]
+    assert words == {"Study the vocabulary on page 12": [PLAIN_LINE]}

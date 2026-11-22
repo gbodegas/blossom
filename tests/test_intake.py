@@ -41,6 +41,7 @@ from blossom.intake import (
     changes_for,
     conflicting_choices,
     identity,
+    is_shaped_as_structure,
     keep,
     kind_of,
     read_cards,
@@ -1664,17 +1665,45 @@ def test_a_cards_short_review_paragraph_is_a_block_only_from_a_heading_inside_it
         "Math - Assigned: Sheet 3",
         "Due: Orphan:",
         "Assigned: Poster: (Due:11/09/2026)",
+        "Assigned: Poster: (Due:TBD)",
+        "Assigned: Poster",
+        "Assigned:",
+        "Assigned : Poster",
     ],
 )
 def test_a_line_kept_in_a_note_only_because_it_did_not_read_makes_its_block_suspect(
     line: str,
 ) -> None:
     """A day in either shape whose digits name no date, a Missing-shaped line with another
-    grade, a card with its course that does not read, and a page card's line with no course
-    are kept in the note, in its paragraph, and mark its block suspect. The block keeps the
-    school day its heading was read under."""
+    grade, a card with its course that does not read, a page card's line with no course, and
+    a line that begins with a card's label whatever follows it are kept in the note, in its
+    paragraph, and mark its block suspect. The block keeps the school day its heading was
+    read under."""
     assert blocks(NOTE_HEAD + line + "\nMore words\n") == [
         ("Science", NOTE_DAY, (f"Lab notes\n{line}\nMore words",), 3, (3, 4, 5, 6), True)
+    ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Poster assigned today, due Friday.",
+        "Assigned by: Ms. Lee",
+        "Assigned to: Wren",
+        "Due date: Friday",
+        "assigned: poster",
+        "Poster Assigned: today",
+    ],
+)
+def test_a_line_without_a_card_s_label_and_colon_at_its_start_is_not_shaped_as_a_card(
+    line: str,
+) -> None:
+    """A sentence that holds the words assigned and due, a label followed by another word
+    before its colon, a label in lower case, and a label after other words are a teacher's
+    words: none is shaped as a card, and a note holding one is not suspect."""
+    assert not is_shaped_as_structure(line)
+    assert blocks(NOTE_HEAD + line + "\n") == [
+        ("Science", NOTE_DAY, (f"Lab notes\n{line}",), 3, (3, 4, 5), False)
     ]
 
 

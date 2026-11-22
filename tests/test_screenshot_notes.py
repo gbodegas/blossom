@@ -225,6 +225,8 @@ SHAPED = [
     pytest.param(
         None, f"{STUDY}\nOn Tue, Nov 17, 2026 at 9:14 AM The School wrote:", id="a-mail-date"
     ),
+    pytest.param(None, "Assigned: Poster: (Due:TBD)", id="a-card-s-label-in-the-instruction"),
+    pytest.param("Assigned: Poster: (Due:TBD)", None, id="a-card-s-label-in-the-title"),
 ]
 """A note card's title and instruction, a line of one shaped as a day, a Missing line, a card
 or a mail program's date line."""

@@ -220,6 +220,8 @@ ASSIGNED_LINE: Final = re.compile(
     r"^Assigned:\s*(?P<title>.+):\s*\(Due:\s*(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\)\s*$"
 )
 DUE_LINE: Final = re.compile(r"^Due:\s*(?P<title>.*?):?\s*$")
+CARD_LABEL_LINE: Final = re.compile(r"^(?:Assigned|Due)\s*:")
+"""A card's label at the start of a line, whatever follows it."""
 LOOKS_STRUCTURAL: Final = re.compile(
     r"^(?:(?:[-*•]\s*)?\d{1,2}/\d{1,2}/\d{2,4}\b|(?:.+?\s+-\s+)?(?:Assigned|Due)\s*:|.*\(Due\s*:)",
     re.IGNORECASE,
@@ -975,7 +977,8 @@ def _names_a_day(line: str | None) -> bool:
 def _is_shaped_as_structure(line: str) -> bool:
     """Whether a line is written as a day in either shape, as a Missing line, as a card, with
     its course on its line or with none, or as a mail program's date line, whatever it reads
-    as."""
+    as. A line that begins with a card's label and its colon is written as a card whatever
+    follows the colon: a due date that cannot be read, other words, or nothing."""
     return (
         _is_a_day(line)
         or mail_date(line) is not None
@@ -984,6 +987,7 @@ def _is_shaped_as_structure(line: str) -> bool:
             or CARD_LINE.match(line)
             or ASSIGNED_LINE.match(line)
             or DUE_LINE.match(line)
+            or CARD_LABEL_LINE.match(line)
         )
     )
 
