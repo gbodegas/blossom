@@ -109,7 +109,7 @@ from blossom.screenshot_save import (
     SaveOutcome,
     SavePress,
     canonical,
-    confirm_subject,
+    confirm_posted,
     correction_text,
     fold_reads,
     read_digest,
@@ -1157,7 +1157,7 @@ def choices_unlike(post: ReviewPost, rows: RowsShown, no_date_read: Collection[s
         if field.startswith("none:"):
             subject = field.removeprefix("none:")
             key = str(json.loads(subject)[0])
-            heading = ("confirm", confirm_subject(key.removeprefix("date:"), "heading"))
+            heading = heading_asked(post, key)
             confirmation = posted.get(answer_field(*heading))
             return not (
                 confirmation is not None
@@ -5067,6 +5067,14 @@ def tick_unlike_progress(snapshot: DraftSnapshot, typed: Corrections, kept: Corr
     )
 
 
+def heading_asked(post: ReviewPost, key: str) -> tuple[str, str]:
+    """The day heading's confirmation of the piece a dates key names, by kind and subject,
+    under the subject the post's page asked it by (``confirm_posted``): the one that names
+    selected joined notes where the post holds one, else the piece's own."""
+    subjects = (answer.subject for answer in post.answers if answer.kind == "confirm")
+    return "confirm", confirm_posted(subjects, key.removeprefix("date:"), "heading")
+
+
 def tick_beyond_progress(
     snapshot: DraftSnapshot,
     post: ReviewPost,
@@ -5084,7 +5092,7 @@ def tick_beyond_progress(
     readable = text is None or progress_read(text) is not None
 
     def confirmed(key: str) -> bool:
-        asked = ("confirm", confirm_subject(key.removeprefix("date:"), "heading"))
+        asked = heading_asked(post, key)
         return (
             readable
             and held is not None
@@ -5182,7 +5190,7 @@ def shape_three_for_its_piece(
     return {
         key: converted.get(key, {})
         for key in no_date_keys(post)
-        if ("confirm", confirm_subject(key.removeprefix("date:"), "heading")) in posted
+        if heading_asked(post, key) in posted
         and post.corrections.get(key, {}).get("assigned", "") is not None
     }
 

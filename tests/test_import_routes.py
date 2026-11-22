@@ -47855,6 +47855,590 @@ def test_a_joined_note_whose_title_is_marked_uncertain_needs_it_confirmed_once_s
         assert words == []
 
 
+NOTE_UNSURE: Final = "The reader wasn't sure of the {named} in this teacher's note."
+"""The legend of a question a selected joined note brought, its field named as the page names
+it in a card's own question."""
+OWN_UNSURE: Final = "The reader wasn't sure of the {named}."
+"""The legend of a card's own question about a field."""
+BOTH_UNSURE: Final = f"{OWN_UNSURE} {NOTE_UNSURE}"
+"""The one legend of a field both the card and its selected joined note mark."""
+HEARD_OF_THE_CARD: Final = " for {title} (screenshot 1, card 1)"
+"""The words only a screen reader hears after a question's legend, naming the essay card."""
+HEARD_OF_THE_NOTE: Final = HEARD_OF_THE_CARD + " and the teacher's note in screenshot 2, card 1"
+"""Those words on a question the selected joined note brought: the card, then the note's place."""
+CORRECT_IT: Final = "or correct it under"
+"""How the pointer under a card's own question begins, before "Correct what was read"."""
+FIELD_TO_ANSWER: Final = "Still to answer: a field the reader wasn't sure of."
+"""The page's line on a group with an unsure field neither confirmed nor answered."""
+SAINT_TITLE: Final = "Short essay on a saint"
+"""A title typed for the essay card."""
+JOINED_SAYS: Final = f"The teacher's note for October 5 also says: {ESSAY_NOTE}"
+"""The legend over the joined note's tick, holding the note's words."""
+BOTH_CLAIMS: Final = {("2026-10-07", intake.TEACHER_NOTE), ("2026-10-09", intake.OWN_LINE)}
+"""The essay's date claims saved with its note: the note's Wednesday and the card's Friday."""
+
+
+def confirm_asked(page: str) -> list[tuple[str, bool, bool]]:
+    """Each "Confirm as read" question on the review form, in page order: its legend without
+    the words only a screen reader hears, whether its box is ticked, and whether it points to
+    "Correct what was read"."""
+    found = []
+    for chunk in review_form(page).split("<fieldset")[1:]:
+        asked = chunk.split("</fieldset>", 1)[0]
+        if 'name="answer:confirm:' not in asked:
+            continue
+        legend = re.search(r"<legend>(.*?)(?:<span|</legend>)", asked, re.S)
+        assert legend is not None, asked
+        said = html.unescape(legend.group(1)).strip()
+        found.append((said, " checked" in asked, CORRECT_IT in asked))
+    return found
+
+
+def confirm_heard(page: str) -> list[str]:
+    """The words only a screen reader hears after the legend of each "Confirm as read"
+    question on the review form, in page order."""
+    found = []
+    for chunk in review_form(page).split("<fieldset")[1:]:
+        asked = chunk.split("</fieldset>", 1)[0]
+        if 'name="answer:confirm:' not in asked:
+            continue
+        heard = re.search(r'<span class="visually-hidden">(.*?)</span></legend>', asked, re.S)
+        found.append("" if heard is None else html.unescape(heard.group(1)))
+    return found
+
+
+def confirms_carried(page: str) -> list[str]:
+    """The subject of each confirmation the review form carries hidden, as read: the card's
+    own, given with no marking note ticked, beside a question that names the notes."""
+    found = re.findall(
+        r'<input type="hidden" name="answer:confirm:([^"]+)" value="as_read">', review_form(page)
+    )
+    return [html.unescape(subject) for subject in found]
+
+
+def offers_save(page: str) -> bool:
+    """Whether the review form offers its Save press."""
+    return 'name="press" value="save"' in review_form(page)
+
+
+def without_the_note(page: str, press: str) -> import_review_cases.RawPost:
+    """This page's post with the joined note's tick, shown ticked, taken off, every group
+    ticked: the one change stated."""
+    post = page_post(page, press, tick=units_on(page))
+    return import_review_cases.raw_post(post, removed=[joined_field(page)])
+
+
+def essay_with_marks(
+    browser: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    note_marks: Sequence[str] = ("title",),
+    card_marks: Sequence[str] = (),
+    *,
+    unsure_days: bool = False,
+    due_card: bool = False,
+) -> tuple[str, str]:
+    """The essay card in one screenshot and its note in another, both naming Wren, her name
+    answered; the note's fields in ``note_marks`` and the card's in ``card_marks`` marked
+    uncertain. With ``unsure_days``, the day heading of each screenshot is marked uncertain
+    too. With ``due_card``, the card is a DUE card with no due line, due on the day it is
+    listed under, with no assigned date. The review's id and its page."""
+    card, note = essay_and_note_apart({"name": "Wren", "uncertain": None}, note_marks)
+    cards = card["cards"]
+    assert isinstance(cards, list)
+    if due_card:
+        cards[0] = {**cards[0], "badge": "DUE", "footer": None}
+    cards[0]["uncertain"] = [{"field": field, "reason": "faint"} for field in card_marks]
+    for answer in (card, note) if unsure_days else ():
+        headings = answer["headings"]
+        assert isinstance(headings, list)
+        headings[0]["uncertain"] = "faint"
+    draft_id, page = read_review(browser, monkeypatch, (RED, card), (BLUE, note))
+    return draft_id, her_name_answered(browser, draft_id, page)
+
+
+def card_opened_and_title_reviewed(browser: TestClient, draft_id: str, page: str) -> str:
+    """The page after the family presses "Correct what was read" on the essay card
+    (``opened_for_typing``), types ``SAINT_TITLE`` in its Title box and presses Review changes,
+    which answers 200; every control as that page shows it."""
+    box = f"correct:{box_subject(page, 'title')}"
+    opened = opened_for_typing(browser, draft_id, page, {box: SAINT_TITLE})
+    answer = send(
+        browser,
+        draft_id,
+        page_post(opened, "review", typed={box: SAINT_TITLE}, tick=units_on(opened)),
+    )
+    assert answer.status_code == 200, answer.text
+    return answer.text
+
+
+def confirm_ticked_and_reviewed(browser: TestClient, draft_id: str, page: str) -> str:
+    """The page after the family ticks the one "Confirm as read" box this page shows and
+    presses Review changes, which answers 200."""
+    [box] = re.findall(r'<input type="checkbox" name="(answer:confirm:[^"]+)"', review_form(page))
+    confirm = {html.unescape(box): "as_read"}
+    answer = send(browser, draft_id, page_post(page, "review", choose=confirm, tick=units_on(page)))
+    assert answer.status_code == 200, answer.text
+    return answer.text
+
+
+@pytest.mark.parametrize(
+    ("card_marks", "worded"),
+    [
+        pytest.param((), NOTE_UNSURE, id="the-note-alone-marks-its-title"),
+        pytest.param(("title",), BOTH_UNSURE, id="the-card-marks-its-title-too"),
+    ],
+)
+def test_a_title_typed_for_the_card_leaves_its_selected_joined_notes_question_to_answer(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    card_marks: tuple[str, ...],
+    worded: str,
+) -> None:
+    """The joined note's title marked uncertain and the note ticked from the start; the card
+    read with no doubt, or its own title marked too. Save writes nothing, and the page asks
+    one question that names the title in the teacher's note, after the card's own sentence
+    where the card marks it too: "Confirm as read" after the note's words and its tick, with
+    no pointer to "Correct what was read", its hidden words naming the card and the note's
+    place. A title typed for the card and reviewed leaves that question to answer: Save is
+    not offered, nothing is written, and a Save sent anyway as a raw POST writes nothing. One
+    "Confirm as read" ticked and reviewed answers it, and one Save writes one row under the
+    typed title, due on the card's date, with the note's words once and the card's and the
+    note's date claims once each."""
+    legend = worded.format(named="title")
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = essay_with_marks(browser, monkeypatch, card_marks=card_marks)
+        choose = {joined_field(page): "1"}
+        first = send(browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page)))
+        asked = followed(browser, first)
+        refused = essay_counts(browser)
+        corrected = card_opened_and_title_reviewed(browser, draft_id, asked)
+        after_title = essay_counts(browser)
+        save_post = page_post(corrected, "save", tick=units_on(corrected))
+        anyway = followed(
+            browser, send(browser, draft_id, import_review_cases.unoffered(save_post))
+        )
+        after_raw_save = essay_counts(browser)
+        confirmed = confirm_ticked_and_reviewed(browser, draft_id, anyway)
+        before_save = essay_counts(browser)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(confirmed, "save", tick=units_on(confirmed)))
+        )
+        counts = essay_counts(browser)
+        row, claims, words = essay_row(browser)
+
+    shown = html.unescape(review_form(asked))
+    assert refused == (0, 0, 0)
+    assert confirm_asked(asked) == [(legend, False, False)]
+    assert confirm_heard(asked) == [HEARD_OF_THE_NOTE.format(title="Short essay")]
+    assert shown.index(JOINED_SAYS) < shown.index("Add this note to the assignment")
+    assert shown.index("Add this note to the assignment") < shown.index(legend)
+    assert CORRECT_IT not in html.unescape(asked)
+    assert JOINED_TICK.findall(review_form(asked)) == [" checked"]
+    assert confirm_asked(corrected) == [(legend, False, False)]
+    assert confirm_heard(corrected) == [HEARD_OF_THE_NOTE.format(title=SAINT_TITLE)]
+    assert says(corrected, FIELD_TO_ANSWER)
+    assert says(corrected, SAINT_TITLE)
+    assert JOINED_TICK.findall(review_form(corrected)) == [" checked"]
+    assert import_review_cases.offers_review_changes(corrected)
+    assert after_title == (0, 0, 0)
+    assert says(anyway, imports.NOT_SAVED_BECAUSE["open"])
+    assert confirm_asked(anyway) == [(legend, False, False)]
+    assert after_raw_save == (0, 0, 0)
+    assert confirm_asked(confirmed) == [(legend, True, False)]
+    assert not says(confirmed, FIELD_TO_ANSWER)
+    assert offers_save(confirmed)
+    assert before_save == (0, 0, 0)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert counts == (1, 2, 1)
+    assert (row.title, row.due_date) == (SAINT_TITLE, date(2026, 10, 9))
+    assert claims == BOTH_CLAIMS
+    assert words == [ESSAY_NOTE]
+
+
+def test_a_title_typed_for_the_card_saves_it_alone_with_its_unsure_joined_note_unticked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The joined note's title marked uncertain and the note left unticked: the page asks
+    nothing of it, and a title typed for the card, reviewed and saved, writes the card alone
+    under that title, with no words of the note and no claim from it."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = essay_with_marks(browser, monkeypatch)
+        corrected = card_opened_and_title_reviewed(browser, draft_id, page)
+        between = essay_counts(browser)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(corrected, "save", tick=units_on(corrected)))
+        )
+        counts = essay_counts(browser)
+        row, claims, words = essay_row(browser)
+
+    assert confirm_asked(page) == []
+    assert confirm_asked(corrected) == []
+    assert JOINED_TICK.findall(review_form(corrected)) == [""]
+    assert offers_save(corrected)
+    assert between == (0, 0, 0)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert counts == (1, 1, 0)
+    assert (row.title, row.due_date) == (SAINT_TITLE, date(2026, 10, 9))
+    assert claims == {("2026-10-09", intake.OWN_LINE)}
+    assert words == []
+
+
+@pytest.mark.parametrize("field", ["title", "instruction"])
+def test_a_selected_joined_note_confirmed_as_read_on_the_page_saves_once_with_the_note(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    """The joined note's title, or its instructions, marked uncertain and the note ticked,
+    with nothing typed. Save writes nothing and the page asks one question. "Confirm as read"
+    ticked and reviewed, one Save writes the card under its title as read, due on its own
+    date, with the note's words once and both date claims once each."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = essay_with_marks(browser, monkeypatch, note_marks=(field,))
+        choose = {joined_field(page): "1"}
+        first = send(browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page)))
+        asked = followed(browser, first)
+        refused = essay_counts(browser)
+        confirmed = confirm_ticked_and_reviewed(browser, draft_id, asked)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(confirmed, "save", tick=units_on(confirmed)))
+        )
+        counts = essay_counts(browser)
+        row, claims, words = essay_row(browser)
+
+    assert first.status_code == 409
+    assert refused == (0, 0, 0)
+    assert [ticked for _, ticked, _ in confirm_asked(asked)] == [False]
+    assert says(asked, FIELD_TO_ANSWER)
+    assert [ticked for _, ticked, _ in confirm_asked(confirmed)] == [True]
+    assert not says(confirmed, FIELD_TO_ANSWER)
+    assert offers_save(confirmed)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert counts == (1, 2, 1)
+    assert (row.title, row.due_date) == ("Short essay", date(2026, 10, 9))
+    assert claims == BOTH_CLAIMS
+    assert words == [ESSAY_NOTE]
+
+
+def test_a_selected_joined_notes_question_names_the_field_the_reader_marked_on_the_note(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The joined note's instructions marked uncertain and the note ticked: the question
+    names the instructions in the teacher's note, as the page names that field in a card's
+    own question, and points to no box of "Correct what was read"."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = essay_with_marks(browser, monkeypatch, note_marks=("instruction",))
+        choose = {joined_field(page): "1"}
+        asked = followed(
+            browser,
+            send(browser, draft_id, page_post(page, "save", choose=choose, tick=units_on(page))),
+        )
+
+    assert confirm_asked(asked) == [(NOTE_UNSURE.format(named="instructions"), False, False)]
+    assert CORRECT_IT not in html.unescape(asked)
+
+
+def test_a_cards_own_unsure_title_keeps_its_question_and_a_typed_title_answers_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The card's own title marked uncertain, its joined note read with no doubt and left
+    unticked: the question names the title alone and points to "Correct what was read". A
+    title typed for the card and reviewed answers it, and the Save then offered writes the
+    card alone under that title."""
+    legend = OWN_UNSURE.format(named="title")
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = essay_with_marks(
+            browser, monkeypatch, note_marks=(), card_marks=("title",)
+        )
+        corrected = card_opened_and_title_reviewed(browser, draft_id, page)
+        between = essay_counts(browser)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(corrected, "save", tick=units_on(corrected)))
+        )
+        counts = essay_counts(browser)
+        row, claims, words = essay_row(browser)
+
+    assert confirm_asked(page) == [(legend, False, True)]
+    assert confirm_heard(page) == [HEARD_OF_THE_CARD.format(title="Short essay")]
+    assert says(page, FIELD_TO_ANSWER)
+    assert import_review_cases.offers_review_changes(page)
+    assert confirm_asked(corrected) == [(legend, False, True)]
+    assert confirm_heard(corrected) == [HEARD_OF_THE_CARD.format(title=SAINT_TITLE)]
+    assert not says(corrected, FIELD_TO_ANSWER)
+    assert offers_save(corrected)
+    assert JOINED_TICK.findall(review_form(corrected)) == [""]
+    assert between == (0, 0, 0)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert counts == (1, 1, 0)
+    assert (row.title, row.due_date) == (SAINT_TITLE, date(2026, 10, 9))
+    assert claims == {("2026-10-09", intake.OWN_LINE)}
+    assert words == []
+
+
+def card_confirmed_then_note_ticked(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, due_card: bool | None = None
+) -> tuple[str, str, str, str]:
+    """One field marked uncertain on the card and on its joined note: their titles, or, where
+    ``due_card`` is given, the day heading each was read under, which is the due date of a
+    DUE card with no due line and the assigned date of the ASSIGNED card. In this order: the
+    note unticked, "Confirm as read" ticked for the card and reviewed; then the note ticked
+    and reviewed, which answers 200. The review's id and the three pages in turn."""
+    if due_card is None:
+        draft_id, page = essay_with_marks(browser, monkeypatch, card_marks=("title",))
+    else:
+        draft_id, page = essay_with_marks(
+            browser, monkeypatch, note_marks=(), unsure_days=True, due_card=due_card
+        )
+    confirmed = confirm_ticked_and_reviewed(browser, draft_id, page)
+    choose = {joined_field(confirmed): "1"}
+    answer = send(
+        browser, draft_id, page_post(confirmed, "review", choose=choose, tick=units_on(confirmed))
+    )
+    assert answer.status_code == 200, answer.text
+    return draft_id, page, confirmed, answer.text
+
+
+def test_the_card_confirmed_then_its_unsure_joined_note_ticked_asks_of_the_note_before_any_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The card's title and its joined note's title both marked uncertain, in this order. The
+    note unticked, "Confirm as read" ticked for the card and reviewed: the card's own
+    question shows answered and Save is offered. The note then ticked and reviewed: the one
+    question names both sources, its box unticked, the group has a field to answer, Save is
+    not offered and nothing is written; a Save sent anyway as a raw POST writes nothing.
+    "Confirm as read" ticked and reviewed, one Save writes one row under the title as read,
+    due on the card's date, with the note's words once and the card's and the note's date
+    claims once each."""
+    own = OWN_UNSURE.format(named="title")
+    both = BOTH_UNSURE.format(named="title")
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, confirmed, held = card_confirmed_then_note_ticked(browser, monkeypatch)
+        after_tick = essay_counts(browser)
+        save_post = page_post(held, "save", tick=units_on(held))
+        anyway = followed(
+            browser, send(browser, draft_id, import_review_cases.unoffered(save_post))
+        )
+        after_raw_save = essay_counts(browser)
+        answered = confirm_ticked_and_reviewed(browser, draft_id, anyway)
+        before_save = essay_counts(browser)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(answered, "save", tick=units_on(answered)))
+        )
+        counts = essay_counts(browser)
+        row, claims, words = essay_row(browser)
+
+    assert confirm_asked(page) == [(own, False, True)]
+    assert confirm_heard(page) == [HEARD_OF_THE_CARD.format(title="Short essay")]
+    assert confirm_asked(confirmed) == [(own, True, True)]
+    assert JOINED_TICK.findall(review_form(confirmed)) == [""]
+    assert not says(confirmed, FIELD_TO_ANSWER)
+    assert offers_save(confirmed)
+    assert JOINED_TICK.findall(review_form(held)) == [" checked"]
+    assert confirm_asked(held) == [(both, False, False)]
+    assert confirm_heard(held) == [HEARD_OF_THE_NOTE.format(title="Short essay")]
+    assert [len(json.loads(subject)) for subject in confirms_carried(held)] == [2]
+    assert confirms_carried(confirmed) == []
+    assert says(held, FIELD_TO_ANSWER)
+    assert import_review_cases.offers_review_changes(held)
+    assert after_tick == (0, 0, 0)
+    assert says(anyway, imports.NOT_SAVED_BECAUSE["open"])
+    assert confirm_asked(anyway) == [(both, False, False)]
+    assert after_raw_save == (0, 0, 0)
+    assert confirm_asked(answered) == [(both, True, False)]
+    assert not says(answered, FIELD_TO_ANSWER)
+    assert offers_save(answered)
+    assert before_save == (0, 0, 0)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert counts == (1, 2, 1)
+    assert (row.title, row.due_date) == ("Short essay", date(2026, 10, 9))
+    assert claims == BOTH_CLAIMS
+    assert words == [ESSAY_NOTE]
+
+
+def essay_saved(
+    browser: TestClient,
+) -> tuple[date | None, date | None, list[tuple[str, str, str | None]], list[str]]:
+    """What the record holds of the saved essay: its due date, its assigned date, every
+    due-date claim (its channel, its date and where it was seen), sorted, and the words of
+    its school instructions."""
+    record = state_of(browser).project_state
+    [row] = [a for a in record.all_assignments() if a.course == "Religion 8"]
+    claims = sorted(
+        (c.channel.name, c.asserted_value, c.seen_in)
+        for c in record.deadline_records(row.assignment_id)
+    )
+    found = record.school_instruction_readings([row.assignment_id]).readable.get(row.assignment_id)
+    words = [] if found is None else [each.text for each in found.kept]
+    return row.due_date, row.assigned_on, claims, words
+
+
+NOTE_CLAIM: Final = ("LMS", "2026-10-07", intake.TEACHER_NOTE)
+"""The date claim the essay's note adds: the school's, Wednesday, seen in the teacher's note."""
+DATE_FIELDS_BOTH_MARK: Final = [
+    pytest.param(
+        True,
+        "due date",
+        date(2026, 10, 5),
+        None,
+        ("LMS", "2026-10-05", intake.DAY_HEADER),
+        id="due",
+    ),
+    pytest.param(
+        False,
+        "assigned date (day heading)",
+        date(2026, 10, 9),
+        date(2026, 10, 5),
+        ("LMS", "2026-10-09", intake.OWN_LINE),
+        id="assigned",
+    ),
+]
+"""The two date fields a day heading marked uncertain is asked as: whether the card is the
+DUE card with no due line, the page's name of the field, the due date and the assigned date
+the card saves with, and the card's own date claim."""
+
+
+@pytest.mark.parametrize(
+    ("due_card", "named", "due", "assigned", "own_claim"), DATE_FIELDS_BOTH_MARK
+)
+def test_the_cards_date_confirmed_then_its_note_under_an_unsure_day_ticked_asks_before_any_save(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    due_card: bool,
+    named: str,
+    due: date,
+    assigned: date | None,
+    own_claim: tuple[str, str, str],
+) -> None:
+    """The card and its joined note each read under a day heading marked uncertain: the due
+    date of a DUE card with no due line, the assigned date of the ASSIGNED card. In this
+    order. The note unticked, "Confirm as read" ticked for the card's date and reviewed: its
+    own question shows answered and Save is offered. The note then ticked and reviewed: the
+    one question names both sources, its box unticked, the group has a field to answer, Save
+    is not offered and nothing is written; a Save sent anyway as a raw POST writes nothing.
+    "Confirm as read" ticked and reviewed, one Save writes one row with the card's due date
+    and assigned date, the note's words once, and the card's and the note's date claims, each
+    the school's, once."""
+    own = OWN_UNSURE.format(named=named)
+    both = BOTH_UNSURE.format(named=named)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page, confirmed, held = card_confirmed_then_note_ticked(
+            browser, monkeypatch, due_card
+        )
+        after_tick = essay_counts(browser)
+        save_post = page_post(held, "save", tick=units_on(held))
+        anyway = followed(
+            browser, send(browser, draft_id, import_review_cases.unoffered(save_post))
+        )
+        after_raw_save = essay_counts(browser)
+        answered = confirm_ticked_and_reviewed(browser, draft_id, anyway)
+        before_save = essay_counts(browser)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(answered, "save", tick=units_on(answered)))
+        )
+        counts = essay_counts(browser)
+        recorded = essay_saved(browser)
+
+    assert confirm_asked(page) == [(own, False, True)]
+    assert confirm_asked(confirmed) == [(own, True, True)]
+    assert not says(confirmed, FIELD_TO_ANSWER)
+    assert offers_save(confirmed)
+    assert JOINED_TICK.findall(review_form(held)) == [" checked"]
+    assert confirm_asked(held) == [(both, False, False)]
+    assert confirm_heard(held) == [HEARD_OF_THE_NOTE.format(title="Short essay")]
+    assert says(held, FIELD_TO_ANSWER)
+    assert import_review_cases.offers_review_changes(held)
+    assert after_tick == (0, 0, 0)
+    assert says(anyway, imports.NOT_SAVED_BECAUSE["open"])
+    assert confirm_asked(anyway) == [(both, False, False)]
+    assert after_raw_save == (0, 0, 0)
+    assert confirm_asked(answered) == [(both, True, False)]
+    assert not says(answered, FIELD_TO_ANSWER)
+    assert offers_save(answered)
+    assert before_save == (0, 0, 0)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert counts == (1, 2, 1)
+    assert recorded == (due, assigned, sorted([own_claim, NOTE_CLAIM]), [ESSAY_NOTE])
+
+
+@pytest.mark.parametrize(
+    ("due_card", "named", "due", "assigned", "own_claim"), DATE_FIELDS_BOTH_MARK
+)
+def test_the_note_unticked_from_the_held_state_lets_the_card_save_alone_with_its_date_as_confirmed(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    due_card: bool,
+    named: str,
+    due: date,
+    assigned: date | None,
+    own_claim: tuple[str, str, str],
+) -> None:
+    """The card's date confirmed, then its joined note, read under an unsure day heading
+    too, ticked, so the group is held. The note's tick taken off and reviewed: the card's own
+    question shows answered by the confirmation given first, Save is offered, and it writes
+    the card alone with its due date and assigned date and its own date claim, with no words
+    of the note and no claim from it."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, _, held = card_confirmed_then_note_ticked(browser, monkeypatch, due_card)
+        answer = send(browser, draft_id, without_the_note(held, "review"))
+        alone = followed(browser, answer)
+        between = essay_counts(browser)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(alone, "save", tick=units_on(alone)))
+        )
+        counts = essay_counts(browser)
+        recorded = essay_saved(browser)
+
+    assert confirm_asked(held) == [(BOTH_UNSURE.format(named=named), False, False)]
+    assert answer.status_code == 200
+    assert JOINED_TICK.findall(review_form(alone)) == [""]
+    assert confirm_asked(alone) == [(OWN_UNSURE.format(named=named), True, True)]
+    assert not says(alone, FIELD_TO_ANSWER)
+    assert offers_save(alone)
+    assert between == (0, 0, 0)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert counts == (1, 1, 0)
+    assert recorded == (due, assigned, [own_claim], [])
+
+
+@pytest.mark.parametrize("typed", [False, True], ids=["as-read", "a-title-typed"])
+def test_the_note_unticked_from_the_held_state_lets_the_confirmed_card_save_alone(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, typed: bool
+) -> None:
+    """The card confirmed, then its unsure joined note ticked, so the group is held; with or
+    without a title then typed for the card, which leaves the note's question to answer. The
+    note's tick taken off and reviewed: the card's own question shows answered by the
+    confirmation given first, Save is offered, and it writes the card alone, under the typed
+    title where one was typed, with no words of the note and no claim from it."""
+    own = OWN_UNSURE.format(named="title")
+    both = BOTH_UNSURE.format(named="title")
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, _, held = card_confirmed_then_note_ticked(browser, monkeypatch)
+        if typed:
+            held = card_opened_and_title_reviewed(browser, draft_id, held)
+        answer = send(browser, draft_id, without_the_note(held, "review"))
+        alone = followed(browser, answer)
+        between = essay_counts(browser)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(alone, "save", tick=units_on(alone)))
+        )
+        counts = essay_counts(browser)
+        row, claims, words = essay_row(browser)
+
+    assert confirm_asked(held) == [(both, False, False)]
+    assert says(held, FIELD_TO_ANSWER)
+    assert import_review_cases.offers_review_changes(held)
+    assert answer.status_code == 200
+    assert JOINED_TICK.findall(review_form(alone)) == [""]
+    assert confirm_asked(alone) == [(own, True, True)]
+    assert not says(alone, FIELD_TO_ANSWER)
+    assert offers_save(alone)
+    assert between == (0, 0, 0)
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert counts == (1, 1, 0)
+    assert row.title == (SAINT_TITLE if typed else "Short essay")
+    assert row.due_date == date(2026, 10, 9)
+    assert claims == {("2026-10-09", intake.OWN_LINE)}
+    assert words == []
+
+
 def test_a_saved_joined_note_on_the_familys_dated_row_starts_selected_and_adds_nothing(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

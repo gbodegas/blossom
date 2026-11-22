@@ -62,11 +62,14 @@ from blossom.screenshot_review import (
 from blossom.screenshot_save import (
     PIECE_FIELDS,
     ReviewState,
+    asked_as,
     confirm_fields,
     confirm_of,
     confirm_owner,
+    confirm_subject,
     fold_answers,
     instruction_subject,
+    noting,
     own_carried,
     own_wordless,
     read_digest,
@@ -134,6 +137,8 @@ SAID: Final = {
     "again.",
     "where": "Where it goes",
     "unsure": "The reader wasn't sure of the {named}.",
+    "unsure_note": "The reader wasn't sure of the {named} in this teacher's note.",
+    "note_place": " and the teacher's note in {place}",
     "correct_it": "or correct it under",
     "fold": "Correct what was read",
     "said_fold": "What the screenshot said",
@@ -506,15 +511,22 @@ def confirm_question(
 ) -> "Question":
     """Confirm as read, for a field the reader wasn't sure of, pointing to the box of "Correct
     what was read" that corrects it (``fold``, its fold's summary's id), except for the due or
-    assigned label, which is confirmed only."""
+    assigned label, which is confirmed only. A field a selected joined note of the piece
+    marks (``noting``) is asked of the teacher's note, after the card's own sentence where a
+    card of the piece marks it too, and points to no box, since no correction answers it."""
     subject = confirm_of(piece, field)
     legend = SAID["unsure"].format(named=FIELD_NAMES[field])
+    noted = bool(noting(piece, field))
+    if noted:
+        in_note = SAID["unsure_note"].format(named=FIELD_NAMES[field])
+        beside = field in asked_as(piece, piece.own_uncertain)
+        legend = f"{legend} {in_note}" if beside else in_note
     options = (("as_read", SAID["confirm"], values.get(("confirm", subject)) == "as_read"),)
     return Question(
         answer_field("confirm", subject),
         legend,
         options,
-        fold="" if field == "badge" else fold,
+        fold="" if noted or field == "badge" else fold,
     )
 
 
@@ -984,7 +996,9 @@ class Question:
     """Whether one of its options must be chosen before the form is sent."""
     marks: tuple[tuple[str, str], ...] = ()
     """Hidden fields it carries, by name and value: a joined note's tick sent twice with
-    different answers carries the values sent (``UNRESOLVED``) until it is answered."""
+    different answers carries the values sent (``UNRESOLVED``) until it is answered; a
+    question that names selected joined notes carries the card's own confirmation of the
+    field, given with none of them ticked."""
 
 
 UNRESOLVED: Final = "unresolved:"
@@ -1969,16 +1983,18 @@ def rows_shown(
     first_of_row: dict[str, str] = {}
     for piece in open_pieces:
         first_of_row.setdefault(piece.key, piece.name)
-    confirm_on: dict[tuple[str, str], str] = {}
-    asking: dict[tuple[str, str], list[Piece]] = {}
+    confirm_on: dict[tuple[str, str, str], str] = {}
+    asking: dict[tuple[str, str, str], list[Piece]] = {}
     for piece in open_pieces:
         for field in sorted(confirm_fields(piece)):
             # A date's question is its own piece's, on its card; any other field's is its
-            # row's, on the row's first open card.
+            # row's, on the row's first open card. One a selected joined note brought has a
+            # subject of its own (``confirm_of``) and is asked on the card the note joins.
             whose = confirm_owner(piece, field)
-            host = piece.name if field in PIECE_FIELDS else first_of_row[piece.key]
-            confirm_on.setdefault((whose, field), host)
-            asking.setdefault((whose, field), []).append(piece)
+            asked = (whose, field, confirm_of(piece, field))
+            apart = field in PIECE_FIELDS or bool(noting(piece, field))
+            confirm_on.setdefault(asked, piece.name if apart else first_of_row[piece.key])
+            asking.setdefault(asked, []).append(piece)
     previews = {e.dest: e for e in state.preview}
     digests = unit_digests(state)
     asks_where = frozenset(
@@ -2013,18 +2029,30 @@ def rows_shown(
                 )
             )
         checks += joined_questions(piece, values, about)
-        for (whose, field), host in confirm_on.items():
+        for (whose, field, subject), host in confirm_on.items():
             if host != piece.name:
                 continue
             fold = folds[host] if field in PIECE_FIELDS else folds[first_of_row[whose]]
-            # A row's question stands for every open piece unsure of that field, and a date's
-            # for its own piece, as "Still to answer" and the save read them.
-            askers = asking[(whose, field)]
+            # A row's question stands for every open piece unsure of that field under the
+            # same subject, and a date's for its own piece, as "Still to answer" and the save
+            # read them.
+            askers = asking[(whose, field, subject)]
+            notes = noting(askers[0], field)
+            # The card's own confirmation, given with no marking note ticked, travels hidden
+            # beside the question that names the notes, so it stands once they are unticked.
+            alone = ("confirm", confirm_subject(whose, field))
+            kept = bool(notes) and alone in values and (whose, field, alone[1]) not in confirm_on
             checks.append(
                 dataclasses.replace(
-                    confirm_question(piece, field, values, fold),
-                    about=about,
+                    confirm_question(askers[0], field, values, fold),
+                    about=about
+                    + "".join(
+                        SAID["note_place"].format(place=card_text(places, card))
+                        for note in notes
+                        for card in note.places
+                    ),
                     answered=all(fold_answers(p, field, corrections) for p in askers),
+                    marks=((answer_field(*alone), values[alone]),) if kept else (),
                 )
             )
         read = piece.as_read

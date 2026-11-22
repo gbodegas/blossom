@@ -6355,6 +6355,68 @@ def test_a_new_note_beside_saved_homework_is_saved_once_when_ticked_and_not_when
     assert '<span class="pill">Already saved</span>' in card(reread, title)
 
 
+NEW_NOTES_TO_TICK_THEN_REVIEW = (
+    "Some notes above can be saved as new assignments. Tick the ones you want, then press "
+    "Review changes."
+)
+"""The words of the Save panel where a note that is not ticked would be saved as a new
+assignment and a card's details are open, so that Review changes is the press offered."""
+TITLE_BOX = r'<input type="text" name="(title-\d+)"'
+"""A note card's title box, open for editing, with its name."""
+
+
+def test_the_save_panel_names_review_changes_for_new_notes_while_a_card_s_details_are_open(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The saved Short essay read again beside an unticked Poster. With no details open, the
+    panel says to tick the notes wanted, then save, beside "Save selected assignments". With
+    Edit details pressed on the Poster, its title box is open, Review changes is offered and
+    no Save, and the panel says to tick the notes wanted, then press Review changes, before
+    the same closing sentence. The Poster ticked there and Review changes pressed writes
+    nothing, keeps the tick, closes the details and offers Save; that Save adds the Poster
+    once, the Short essay's row as it was, and the same Save sent again adds nothing."""
+    with client_in(tmp_path) as client:
+        page = read_again_once_saved(client, POSTER_BESIDE_JOINED_ON_SAVED)
+        poster = key_of(page, "Poster")
+        editing = opened(client, page, poster)
+        before = saved_rows(client)
+        form = ticked_form(editing.text) | {f"take-{poster}": "1", "recheck": "1"}
+        reviewed = client.post("/parent/inbox/find", data=form)
+        after_review = saved_rows(client)
+        saved = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        rows = saved_rows(client)
+        again = client.post("/parent/inbox/keep", data=ticked_form(reviewed.text))
+        twice = saved_rows(client)
+
+    assert save_panel_line(page) == f"{NEW_NOTES_TO_TICK} {TYPE_CAN_CHANGE}"
+    assert SAVE_SELECTED in page
+    assert re.findall(TITLE_BOX, page) == []
+    assert editing.status_code == 200
+    assert re.findall(TITLE_BOX, editing.text) == [f"title-{poster}"]
+    assert re.findall(NOTE_TICK, card(editing.text, "Poster")) == [""]
+    assert SAVE_SELECTED not in editing.text
+    assert editing.text.count(REVIEW_CHANGES) == 1
+    assert save_panel_line(editing.text) == f"{NEW_NOTES_TO_TICK_THEN_REVIEW} {TYPE_CAN_CHANGE}"
+    assert reviewed.status_code == 200
+    assert after_review == before
+    assert re.findall(NOTE_TICK, card(reviewed.text, "Poster")) == [" checked"]
+    assert re.findall(TITLE_BOX, reviewed.text) == []
+    assert SAVE_SELECTED in reviewed.text
+    assert (
+        save_panel_line(reviewed.text)
+        == "Saving adds 1 and updates 0; the other 1 stay as they are."
+    )
+    assert saved.status_code == 303
+    assert saved.headers["location"].endswith("added=1&updated=0&unchanged=1")
+    assert [name for _, name, _ in before] == ["Short essay"]
+    assert [row for row in rows if row in before] == before
+    assert [(name, when) for _, name, when in rows if name != "Short essay"] == [
+        ("Poster", datetime.date(2026, 11, 5))
+    ]
+    assert again.status_code == 303
+    assert twice == rows
+
+
 @pytest.mark.parametrize(
     ("text", "said", "save"),
     [

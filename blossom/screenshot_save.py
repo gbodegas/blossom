@@ -94,6 +94,7 @@ from blossom.screenshot_review import (
 from blossom.screenshots import (
     CardPlace,
     HomeworkReading,
+    JoinedSource,
     PlacedCard,
     ScreenshotRow,
     cards_placed,
@@ -539,6 +540,20 @@ def confirm_fields(piece: Piece) -> frozenset[str]:
     return frozenset(fields)
 
 
+def asked_as(piece: Piece, marks: Collection[str]) -> frozenset[str]:
+    """These marks under the names the piece's questions ask them by, as ``confirm_fields``
+    names its uncertain fields: an unsure day heading is its due date or its assigned date."""
+    return confirm_fields(dataclasses.replace(piece, uncertain=frozenset(marks)))
+
+
+def noting(piece: Piece, field: str) -> tuple[JoinedSource, ...]:
+    """The piece's selected joined notes that mark this field, under the name its question
+    asks it by, in tag order. Where there is one, only "Confirm as read" answers the field,
+    under a subject that names them (``confirm_of``), and no correction does."""
+    marking = [source for source in piece.noted if field in asked_as(piece, source.marks)]
+    return tuple(sorted(marking, key=lambda source: source.tag))
+
+
 def fold_answers(piece: Piece, field: str, corrections: Corrections) -> bool:
     """Whether a correction Blossom can use answers an unsure field: the row's box for its
     class, title or instructions, and the piece's own box for its due date (``footer``) or
@@ -549,7 +564,10 @@ def fold_answers(piece: Piece, field: str, corrections: Corrections) -> bool:
     words typed in its own empty box; nothing typed for another card stands for it. Where no
     card of the piece is marked so, an instruction correction answers where it takes effect:
     for a text the row has, or for one of the row's cards read with no words. In saved
-    progress of shape 3, the field's own correction answers it."""
+    progress of shape 3, the field's own correction answers it. A field one of the piece's
+    selected joined notes marks (``noting``) is answered by no correction."""
+    if noting(piece, field):
+        return False
     row = corrections.get(piece.key, {})
     dates = corrections.get(dates_key(piece.name), {})
     if usable_correction(field, row.get(field)):
@@ -660,8 +678,32 @@ def confirm_owner(piece: Piece, field: str) -> str:
 
 
 def confirm_of(piece: Piece, field: str) -> str:
-    """The subject of the confirmation that answers a piece's unsure field."""
-    return confirm_subject(confirm_owner(piece, field), field)
+    """The subject of the confirmation that answers a piece's unsure field: its owner and the
+    field and, where selected joined notes of the piece mark the field (``noting``), their
+    tags in order as a third element. A confirmation given with other notes ticked, or with
+    none, is another subject's, so it answers nothing of these; with their ticks taken off,
+    the subject is the earlier one, whose answer stands."""
+    owner = confirm_owner(piece, field)
+    tags = sorted({source.tag for source in noting(piece, field)})
+    if not tags:
+        return confirm_subject(owner, field)
+    return json.dumps([owner, field, tags], separators=(",", ":"))
+
+
+def confirm_posted(subjects: Iterable[str], owner: str, field: str) -> str:
+    """The subject under which a post confirms this owner's field, among the subjects of the
+    confirmations it holds: the one that names joined notes where it holds one, as a page
+    that asks of them offers no other box for the field, else the owner's own
+    (``confirm_subject``), which is also given where the post holds neither."""
+    found = []
+    for subject in subjects:
+        try:
+            parts = json.loads(subject)
+        except ValueError:
+            continue
+        if isinstance(parts, list) and parts[:2] == [owner, field]:
+            found.append((len(parts), subject))
+    return max(found)[1] if found else confirm_subject(owner, field)
 
 
 def student_line(body: str) -> str | None:
@@ -1695,7 +1737,7 @@ def _correction_counts(
     placed = cards_placed(readings)
     rows: dict[str, Piece] = {}
     pieces: list[Piece] = []
-    unsure: dict[tuple[str, str], Piece] = {}
+    unsure: dict[tuple[str, str], set[str]] = {}
     for name in sorted(written):
         piece = state.by_name[name]
         if piece.key in taken:
@@ -1703,7 +1745,8 @@ def _correction_counts(
         rows.setdefault(piece.key, piece)
         pieces.append(piece)
         for field in sorted(confirm_fields(piece)):
-            unsure.setdefault((confirm_owner(piece, field), field), piece)
+            asked = unsure.setdefault((confirm_owner(piece, field), field), set())
+            asked.add(confirm_of(piece, field))
     corrected = 0
     fixed: set[tuple[str, str]] = set()
     boxes = [
@@ -1722,8 +1765,8 @@ def _correction_counts(
             fixed.add((key, CONFIRMED_BY.get(field, field.partition(":")[0])))
     confirmed = sum(
         1
-        for key, field in unsure
-        if (key, field) not in fixed and ("confirm", confirm_subject(key, field)) in answers
+        for (key, field), asked in unsure.items()
+        if (key, field) not in fixed and any(("confirm", subject) in answers for subject in asked)
     )
     return corrected, confirmed
 

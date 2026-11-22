@@ -8,11 +8,12 @@ note is not known. Every card here is made up, as a fake reader would return it.
 """
 
 import itertools
+import json
 from datetime import UTC, date, datetime
 
 import pytest
 
-from blossom import screenshot_page
+from blossom import screenshot_page, screenshot_save
 from blossom import screenshot_review as review
 from blossom.intake import TEACHER_NOTE, Reading
 from blossom.reconciliation import SourceChannel
@@ -1385,3 +1386,204 @@ def test_a_screenshot_note_s_rows_take_the_note_reader_s_titles_and_school_dates
         [] if number is None else [(SourceChannel.LMS, f"2026-11-{number}", TEACHER_NOTE)]
         for _, number in rows
     ]
+
+
+# ------------------------------------------------------------------ a joined note's own marks
+
+
+def faint(*fields: str) -> list[dict[str, str]]:
+    """These card fields marked uncertain, as the reader gives them."""
+    return [{"field": field, "reason": "faint"} for field in fields]
+
+
+def joined_piece(label: str, ticked: bool, *shots: dict[str, object]) -> Piece:
+    """The one piece these screenshots read as, with every joined note of its row ticked or
+    none."""
+    images = stored(label, *shots)
+    row = only_row(homework_assembly(images, now=NOW))
+    tags = {note_tag(task) for task in row.reading.joined_notes}
+    assert tags
+    joined = {(row.key, tag) for tag in tags} if ticked else set()
+    [piece], _, _ = review.pieces_from(images, {}, frozenset(), NOW, joined=joined)
+    return piece
+
+
+def marked_essay(*fields: str) -> dict[str, object]:
+    """The essay card with these fields marked uncertain."""
+    return {**essay(), "uncertain": faint(*fields)}
+
+
+def marked_note(*fields: str) -> dict[str, object]:
+    """The essay's note under its card, with these fields marked uncertain."""
+    return note("Religion 8", title=ESSAY_DUE, y_top=300, uncertain=faint(*fields))
+
+
+def test_a_piece_holds_its_selected_joined_notes_and_its_own_cards_marks() -> None:
+    """A card marked on its title, with a joined note marked on its title and its
+    instruction. Ticked, the piece holds the note as its row holds it (its tag, its marks and
+    its card's place) and the card's own marks apart, its uncertain fields taking both in;
+    unticked, it holds no note and its uncertain fields are the card's."""
+    answer = shot(marked_essay("title"), marked_note("title", "instruction"))
+    row = only_row(assembled("marks", answer))
+    ticked = joined_piece("marks", True, answer)
+    unticked = joined_piece("marks", False, answer)
+
+    assert ticked.noted == row.joined
+    assert [(source.marks, len(source.places)) for source in ticked.noted] == [
+        (frozenset({"title", "instruction"}), 1)
+    ]
+    assert ticked.own_uncertain == frozenset({"title"})
+    assert ticked.uncertain == frozenset({"title", "instruction"})
+    assert unticked.noted == ()
+    assert unticked.uncertain == frozenset({"title"})
+
+
+def test_no_correction_answers_a_field_a_selected_joined_note_brought() -> None:
+    """A title typed for the card answers the card's own unsure title, and answers nothing
+    of a title its selected joined note brought, whether or not the card marks its title
+    too."""
+    typed = "Short essay on a saint"
+    note_only = joined_piece("note", True, shot(essay(), marked_note("title")))
+    both = joined_piece("both", True, shot(marked_essay("title"), marked_note("title")))
+    card_only = joined_piece("card", True, shot(marked_essay("title"), marked_note()))
+    unticked = joined_piece("both", False, shot(marked_essay("title"), marked_note("title")))
+
+    assert [len(screenshot_save.noting(p, "title")) for p in (note_only, both)] == [1, 1]
+    assert [len(screenshot_save.noting(p, "title")) for p in (card_only, unticked)] == [0, 0]
+    assert not screenshot_save.fold_answers(note_only, "title", {note_only.key: {"title": typed}})
+    assert not screenshot_save.fold_answers(both, "title", {both.key: {"title": typed}})
+    assert screenshot_save.fold_answers(card_only, "title", {card_only.key: {"title": typed}})
+    assert screenshot_save.fold_answers(unticked, "title", {unticked.key: {"title": typed}})
+
+
+def test_a_confirmation_of_a_field_a_selected_joined_note_brought_has_a_subject_of_its_own() -> (
+    None
+):
+    """The confirmation of a title a selected joined note marks is kept under the row and
+    the field, then the tags of the selected notes that mark it: another subject than the
+    card's own, which a note left unticked, or a ticked note that marks no title, keeps."""
+    note_only = joined_piece("note", True, shot(essay(), marked_note("title")))
+    both = joined_piece("both", True, shot(marked_essay("title"), marked_note("title")))
+    card_only = joined_piece("card", True, shot(marked_essay("title"), marked_note()))
+    unticked = joined_piece("both", False, shot(marked_essay("title"), marked_note("title")))
+
+    for piece in (note_only, both):
+        tags = [source.tag for source in piece.noted]
+        subject = json.loads(screenshot_save.confirm_of(piece, "title"))
+        assert subject == [piece.key, "title", tags]
+        assert len(tags) == 1
+    for piece in (card_only, unticked):
+        assert json.loads(screenshot_save.confirm_of(piece, "title")) == [piece.key, "title"]
+    assert screenshot_save.confirm_of(both, "title") != screenshot_save.confirm_of(
+        unticked, "title"
+    )
+
+
+def test_a_joined_note_s_unsure_day_heading_is_found_under_the_name_its_question_asks() -> None:
+    """A card under a day heading read with no doubt, and its joined note in another
+    screenshot under the same day, that heading marked uncertain. The note's mark is its day
+    heading. Joined to a due card, the question asks the due date; joined to an assigned
+    card, the assigned date. Either names the teacher's note, a typed date does not answer
+    it, and its confirmation is kept under the piece, the field as asked and the note's
+    tag."""
+    unsure_day = homework_answer(
+        headings=[{"text": MONDAY, "y": 150, "uncertain": "faint"}],
+        cards=[note("Religion 8", title=ESSAY_DUE)],
+    )
+    due = joined_piece("day", True, shot(formal("Religion 8", "Short essay", 200)), unsure_day)
+    assigned = joined_piece("day", True, shot(essay()), unsure_day)
+    due_typed = {review.dates_key(due.name): {"due": "2026-11-18"}}
+    assigned_typed = {review.dates_key(assigned.name): {"assigned": "2026-11-17"}}
+    due_asked = screenshot_page.confirm_question(due, "footer", {}, "fix-1")
+    assigned_asked = screenshot_page.confirm_question(assigned, "heading", {}, "fix-1")
+
+    for piece, field, typed in ((due, "footer", due_typed), (assigned, "heading", assigned_typed)):
+        [source] = piece.noted
+        assert source.marks == frozenset({"heading"})
+        assert screenshot_save.confirm_fields(piece) == frozenset({field})
+        assert screenshot_save.noting(piece, field) == (source,)
+        assert not screenshot_save.fold_answers(piece, field, typed)
+        assert json.loads(screenshot_save.confirm_of(piece, field)) == [
+            piece.name,
+            field,
+            [source.tag],
+        ]
+    assert due_asked.legend == "The reader wasn't sure of the due date in this teacher's note."
+    assert assigned_asked.legend == (
+        "The reader wasn't sure of the assigned date (day heading) in this teacher's note."
+    )
+    assert (due_asked.fold, assigned_asked.fold) == ("", "")
+
+
+def test_on_a_split_row_only_the_piece_its_note_joins_takes_the_subject_that_names_the_note() -> (
+    None
+):
+    """A row answered "These are different assignments", its note listed on the Monday and
+    marked on its title, ticked: the Monday piece's title confirmation names the note, and
+    the Tuesday piece's is the row's own."""
+    row, pieces = split_practice(
+        shot(note("Math 8", title=PRACTICE_NOTE, uncertain=faint("title")))
+    )
+    by_day = {piece.reading.assigned_on: piece for piece in pieces if piece.reading is not None}
+    monday, tuesday = by_day[date(2026, 11, 16)], by_day[date(2026, 11, 17)]
+
+    assert [len(piece.noted) for piece in (monday, tuesday)] == [1, 0]
+    assert json.loads(screenshot_save.confirm_of(monday, "title")) == [
+        row.key,
+        "title",
+        [monday.noted[0].tag],
+    ]
+    assert json.loads(screenshot_save.confirm_of(tuesday, "title")) == [row.key, "title"]
+
+
+def test_a_posted_confirmation_is_read_under_the_subject_its_page_asked() -> None:
+    """Among the confirmations a post holds for one owner's field, the one that names joined
+    notes is the one its page asked; with none that names notes, the owner's own subject,
+    which is also given where the post holds no confirmation of the field."""
+    own = screenshot_save.confirm_subject("piece", "heading")
+    noted = json.dumps(["piece", "heading", ["a-tag"]], separators=(",", ":"))
+    other = screenshot_save.confirm_subject("piece", "footer")
+
+    assert screenshot_save.confirm_posted([own], "piece", "heading") == own
+    assert screenshot_save.confirm_posted([own, noted, other], "piece", "heading") == noted
+    assert screenshot_save.confirm_posted([noted], "piece", "heading") == noted
+    assert screenshot_save.confirm_posted([other, "no subject"], "piece", "heading") == own
+    assert screenshot_save.confirm_posted([], "piece", "heading") == own
+
+
+@pytest.mark.parametrize(
+    ("field", "named"),
+    [
+        ("course", "class"),
+        ("title", "title"),
+        ("instruction", "instructions"),
+        ("footer", "due date"),
+    ],
+)
+def test_a_note_brought_question_names_its_field_as_a_card_s_own_question_does(
+    field: str, named: str
+) -> None:
+    """The legend of a question a selected joined note brought names the field as a card's
+    own question names it, then the teacher's note, and points to no box. Where the card
+    marks the field too, the card's own sentence comes first in the one legend. The box is
+    the card's own question's, whose legend and pointer stand with the note unticked."""
+    answer = shot(essay(), marked_note(field))
+    beside = shot(marked_essay(field), marked_note(field))
+    noted = screenshot_page.confirm_question(
+        joined_piece("legend", True, answer), field, {}, "fix-1"
+    )
+    both = screenshot_page.confirm_question(
+        joined_piece("legend", True, beside), field, {}, "fix-1"
+    )
+    own = screenshot_page.confirm_question(
+        joined_piece("legend", False, beside), field, {}, "fix-1"
+    )
+    in_the_note = f"The reader wasn't sure of the {named} in this teacher's note."
+
+    assert noted.legend == in_the_note
+    assert both.legend == f"The reader wasn't sure of the {named}. {in_the_note}"
+    assert (noted.fold, both.fold) == ("", "")
+    assert own.legend == f"The reader wasn't sure of the {named}."
+    assert own.fold == "fix-1"
+    assert noted.options == both.options == own.options
+    assert [label for _, label, _ in noted.options] == ["Confirm as read"]

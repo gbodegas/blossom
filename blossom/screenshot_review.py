@@ -33,6 +33,7 @@ from blossom.screenshots import (
     TITLE_MOST,
     CardPlace,
     HomeworkReading,
+    JoinedSource,
     PlacedCard,
     ScreenshotRow,
     cards_placed,
@@ -139,6 +140,14 @@ class Piece:
     noted_cards: tuple[CardPlace, ...] = dataclasses.field(default=(), compare=False)
     """The note cards of each joined note the family selected, whose screenshots count in the
     name check beside its own cards'; their uncertain fields are among ``uncertain``."""
+    noted: tuple[JoinedSource, ...] = dataclasses.field(default=(), compare=False)
+    """Each joined note the family selected, as its row holds it: its tag, the fields marked
+    uncertain on its cards and day headings, and its cards' places. Only "Confirm as read"
+    answers a field one of them marks, never a correction, under a subject that names them
+    (``screenshot_save.noting``, ``screenshot_save.confirm_of``)."""
+    own_uncertain: frozenset[str] = dataclasses.field(default=frozenset(), compare=False)
+    """Beside ``noted``: the fields its own cards mark uncertain, which ``uncertain`` holds
+    together with the notes'. Empty where no joined note is selected."""
 
     @property
     def due_choices(self) -> tuple[date, ...]:
@@ -1800,7 +1809,8 @@ def pieces_from(
     fields with no correction beside the corrected ones. A piece takes what each joined note
     the family selected adds, by piece name and note tag in ``joined`` (``with_joined``), before
     its corrections, so the page, a refusal and the save read one reading; with it, the places
-    of those notes' cards (``Piece.noted_cards``) and their uncertain fields."""
+    of those notes' cards (``Piece.noted_cards``) and their uncertain fields, and the notes
+    themselves beside its own cards' marks (``Piece.noted``, ``Piece.own_uncertain``)."""
     rows = list(homework_assembly(list(readings), now=now).rows)
     placed = cards_placed(readings)
     corrections = corrections or {}
@@ -1842,11 +1852,15 @@ def pieces_from(
             carried,
         )
         mine_noted = tags & {note_tag(task) for task in reading.joined_notes}
-        selected = [found for found in row.joined if found.tag in mine_noted]
+        selected = tuple(found for found in row.joined if found.tag in mine_noted)
         noted_marks = frozenset(mark for found in selected for mark in found.marks)
         piece = _piece(name, row.key, fixed, cards, is_split, marks | noted_marks, read)
         places = tuple(dict.fromkeys(place for found in selected for place in found.places))
-        return dataclasses.replace(piece, noted_cards=places) if places else piece
+        if not selected:
+            return piece
+        return dataclasses.replace(
+            piece, noted_cards=places, noted=selected, own_uncertain=frozenset(marks)
+        )
 
     def own(cards: Sequence[CardPlace], day: date | None) -> tuple[Reading, frozenset[str]]:
         mine = [r for r in readings if r.sha256 in {c.sha256 for c in cards}]
