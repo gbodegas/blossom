@@ -87,9 +87,11 @@ from blossom.stores.import_drafts import (
     DraftFrozen,
     DraftNotFound,
     ImportDraftsStore,
+    ReadTiming,
     ReviewChanged,
     SavedForLater,
     TooManyImages,
+    UploadedReading,
     new_creation_token,
 )
 from blossom.stores.project_state import (
@@ -2107,6 +2109,76 @@ def test_saved_progress_keeps_the_groups_ticked_and_ticks_only_those_still_open(
     assert units_on(after_save) == [second]
     assert units_ticked(after_save) == []
     assert says(refused, imports.PRESS_SAID["later_invalid"])
+
+
+def read_under(browser: TestClient, draft_id: str, answer: object, prompt_version: str) -> None:
+    """The review's one screenshot with this answer's reading stored under a prompt version,
+    as a Read made with that prompt stored it, with no reader called."""
+    student = state_of(browser).project_state.student_id()
+    store = state_of(browser).import_drafts
+    [image] = store.snapshot(student, draft_id).images
+    attempt = store.start_attempt(student, draft_id, [image.image_id])
+    assert attempt is not None
+    checked = screenshots.homework_reading(answer)
+    assert checked.reading is not None
+    stored = store.store_reading(
+        student,
+        draft_id,
+        attempt_id=attempt.attempt_id,
+        image_id=image.image_id,
+        sha256=image.sha256,
+        reading=UploadedReading(
+            checked.reading.image_kind,
+            prompt_version,
+            "screenshot-reading/1",
+            checked.reading.model_dump_json(),
+        ),
+        timing=ReadTiming(1.0, 10, 5),
+    )
+    assert stored
+    assert store.end_attempt(student, draft_id, attempt.attempt_id)
+
+
+def test_a_review_read_with_prompt_v1b_and_saved_for_later_reopens_with_its_choices_and_no_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reading stored under prompt v1b, which shares the answer schema of the prompt in use,
+    reads as its cards. The review saved for later with her name answered and one group ticked
+    reopens with both cards shown, that answer kept and that tick drawn, and the reader is
+    never called."""
+    called: list[bytes] = []
+
+    def never(settings: Settings, png_bytes: bytes, *, timeout: float) -> ScreenshotAnswer:
+        called.append(png_bytes)
+        pytest.fail("the reader was called")
+
+    monkeypatch.setattr(screenshot_reading, "read_screenshot", never)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        read_under(browser, draft_id, homework_answer(), "v1b")
+        page = her_name_answered(browser, draft_id, loaded(browser, draft_id))
+        first, second = units_on(page)
+        followed(browser, send(browser, draft_id, page_post(page, "later", tick=[first])))
+        reopened = loaded(browser, draft_id)
+        student = state_of(browser).project_state.student_id()
+        snapshot = state_of(browser).import_drafts.snapshot(student, draft_id)
+        answers = stored_answers(browser, draft_id)
+
+    form = html.unescape(review_form(reopened))
+    name_drawn = [
+        [pair for pair in checked_values(review_form(shown)) if pair[0].startswith("answer:name:")]
+        for shown in (page, reopened)
+    ]
+    assert [reading.prompt_version for reading in snapshot.readings] == ["v1b"]
+    assert json.loads(str(snapshot.progress))["selected"] == [first]
+    assert [value for (kind, _), value in answers.items() if kind == "name"] == ["hers"]
+    assert name_drawn[1] == name_drawn[0]
+    assert 'id="unread-heading"' not in reopened
+    assert "Sentence Composing" in form
+    assert "Chains Reading Guide 6" in form
+    assert units_on(reopened) == [first, second]
+    assert units_ticked(reopened) == [first]
+    assert called == []
 
 
 def test_with_no_saved_progress_every_group_on_its_default_is_ticked_an_open_question_or_not(
@@ -45405,6 +45477,147 @@ def test_a_note_saved_and_read_again_is_ticked_as_already_saved(
     assert UNIT_TICK.findall(review_form(again)) == [" checked"]
     assert says(resaved, imports.counted(0, 0, 1, 0))
     assert rows == [("The class project", date(2026, 10, 5))]
+
+
+# ------------------------------------------------------------------ a printed homework list
+
+PORTAL_DAY: Final = "Monday 11/16/2026"
+"""A day heading as the portal's homework list shows it."""
+PRINTED_DAY: Final = "11/16/2026 - Monday"
+"""The same day as a printed homework list's dated day line."""
+BULLETED_DAY: Final = "- 11/16/2026 - Monday"
+"""The printed day line with the bullet the print view can put before it."""
+BOTH_DAY_LINES: Final = pytest.mark.parametrize(
+    "day_line",
+    [PORTAL_DAY, PRINTED_DAY, BULLETED_DAY],
+    ids=["portal-day-heading", "printed-day-line", "printed-day-line-with-a-bullet"],
+)
+TENER_LINES: Final = (
+    'Study and memorize the categories for the verb "tener"',
+    "Be ready to form sentences with each of the categories.",
+)
+"""The two lines beneath Spanish on the made-up printed list."""
+
+
+def printed_card(course: str, title: str, instruction: str | None, y_top: int) -> dict[str, object]:
+    """One subject of a printed homework list as the reader answers it: the subject label
+    without its closing hyphen as the course, no label and no due line, the first line of the
+    words beneath as the title and any further lines as the instruction."""
+    return homework_card(
+        badge=None,
+        course=course,
+        title=title,
+        instruction=instruction,
+        footer=None,
+        y_top=y_top,
+        y_bottom=y_top + 80,
+    )
+
+
+def printed_answer(day_line: str, *cards: dict[str, object]) -> dict[str, object]:
+    """The reader's answer for a made-up printed homework list for Wren: one dated day line
+    and these subjects under it."""
+    return homework_answer(
+        headings=[{"text": day_line, "y": 150, "uncertain": None}], cards=list(cards)
+    )
+
+
+def courses_offered(page: str) -> list[str]:
+    """The class each course box of "Correct what was read" holds, in page order."""
+    form = review_form(page)
+    subjects = [s for s in fields_named(form, "correct:") if json.loads(s)[1] == "course"]
+    boxes = [box_of(form, f"correct:{subject}") for subject in subjects]
+    return [box[1] for box in boxes if box is not None]
+
+
+def ids_on_record(browser: TestClient) -> set[str]:
+    """The id of every assignment on record."""
+    return {a.assignment_id for a in state_of(browser).project_state.all_assignments()}
+
+
+def written_since(browser: TestClient, before: set[str]) -> list[tuple[str, str, date | None, str]]:
+    """Every assignment on record that isn't among ``before`` as its class, title and due
+    date, with the words of the school instructions kept under it joined by single spaces,
+    by class and title."""
+    record = state_of(browser).project_state
+    rows = [a for a in record.all_assignments() if a.assignment_id not in before]
+    readable = record.school_instruction_readings([a.assignment_id for a in rows]).readable
+    return sorted(
+        (
+            (
+                a.course,
+                a.title,
+                a.due_date,
+                " ".join(each.text for each in readable[a.assignment_id].kept)
+                if a.assignment_id in readable
+                else "",
+            )
+            for a in rows
+        ),
+        key=lambda row: row[:2],
+    )
+
+
+@BOTH_DAY_LINES
+def test_a_printed_homework_list_s_subjects_are_offered_and_saved_as_their_assignments(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, day_line: str
+) -> None:
+    """The reader's answer for a printed homework list, Humanities and Spanish under one dated
+    day line, reads under the day line as printed as it does under the portal's heading for
+    that day: the review offers the Humanities project due on that day and one Spanish
+    assignment holding both of its lines with no due date, each under its subject's name, and
+    Save selected homework with every group ticked writes those two."""
+    answer = printed_answer(
+        day_line,
+        printed_card("Humanities", "The Outsiders project due today.", None, 200),
+        printed_card("Spanish", TENER_LINES[0], TENER_LINES[1], 320),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    form = html.unescape(review_form(page))
+    assert 'id="unread-heading"' not in page
+    assert len(units_on(page)) == 2
+    assert courses_offered(page) == ["Humanities", "Spanish"]
+    assert "The Outsiders project" in form
+    assert [line for line in TENER_LINES if line not in form] == []
+    assert says(after, imports.counted(2, 0, 0, 0))
+    assert [(course, due) for course, _, due, _ in rows] == [
+        ("Humanities", date(2026, 11, 16)),
+        ("Spanish", None),
+    ]
+    assert rows[0][1] == "The Outsiders project"
+    assert [line for line in TENER_LINES if line not in f"{rows[1][1]} {rows[1][3]}"] == []
+
+
+@BOTH_DAY_LINES
+def test_a_printed_subject_with_a_hyphen_in_its_name_keeps_its_name_whole(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, day_line: str
+) -> None:
+    """A subject whose name holds a hyphen, answered as its label without the closing hyphen,
+    is offered and saved under that name whole."""
+    answer = printed_answer(
+        day_line, printed_card("Pre-Algebra", "Study the fractions on page 30.", None, 200)
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    assert 'id="unread-heading"' not in page
+    assert courses_offered(page) == ["Pre-Algebra"]
+    assert says(after, imports.counted(1, 0, 0, 0))
+    assert [(course, title, due) for course, title, due, _ in rows] == [
+        ("Pre-Algebra", "Study the fractions on page 30", None)
+    ]
 
 
 def note_under(day: str, words: str) -> dict[str, object]:

@@ -61,6 +61,7 @@ from blossom.intake import (
     ANOTHER_OCCURRENCE,
     DAY_LINE,
     PORTAL_CONFIDENCE,
+    SUMMARY_DAY_LINE,
     TEACHER_NOTE,
     PortalCard,
     Reading,
@@ -76,7 +77,7 @@ from blossom.intake import (
 )
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionSeen, instruction_words
-from blossom.screenshot_prompt import PROMPT_VERSION, SCHEMA_VERSION
+from blossom.screenshot_prompt import SCHEMA_VERSION
 from blossom.stores.import_drafts import DraftRow, StoredReading
 from blossom.teacher_notes import NoteBlock, NoteTask, read_notes
 
@@ -100,6 +101,10 @@ MOST_MARKS: Final = 20
 """The most uncertain fields one item may list."""
 MOST_CATEGORIES: Final = 30
 MOST_ROWS: Final = 200
+
+PROMPT_VERSIONS: Final = frozenset({"v1b", "v1c"})
+"""Every prompt version whose answers have this schema's shape: the closed set a stored
+reading may carry and still decode. The prompt in use is one of them."""
 
 ImageKind = Literal["homework_list", "grade_report", "unsupported"]
 Badge = Literal["DUE", "ASSIGNED"]
@@ -207,8 +212,11 @@ class Heading(_Closed):
 
     @property
     def day(self) -> date | None:
-        """The day the heading names, read here from its text, or ``None``."""
-        found = DAY_LINE.match(self.text.strip())
+        """The day the heading names, read here from its text, or ``None``: the portal's
+        form, such as "Monday 11/16/2026", or a printed list's dated day line, such as
+        "11/16/2026 - Monday", with or without the bullet the print view can put before it."""
+        text = self.text.strip()
+        found = DAY_LINE.match(text) or SUMMARY_DAY_LINE.match(text)
         return None if found is None else a_date(found["year"], found["month"], found["day"])
 
 
@@ -723,8 +731,11 @@ def cards_placed(readings: Sequence[StoredReading]) -> dict[CardPlace, PlacedCar
 
 
 def _decoded(stored: StoredReading) -> HomeworkReading | None:
-    """A stored reading as its model, or ``None`` when it can't be decoded as this schema's."""
-    if (stored.prompt_version, stored.schema_version) != (PROMPT_VERSION, SCHEMA_VERSION):
+    """A stored reading as its model, or ``None`` when it can't be decoded as this schema's:
+    its schema version is another, its prompt version is none of ``PROMPT_VERSIONS``, or its
+    text doesn't fit the model. A reading made with any prompt of this schema decodes, and
+    keeps the prompt version it was made with in its digest."""
+    if stored.schema_version != SCHEMA_VERSION or stored.prompt_version not in PROMPT_VERSIONS:
         return None
     try:
         return HomeworkReading.model_validate_json(stored.body)

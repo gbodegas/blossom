@@ -112,6 +112,12 @@ def test_dates_are_kept_as_the_text_shown_and_parsed_in_code() -> None:
         ("Monday 13/45/2026", None),
         ("Week of 10/5/2026", None),
         ("10/5/2026", None),
+        ("11/16/2026 - Monday", date(2026, 11, 16)),
+        ("- 11/16/2026 - Monday", date(2026, 11, 16)),
+        (" 1/9/2026 - Friday ", date(2026, 1, 9)),
+        ("13/45/2026 - Monday", None),
+        ("11/16/2026 - Someday", None),
+        ("11/16/2026 - Monday and more", None),
     ],
 )
 def test_a_heading_names_a_day_only_when_its_text_reads_as_one(text: str, day: date | None) -> None:
@@ -1871,6 +1877,76 @@ def test_the_same_body_under_other_versions_gives_a_new_item_key() -> None:
 
     assert [[item.reason for item in found] for found in items] == [["reading_unreadable"]] * 3
     assert len({found[0].key for found in items}) == 3
+
+
+@pytest.mark.parametrize("prompt_version", ["v1b", "v1c"])
+def test_a_reading_stored_under_either_prompt_of_this_schema_decodes(prompt_version: str) -> None:
+    """The prompts v1b and v1c share the answer schema, so a reading stored under either one
+    reads as its rows and places its cards."""
+    stored = stored_homework("m", an_answer())._replace(prompt_version=prompt_version)
+
+    assembly = homework_assembly([stored], now=NOW)
+
+    assert stored.schema_version == "screenshot-reading/1"
+    assert len(assembly.rows) == 2
+    assert assembly.unread == ()
+    assert len(screenshots.cards_placed([stored])) == 2
+
+
+def test_the_prompt_in_use_is_one_a_stored_reading_decodes_under() -> None:
+    stored = stored_homework("m", an_answer())
+
+    assert stored.prompt_version == PROMPT_VERSION == "v1c"
+    assert len(homework_assembly([stored], now=NOW).rows) == 2
+
+
+@pytest.mark.parametrize(
+    ("prompt_version", "schema_version"),
+    [
+        ("v1", "screenshot-reading/1"),
+        ("v1a", "screenshot-reading/1"),
+        ("v1d", "screenshot-reading/1"),
+        ("V1B", "screenshot-reading/1"),
+        ("v1b ", "screenshot-reading/1"),
+        ("", "screenshot-reading/1"),
+        ("v1b", "screenshot-reading/0"),
+        ("v1b", "screenshot-reading/2"),
+        ("v1c", "screenshot-reading/0"),
+        ("v1c", "screenshot-reading/2"),
+        ("v1c", ""),
+    ],
+)
+def test_a_reading_stored_under_any_other_prompt_or_schema_version_is_not_decoded(
+    prompt_version: str, schema_version: str
+) -> None:
+    """The decoder takes the closed set of prompt versions that share this schema and this
+    schema version alone: the same text under any other version is one item that couldn't be
+    read, and places no card."""
+    stored = stored_homework("m", an_answer())._replace(
+        prompt_version=prompt_version, schema_version=schema_version
+    )
+
+    assembly = homework_assembly([stored], now=NOW)
+
+    assert assembly.rows == ()
+    assert [item.reason for item in assembly.unread] == ["reading_unreadable"]
+    assert screenshots.cards_placed([stored]) == {}
+
+
+def test_a_decoded_reading_s_item_keys_hold_the_prompt_version_it_was_made_with() -> None:
+    """A stored reading's digest holds its own prompt version, so the same reading stored
+    under v1b and under v1c gives its clipped card two keys, and each key is steady."""
+    clipped = an_answer(cards=[a_card(clipped=True)])
+    older = stored_homework("m", clipped)._replace(prompt_version="v1b")
+    newer = older._replace(prompt_version="v1c")
+
+    [first] = homework_assembly([older], now=NOW).unread
+    [again] = homework_assembly([older], now=NOW).unread
+    [second] = homework_assembly([newer], now=NOW).unread
+
+    assert first.reason == second.reason == "clipped"
+    assert first.key == again.key
+    assert first.key != second.key
 
 
 @pytest.mark.parametrize(
