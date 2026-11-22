@@ -2687,7 +2687,8 @@ def _carried(
     """Everything on the page that asks, as a refused press sent it, for an instruction conflict or
     a kept row that isn't on the record: its choices checked as posted, "Not saved yet." on each
     that differs from what the record shows, and the conflict's sentence in its own fieldset;
-    whether a choice has no question or option here; and whether one of those is more than a
+    whether a choice has no question or option here, a confirmation that a question here carries
+    hidden with the value posted counting as shown; and whether one of those is more than a
     confirmed save took with its own rows (``marks``, their pieces and row keys, which are in the
     fields that ask about them) or a name question. A value is never swapped for another. This only
     marks what's shown and changes no field or option the page signs, so the next post meets every
@@ -2717,6 +2718,11 @@ def _carried(
         return [checked for _, _, checked in before] != [checked for _, _, checked in after]
 
     def question(asked: Question) -> Question:
+        seen.update(
+            name
+            for name, value in asked.marks
+            if name.startswith("answer:confirm:") and choices.get(name) == (value,)
+        )
         if asked.field not in choices:
             return asked
         options = as_posted(asked.field, asked.options)

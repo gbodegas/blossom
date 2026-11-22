@@ -19257,6 +19257,32 @@ def test_a_posted_choice_with_no_question_here_is_said_unless_it_was_cleared(
     assert not_carried is lost
 
 
+@pytest.mark.parametrize(
+    ("marks", "lost"),
+    [
+        ((("answer:confirm:card", "as_read"),), False),
+        ((("answer:confirm:card", "other"),), True),
+        ((), True),
+    ],
+    ids=["carried with its value", "carried with another value", "carried by no question"],
+)
+def test_a_posted_confirmation_counts_as_shown_only_where_a_question_carries_it(
+    marks: tuple[tuple[str, str], ...], lost: bool
+) -> None:
+    """A confirmation posted from a hidden field is shown where a question on the page carries
+    that field with the value posted. One carried with another value, or by no question, is a
+    choice the page can't show, and is said."""
+    asked = dataclasses.replace(
+        asking("answer:confirm:note", ("as_read", "Confirm as read", False)), marks=marks
+    )
+    _, splits, _, not_carried, _ = screenshot_page._carried(
+        [], (asked,), [], {"answer:confirm:card": ("as_read",)}, {}
+    )
+
+    assert splits[0].marks == marks
+    assert not_carried is lost
+
+
 def test_what_a_press_says_first_gives_way_on_the_narrowest_screen() -> None:
     """Measured in Chrome at 320 pixels with text at 200%, where it keeps "instructions" whole."""
     css = (pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css").read_text()
@@ -48236,6 +48262,9 @@ def test_the_card_confirmed_then_its_unsure_joined_note_ticked_asks_of_the_note_
     assert confirm_heard(held) == [HEARD_OF_THE_NOTE.format(title="Short essay")]
     assert [len(json.loads(subject)) for subject in confirms_carried(held)] == [2]
     assert confirms_carried(confirmed) == []
+    assert not says(held, screenshot_page.SAID["not_carried"])
+    assert not says(anyway, screenshot_page.SAID["not_carried"])
+    assert not says(answered, screenshot_page.SAID["not_carried"])
     assert says(held, FIELD_TO_ANSWER)
     assert import_review_cases.offers_review_changes(held)
     assert after_tick == (0, 0, 0)
@@ -48343,6 +48372,9 @@ def test_the_cards_date_confirmed_then_its_note_under_an_unsure_day_ticked_asks_
     assert JOINED_TICK.findall(review_form(held)) == [" checked"]
     assert confirm_asked(held) == [(both, False, False)]
     assert confirm_heard(held) == [HEARD_OF_THE_NOTE.format(title="Short essay")]
+    assert not says(held, screenshot_page.SAID["not_carried"])
+    assert not says(anyway, screenshot_page.SAID["not_carried"])
+    assert not says(answered, screenshot_page.SAID["not_carried"])
     assert says(held, FIELD_TO_ANSWER)
     assert import_review_cases.offers_review_changes(held)
     assert after_tick == (0, 0, 0)
