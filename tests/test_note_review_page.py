@@ -6185,6 +6185,224 @@ def test_a_paste_whose_only_new_content_is_a_joined_note_says_to_tick_the_notes_
         assert "ticked above is added" not in html.unescape(page)
 
 
+NEW_NOTES_TO_TICK = (
+    "Some notes above can be saved as new assignments. Tick the ones you want, then save."
+)
+"""The words beside Save where a note that is not ticked would be saved as a new assignment."""
+NOTHING_TO_SAVE = "Everything here is saved already; there is nothing to save."
+"""The words beside Save where the page offers nothing to add."""
+TYPE_CAN_CHANGE = "A type changed on a card can still be saved."
+"""The sentence that closes the line beside Save on a page with nothing ticked to save."""
+THIS_WEEK = "Week of Monday, November 2, 2026"
+"""The heading of the week the saved Short essay is listed under."""
+UPDATE_NAMING_OTHER_WORK_ON_SAVED = JOINED_ON_SAVED.replace(
+    "Short essay due Friday.", "Short essay due Friday. Update: the poster is due Monday."
+)
+"""The saved card with a note above it whose first sentence names it and whose update names
+other work: the update is a note task of its own."""
+POSTER_BESIDE_JOINED_ON_SAVED = JOINED_ON_SAVED.replace(
+    "Short essay due Friday.\n", "Short essay due Friday.\nPoster due Thursday.\n"
+)
+"""The saved card with the note joined to it and, on a line of its own, a note task that
+names other work."""
+MAY_BE_ON_SAVED = SAVED_ALONE.replace(
+    "Religion - Due:", "08 Geometry -\nQuiz on unit two\nReligion - Due:"
+)
+"""The saved card beside a note of another class that may be homework."""
+NO_HOMEWORK_ON_SAVED = SAVED_ALONE.replace(
+    "Religion - Due:",
+    "Music -\nUnit test today. No additional Music homework assigned.\nReligion - Due:",
+)
+"""The saved card beside a note of another class that says no homework is assigned."""
+WORKSHEET_ALONE = (
+    "Homework for Wren\n11/03/2026 - Tuesday\nMath - Due: Worksheet 5:\nProblems 1 to 10.\n"
+)
+"""One card of another class, saved on its own before the text below is read."""
+NOTE_NAMING_SAVED_WORK = (
+    "Homework for Wren\n11/03/2026 - Tuesday\nReligion -\n"
+    "Short essay due Friday. Write it in ink.\n"
+    "Math - Due: Worksheet 5:\nProblems 1 to 10.\n"
+)
+"""The saved Worksheet 5 card beside a note that names the saved Short essay and says more,
+with no Short essay card in the text."""
+NOTE_TICK = r'<input type="checkbox" name="take-\d+" value="1"( checked)?>'
+"""A note card's tick, with whether it is ticked."""
+
+
+@pytest.mark.parametrize(
+    ("text", "title", "heading", "joined_says"),
+    [
+        pytest.param(
+            UPDATE_NAMING_OTHER_WORK_ON_SAVED,
+            "Update: the poster",
+            "No due date yet",
+            "If selected: Already saved.",
+            id="update-naming-other-work",
+        ),
+        pytest.param(
+            POSTER_BESIDE_JOINED_ON_SAVED,
+            "Poster",
+            THIS_WEEK,
+            "If selected: Saved; adds a date to review.",
+            id="beside-a-joined-note",
+        ),
+        pytest.param(MAY_BE_ON_SAVED, "Quiz on unit two", MAY_BE, None, id="may-be-homework"),
+        pytest.param(NEW_NOTE_ON_SAVED, "Read chapter 4", THIS_WEEK, None, id="new-note"),
+    ],
+)
+def test_a_note_not_ticked_that_would_be_a_new_assignment_is_named_beside_save(
+    tmp_path: pathlib.Path, text: str, title: str, heading: str, joined_says: str | None
+) -> None:
+    """The saved Short essay read again beside a note that is homework, or may be homework,
+    and would be saved as a new assignment: the note's card is unticked and says "If
+    selected: New.", and the line beside Save says that some notes above can be saved as new
+    assignments and to tick the ones wanted, then save, beside "Save selected assignments".
+    That holds where a joined note on the saved card would add nothing and where it would
+    add a date to review, the joined tick unticked in both."""
+    with client_in(tmp_path) as client:
+        page = read_again_once_saved(client, text)
+
+    note = card(page, title)
+    assert title in titles(sections(page)[heading])
+    assert re.findall(NOTE_TICK, note) == [""]
+    assert "If selected: New." in note
+    if joined_says is not None:
+        assert joined_ticks(page) == {"join-0-0": False}
+        assert joined_says in card(page, "Short essay")
+    assert SAVE_SELECTED in page
+    assert save_panel_line(page) == f"{NEW_NOTES_TO_TICK} {TYPE_CAN_CHANGE}"
+
+
+def test_a_note_not_ticked_that_would_ask_a_question_is_named_beside_save(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The saved Short essay and the saved Worksheet 5, read again as the Worksheet 5 card
+    beside a note that names the Short essay and says more: the note's card is unticked and
+    says "If selected: Needs your answer.", and the line beside Save says that some notes
+    above can be saved as new assignments and to tick the ones wanted, then save."""
+    with client_in(tmp_path) as client:
+        sheet = client.post("/parent/inbox/read", data={"text": WORKSHEET_ALONE}).text
+        assert client.post("/parent/inbox/keep", data=ticked_form(sheet)).status_code == 303
+        page = read_again_once_saved(client, NOTE_NAMING_SAVED_WORK)
+
+    note = card(page, "Short essay")
+    assert '<span class="pill">Already saved</span>' in card(page, "Worksheet 5")
+    assert re.findall(NOTE_TICK, note) == [""]
+    assert "If selected: Needs your answer." in note
+    assert SAVE_SELECTED in page
+    assert save_panel_line(page) == f"{NEW_NOTES_TO_TICK} {TYPE_CAN_CHANGE}"
+
+
+@pytest.mark.parametrize(
+    ("text", "title", "due"),
+    [
+        pytest.param(
+            UPDATE_NAMING_OTHER_WORK_ON_SAVED,
+            "Update: the poster",
+            None,
+            id="update-naming-other-work",
+        ),
+        pytest.param(
+            POSTER_BESIDE_JOINED_ON_SAVED,
+            "Poster",
+            datetime.date(2026, 11, 5),
+            id="beside-a-joined-note",
+        ),
+    ],
+)
+def test_a_new_note_beside_saved_homework_is_saved_once_when_ticked_and_not_when_unticked(
+    tmp_path: pathlib.Path, text: str, title: str, due: datetime.date | None
+) -> None:
+    """The saved Short essay read again beside a new note. Save pressed on the page as shown,
+    the note unticked, writes nothing: every table of the record is as it was. With the
+    note's tick sent, one Save adds its assignment once, with the due date listed, and leaves
+    the Short essay's due date, date claims and instructions as they were; the same Save sent
+    again writes nothing more; and the text read again shows the note ticked and already
+    saved."""
+    (tmp_path / "as-shown").mkdir()
+    (tmp_path / "ticked").mkdir()
+    with client_in(tmp_path / "as-shown") as client:
+        page = read_again_once_saved(client, text)
+        before = every_row(client)
+        shown = client.post("/parent/inbox/keep", data=ticked_form(page))
+        as_shown = every_row(client)
+    with client_in(tmp_path / "ticked") as client:
+        page = read_again_once_saved(client, text)
+        form = ticked_form(page) | {f"take-{key_of(page, title)}": "1"}
+        essay = (essay_record(client), instruction_texts(client)["Short essay"])
+        rows = saved_rows(client)
+        saved = client.post("/parent/inbox/keep", data=form)
+        rows_saved = saved_rows(client)
+        essay_saved = (essay_record(client), instruction_texts(client)["Short essay"])
+        once = every_row(client)
+        again = client.post("/parent/inbox/keep", data=form)
+        twice = every_row(client)
+        reread = client.post("/parent/inbox/read", data={"text": text}).text
+
+    assert re.findall(NOTE_TICK, card(page, title)) == [""]
+    assert shown.status_code == 303
+    assert shown.headers["location"].endswith("added=0&updated=0&unchanged=1")
+    assert as_shown == before
+    assert saved.status_code == 303
+    assert saved.headers["location"].endswith("added=1&updated=0&unchanged=1")
+    assert [name for _, name, _ in rows] == ["Short essay"]
+    assert [row for row in rows_saved if row in rows] == rows
+    assert [(name, when) for _, name, when in rows_saved if name != "Short essay"] == [(title, due)]
+    assert essay_saved == essay
+    assert again.status_code == 303
+    assert twice == once
+    assert re.findall(NOTE_TICK, card(reread, title)) == [" checked"]
+    assert '<span class="pill">Already saved</span>' in card(reread, title)
+
+
+@pytest.mark.parametrize(
+    ("text", "said", "save"),
+    [
+        pytest.param(
+            JOINED_ON_SAVED, ADD_THE_NOTES, r"[^>]*>Save the ticked notes<", id="joined-note-only"
+        ),
+        pytest.param(
+            SAVED_ALONE,
+            NOTHING_TO_SAVE,
+            r' data-unchanged-label="Save 0 assignments"[^>]*>Save changes<',
+            id="no-note",
+        ),
+    ],
+)
+def test_the_line_beside_save_where_the_page_offers_no_note_task(
+    tmp_path: pathlib.Path, text: str, said: str, save: str
+) -> None:
+    """The saved Short essay read again with no note task on the page. With a joined note
+    that would add a date as the only addition, the line beside Save says that the
+    assignments are already saved and to tick the notes to add, then save, beside "Save the
+    ticked notes". With no note at all, the line says that everything here is saved already
+    and there is nothing to save, beside a Save marked for the page script to show as done."""
+    with client_in(tmp_path) as client:
+        page = read_again_once_saved(client, text)
+
+    assert re.findall(NOTE_TICK, page) == []
+    assert re.search(rf'<button type="submit" class="primary"{save}', page)
+    assert save_panel_line(page) == f"{said} {TYPE_CAN_CHANGE}"
+
+
+def test_a_note_that_says_no_homework_is_assigned_is_not_named_beside_save(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The saved Short essay read again beside a note that says no homework is assigned: the
+    note's card is unticked under "Notes with no homework" and says "If selected: New.", and
+    the line beside Save says that everything here is saved already and there is nothing to
+    save, beside "Save selected assignments"."""
+    with client_in(tmp_path) as client:
+        page = read_again_once_saved(client, NO_HOMEWORK_ON_SAVED)
+
+    note = card(page, "Unit test today")
+    assert titles(sections(page)[NONE_ASSIGNED]) == ["Unit test today"]
+    assert re.findall(NOTE_TICK, note) == [""]
+    assert "If selected: New." in note
+    assert SAVE_SELECTED in page
+    assert save_panel_line(page) == f"{NOTHING_TO_SAVE} {TYPE_CAN_CHANGE}"
+
+
 NoteCard = tuple[str, str, tuple[int, ...], int | None]
 """A note card as a table lists it: its title, the words it shows, the November 2026 days it
 offers unselected, and the November day it saves as the school's, if it sets one."""

@@ -1,14 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""How a screenshot review's work grows with its cards, on the page with every question and box.
+"""Counts taken while a screenshot review's page with every question and box is built and pressed.
 
-A group whose date, kind or instructions questions are checked under each answer they offer is
-worked out over its own pieces and those its checks against other cards read, and the saved
-assignments are read once for each working out of the review a page makes, so the page's work grows
-with its cards, not with their square. The tests count, so they depend on nothing but the code and
-no clock: the first, the workings out of the review and the record's reads of every assignment over
-the whole of the worst page, built and pressed; the second, the pieces each answer preview works
-out. A save's own working out, inside its transaction, reads as it reads
+The tests count, so they depend on nothing but the code and no clock. The first counts the
+workings out of the review and the record's reads of every saved assignment over the whole of the
+worst page, built and pressed, and asserts one read for each working out and the same counts at
+10 cards and at 20. The second counts the pieces each answer preview works out and asserts the
+same numbers of pieces at 10, 20 and 60 cards. The counts establish nothing about the total time
+a page takes to build. A save's own working out, inside its transaction, reads as it reads
 (``tests/test_screenshot_save.py`` counts its statements).
 """
 

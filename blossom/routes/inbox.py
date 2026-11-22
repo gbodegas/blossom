@@ -2209,6 +2209,14 @@ def preview_page(
             "if_selected": {
                 change.key: when_selected[change.key].label for change in shown if change.left_out
             },
+            # Whether a note not selected that is homework or may be homework would, once
+            # selected, be saved as a new assignment or ask a question first. A note that
+            # says no homework is assigned is not counted.
+            "new_notes_offered": any(
+                when_selected[change.key].state in (NEW, REVIEW)
+                for change in (*in_weeks, *may_be)
+                if change.left_out
+            ),
             "unselected_asks": unselected_asks,
             "occurrence_given": {
                 key: value for key, value in (occurrences or {}).items() if key in unselected_asks
