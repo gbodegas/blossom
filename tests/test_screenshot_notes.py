@@ -973,6 +973,39 @@ NOTE_DATE_LINES = [
         id="one-date-extra-credit",
     ),
     pytest.param("Essay used " + "to be due Friday.", MONDAY, [], id="superseded-says-none"),
+    *(
+        pytest.param(
+            words,
+            MONDAY,
+            ["The note mentions Friday, November 20. The due date is unclear."],
+            id=f"one-date-{label}",
+        )
+        for label, words in [
+            ("i-m-thinking", "I'm thinking the essay will be due Friday."),
+            ("seems-to-be", "Essay seems to be due Friday."),
+            ("it-looks-like", "It looks like the essay is due Friday."),
+            ("usually", "Usually reading logs are due Friday."),
+            ("tentative-essay", "Tentative essay due Friday."),
+            ("skip", "Skip the essay due Friday."),
+            ("pretty-sure-must", "Pretty sure the essay must be done by Friday."),
+            ("bring", "Bring the essay due Friday."),
+        ]
+    ),
+    pytest.param("Students must turn in the essay by Friday.", MONDAY, [], id="sets-students-must"),
+    pytest.param("Read the chapter by Friday.", MONDAY, [], id="sets-read-the-chapter"),
+    pytest.param("Rumored essay due Friday.", MONDAY, [], id="sets-the-documented-limit"),
+    pytest.param(
+        "Essay due Friday. Update: it is due Monday.",
+        TUESDAY,
+        [OPEN, "It could mean Friday, November 20 or Monday, November 23."],
+        id="two-dates-a-correction-behind-a-lead-in",
+    ),
+    pytest.param(
+        "Essay used " + "to be due Friday. It is now due Monday.",
+        MONDAY,
+        [OPEN, "It could mean Monday, November 16 or Monday, November 23."],
+        id="two-dates-a-correction-after-a-superseded-date",
+    ),
 ]
 """A note's words, the school day it is listed under, and what its card says of its dates
 after the line naming that day."""
@@ -1067,3 +1100,70 @@ def test_a_joined_note_naming_a_date_with_no_deadline_statement_says_no_mentione
     assert [said for said, _ in question.notes] == []
     assert [label for _, label, _ in question.options] == [screenshot_page.SAID["joined_tick"]]
     assert question.legend == f"The teacher's note for November 16 also says: {words}"
+
+
+# ------------------------------------------------------------------ titles and dates of note rows
+
+NOTE_ROWS = [
+    pytest.param("Essay will be due Friday.", MONDAY, [("Essay", 20)], id="will-be"),
+    pytest.param("Essay could be due Friday.", MONDAY, [("Essay", None)], id="could-be"),
+    pytest.param("Essay seems to be due Friday.", MONDAY, [("Essay", None)], id="seems-to-be"),
+    pytest.param(
+        "Rumored essay due Friday.", MONDAY, [("Rumored essay", 20)], id="the-documented-limit"
+    ),
+    pytest.param(
+        "Pretty sure the essay will be collected by Friday.",
+        MONDAY,
+        [("Pretty sure the essay will be collected", 20)],
+        id="the-documented-limit-by",
+    ),
+    pytest.param(
+        "Essay due Friday. Update: it is due Monday.", TUESDAY, [("Essay", None)], id="update"
+    ),
+    pytest.param(
+        "Essay used " + "to be due Friday. It is now due Monday.",
+        MONDAY,
+        [("Essay", None)],
+        id="after-a-superseded-date",
+    ),
+    pytest.param(
+        "Essay due Friday. Poster: due Monday.",
+        TUESDAY,
+        [("Essay", 20), ("Poster", 23)],
+        id="poster",
+    ),
+    pytest.param(
+        "Essay due Friday. Science project: it is due Monday.",
+        TUESDAY,
+        [("Essay", 20), ("Science project", None)],
+        id="science-project",
+    ),
+]
+"""A screenshot note's words, the school day it is listed under, and each row it gives: its
+title and the November 2026 day the note sets as its due date, if it sets one."""
+
+
+@pytest.mark.parametrize(("words", "day", "rows"), NOTE_ROWS)
+def test_a_screenshot_note_s_rows_take_the_note_reader_s_titles_and_school_dates(
+    words: str, day: str, rows: list[tuple[str, int | None]]
+) -> None:
+    """A screenshot note's rows are titled as the note reader titles its tasks, without the
+    verb phrase before the cue, and a row is due only on a date the note sets, with one claim
+    of that date seen in the teacher's note; a row whose date the note leaves unset has no
+    due date and no claim. A correction behind a lead-in is one row with its task; a second
+    assignment named before the cue is a row of its own."""
+    found = assembled("rows", shot(note("English 8", title=words), day=day))
+
+    assert found.unread == ()
+    read = sorted(found.rows, key=lambda row: row.reading.title)
+    assert [row.reading.title for row in read] == [title for title, _ in rows]
+    assert [row.reading.due_date for row in read] == [
+        None if number is None else date(2026, 11, number) for _, number in rows
+    ]
+    assert [
+        [(claim.channel, claim.asserted_value, claim.seen_in) for claim in row.reading.claims]
+        for row in read
+    ] == [
+        [] if number is None else [(SourceChannel.LMS, f"2026-11-{number}", TEACHER_NOTE)]
+        for _, number in rows
+    ]

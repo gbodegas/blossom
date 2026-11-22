@@ -1685,3 +1685,318 @@ def test_a_no_homework_head_note_stays_its_own_task() -> None:
     notice, essay = read_one("No homework tonight. Essay due Friday.")
 
     assert (notice.standing, essay.name, essay.deadline) == (NOT_ASSIGNMENT, "Essay", nov(20))
+
+
+SHAPED_SETS = [
+    ("Students must turn in the essay by Friday.", MONDAY_16, nov(20)),
+    ("Students should read chapter 5 by Friday.", MONDAY_16, nov(20)),
+    ("The class must turn in the essay by Friday.", MONDAY_16, nov(20)),
+    ("All students must turn in the essay by Friday.", MONDAY_16, nov(20)),
+    ("Each of the students must turn in the essay by Friday.", MONDAY_16, nov(20)),
+    ("The essay should be turned in by Friday.", MONDAY_16, nov(20)),
+    ("Must be turned in by Friday.", MONDAY_16, nov(20)),
+    ("Read the chapter by Friday.", MONDAY_16, nov(20)),
+    ("Answer the questions in the workbook by Friday.", MONDAY_16, nov(20)),
+    ("Make sure your essay is finished by Friday.", MONDAY_16, nov(20)),
+    ("Read the chapter and be ready to discuss it by Friday.", MONDAY_16, nov(20)),
+    ("The essay will be collected by Friday.", MONDAY_16, nov(20)),
+    ("Weekly reading log due Friday.", MONDAY_16, nov(20)),
+    ("Family tree due Friday.", MONDAY_16, nov(20)),
+    ("Nightly reading log due Friday.", MONDAY_16, nov(20)),
+    ("Friendly letter due Friday.", MONDAY_16, nov(20)),
+    ("Tally chart due Friday.", MONDAY_16, nov(20)),
+    ("Page 4 of the workbook is due Friday.", MONDAY_16, nov(20)),
+    ("Notes on the reading due Friday.", MONDAY_16, nov(20)),
+    ("Chapter 5 questions and the vocabulary sheet are due Friday.", MONDAY_16, nov(20)),
+    ("Your signed permission slip is due Friday.", MONDAY_16, nov(20)),
+    ("Questions at the end of the chapter are due Friday.", MONDAY_16, nov(20)),
+    ("Test signed by a parent due Friday.", MONDAY_16, nov(20)),
+    ("All the essays are due Friday.", MONDAY_16, nov(20)),
+    ("Both the essay and the poster are due Friday.", MONDAY_16, nov(20)),
+    ("Part A is due Friday.", MONDAY_16, nov(20)),
+    ("Worksheet A due Friday.", MONDAY_16, nov(20)),
+    ("Please note the essay is due Friday.", MONDAY_16, nov(20)),
+    ("Please remember the essay is due Friday.", MONDAY_16, nov(20)),
+    ("Note that the essay is due Friday.", MONDAY_16, nov(20)),
+    ("Potential energy worksheet due Friday.", MONDAY_16, nov(20)),
+    ("The essay will sti" + "ll be due Friday.", MONDAY_16, nov(20)),
+    ("Essay will also be due Friday.", MONDAY_16, nov(20)),
+    ("Reading logs are all due Friday.", MONDAY_16, nov(20)),
+    ("Homework is always due Friday.", MONDAY_16, nov(20)),
+    ("Life is Beautiful essay due Friday.", MONDAY_16, nov(20)),
+    ("Essay will now be due Monday.", TUESDAY_17, nov(23)),
+    ("Essay was due Friday, now the essay is due Monday.", TUESDAY_17, nov(23)),
+]
+
+
+@pytest.mark.parametrize(("words", "day", "deadline"), SHAPED_SETS)
+def test_a_lead_shaped_as_a_name_or_an_instruction_sets_the_school_deadline(
+    words: str, day: date, deadline: date
+) -> None:
+    """A lead that is an assignment's name before "due", or an instruction or an obligation
+    with a plain subject before "by", sets its one date and offers nothing else."""
+    (task,) = read_one(words, day)
+
+    assert (task.deadline, task.choices, task.named, task.milestones) == (deadline, (), (), ())
+
+
+DOCUMENTED_LIMIT = [
+    "Rumored essay due Friday.",
+    "Pretty sure essays are due Friday.",
+    "Skip essay due Friday.",
+    "Forget about the essay due Friday.",
+    "The office says essays are due Friday.",
+    "Looks like the essay gets turned in by Friday.",
+    "Pretty sure the essay will be collected by Friday.",
+    "It looks like the essay will be collected by Friday.",
+    "Pretty sure the essay is needed by Friday.",
+]
+
+
+@pytest.mark.parametrize("words", DOCUMENTED_LIMIT)
+def test_a_hedge_no_fixed_word_or_shape_catches_sets_the_date_with_its_words_in_the_title(
+    words: str,
+) -> None:
+    """The documented limit: a hedge, a retraction or reported speech that none of the fixed
+    words and none of the lead's shapes catch sets the date, and its words show in the
+    title."""
+    (task,) = read_one(words)
+
+    assert (task.deadline, task.choices, task.named) == (nov(20), (), ())
+    assert task.name.split()[0] == words.split()[0]
+
+
+SHAPED_UNSET = [
+    "Essay seems to be due Friday.",
+    "Essay appears to be due Friday.",
+    "Essay is unlikely to be due Friday.",
+    "Essay is meant to be due Friday.",
+    "Essay is said to be due Friday.",
+    "Essay is scheduled to be due Friday.",
+    "Essay should be due Friday.",
+    "Essay must be due Friday.",
+    "The essay is hopefully sti" + "ll due Friday.",
+    "Essay is supposedly now due Friday.",
+    "It looks like the essay is due Friday.",
+    "It looks like the essay will be due Friday.",
+    "Pretty sure the essay is due Friday.",
+    "Looks like the essay is due Friday.",
+    "It seems the essay is due Friday.",
+    "My guess is the essay is due Friday.",
+    "Someone said the essay is due Friday.",
+    "Unsure whether the essay is due Friday.",
+    "Skip the essay due Friday.",
+    "Ignore the essay due Friday.",
+    "Bring the essay due Friday.",
+    "Finish the essay due Friday.",
+    "Complete the worksheet, due Friday.",
+    "Read chapter 5 and answer the questions, due Friday.",
+    "To Kill a Mockingbird essay due Friday.",
+    "Don't forget to bring the permission slip due Friday.",
+    "For now the essay is due Friday.",
+    "As of now the essay is due Friday.",
+    "After all the essay is due Friday.",
+    "I'm thinking the essay will be due Friday.",
+    "I\N{RIGHT SINGLE QUOTATION MARK}m thinking the essay will be due Friday.",
+    "I'd say the essay is due Friday.",
+    "We're hoping the essay is due Friday.",
+    "I'm pretty sure the essay is due Friday.",
+    "You must turn in the essay by Friday.",
+    "I'll collect the essay by Friday.",
+    "You need to finish the essay by Friday.",
+    "Usually reading logs are due Friday.",
+    "Hopefully essay due Friday.",
+    "Apparently essay due Friday.",
+    "Normally homework is due Friday.",
+    "Supposedly essays are due Friday.",
+    "Hopefully all essays are due Friday.",
+    "Tentative essay due Friday.",
+    "TBD essay due Friday.",
+    "Possible outcomes worksheet due Friday.",
+    "The essay should have been turned in by Friday.",
+    "Essays must have been submitted by Friday.",
+    "Students had to turn in the essay by Friday.",
+    "Nobody has to finish the essay by Friday.",
+    "Students should have their essay done by Friday.",
+    "Students must have the form signed by Friday.",
+    "Pretty sure the essay must be done by Friday.",
+    "Pretty sure students must turn in the essay by Friday.",
+    "It looks like students must turn in the essay by Friday.",
+    "Late essays must be turned in by Friday.",
+    "Half the class must present by Friday.",
+    "Period 3 students must turn in the essay by Friday.",
+    "Students in the class must turn in the essay by Friday.",
+]
+
+
+@pytest.mark.parametrize("words", SHAPED_UNSET)
+def test_a_lead_shaped_as_more_than_a_name_or_an_instruction_offers_friday_unselected(
+    words: str,
+) -> None:
+    """A lead with a verb phrase other than "is", "are" or "will be" before the cue, a
+    possibility or past obligation, a speaker, an opening adverb, a hedge word, a word before
+    a determiner in a name, or a qualified subject before an obligation verb has no deadline
+    and offers its date unselected."""
+    (task,) = read_one(words)
+
+    assert (task.deadline, task.milestones) == (None, ())
+    assert offered(task) == (nov(20),)
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        "Essay used " + "to be due Friday.",
+        "Essay cannot be due Friday.",
+        "Essay will not be due Friday.",
+    ],
+)
+def test_a_governed_form_before_the_cue_offers_nothing(words: str) -> None:
+    """A negated or superseded verb phrase before the cue keeps its effect: no deadline and
+    no date offered."""
+    (task,) = read_one(words)
+
+    assert (task.name, task.deadline, offered(task)) == ("Essay", None, ())
+
+
+CORRECTIONS_THAT_JOIN = [
+    "Update: it is due Monday.",
+    "Update: due Monday.",
+    "Correction: due Monday.",
+    "Correction: it is due Monday.",
+    "Please note: it is due Monday.",
+    "Please note: due Monday.",
+    "Note: due Monday.",
+    "Sorry, it is due Monday.",
+    "Sorry: it is due Monday.",
+    "Sorry, due Monday.",
+    "Typo: it is due Monday.",
+    "Oops: due Monday.",
+    "Update: it will be due Monday.",
+    "Update: this is due Monday.",
+    "Update: they are due Monday.",
+    "Update: is due Monday.",
+    "Update - it is due Monday.",
+    "Update: the essay is due Monday.",
+    "Correction: the essay is due Monday.",
+    "Update: essay due Monday.",
+    "Edit: the essay is due Monday.",
+    "It'll be due Monday.",
+    "Actually it is due Monday.",
+    "It is actually due Monday.",
+    "Sorry it is due Monday.",
+    "Instead it is due Monday.",
+    "Poster: it is now due Monday.",
+    "Please note: the essay is due Monday.",
+    "Please note the essay is due Monday.",
+    "Reminder: the essay is due Monday.",
+    "Don't forget the essay is due Monday.",
+    "Essay outline: it is due Monday.",
+    "Poster is ready and it is due Monday.",
+    "It is due Monday.",
+    "Update: it's due Monday.",
+    "Reminder: it is due Monday.",
+    "Reminder: due Monday.",
+    "Due Monday.",
+    "Now due Monday.",
+]
+
+
+@pytest.mark.parametrize("correction", CORRECTIONS_THAT_JOIN)
+def test_a_correction_with_or_without_now_joins_the_task_before_it(correction: str) -> None:
+    """A piece that names no assignment of its own, behind a remark, a one-word lead-in before
+    a pronoun, a reminder opening or none, joins the task before it: one task titled by the
+    first sentence, with both dates offered unselected."""
+    words = f"Essay due Friday. {correction}"
+    (task,) = read_one(words, TUESDAY_17)
+
+    assert (task.name, task.words, task.deadline, task.milestones) == ("Essay", words, None, ())
+    assert offered(task) == (nov(20), nov(23))
+
+
+@pytest.mark.parametrize("correction", ["Update: it is due Monday.", "Correction: due Monday."])
+def test_a_correction_in_its_own_paragraph_joins_the_task_before_it(correction: str) -> None:
+    """A correction written as the next paragraph of the note joins as one in the same
+    paragraph does."""
+    (task,) = read_notes((note("English", TUESDAY_17, "Essay due Friday.", correction),))
+
+    assert (task.name, task.deadline, offered(task)) == ("Essay", None, (nov(20), nov(23)))
+
+
+def test_a_correction_after_a_superseded_statement_joins_its_task() -> None:
+    """A correction after a task whose own statement is superseded joins it as after any
+    other task: one task titled by the assignment, with the correction's dates offered."""
+    words = "Essay used " + "to be due Friday. It is now due Monday."
+    (task,) = read_one(words)
+
+    assert (task.name, task.words, task.deadline) == ("Essay", words, None)
+    assert offered(task) == (nov(16), nov(23))
+
+
+SEPARATE_TASKS = [
+    ("Essay due Friday. Poster: due Monday.", "Poster", nov(23), ()),
+    ("Essay: due Friday. Poster: due Monday.", "Poster", nov(23), ()),
+    ("Essay due Friday. Whoops: due Monday.", "Whoops", nov(23), ()),
+    ("Essay due Friday. Heads up: due Monday.", "Heads up", nov(23), ()),
+    ("Essay due Friday. The essay is due Monday.", "The essay", nov(23), ()),
+    ("Essay due Friday. That poster is due Monday.", "That poster", nov(23), ()),
+    ("Essay due Friday. Reminder: the poster is due Monday.", "Reminder: the poster", nov(23), ()),
+    ("Essay due Friday. Update: the poster is due Monday.", "Update: the poster", None, (23,)),
+    ("Essay due Friday. Science project: it is due Monday.", "Science project", None, (23,)),
+    ("Essay due Friday. The poster, it is due Monday.", "The poster", None, (23,)),
+]
+
+
+@pytest.mark.parametrize(("words", "name", "deadline", "days"), SEPARATE_TASKS)
+def test_a_piece_naming_an_assignment_of_its_own_stays_a_separate_task(
+    words: str, name: str, deadline: date | None, days: tuple[int, ...]
+) -> None:
+    """A lone word that is no remark right before the cue, a lead-in of two or more words
+    sharing none with the title before it, or a lead naming another assignment starts a task
+    of its own; the first task keeps its date."""
+    essay, other = read_one(words, TUESDAY_17)
+
+    assert (essay.name, essay.deadline, offered(essay)) == ("Essay", nov(20), ())
+    assert (other.name, other.deadline) == (name, deadline)
+    assert offered(other) == tuple(nov(each) for each in days)
+
+
+TITLES = [
+    ("Essay will be due Friday.", "Essay"),
+    ("Essay could be due Friday.", "Essay"),
+    ("Essay might be due Friday.", "Essay"),
+    ("Essay seems to be due Friday.", "Essay"),
+    ("Essay is unlikely to be due Friday.", "Essay"),
+    ("Essay is supposed to be due Friday.", "Essay"),
+    ("Essay will now be due Friday.", "Essay"),
+    ("The essay will sti" + "ll be due Friday.", "The essay"),
+    ("It looks like the essay will be due Friday.", "It looks like the essay"),
+    ("I think the essay is due Friday.", "I think the essay"),
+    ("Tentative: essay due Friday.", "Tentative: essay"),
+    ("Multiply the fractions by Friday.", "Multiply the fractions"),
+    ("Rumored essay due Friday.", "Rumored essay"),
+    ("Pretty sure the essay must be done by Friday.", "Pretty sure the essay must be done"),
+    ("Will be due Friday.", "Will be"),
+    ("Essay now due Monday, November 23.", "Essay now"),
+    ("Trash can due Friday.", "Trash can"),
+    ("Reading log for May due Friday.", "Reading log for May"),
+    ("Reading logs are all due Friday.", "Reading logs are all"),
+]
+
+
+def test_a_label_holding_should_be_keeps_no_milestone() -> None:
+    """A statement's label holding "should be" is not clean: the task keeps no milestone and
+    offers both dates unselected."""
+    (task,) = read_one("Draft should be due Wednesday and final copy due Friday.")
+
+    assert (task.deadline, task.milestones, offered(task)) == (None, (), (nov(18), nov(20)))
+
+
+@pytest.mark.parametrize(("words", "name"), TITLES)
+def test_a_title_drops_the_verb_phrase_right_before_its_cue(words: str, name: str) -> None:
+    """A title drops a final "be", a "to" before it with the one word before that, and then
+    linking words and modals; every other word stays, and a title with no "be" before its cue
+    stays whole."""
+    (task,) = read_one(words)
+
+    assert task.name == name
