@@ -9747,13 +9747,13 @@ def test_a_read_whose_readings_were_kept_goes_to_the_review_when_it_can_t_be_sho
     assert "<h3>Sentence Composing</h3>" in review_form(shown.text)
 
 
-def test_a_reading_the_busy_file_couldn_t_keep_is_left_to_its_label_when_a_read_goes_back(
+def test_a_reading_the_busy_file_couldn_t_keep_is_said_by_the_review_a_read_goes_back_to(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A Read whose reading the busy file couldn't keep, then the read for its page refused:
-    the way back to the review carries no line naming a screenshot by number, and the review's
-    own label says it needs reading once the review can be read. The screenshot was read once,
-    by one Read."""
+    the way back to the review carries that screenshot's hash, and the review says the reading
+    couldn't be kept by the place it shows and with "Read again.", as its Read press sends it,
+    beside its own label saying it needs reading. The screenshot was read once, by one Read."""
     with here(open_settings(tmp_path)) as browser:
         reader = Reader(monkeypatch)
         draft_id = made(browser, RED)
@@ -9776,9 +9776,9 @@ def test_a_reading_the_busy_file_couldn_t_keep_is_left_to_its_label_when_a_read_
         shown = browser.get(answer.headers["location"])
 
     assert answer.status_code == 303
-    assert imports.NOTE_COOKIE not in answer.headers.get("set-cookie", "")
-    assert not says(shown.text, imports.busy_reading(1))
-    assert "couldn&#39;t keep the reading" not in shown.text
+    assert imports.NOTE_COOKIE in answer.headers.get("set-cookie", "")
+    assert said_block(shown.text) == [imports.busy_reading(1)]
+    assert shown.text.count("couldn&#39;t keep the reading") == 1
     assert says(shown.text, imports.LABELS["ended"])
     assert reader.calls == [RED]
     assert runs == [1]
@@ -9913,9 +9913,11 @@ def test_a_read_whose_review_can_t_be_read_again_counts_the_readings_it_kept(
     """Five screenshots read by one press: a reading kept, a failure kept, a reading the busy
     writer couldn't keep, one that ended with an error nothing expects and one the store refused
     to keep. The review's read is then refused, busy or not. The way back counts the one reading
-    kept, and says nothing of the other four, nothing doubtful and no screenshot by its place;
-    the review's labels say how each one stands. Nothing is read twice, the review isn't read
-    again after the refusal, and no change lines are worked out."""
+    kept and carries the hash of the one the busy writer couldn't keep, which the review says by
+    the place it shows, with "Read again." as its Read press sends it; it says nothing of the
+    other three and nothing doubtful, and the review's labels say how each one stands. Nothing is
+    read twice, the review isn't read again after the refusal, and no change lines are worked
+    out."""
     with here(open_settings(tmp_path)) as browser:
         reader = Reader(monkeypatch)
         reader.answers[BLUE] = ScreenshotAnswer(None, "model_refused", 10, 5)
@@ -9940,14 +9942,14 @@ def test_a_read_whose_review_can_t_be_read_again_counts_the_readings_it_kept(
     assert sorted(reader.calls) == sorted([RED, BLUE, GREEN, YELLOW, VIOLET])
     assert shown.status_code == 200
     assert lines_in(TOLD.search(shown.text)) == [KEPT_ONE]
-    assert said_block(shown.text) == []
+    assert said_block(shown.text) == [imports.busy_reading(3)]
     assert says(shown.text, "Screenshot 1 · Read.")
     assert says(shown.text, f"Screenshot 2 · {imports.FAILED['model_refused']}")
     assert says(shown.text, f"Screenshot 3 · {imports.LABELS['ended']}")
     assert says(shown.text, f"Screenshot 4 · {imports.LABELS['ended']}")
     assert says(shown.text, f"Screenshot 5 · {imports.LABELS['ended']}")
     assert not says(shown.text, imports.READINGS_UNCONFIRMED)
-    assert "couldn&#39;t keep the reading" not in shown.text
+    assert shown.text.count("couldn&#39;t keep the reading") == 1
 
 
 def test_a_read_whose_review_can_t_be_read_again_counts_every_reading_it_kept(
@@ -10016,14 +10018,15 @@ ROWS_REFUSED: Final = {
 the store call refused."""
 
 
-def assert_only_changes_and_count(shown: Answer, told: list[str]) -> None:
+def assert_only_changes_and_count(shown: Answer, told: list[str], busy: Sequence[str] = ()) -> None:
     """The visit after a Read press whose rows couldn't be built: what the press changed in the
-    said block, ``told`` in the status block, and no line naming a screenshot by its place, no
-    review-wide total, and no line page-building added."""
+    said block, then ``busy``, the lines the review says of the readings the busy writer couldn't
+    keep, by the places it shows; ``told`` in the status block, and no other line naming a
+    screenshot by its place, no review-wide total, and no line page-building added."""
     assert shown.status_code == 200
-    assert said_block(shown.text) == [CHANGED]
+    assert said_block(shown.text) == [CHANGED, *busy]
     assert lines_in(TOLD.search(shown.text)) == told
-    assert "couldn&#39;t keep the reading" not in shown.text
+    assert shown.text.count("couldn&#39;t keep the reading") == len(busy)
     assert TOTALS.search(shown.text) is None
     assert not says(shown.text, imports.SAID["no_name_check"])
     assert not says(shown.text, imports.READINGS_UNCONFIRMED)
@@ -10036,9 +10039,10 @@ def test_a_read_whose_rows_can_t_be_built_keeps_what_it_changed_and_counts_its_k
     """Five screenshots read by one press: a reading kept, a failure kept, a reading the busy
     writer couldn't keep, one unfinished and one the store refused to keep. The review is read
     again, then building its rows is refused, busy or not, or after a line was added to the
-    press's own. The way back keeps what the press changed and counts the one reading kept,
-    with no numbered busy line, no review-wide total and no added line. Change lines are worked
-    out once, no store call follows the refused one, and nothing is read twice."""
+    press's own. The way back keeps what the press changed and counts the one reading kept, and
+    the review says the reading the busy writer couldn't keep by the place it shows, with no
+    review-wide total and no added line. Change lines are worked out once, no store call follows
+    the refused one, and nothing is read twice."""
     where, refusal, refused = ROWS_REFUSED[case]
     with here(open_settings(tmp_path)) as browser:
         reader = Reader(monkeypatch)
@@ -10064,7 +10068,7 @@ def test_a_read_whose_rows_can_t_be_built_keeps_what_it_changed_and_counts_its_k
     assert later == [refused]
     assert changes == [1]
     assert sorted(reader.calls) == sorted([RED, BLUE, GREEN, YELLOW, VIOLET])
-    assert_only_changes_and_count(shown, [KEPT_ONE])
+    assert_only_changes_and_count(shown, [KEPT_ONE], [imports.busy_reading(3)])
     assert says(shown.text, f"Screenshot 3 · {imports.LABELS['ended']}")
 
 
@@ -10073,9 +10077,10 @@ def test_a_read_whose_rows_can_t_be_built_names_no_screenshot_removed_before_the
 ) -> None:
     """Three screenshots read, the second's reading refused by a busy writer, then building the
     rows refused; before the way back is followed, the first screenshot is removed elsewhere.
-    The visit keeps what the press changed and counts the two readings kept, and says nothing
-    of a screenshot by the place it had: the one that was second is now screenshot 1, and its
-    own label says it needs reading."""
+    The visit keeps what the press changed and counts the two readings kept, and names no
+    screenshot by the place it had: the one that was second is now screenshot 1, the line about
+    the reading the busy writer couldn't keep names it so, and its own label says it needs
+    reading."""
     with here(open_settings(tmp_path)) as browser:
         reader = Reader(monkeypatch)
         draft_id = made(browser, RED, BLUE, GREEN)
@@ -10101,7 +10106,9 @@ def test_a_read_whose_rows_can_t_be_built_names_no_screenshot_removed_before_the
     assert left == [busy, third]
     assert sorted(reader.calls) == sorted([RED, BLUE, GREEN])
     assert_only_changes_and_count(
-        shown, ["Blossom confirmed that this attempt kept the readings of 2 screenshots."]
+        shown,
+        ["Blossom confirmed that this attempt kept the readings of 2 screenshots."],
+        [imports.busy_reading(1)],
     )
     assert says(shown.text, f"Screenshot 1 · {imports.LABELS['ended']}")
 

@@ -55,9 +55,17 @@ answers with says the screenshot wasn't sent to be read, by its place only while
 it and with "Press Read to send it." only when Read sends it; a press whose store was busy as it
 kept the reading says the reading couldn't be kept. Every Read press, Upload and read and Replace
 and read says it the same way.
+
+When the review can't be read again, or its rows built, after a press's read, the page its way
+back lands on still says which screenshots weren't sent and which readings couldn't be kept, in
+the same words and by the same rules, beside the count of readings the press confirmed it kept.
+A page decides once, from the review as it reads it, whether a read is under way: when that
+read's deadline has passed, the line about it, the line in place of Read and the Read press all
+treat it as over, and the page calls no reader.
 """
 
 import base64
+import hashlib
 import html
 import json
 import pathlib
@@ -77,6 +85,7 @@ from blossom.anthropic_client import ReadFailure, ScreenshotAnswer
 from blossom.app import create_app
 from blossom.intake import CardsRead, PortalCard, Reading, read_cards
 from blossom.routes import imports
+from blossom.screenshot_reading import ReadOutcome
 from blossom.screenshot_review import ChangeTold, ClearedRow
 from blossom.screenshots import KEY_INSTANT, homework_assembly
 from blossom.settings import Settings
@@ -4015,3 +4024,329 @@ def test_a_note_s_unsent_screenshots_are_read_strictly() -> None:
     for sent in (facts, imports.PressFacts(unsent=(digest,))):
         value = imports.note_for(key, draft_id, ["a"], facts=sent)
         assert imports.note_read(key, draft_id, value) == imports.Note(["a"], [], [], (), sent)
+
+
+# ------------------------------------------------------------------ a second refusal after a read
+
+CONFIRMED_ONE: Final = "Blossom confirmed that this attempt kept the reading of 1 screenshot."
+"""The way back's count of the readings a press confirmed it kept, written out here so a change
+to its words fails here."""
+SECOND_REFUSED: Final = {
+    "upload and read, the review read again": ("upload and read", "review"),
+    "replace and read, the review read again": ("replace and read", "review"),
+    "read, the review read again": ("read", "review"),
+    "read, its rows": ("read", "rows"),
+}
+"""A press, and what the household's file refuses once its read is done: reading the review again
+for the press's answer, or building the review's rows for a Read press's own page."""
+SECOND_RACED: Final = {
+    "nobody touches it": {
+        "while its image loads": f"{UNSENT_TWO} {SEND_IT}",
+        "while its reading is kept": f"{BUSY_TWO} Read again.",
+    },
+    "the other browser removes it": {
+        "while its image loads": UNSENT_UNPLACED,
+        "while its reading is kept": BUSY_UNPLACED,
+    },
+}
+"""What another browser does before the way back is followed, and the line the landing says for
+each place the store was busy."""
+
+
+def busy_for_green(patch: pytest.MonkeyPatch, browser: TestClient, lock: str) -> None:
+    """While ``patch`` holds, the store is busy for GREEN's screenshot alone at ``lock``: as a read
+    loads its prepared PNG, before any reader call, or as it keeps the reading the reader gave.
+    Every other screenshot is read and kept."""
+    store = state_of(browser).import_drafts
+    if lock == "while its image loads":
+        real_png = store.image_png
+
+        def png_of(*args: Any, **kwargs: Any) -> bytes:  # noqa: ANN401
+            found = real_png(*args, **kwargs)
+            if found == GREEN:
+                raise StoreBusy
+            return found
+
+        patch.setattr(store, "image_png", png_of)
+        return
+    real_keep = store.store_reading
+    green = hashlib.sha256(GREEN).hexdigest()
+
+    def keep(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        if kwargs.get("sha256") == green:
+            raise WriterBusy
+        return real_keep(*args, **kwargs)
+
+    patch.setattr(store, "store_reading", keep)
+
+
+def refused_after_the_read(patch: pytest.MonkeyPatch, browser: TestClient, where: str) -> None:
+    """While ``patch`` holds, once a press's read is done, the household's file refuses reading
+    the review again (``where`` is "review"), or building its rows ("rows")."""
+    store = state_of(browser).import_drafts
+    real_named = imports.read_named
+
+    async def then_refused(*args: Any) -> object:  # noqa: ANN401
+        outcome = await real_named(*args)
+        if where == "review":
+            patch.setattr(store, "snapshot", busy_store(StoreBusy))
+        else:
+            patch.setattr(imports, "rows_of", refusing_tables)
+        return outcome
+
+    patch.setattr(imports, "read_named", then_refused)
+
+
+@pytest.mark.parametrize("between", list(SECOND_RACED))
+@pytest.mark.parametrize("lock", list(BUSY_AT))
+@pytest.mark.parametrize("case", list(SECOND_REFUSED))
+def test_a_way_back_after_a_second_refusal_says_what_the_read_did(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_property: Callable[[str, object], None],
+    case: str,
+    lock: str,
+    between: str,
+) -> None:
+    """Upload and read adds GREEN and AMBER, Replace and read puts GREEN in Screenshot 2's place,
+    or a Read press sends GREEN and AMBER, and the store is busy for GREEN alone: as its image
+    loads, so no reader call is made for it, or as its reading is kept, after one call. Then the
+    household's file refuses reading the review again, or building a Read press's rows, so the
+    press answers with its way back. Before it is followed, another browser removes GREEN, or
+    nobody touches it. The landing says GREEN wasn't sent, or its reading couldn't be kept, as the
+    reader's calls for it say: by its place with what to do only while its list holds it and its
+    Read press sends it, and with no place otherwise. AMBER's reading is kept, and the count of
+    readings the press confirmed it kept stays beside it. No reading of GREEN is kept, the landing
+    calls no reader, and the note's whole header stays within 4,096 bytes."""
+    how, where = SECOND_REFUSED[case]
+    for_it, _ = BUSY_AT[lock]
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE) if how == "replace and read" else made(browser, RED)
+        review = f"/parent/imports/{draft_id}"
+        browser.post(f"{review}/read", data=read_form(browser.get(review).text))
+        form: dict[str, str] = {}
+        if how == "read":
+            assert upload(browser, GREEN, AMBER, form={}, to=f"{review}/images").status_code == 303
+            form = read_form(browser.get(review).text)
+        with monkeypatch.context() as patch:
+            busy_for_green(patch, browser, lock)
+            refused_after_the_read(patch, browser, where)
+            if how == "upload and read":
+                sent = upload(browser, GREEN, AMBER, form=READ_NOW, to=f"{review}/images")
+            elif how == "replace and read":
+                second = images_of(browser, draft_id)[1]
+                sent = replace_with(browser, draft_id, second, GREEN, form=READ_NOW)
+            else:
+                sent = browser.post(f"{review}/read", data=form)
+        green = images_of(browser, draft_id)[1]
+        if between == "the other browser removes it":
+            other = other_browser(browser)
+            assert other.post(f"{review}/images/{green}/remove").status_code == 303
+        calls = list(reader.calls)
+        header = note_header(sent)
+        page = browser.get(sent.headers["location"]).text
+        student = state_of(browser).project_state.student_id()
+        stored = state_of(browser).import_drafts.snapshot(student, draft_id)
+
+    offered = f'action="{review}/read"' in page
+    told = lines_in(TOLD.search(page))
+    record_property("problem_lines", busy_problems(page))
+    record_property("read_form_ids", read_form(page)["images"] if offered else None)
+    record_property("green_id", green)
+    record_property("told", told)
+    record_property("calls_for_it", calls.count(GREEN))
+    record_property("note_header_bytes", len(header.encode()))
+    earlier = [RED, BLUE] if how == "replace and read" else [RED]
+    sibling = [] if how == "replace and read" else [AMBER]
+    gone = between == "the other browser removes it"
+    assert sent.status_code == 303, sent.text[:400]
+    assert sorted(calls) == sorted([*earlier, *sibling, *([GREEN] * for_it)])
+    assert reader.calls == calls
+    assert hashlib.sha256(GREEN).hexdigest() not in {reading.sha256 for reading in stored.readings}
+    assert [image.image_id == green for image in stored.images].count(True) == (0 if gone else 1)
+    assert busy_problems(page) == [SECOND_RACED[between][lock]]
+    if gone:
+        assert not offered
+    else:
+        assert read_form(page)["images"] == green
+    held, read = len(stored.images), sum(1 for image in stored.images if image.read)
+    if how == "upload and read":
+        receipt = f"2 more screenshots uploaded. {held} in this review, {read} read."
+        assert told == [receipt, CONFIRMED_ONE]
+    elif how == "replace and read":
+        assert told == ["A screenshot was replaced." if gone else "Screenshot 2 was replaced."]
+    else:
+        assert told == [CONFIRMED_ONE]
+    assert len(header.encode()) <= NOTE_HEADER_MOST, len(header.encode())
+
+
+def test_a_read_press_s_way_back_counts_a_screenshot_it_found_no_image_for(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Read press's way back carries each screenshot its read didn't send, or whose reading it
+    couldn't keep, by its image's hash in the review as the press found it. One with no image
+    there is carried by a hash no screenshot has, and the review counts it with no place and
+    nothing to do, beside the one it names by its place. Showing it calls no reader."""
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        review = f"/parent/imports/{draft_id}"
+        state = state_of(browser)
+        found = state.import_drafts.snapshot(state.project_state.student_id(), draft_id)
+        [red, blue] = found.images
+        outcome = ReadOutcome(started=True, busy=(red.image_id, "f" * 32), unsent=("e" * 32,))
+        facts = imports.read_facts(found, outcome)
+        note = imports.note_for(state.result_key, draft_id, [], facts=facts)
+        cookie = f"{imports.NOTE_COOKIE}={note}".encode()
+        page = other_browser(browser).get(review, headers={b"Cookie": cookie}).text
+
+    assert facts == imports.PressFacts(
+        busy=(red.sha256, imports.NO_IMAGE), unsent=(imports.NO_IMAGE,)
+    )
+    assert imports.NO_IMAGE not in {red.sha256, blue.sha256}
+    assert imports.read_facts(found, None) == imports.NO_FACTS
+    assert busy_problems(page) == [imports.busy_reading(1), BUSY_UNPLACED, UNSENT_UNPLACED]
+    assert reader.calls == []
+
+
+# ------------------------------------------------------------------ one decision per page load
+
+AT_THE_DEADLINE: Final = (
+    "the read is still running",
+    "the read runs out of time as the page is shown",
+    "another read is current",
+    "another read runs out of time as the page is shown",
+)
+"""What the read a press met is when its landing is shown: still current, at its deadline just
+after the page read the review, ended while another is current, or ended while another reaches
+its deadline just after the page read the review."""
+
+
+def due_after_the_next_snapshot(
+    patch: pytest.MonkeyPatch, browser: TestClient, clock: FakeTime
+) -> None:
+    """While ``patch`` holds, the clock attempts are timed on reaches the deadline of the read the
+    store's next snapshot shows as current, right after that snapshot returns: the read runs out
+    of time between the page reading the review and showing it."""
+    store = state_of(browser).import_drafts
+    real = store.snapshot
+
+    def then_due(*args: Any, **kwargs: Any) -> object:  # noqa: ANN401
+        found = real(*args, **kwargs)
+        patch.setattr(store, "snapshot", real)
+        if found.attempt_ends is not None:
+            clock.advance(found.attempt_ends - clock())
+        return found
+
+    patch.setattr(store, "snapshot", then_due)
+
+
+@pytest.mark.parametrize("how", ["upload and read", "replace and read"])
+@pytest.mark.parametrize("between", AT_THE_DEADLINE)
+def test_a_landing_decides_once_whether_the_read_its_press_met_is_under_way(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, between: str, how: str
+) -> None:
+    """A read is forced current over every screenshot of the review, and Upload and read adds a
+    screenshot, or Replace and read puts one in Screenshot 2's place: nothing is read. When the
+    landing reads the review, that read is current, or it ended and another is current; in two of
+    the cases, the current read's deadline passes right after the landing reads the review and
+    before it is shown. A read still current is said with the time it ends, in the problem lines
+    and in place of Read. One that reached its deadline is over for the whole page: the past-tense
+    line, no line in place of Read, and Read offered for every unread screenshot. The landing
+    calls no reader."""
+    reader = Reader(monkeypatch)
+    clock = FakeTime()
+    with here_on(open_settings(tmp_path), clock) as browser:
+        state = state_of(browser)
+        store = state.import_drafts
+        student = state.project_state.student_id()
+        draft_id = made(browser, RED) if how == "upload and read" else made(browser, RED, BLUE)
+        review = f"/parent/imports/{draft_id}"
+        attempt = store.start_attempt(student, draft_id, images_of(browser, draft_id))
+        assert attempt is not None
+        if how == "upload and read":
+            sent = upload(browser, GREEN, form=READ_NOW, to=f"{review}/images")
+        else:
+            second = images_of(browser, draft_id)[1]
+            sent = replace_with(browser, draft_id, second, GREEN, form=READ_NOW)
+        if between.startswith("another read"):
+            assert store.end_attempt(student, draft_id, attempt.attempt_id)
+            clock.advance(1)
+            assert store.start_attempt(student, draft_id, images_of(browser, draft_id))
+        shown = {shown_under_way(browser, draft_id)}
+        with monkeypatch.context() as patch:
+            if between.endswith("as the page is shown"):
+                due_after_the_next_snapshot(patch, browser, clock)
+            page = browser.get(sent.headers["location"]).text
+        shown.add(shown_under_way(browser, draft_id))
+        held = images_of(browser, draft_id)
+
+    assert sent.status_code == 303, sent.text[:400]
+    assert reader.calls == []
+    assert None not in shown or between.endswith("as the page is shown")
+    if between == "the read is still running":
+        [line] = under_way_lines(page)
+        assert line in shown
+    else:
+        assert under_way_lines(page) == [UNDER_WAY_PAST]
+    if between.endswith("as the page is shown"):
+        assert OWN_UNDER_WAY.findall(page) == []
+        assert read_form(page)["images"] == ",".join(held)
+    else:
+        [own] = OWN_UNDER_WAY.findall(page)
+        assert own in shown
+        assert f'action="{review}/read"' not in page
+
+
+@pytest.mark.parametrize("deadline", ["ahead", "reached as the page is shown"])
+@pytest.mark.parametrize("shown_by", ["the review", "a read press"])
+def test_a_page_s_line_in_place_of_read_and_its_read_press_agree_at_the_deadline(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, shown_by: str, deadline: str
+) -> None:
+    """A read is forced current over both screenshots of a review, and the review is shown with
+    no note, or a Read press meets that read and starts none. With the deadline still ahead, the
+    page says reading is under way in place of Read and offers no Read press; when the deadline
+    passes right after the page read the review and before it is shown, the page has no such
+    line and offers Read for both screenshots. Neither page calls a reader."""
+    reader = Reader(monkeypatch)
+    clock = FakeTime()
+    with here_on(open_settings(tmp_path), clock) as browser:
+        state = state_of(browser)
+        store = state.import_drafts
+        student = state.project_state.student_id()
+        draft_id = made(browser, RED, BLUE)
+        review = f"/parent/imports/{draft_id}"
+        form = read_form(browser.get(review).text)
+        assert store.start_attempt(student, draft_id, images_of(browser, draft_id))
+        shown = {shown_under_way(browser, draft_id)}
+        due = deadline != "ahead"
+        with monkeypatch.context() as patch:
+            if shown_by == "a read press":
+                real_named = imports.read_named
+
+                async def then_due(*args: Any) -> object:  # noqa: ANN401
+                    outcome = await real_named(*args)
+                    if due:
+                        due_after_the_next_snapshot(patch, browser, clock)
+                    return outcome
+
+                patch.setattr(imports, "read_named", then_due)
+                answer = browser.post(f"{review}/read", data=form)
+            else:
+                if due:
+                    due_after_the_next_snapshot(patch, browser, clock)
+                answer = browser.get(review)
+        shown.add(shown_under_way(browser, draft_id))
+        held = images_of(browser, draft_id)
+
+    page = answer.text
+    assert answer.status_code == 200, page[:400]
+    assert reader.calls == []
+    if due:
+        assert OWN_UNDER_WAY.findall(page) == []
+        assert read_form(page)["images"] == ",".join(held)
+    else:
+        [own] = OWN_UNDER_WAY.findall(page)
+        assert own in shown
+        assert f'action="{review}/read"' not in page
