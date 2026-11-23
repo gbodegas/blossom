@@ -49,6 +49,12 @@ An Upload and read or a Replace and read that read nothing because a read was un
 reading is under way, with the time it ends, only while the page it lands on shows that same
 read as current; otherwise it says a read was already under way, so the press didn't start
 another, and the page offers Read as it would for any other unread screenshot.
+
+A press whose store was busy as it loaded a screenshot sent nothing to be read, and the page it
+answers with says the screenshot wasn't sent to be read, by its place only while the list holds
+it and with "Press Read to send it." only when Read sends it; a press whose store was busy as it
+kept the reading says the reading couldn't be kept. Every Read press, Upload and read and Replace
+and read says it the same way.
 """
 
 import base64
@@ -3720,3 +3726,292 @@ def test_an_older_note_s_under_way_line_shows_once_as_it_was_written(
     assert OWN_UNDER_WAY.findall(page) == []
     assert lines_in(TOLD.search(page)) == [FIRST_RECEIPT]
     assert read_form(page)["images"] == ",".join(held)
+
+
+# ------------------------------------------------------------------ a screenshot not sent
+
+UNSENT_TWO: Final = "Blossom was busy, so screenshot 2 wasn't sent to be read."
+UNSENT_THREE: Final = "Blossom was busy, so screenshot 3 wasn't sent to be read."
+SEND_IT: Final = "Press Read to send it."
+UNSENT_UNPLACED: Final = "Blossom was busy, so a screenshot wasn't sent to be read."
+UNSENT_TWO_GONE: Final = "Blossom was busy, so 2 screenshots weren't sent to be read."
+"""What a page says of a screenshot a busy store kept its press from sending, written out here so
+a change to its words fails here."""
+BUSY_AT: Final = {
+    "while its image loads": (0, f"{UNSENT_TWO} {SEND_IT}"),
+    "while its reading is kept": (1, f"{BUSY_TWO} Read again."),
+}
+"""Where the store is busy as a press reads its new screenshot: the reader calls made for it, and
+the line the page says."""
+PRESSES: Final = ["upload and read", "replace and read", "read"]
+
+
+def busy_at(patch: pytest.MonkeyPatch, browser: TestClient, lock: str) -> None:
+    """While ``patch`` holds, the store is busy at ``lock``: as a read loads a screenshot's
+    prepared PNG, before any reader call, or as it keeps the reading the reader gave."""
+    if lock == "while its image loads":
+        patch.setattr(state_of(browser).import_drafts, "image_png", busy_store(StoreBusy))
+    else:
+        busy_for(patch, browser, None)
+
+
+def busy_problems(page: str) -> list[str]:
+    """The lines of a page's problems that say Blossom was busy."""
+    return [line for line in lines_in(PROBLEM.search(page)) if line.startswith("Blossom was busy")]
+
+
+@pytest.mark.parametrize("lock", list(BUSY_AT))
+@pytest.mark.parametrize("how", PRESSES)
+def test_a_busy_store_says_whether_the_screenshot_was_sent_to_be_read(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_property: Callable[[str, object], None],
+    how: str,
+    lock: str,
+) -> None:
+    """Upload and read adds a second screenshot, Replace and read puts one in Screenshot 2's
+    place, or a Read press sends Screenshot 2, and the store is busy for that press alone. Busy as
+    the screenshot's image loads, no reader call is made for it, and the page says it wasn't sent
+    to be read, with "Press Read to send it."; busy as its reading is kept, one call is made and
+    the page says the reading couldn't be kept, with "Read again.". Either way no reading is kept
+    for it, its Read form sends it, and a redirect's whole note header stays within 4,096
+    bytes."""
+    for_it, expected = BUSY_AT[lock]
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE) if how == "replace and read" else made(browser, RED)
+        review = f"/parent/imports/{draft_id}"
+        browser.post(f"{review}/read", data=read_form(browser.get(review).text))
+        form: dict[str, str] = {}
+        if how == "read":
+            assert upload(browser, GREEN, form={}, to=f"{review}/images").status_code == 303
+            form = read_form(browser.get(review).text)
+        with monkeypatch.context() as patch:
+            busy_at(patch, browser, lock)
+            if how == "upload and read":
+                sent = upload(browser, GREEN, form=READ_NOW, to=f"{review}/images")
+            elif how == "replace and read":
+                second = images_of(browser, draft_id)[1]
+                sent = replace_with(browser, draft_id, second, GREEN, form=READ_NOW)
+            else:
+                sent = browser.post(f"{review}/read", data=form)
+        calls = list(reader.calls)
+        header = "" if how == "read" else note_header(sent)
+        page = sent.text if how == "read" else browser.get(sent.headers["location"]).text
+        student = state_of(browser).project_state.student_id()
+        stored = state_of(browser).import_drafts.snapshot(student, draft_id)
+
+    new = stored.images[1]
+    offered = f'action="{review}/read"' in page
+    record_property("problem_lines", busy_problems(page))
+    record_property("read_form_ids", read_form(page)["images"] if offered else None)
+    record_property("new_image_id", new.image_id)
+    record_property("calls_for_it", calls.count(GREEN))
+    record_property("note_header_bytes", len(header.encode()))
+    earlier = [RED, BLUE] if how == "replace and read" else [RED]
+    assert sent.status_code == (200 if how == "read" else 303), sent.text[:400]
+    assert sorted(calls) == sorted([*earlier, *([GREEN] * for_it)])
+    assert reader.calls == calls
+    assert not new.read
+    assert new.sha256 not in {reading.sha256 for reading in stored.readings}
+    assert busy_problems(page) == [expected]
+    assert read_form(page)["images"] == new.image_id
+    assert len(header.encode()) <= NOTE_HEADER_MOST, len(header.encode())
+
+
+UNSENT_RACED: Final = {
+    "nobody touches it": (f"{UNSENT_TWO} {SEND_IT}", "it"),
+    "the other browser replaces it": (UNSENT_UNPLACED, "its replacement"),
+    "the other browser reads it": (UNSENT_TWO, None),
+    "the other browser removes it": (UNSENT_UNPLACED, None),
+}
+"""What another browser does between a press whose new screenshot a busy store kept from being
+sent and its landing: the line the landing says, and what its Read form sends (that screenshot,
+the file that replaced it, or no Read form at all)."""
+
+
+@pytest.mark.parametrize("how", ["upload and read", "replace and read"])
+@pytest.mark.parametrize("between", list(UNSENT_RACED))
+def test_a_screenshot_not_sent_is_named_only_while_the_page_shows_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, between: str, how: str
+) -> None:
+    """Browser A adds a second screenshot with Upload and read, or puts one in Screenshot 2's
+    place with Replace and read, and the store is busy as its image loads, so it isn't sent.
+    Before A follows the redirect, browser B replaces that screenshot without reading, reads it,
+    removes it, or does nothing. A's landing names it by its place only while the list holds it,
+    and says "Press Read to send it." only when its own Read form sends it; otherwise it says a
+    screenshot wasn't sent to be read. The landing calls no reader."""
+    expected, sends = UNSENT_RACED[between]
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED) if how == "upload and read" else made(browser, RED, BLUE)
+        review = f"/parent/imports/{draft_id}"
+        browser.post(f"{review}/read", data=read_form(browser.get(review).text))
+        with monkeypatch.context() as patch:
+            busy_at(patch, browser, "while its image loads")
+            if how == "upload and read":
+                sent = upload(browser, GREEN, form=READ_NOW, to=f"{review}/images")
+            else:
+                second = images_of(browser, draft_id)[1]
+                sent = replace_with(browser, draft_id, second, GREEN, form=READ_NOW)
+        new = images_of(browser, draft_id)[1]
+        other = other_browser(browser)
+        if between == "the other browser replaces it":
+            assert replace_with(other, draft_id, new, AMBER).status_code == 303
+        elif between == "the other browser reads it":
+            other.post(f"{review}/read", data=read_form(other.get(review).text))
+        elif between == "the other browser removes it":
+            assert other.post(f"{review}/images/{new}/remove").status_code == 303
+        calls = list(reader.calls)
+        page = browser.get(sent.headers["location"]).text
+        held = images_of(browser, draft_id)
+
+    earlier = [RED] if how == "upload and read" else [RED, BLUE]
+    assert sent.status_code == 303, sent.text[:400]
+    assert sorted(calls) == sorted([*earlier, *([GREEN] if between.endswith("reads it") else [])])
+    assert reader.calls == calls
+    assert busy_problems(page) == [expected]
+    if sends == "it":
+        assert read_form(page)["images"] == new
+    elif sends == "its replacement":
+        assert held[1] != new
+        assert read_form(page)["images"] == held[1]
+    else:
+        assert f'action="{review}/read"' not in page
+
+
+UNSENT_TWO_RACED: Final = {
+    "nobody touches them": [f"{UNSENT_TWO} {SEND_IT}", f"{UNSENT_THREE} {SEND_IT}"],
+    "the other browser removes both": [UNSENT_TWO_GONE],
+}
+"""What another browser does between an Upload and read whose two new screenshots a busy store
+kept from being sent and its landing, and the lines the landing says."""
+
+
+@pytest.mark.parametrize("between", list(UNSENT_TWO_RACED))
+def test_screenshots_not_sent_are_named_in_order_or_counted_once_gone(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, between: str
+) -> None:
+    """Upload and read adds two screenshots to a review of one, and the store is busy as their
+    images load, so neither is sent. With nobody touching them, the landing names each by its
+    place, in order, with "Press Read to send it.", and its Read form sends both; once another
+    browser removes both, it counts them with no place and nothing to do."""
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        review = f"/parent/imports/{draft_id}"
+        browser.post(f"{review}/read", data=read_form(browser.get(review).text))
+        with monkeypatch.context() as patch:
+            busy_at(patch, browser, "while its image loads")
+            sent = upload(browser, GREEN, AMBER, form=READ_NOW, to=f"{review}/images")
+        [_, *new] = images_of(browser, draft_id)
+        if between == "the other browser removes both":
+            other = other_browser(browser)
+            for image_id in new:
+                assert other.post(f"{review}/images/{image_id}/remove").status_code == 303
+        page = browser.get(sent.headers["location"]).text
+
+    assert sent.status_code == 303, sent.text[:400]
+    assert len(new) == 2
+    assert reader.calls == [RED]
+    assert busy_problems(page) == UNSENT_TWO_RACED[between]
+    if between == "nobody touches them":
+        assert read_form(page)["images"] == ",".join(new)
+    else:
+        assert f'action="{review}/read"' not in page
+
+
+@pytest.mark.parametrize("between", list(UNSENT_RACED))
+def test_a_read_press_names_a_screenshot_it_didn_t_send_by_the_page_it_answers_with(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, between: str
+) -> None:
+    """A Read press would send Screenshot 2, and the store is busy as its image loads, so it isn't
+    sent. Before the press reads the review again for its own page, another browser's change is
+    stood in through the store: Screenshot 2 replaced, read, removed, or nothing. The page names it
+    by its place only while it holds it, says "Press Read to send it." only when its Read form
+    sends it, and otherwise says a screenshot wasn't sent to be read."""
+    expected, sends = UNSENT_RACED[between]
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        review = f"/parent/imports/{draft_id}"
+        browser.post(f"{review}/read", data=read_form(browser.get(review).text))
+        assert upload(browser, BLUE, form={}, to=f"{review}/images").status_code == 303
+        form = read_form(browser.get(review).text)
+        [_, second] = images_of(browser, draft_id)
+        store = state_of(browser).import_drafts
+        student = state_of(browser).project_state.student_id()
+        real_png, real_named = store.image_png, imports.read_named
+
+        with monkeypatch.context() as patch:
+
+            async def then_another(*args: Any) -> object:  # noqa: ANN401
+                outcome = await real_named(*args)
+                if between == "the other browser replaces it":
+                    [(_, image)] = prepare_upload([AMBER]).images
+                    store.replace_image(student, draft_id, second, image)
+                elif between == "the other browser reads it":
+                    patch.setattr(store, "image_png", real_png)
+                    await real_named(args[0], student, draft_id, [second])
+                elif between == "the other browser removes it":
+                    store.remove_image(student, draft_id, second)
+                return outcome
+
+            busy_at(patch, browser, "while its image loads")
+            patch.setattr(imports, "read_named", then_another)
+            pressed = browser.post(f"{review}/read", data=form)
+        held = images_of(browser, draft_id)
+
+    assert pressed.status_code == 200, pressed.text[:400]
+    assert form["images"] == second
+    assert reader.calls == [RED, *([BLUE] if between.endswith("reads it") else [])]
+    assert busy_problems(pressed.text) == [expected]
+    if sends == "it":
+        assert read_form(pressed.text)["images"] == second
+    elif sends == "its replacement":
+        assert held[1] != second
+        assert read_form(pressed.text)["images"] == held[1]
+    else:
+        assert f'action="{review}/read"' not in pressed.text
+
+
+def test_a_note_s_unsent_screenshots_are_read_strictly() -> None:
+    """A note's facts may hold the hashes of the screenshots a busy store kept its press from
+    sending: kept when they are a list of 64 lowercase hex characters each, the whole part ignored
+    otherwise, with the note's lines and hashes read either way. Facts without them read as
+    before."""
+    key, draft_id = bytes(32), "0" * 32
+    digest = "d" * 64
+    facts = imports.PressFacts(added=1, read=True, busy=(digest,), unsent=(digest,))
+
+    def signed(parts: list[object]) -> str:
+        body = base64.urlsafe_b64encode(json.dumps(parts).encode()).decode()
+        return f"{body}.{imports.note_check(key, body)}"
+
+    def read(*more: object) -> imports.Note:
+        return imports.note_read(key, draft_id, signed([draft_id, ["a"], ["b"], ["c"], *more]))
+
+    whole = {"added": 1, "read": True, "busy": [digest], "unsent": [digest]}
+    assert read([], whole) == imports.Note(["a"], ["b"], ["c"], (), facts)
+    assert read([digest], {"unsent": [digest, digest]}) == imports.Note(
+        ["a"], ["b"], ["c"], (digest,), imports.PressFacts(unsent=(digest, digest))
+    )
+    malformed: tuple[object, ...] = (
+        {"unsent": [digest.upper()]},
+        {"unsent": [digest[:-1]]},
+        {"unsent": digest},
+        {"unsent": [digest, 1]},
+        {"unsent": None},
+        {"unsent": {digest: 1}},
+        {"unsent": [digest], "forged": 1},
+        {"unsent": [digest], "busy": [1]},
+        {"unsent": [digest], "added": 0},
+    )
+    for bad in malformed:
+        assert read([digest], bad) == imports.Note(["a"], ["b"], ["c"], (digest,)), bad
+    assert read([], {"added": 1, "read": True, "busy": [digest]}) == imports.Note(
+        ["a"], ["b"], ["c"], (), imports.PressFacts(added=1, read=True, busy=(digest,))
+    )
+    for sent in (facts, imports.PressFacts(unsent=(digest,))):
+        value = imports.note_for(key, draft_id, ["a"], facts=sent)
+        assert imports.note_read(key, draft_id, value) == imports.Note(["a"], [], [], (), sent)

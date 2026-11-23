@@ -350,6 +350,23 @@ def busy_unplaced(count: int) -> list[str]:
     return [f"Blossom was busy and couldn't keep the readings of {count} screenshots."]
 
 
+def unsent_reading(place: int, *, send: bool) -> str:
+    """A screenshot a busy store kept a read from sending, by its place in its review, with
+    "Press Read to send it." after it when ``send`` is true."""
+    said = f"Blossom was busy, so screenshot {place} wasn't sent to be read."
+    return f"{said} Press Read to send it." if send else said
+
+
+def unsent_unplaced(count: int) -> list[str]:
+    """Screenshots a busy store kept a read from sending that the review doesn't hold as it is
+    shown, by count alone: no place and nothing to do."""
+    if count == 0:
+        return []
+    if count == 1:
+        return ["Blossom was busy, so a screenshot wasn't sent to be read."]
+    return [f"Blossom was busy, so {count} screenshots weren't sent to be read."]
+
+
 def under_way(until: str) -> str:
     """What a press says while an attempt is current, with the time it ends."""
     return f"Reading is under way until {until}."
@@ -463,9 +480,10 @@ class PressFacts(NamedTuple):
     stood at the press: how many screenshots it added (``added``, none when 0) and whether the
     review held none before it (``first``); whether it read, so the review says how its
     screenshots read (``read``); the hashes of the screenshots whose readings the busy file
-    couldn't keep (``busy``); the hash of the screenshot a replace put in (``replaced``); and,
+    couldn't keep (``busy``); the hash of the screenshot a replace put in (``replaced``);
     when a read already under way kept it from reading, that read's deadline on the clock
-    attempts are timed on, as the store holds it (``under_way``)."""
+    attempts are timed on, as the store holds it (``under_way``); and the hashes of the
+    screenshots a busy store kept it from sending to be read (``unsent``)."""
 
     added: int = 0
     first: bool = False
@@ -473,6 +491,7 @@ class PressFacts(NamedTuple):
     busy: tuple[str, ...] = ()
     replaced: str = ""
     under_way: float | None = None
+    unsent: tuple[str, ...] = ()
 
 
 NO_FACTS: Final = PressFacts()
@@ -484,6 +503,7 @@ FACT_KINDS: Final = {
     "busy": list,
     "replaced": str,
     "under_way": float,
+    "unsent": list,
 }
 """Each key a note's facts may hold, with its one type."""
 
@@ -491,8 +511,12 @@ FACT_KINDS: Final = {
 def facts_encoded(facts: PressFacts) -> dict[str, object]:
     """A press's facts as its note carries them: only what differs from a press that did
     nothing."""
-    whole: dict[str, object] = {**facts._asdict(), "busy": list(facts.busy)}
-    plain: dict[str, object] = {**NO_FACTS._asdict(), "busy": []}
+    whole: dict[str, object] = {
+        **facts._asdict(),
+        "busy": list(facts.busy),
+        "unsent": list(facts.unsent),
+    }
+    plain: dict[str, object] = {**NO_FACTS._asdict(), "busy": [], "unsent": []}
     return {name: value for name, value in whole.items() if value != plain[name]}
 
 
@@ -507,18 +531,27 @@ def facts_read(found: object) -> PressFacts:
         return nothing
     added = found.get("added", 0)
     busy = found.get("busy", [])
+    unsent = found.get("unsent", [])
     replaced = found.get("replaced", "")
     ends = found.get("under_way")
     if "added" in found and added < 1:
         return nothing
-    if not all(isinstance(digest, str) and DIGEST_SHAPE.fullmatch(digest) for digest in busy):
+    if not all(
+        isinstance(digest, str) and DIGEST_SHAPE.fullmatch(digest) for digest in (*busy, *unsent)
+    ):
         return nothing
     if "replaced" in found and not DIGEST_SHAPE.fullmatch(replaced):
         return nothing
     if ends is not None and not float("-inf") < ends < float("inf"):
         return nothing
     return PressFacts(
-        added, found.get("first", False), found.get("read", False), tuple(busy), replaced, ends
+        added,
+        found.get("first", False),
+        found.get("read", False),
+        tuple(busy),
+        replaced,
+        ends,
+        tuple(unsent),
     )
 
 
@@ -1788,8 +1821,9 @@ async def uploaded(
     store was given, in its order. Whether a line about screenshots left unread says "Press
     Read" after it is decided when the review shows the note, by the hashes it carries. The
     count it added, and whether the review held none before it, are its commit's; the review's
-    totals, how its screenshots read and the readings the busy file couldn't keep are said when
-    the review shows the note, by its facts (``PressFacts``)."""
+    totals, how its screenshots read, the readings the busy file couldn't keep and the
+    screenshots a busy store kept it from sending are said when the review shows the note, by
+    its facts (``PressFacts``)."""
     reread: Sequence[str] = ()
     if read and resent:
         said: list[NoteLine] = [*upload_said(added._replace(duplicates=()), places, refused)]
@@ -1808,7 +1842,9 @@ async def uploaded(
         said += found.said
         told = found.told
         reread = found.reread or reread
-        facts = facts._replace(read=found.read, busy=found.busy, under_way=found.under_way)
+        facts = facts._replace(
+            read=found.read, busy=found.busy, under_way=found.under_way, unsent=found.unsent
+        )
     return to_review(state, added.draft_id, said, told, reread=reread, facts=facts)
 
 
@@ -1816,8 +1852,9 @@ class ReadAdded(NamedTuple):
     """What reading the images a press added says: its problems and status lines, the hashes of
     those images when nothing was read for them (``reread``), whether it read, so the review
     says how its screenshots read when it shows the note (``read``), the hashes of those
-    whose readings the busy file couldn't keep (``busy``), and the deadline of the read already
-    under way that kept it from reading (``under_way``)."""
+    whose readings the busy file couldn't keep (``busy``), the deadline of the read already
+    under way that kept it from reading (``under_way``), and the hashes of those a busy store
+    kept it from sending to be read (``unsent``)."""
 
     said: list[NoteLine]
     told: list[str]
@@ -1825,6 +1862,7 @@ class ReadAdded(NamedTuple):
     read: bool = False
     busy: tuple[str, ...] = ()
     under_way: float | None = None
+    unsent: tuple[str, ...] = ()
 
 
 async def read_added(
@@ -1843,8 +1881,9 @@ async def read_added(
     file refuses the read before it begins, the line carries the added images' hashes
     (``digests``), so the review says "Press Read" after it only when its Read press sends them.
     Once the read is done and the review read again, the hashes of the images whose readings the
-    busy file couldn't keep are taken from ``digests``, never from the review after, and the
-    review says those readings and how its screenshots read when it shows the note. Its note's
+    busy file couldn't keep, and of those a busy store kept it from sending, are taken from
+    ``digests``, never from the review after, and the review says them and how its screenshots
+    read when it shows the note. Its note's
     lines (problems, then status lines), or the page a store's refusal of the read answers with,
     as the Read press's."""
     if not added.added:
@@ -1881,7 +1920,8 @@ async def read_added(
     changed = await change_lines(state, draft_id, before)
     digest_of = dict(zip(added.added, digests, strict=True))
     busy = tuple(digest_of[image_id] for image_id in outcome.busy if image_id in digest_of)
-    return ReadAdded(changed, [], read=True, busy=busy)
+    unsent = tuple(digest_of[image_id] for image_id in outcome.unsent if image_id in digest_of)
+    return ReadAdded(changed, [], read=True, busy=busy, unsent=unsent)
 
 
 @router.post("/{draft_id}/images")
@@ -2160,7 +2200,9 @@ async def replace_image(request: Request, draft_id: str, image_id: str, state: S
         if isinstance(found, Response):
             return found
         said, told, reread = [*said, *found.said], found.told, found.reread
-        facts = facts._replace(read=found.read, busy=found.busy, under_way=found.under_way)
+        facts = facts._replace(
+            read=found.read, busy=found.busy, under_way=found.under_way, unsent=found.unsent
+        )
     return to_review(state, draft_id, said, told, reread=reread, facts=facts)
 
 
@@ -2227,11 +2269,13 @@ def read_lines(
     state: ApplicationState, before: DraftSnapshot, after: DraftSnapshot, outcome: ReadOutcome
 ) -> tuple[list[str], list[str]]:
     """What a Read press says on its own page, from the review as it stands after: each reading
-    the busy file couldn't keep (``busy_said``, its images found by id in the review before or
-    after), and how the review's screenshots read."""
+    the busy file couldn't keep (``busy_said``) and each screenshot a busy store kept it from
+    sending (``unsent_said``), their images found by id in the review before or after, and how
+    the review's screenshots read."""
     digest_of = {image.image_id: image.sha256 for image in (*before.images, *after.images)}
     busy = busy_said(state, after, [digest_of.get(image_id, "") for image_id in outcome.busy])
-    return busy, read_said(after, state.real_clock.now())
+    unsent = [digest_of.get(image_id, "") for image_id in outcome.unsent]
+    return [*busy, *unsent_said(state, after, unsent)], read_said(after, state.real_clock.now())
 
 
 def busy_said(state: ApplicationState, snapshot: DraftSnapshot, busy: Sequence[str]) -> list[str]:
@@ -2248,6 +2292,24 @@ def busy_said(state: ApplicationState, snapshot: DraftSnapshot, busy: Sequence[s
         if digest in held
     ]
     return [*said, *busy_unplaced(sum(1 for digest in busy if digest not in held))]
+
+
+def unsent_said(
+    state: ApplicationState, snapshot: DraftSnapshot, unsent: Sequence[str]
+) -> list[str]:
+    """The screenshots a busy store kept a read from sending, by their hashes (``unsent``), as
+    the review shown from ``snapshot`` says them: each one it holds by its place, in order, with
+    "Press Read to send it." only when its Read press sends that image (``read_offered``); then
+    the others by count alone, with no place and nothing to do."""
+    images = enumerate(snapshot.images)
+    held = {image.sha256: (index + 1, image.image_id) for index, image in images}
+    offered = read_offered(state, snapshot) or []
+    said = [
+        unsent_reading(held[digest][0], send=held[digest][1] in offered)
+        for digest in unsent
+        if digest in held
+    ]
+    return [*said, *unsent_unplaced(sum(1 for digest in unsent if digest not in held))]
 
 
 def under_way_said(
@@ -2720,6 +2782,7 @@ async def review(request: Request, draft_id: str, state: State) -> Response:
         held=still_held(found, note.reread),
     )
     said += busy_said(state, found, note.facts.busy)
+    said += unsent_said(state, found, note.facts.unsent)
     said += under_way_said(state, found, note.facts.under_way)
     told = press_told(state, found, note)
     if said or told or note.done:
