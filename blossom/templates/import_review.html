@@ -2,7 +2,7 @@
 {#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
 {% extends "base.html" %}
 {% from "import_typed_back.html" import typed_back %}
-{% from "import_upload.html" import upload_presses %}
+{% from "import_upload.html" import upload_presses, chosen_files %}
 {% block title %}Blossom - Homework screenshots{% endblock %}
 {% block content %}
   <h1>Home&shy;work screen&shy;shots</h1>
@@ -123,12 +123,12 @@
     <section class="panel" aria-labelledby="more-heading">
       <h2 id="more-heading">Add screenshots</h2>
       <p class="note" id="more-limits">{{ limits }}</p>
-      <form method="post" action="/parent/imports/{{ draft_id }}/images" enctype="multipart/form-data">
+      <form method="post" action="/parent/imports/{{ draft_id }}/images" enctype="multipart/form-data" data-pending="Uploading the screenshots">
         <div class="file-pick">
           <label class="file-choose" for="more-files">Choose screenshots</label>
           <input type="file" id="more-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="more-limits">
         </div>
-        <p class="note" role="status" data-chosen></p>
+        {{ chosen_files() }}
         {{ upload_presses("more", not no_key, rows) }}
       </form>
     </section>

@@ -6,18 +6,31 @@
   the images it added are read. "Upload without reading" sends no read field: the upload is
   stored and nothing is read. With no key only "Upload without reading" is offered, as the
   form's one press. ``prefix`` keeps the lines' ids apart on a page; ``typing`` adds the note
-  that typing in the review's fold isn't kept by this form.
+  that typing in the review's fold isn't kept by this form. Each press carries the words the
+  page script shows while it waits; the form's own words are true of either press.
 #}
 {% macro upload_presses(prefix, keyed, typing=false) %}
   {% set lost = " typing-lost" if typing else "" %}
   {% if keyed %}
     <div class="actions">
-      <button type="submit" class="primary" name="read" value="now" aria-describedby="{{ prefix }}-and-read{{ lost }}">Upload and read</button>
+      <button type="submit" class="primary" name="read" value="now" data-pending="Uploading and reading the screenshots" aria-describedby="{{ prefix }}-and-read{{ lost }}">Upload and read</button>
     </div>
     <p class="note" id="{{ prefix }}-and-read">Upload and read sends these screenshots to Blossom, then to Anthropic's API to be read.</p>
   {% endif %}
     <div class="actions">
-      <button type="submit" class="{{ 'secondary' if keyed else 'primary' }}" aria-describedby="{{ prefix }}-without{{ lost }}">Upload without reading</button>
+      <button type="submit" class="{{ 'secondary' if keyed else 'primary' }}" data-pending="Uploading the screenshots" aria-describedby="{{ prefix }}-without{{ lost }}">Upload without reading</button>
     </div>
     <p class="note" id="{{ prefix }}-without">Upload without reading keeps them in Blossom; nothing is sent to Anthropic's API until you press Read.</p>
+{% endmacro %}
+
+{#
+  What sits under every screenshot picker: the line that says choosing sends nothing, true with
+  scripts off and on; the line the page script says what was chosen in; and the list it fills
+  with each screenshot chosen, by its name, size and preview, with Remove and Replace, hidden
+  and empty until then.
+#}
+{% macro chosen_files() %}
+  <p class="note">Choosing sends nothing. The chosen screenshots stay in this browser until you press an upload button below.</p>
+  <p class="note" role="status" data-chosen></p>
+  <ul class="chosen-files" data-chosen-files hidden></ul>
 {% endmacro %}

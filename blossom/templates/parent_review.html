@@ -1,7 +1,7 @@
 {# SPDX-License-Identifier: AGPL-3.0-or-later #}
 {#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
 {% extends "base.html" %}
-{% from "import_upload.html" import upload_presses %}
+{% from "import_upload.html" import upload_presses, chosen_files %}
 {% set page = "parent" %}
 {% block title %}Blossom - Family review{% endblock %}
 {% macro steps_list(steps, title) %}
@@ -577,7 +577,8 @@
         Screenshots: the limits and when they are sent stay in view; how they are kept folds
         under its own summary. The picker's button is the field's label, so its words are the
         app's own; the browser's own button is hidden and its line says what was chosen, with
-        the count of screenshots chosen said beneath it where scripts run.
+        a line saying choosing sends nothing beneath it, and where scripts run, the count and
+        each screenshot chosen with its preview.
       #}
       {% if screenshots %}
         <div class="import-review">
@@ -590,14 +591,14 @@
             <summary>How screenshots are kept</summary>
             <p class="note" id="screenshot-disclosure">{{ screenshots.disclosure }}</p>
           </details>
-          <form method="post" action="/parent/imports" enctype="multipart/form-data">
+          <form method="post" action="/parent/imports" enctype="multipart/form-data" data-pending="Uploading the screenshots">
             <input type="hidden" name="token" value="{{ screenshots.token }}">
             <input type="hidden" name="issued" value="{{ screenshots.issued }}">
             <div class="file-pick">
               <label class="file-choose" for="screenshot-files">Choose screenshots</label>
               <input type="file" id="screenshot-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="screenshot-summary screenshot-disclosure">
             </div>
-            <p class="note" role="status" data-chosen></p>
+            {{ chosen_files() }}
             {{ upload_presses("screenshot", screenshots.keyed) }}
           </form>
         {% endif %}

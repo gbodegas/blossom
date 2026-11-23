@@ -2266,9 +2266,12 @@ pre.example {
 }
 
 /* Each screenshot is one compact row: its thumbnail at a fixed width, then its place, how it
-   stands and its links, which go under the thumbnail where the line can't hold them. Each box
-   of a card's corrections stands apart from the one above. */
-.import-review .screenshot-list li {
+   stands and its links, which go under the thumbnail where the line can't hold them. A
+   screenshot chosen and not yet sent takes the same row, its preview in place of the
+   thumbnail, then its full name, which wraps anywhere, its size, and Remove and Replace. Each
+   box of a card's corrections stands apart from the one above. */
+.import-review .screenshot-list li,
+.import-review .chosen-files li {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
@@ -2276,16 +2279,19 @@ pre.example {
   margin-block: 0.75rem;
 }
 
-.import-review .screenshot-list li > a {
+.import-review .screenshot-list li > a,
+.import-review .chosen-files li > span {
   flex: 0 0 4.5rem;
 }
 
-.import-review .screenshot-list li > div {
+.import-review .screenshot-list li > div,
+.import-review .chosen-files li > div {
   flex: 1 1 12rem;
   min-width: 0;
 }
 
-.import-review .screenshot-list img {
+.import-review .screenshot-list img,
+.import-review .chosen-files img {
   display: block;
   width: 100%;
   height: auto;
@@ -2293,7 +2299,8 @@ pre.example {
   border-radius: var(--radius-small);
 }
 
-.import-review .screenshot-list p {
+.import-review .screenshot-list p,
+.import-review .chosen-files p {
   margin: 0 0 0.35rem;
 }
 

@@ -537,7 +537,8 @@ def test_a_first_upload_form_is_used_only_within_48_hours_of_its_making(
 UPLOAD_UNKNOWN: Final = "Blossom couldn't tell whether the screenshots were uploaded."
 TRY_AGAIN: Final = "To try this upload again, choose the same screenshots below."
 AGAIN_FORM: Final = re.compile(
-    r'<form method="post" action="/parent/imports" enctype="multipart/form-data">(.*?)</form>',
+    r'<form method="post" action="/parent/imports" enctype="multipart/form-data" '
+    r'data-pending="Uploading the screenshots">(.*?)</form>',
     re.S,
 )
 
@@ -626,10 +627,11 @@ def test_the_form_of_an_uncertain_upload_waits_for_the_parent(tmp_path: pathlib.
     assert " value=" not in picker.group(0)
     assert (
         '<button type="submit" class="primary" name="read" value="now" '
+        'data-pending="Uploading and reading the screenshots" '
         'aria-describedby="again-and-read">Upload and read</button>'
     ) in form
     assert (
-        '<button type="submit" class="secondary" '
+        '<button type="submit" class="secondary" data-pending="Uploading the screenshots" '
         'aria-describedby="again-without">Upload without reading</button>'
     ) in form
     assert 'http-equiv="refresh"' not in answer.text.lower()
@@ -4880,15 +4882,22 @@ IMPORT_REVIEW_RULES = (
     "  margin-bottom: 0.5rem;\n}\n\n"
     ".import-review fieldset.choice > legend + * {\n  clear: both;\n}\n\n"
     "/* Each screenshot is one compact row: its thumbnail at a fixed width, then its place, how"
-    " it\n   stands and its links, which go under the thumbnail where the line can't hold them."
-    " Each box\n   of a card's corrections stands apart from the one above. */\n"
-    ".import-review .screenshot-list li {\n  display: flex;\n  flex-wrap: wrap;\n"
+    " it\n   stands and its links, which go under the thumbnail where the line can't hold them. A"
+    "\n   screenshot chosen and not yet sent takes the same row, its preview in place of the\n"
+    "   thumbnail, then its full name, which wraps anywhere, its size, and Remove and Replace."
+    " Each\n   box of a card's corrections stands apart from the one above. */\n"
+    ".import-review .screenshot-list li,\n.import-review .chosen-files li {\n  display: flex;\n"
+    "  flex-wrap: wrap;\n"
     "  gap: 0.75rem;\n  align-items: flex-start;\n  margin-block: 0.75rem;\n}\n\n"
-    ".import-review .screenshot-list li > a {\n  flex: 0 0 4.5rem;\n}\n\n"
-    ".import-review .screenshot-list li > div {\n  flex: 1 1 12rem;\n  min-width: 0;\n}\n\n"
-    ".import-review .screenshot-list img {\n  display: block;\n  width: 100%;\n  height: auto;\n"
+    ".import-review .screenshot-list li > a,\n.import-review .chosen-files li > span {\n"
+    "  flex: 0 0 4.5rem;\n}\n\n"
+    ".import-review .screenshot-list li > div,\n.import-review .chosen-files li > div {\n"
+    "  flex: 1 1 12rem;\n  min-width: 0;\n}\n\n"
+    ".import-review .screenshot-list img,\n.import-review .chosen-files img {\n"
+    "  display: block;\n  width: 100%;\n  height: auto;\n"
     "  border: 1px solid var(--edge);\n  border-radius: var(--radius-small);\n}\n\n"
-    ".import-review .screenshot-list p {\n  margin: 0 0 0.35rem;\n}\n\n"
+    ".import-review .screenshot-list p,\n.import-review .chosen-files p {\n"
+    "  margin: 0 0 0.35rem;\n}\n\n"
     ".import-review .steps > label {\n  margin-top: 0.75rem;\n}\n\n"
     "@media (max-width: 30rem) {\n"
     "  .import-review .panel,\n  .import-review .panel article {\n"
@@ -4905,8 +4914,8 @@ outline button, with the browser's own button hidden and the picker set apart fr
 that sends it, school text breaks where its line can't hold it while a
 control's words never do, an instruction's correction box sits under its label, two lines
 tall to start, a question's words sit inside its box, each screenshot is one compact row
-with a fixed thumbnail, and each box of a card's corrections stands apart from the one
-above."""
+with a fixed thumbnail, a screenshot chosen and not yet sent takes the same row with its
+preview, and each box of a card's corrections stands apart from the one above."""
 STYLESHEET = pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css"
 
 
@@ -4920,7 +4929,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
 
     # Strict on purpose, beside the exact rules: any text that names the class changes this
     # count, a harmless comment included, and that upkeep is accepted.
-    assert css.count("import-review") == 38
+    assert css.count("import-review") == 43
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert declared_for('.import-review article[tabindex="-1"]:focus') == [ARRIVAL_CUE]
     for landing in ("#told:focus", "#done:focus", "#outcome-heading:focus"):
@@ -5258,8 +5267,9 @@ def test_family_review_offers_screenshots_while_import_is_on(tmp_path: pathlib.P
     assert says(page.text, SCREENSHOT_SUMMARY)
     assert says(page.text, SCREENSHOT_DISCLOSURE)
     assert (
-        '<form method="post" action="/parent/imports" enctype="multipart/form-data">' in page.text
-    )
+        '<form method="post" action="/parent/imports" enctype="multipart/form-data" '
+        'data-pending="Uploading the screenshots">'
+    ) in page.text
     assert sent.status_code == 303
     draft_id = sent.headers["location"].rsplit("/", 1)[-1]
     assert f'href="/parent/imports/{draft_id}"' in listed
