@@ -10,18 +10,26 @@ exactly those.
 Choosing sends nothing: each picker carries a line that says so, a list the page script fills
 with what was chosen, and the page script holds no network call and no submit call. Each press
 carries its own busy words, and the busy-text handler keeps a named press's value.
+
+Each screenshot on the review says in words how it stands and why. One that needs attention stays
+in view above the review; one read with homework folds. The missing-name question leaves out a
+screenshot with nothing to save and names the ones it covers. Before a save, a line beside Save
+says saving fixes the screenshots; after one, a screenshot that needs attention says what can be
+done. No press but a read calls the reader.
 """
 
 import html
 import pathlib
 import re
+from typing import Any, get_args
 
 import pytest
 from fastapi.testclient import TestClient
+from markupsafe import escape
 
-from blossom.anthropic_client import ScreenshotAnswer
+from blossom.anthropic_client import ReadFailure, ScreenshotAnswer
 from blossom.routes import imports
-from tests.support import Answer, homework_answer, state_of
+from tests.support import Answer, homework_answer, homework_card, state_of
 from tests.test_import_routes import (
     BLUE,
     GREEN,
@@ -31,18 +39,26 @@ from tests.test_import_routes import (
     Reader,
     drafts,
     first_form,
+    followed,
     frozen_after_a_partial_save,
     gif,
+    her_name_answered,
     here,
     images_of,
     lines_in,
     made,
     open_settings,
+    page_post,
     png,
+    press_outside,
     read_form,
+    read_review,
     says,
+    send,
     token_of,
     uncertain_upload,
+    units_on,
+    unnamed,
     upload,
 )
 
@@ -684,3 +700,328 @@ def test_the_chosen_list_lets_go_of_its_previews_and_inserts_text_only() -> None
     assert script.count("name.textContent = file.name;") == 1
     assert script.count('whose.textContent = " " + file.name;') == 1
     assert script.count('"To change what you chose, choose again."') == 1
+
+
+# ------------------------------------------------------------------ C8: how each screenshot stands
+
+SHOT_LINE = re.compile(r"<p>(Screenshot \d+ · [^<]*)</p>")
+READ_FOLD = re.compile(r'<details class="screenshot-fold"[^>]*>.*?</details>', re.S)
+NAME_PANEL = re.compile(
+    r'<section class="panel" aria-labelledby="name-heading">.*?</section>', re.S
+)
+
+WITH_HOMEWORK = "Read. 2 assignments found."
+"""How a screenshot read as the stand-in's homework list stands: two cards, two assignments."""
+NOTHING_FOUND = "Read, but no homework was found on it."
+TEXT_ONLY = "Read, but none of it became homework: 2 cards couldn't be used."
+WITH_A_CUT_OFF_CARD = (
+    "Read, but none of it became homework: 1 card couldn't be used, 1 cut off at the "
+    "screenshot's edge."
+)
+"""How a homework list stands with no cards; with two cards that couldn't become homework; and
+with one of those and one the reader marked cut off."""
+
+SAVE_FIXES = (
+    "Saving fixes this review's screenshots, so remove or replace Screenshot 2 first to fix it "
+    "here."
+)
+"""The line beside Save while Screenshot 2 needs attention and nothing is saved."""
+AFTER_A_SAVE = (
+    "To fix it, add the right screenshot in a new upload, or enter its homework by hand from "
+    "Family review. Finish without the rest closes this review."
+)
+"""What a screenshot needing attention says once some homework from its review is saved."""
+
+
+def where_each_stands(page: str) -> dict[str, str]:
+    """Each screenshot's line as the review says it, and where it shows: "fold" inside the fold
+    of screenshots read, "above" outside it and before the review form (or on a page with no
+    form), "below" outside it and after the form."""
+    folded = "".join(READ_FOLD.findall(page))
+    form_at = page.find('id="review-form"')
+    out = {}
+    for found in SHOT_LINE.finditer(page):
+        if found.group(0) in folded:
+            where = "fold"
+        elif form_at == -1 or found.start() < form_at:
+            where = "above"
+        else:
+            where = "below"
+        out[html.unescape(found.group(1))] = where
+    return out
+
+
+def text_only() -> dict[str, Any]:
+    """A homework list whose two cards couldn't become homework: one with no title, and one
+    with no date on it or in a heading above it."""
+    return homework_answer(
+        headings=[],
+        cards=[
+            homework_card(title=None),
+            homework_card(
+                badge="DUE",
+                course="Science 8",
+                title="Vocab 4",
+                instruction=None,
+                footer=None,
+                y_top=450,
+                y_bottom=520,
+            ),
+        ],
+    )
+
+
+def cut_off() -> dict[str, Any]:
+    """A homework list with one card with no title, and one the reader marked cut off."""
+    return homework_answer(
+        headings=[],
+        cards=[
+            homework_card(title=None),
+            homework_card(title="Lab Report", clipped=True, y_top=450, y_bottom=520),
+        ],
+    )
+
+
+ATTENTION: dict[str, tuple[dict[str, Any], str]] = {
+    "a homework list with no cards": (homework_answer(cards=[]), NOTHING_FOUND),
+    "only cards that couldn't become homework": (text_only(), TEXT_ONLY),
+    "a card cut off at its edge": (cut_off(), WITH_A_CUT_OFF_CARD),
+    "not a homework list": (
+        homework_answer(image_kind="unsupported"),
+        imports.LABELS["wrong_kind"],
+    ),
+    "a grade report": (
+        homework_answer(image_kind="grade_report", headings=[], cards=[]),
+        imports.LABELS["wrong_kind"],
+    ),
+}
+"""Each stored reading that leaves a screenshot needing attention, and how its row says so."""
+
+
+@pytest.mark.parametrize("case", list(ATTENTION))
+def test_a_read_screenshot_needing_attention_says_why_above_the_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Screenshot 1 is read with homework: it folds below the review, with its own counts.
+    Screenshot 2 needs attention: its row says why in its own words and stays in view above the
+    review form, with its Remove press."""
+    answer, said = ATTENTION[case]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(browser, monkeypatch, (RED, homework_answer()), (BLUE, answer))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        [_, blue] = images_of(browser, draft_id)
+
+    assert where_each_stands(page) == {
+        f"Screenshot 1 · {WITH_HOMEWORK}": "fold",
+        f"Screenshot 2 · {said}": "above",
+    }
+    assert -1 < page.find(f'form="remove-shot-{blue}"') < page.find('id="review-form"')
+
+
+STAND_IN_FAILURES: dict[str, ScreenshotAnswer] = {
+    **{kind: ScreenshotAnswer(None, kind, 10, 5) for kind in get_args(ReadFailure)},
+    "not_valid": ScreenshotAnswer({"image_kind": "homework_list"}, None, 10, 5),
+}
+"""Each failure the stand-in reader gives: one per failure a reading call returns, and an answer
+that doesn't fit the schema."""
+
+
+@pytest.mark.parametrize("failure", list(STAND_IN_FAILURES))
+def test_a_screenshot_whose_read_failed_says_why_above_the_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Each failure the stand-in reader can give keeps its own words on Screenshot 2's row,
+    above the review form, and the Read press offers that screenshot again."""
+    reader = Reader(monkeypatch)
+    reader.answers[BLUE] = STAND_IN_FAILURES[failure]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        [_, blue] = images_of(browser, draft_id)
+
+    assert where_each_stands(page) == {
+        f"Screenshot 1 · {WITH_HOMEWORK}": "fold",
+        f"Screenshot 2 · {imports.FAILED[failure]}": "above",
+    }
+    assert read_form(page)["images"] == blue
+
+
+def test_a_lone_screenshot_with_nothing_found_is_never_folded_away(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no rows to review, a homework list with no cards says so at the top, outside any
+    fold, with its Remove press."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(browser, monkeypatch, (RED, homework_answer(cards=[])))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        [red] = images_of(browser, draft_id)
+
+    assert where_each_stands(page) == {f"Screenshot 1 · {NOTHING_FOUND}": "above"}
+    assert "screenshot-fold" not in page
+    assert f'form="remove-shot-{red}"' in page
+
+
+def test_each_screenshot_read_with_homework_counts_its_own_assignments_and_notes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Screenshot 2 holds one card of its own and a teacher's note: its row counts those alone,
+    and both screenshots fold below the review."""
+    note = homework_card(
+        badge=None,
+        course="Humanities 8",
+        title="The class project is due today.",
+        instruction=None,
+        footer=None,
+        y_top=360,
+        y_bottom=440,
+    )
+    second = homework_answer(cards=[homework_card(title="Lab Report"), note])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(browser, monkeypatch, (RED, homework_answer()), (BLUE, second))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert where_each_stands(page) == {
+        f"Screenshot 1 · {WITH_HOMEWORK}": "fold",
+        "Screenshot 2 · Read. 1 assignment found, 1 note to check.": "fold",
+    }
+
+
+# ------------------------------------------------------------------ C9: a missing name apart
+
+
+def test_the_missing_name_question_leaves_out_a_screenshot_with_nothing_to_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Screenshot 1 has rows and no name; Screenshot 2 has no cards and no name. The question
+    counts and names Screenshot 1 only, in the Student name panel; Screenshot 2's own row says it
+    has no homework, and no screenshot's row speaks of a name."""
+    nameless_and_empty = homework_answer(active_student={"name": None, "uncertain": None}, cards=[])
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(
+            browser,
+            monkeypatch,
+            (RED, unnamed("Sentence Composing")),
+            (BLUE, nameless_and_empty),
+        )
+        page = browser.get(f"/parent/imports/{draft_id}").text
+
+    panel = NAME_PANEL.search(page)
+    assert panel is not None
+    assert says(
+        panel.group(0),
+        "No student name was found on 1 screenshot. Confirm these are her homework before saving.",
+    )
+    assert says(panel.group(0), "Screenshot 1 shows no student name.")
+    assert "Screenshot 2" not in panel.group(0)
+    assert where_each_stands(page) == {
+        "Screenshot 1 · Read. 1 assignment found.": "fold",
+        f"Screenshot 2 · {NOTHING_FOUND}": "above",
+    }
+    assert not any("name" in line for line in where_each_stands(page))
+
+
+def test_the_missing_name_question_names_every_screenshot_it_covers(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(
+            browser,
+            monkeypatch,
+            (RED, unnamed("Sentence Composing")),
+            (BLUE, unnamed("Lab Report")),
+        )
+        page = browser.get(f"/parent/imports/{draft_id}").text
+
+    panel = NAME_PANEL.search(page)
+    assert panel is not None
+    assert says(panel.group(0), "No student name was found on 2 screenshots.")
+    assert says(panel.group(0), "Screenshot 1 and Screenshot 2 show no student name.")
+
+
+# ------------------------------------------------------------------ C13: the frozen rule, said
+
+
+def test_before_a_save_the_line_beside_save_says_saving_fixes_the_screenshots(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While Screenshot 2 needs attention and nothing is saved, the line sits beside Save, after
+    the typing note and before the press."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(
+            browser, monkeypatch, (RED, homework_answer()), (BLUE, homework_answer(cards=[]))
+        )
+        page = her_name_answered(browser, draft_id, browser.get(f"/parent/imports/{draft_id}").text)
+
+    line = page.find(str(escape(SAVE_FIXES)))
+    assert page.count(str(escape(SAVE_FIXES))) == 1
+    assert page.find('id="typing-lost"') < line < page.find('name="press" value="save"')
+    assert not says(page, AFTER_A_SAVE)
+
+
+def test_with_every_screenshot_read_with_homework_no_line_sits_beside_save(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(browser, monkeypatch, (RED, homework_answer()))
+        page = her_name_answered(browser, draft_id, browser.get(f"/parent/imports/{draft_id}").text)
+
+    assert 'name="press" value="save"' in page
+    assert "Saving fixes" not in page
+
+
+def test_after_a_save_a_screenshot_needing_attention_says_what_can_be_done(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once some homework is saved, the screenshots stay as they are: Screenshot 2 says how to
+    fix it elsewhere, Screenshot 1 doesn't, nothing offers Remove, and the line beside Save is
+    gone."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(
+            browser, monkeypatch, (RED, homework_answer()), (BLUE, homework_answer(cards=[]))
+        )
+        page = her_name_answered(browser, draft_id, browser.get(f"/parent/imports/{draft_id}").text)
+        send(browser, draft_id, page_post(page, "save", tick=units_on(page)[:1]))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert says(page, imports.SAID["frozen"])
+    assert page.count(str(escape(AFTER_A_SAVE))) == 1
+    assert where_each_stands(page)[f"Screenshot 2 · {NOTHING_FOUND}"] == "above"
+    assert 'form="remove-shot-' not in page
+    assert "Saving fixes" not in page
+    assert 'form="finish"' in page
+
+
+# ------------------------------------------------------------------ C14: no silent reread
+
+
+def test_no_press_but_a_read_calls_the_reader(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After one Read, a visit, a reopen, Keep these answers, Save review for later, Save and
+    Finish without the rest call the stand-in reader zero times, the failed screenshot
+    included."""
+    reader = Reader(monkeypatch)
+    reader.answers[BLUE] = ScreenshotAnswer(None, "not_json", 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
+        read_once = sorted(reader.calls)
+        browser.get(f"/parent/imports/{draft_id}")
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        kept = followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        later = followed(browser, send(browser, draft_id, page_post(kept, "later")))
+        page = her_name_answered(browser, draft_id, later)
+        saved = followed(
+            browser, send(browser, draft_id, page_post(page, "save", tick=units_on(page)[:1]))
+        )
+        finished = press_outside(browser, saved, "finish")
+        student = state_of(browser).project_state.student_id()
+        closed = state_of(browser).import_drafts.snapshot(student, draft_id).closed_at
+
+    assert read_once == sorted([RED, BLUE])
+    assert sorted(reader.calls) == read_once
+    assert finished.status_code == 200
+    assert closed is not None

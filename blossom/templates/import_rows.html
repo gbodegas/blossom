@@ -202,6 +202,8 @@
   <section class="panel">
     <p class="note" id="review-status">{{ rows.status }}</p>
     <p class="helper" id="typing-lost">{{ words.typing_lost }}</p>
+    {#- Beside Save, while a screenshot needs attention and nothing is saved: saving fixes them. #}
+    {% if save_fixes and rows.offers_save %}<p class="note">{{ save_fixes }}</p>{% endif %}
     <div class="actions">
       {% if rows.offers_save %}<button type="submit" class="primary" name="press" value="save" aria-describedby="review-status">Save selected homework</button>{% endif %}
       {% if rows.offers_review %}<button type="submit" class="{% if rows.offers_save %}secondary{% else %}primary{% endif %}" name="press" value="review" formnovalidate aria-describedby="review-status">Review changes</button>{% endif %}

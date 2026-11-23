@@ -53,20 +53,27 @@ from blossom.screenshot_page import (
     ListTooLarge,
     PostRefused,
     RowsShown,
+    ShotOutcome,
     answer_field,
     cards_named,
     change_said,
+    found_said,
     kept_ref,
     labels_for,
     page_check,
     piece_text,
     rows_shown,
     same_signature,
+    save_fixes,
+    screenshots_named,
     selected_on_load,
     selection_read,
+    shot_outcomes,
     signed_action,
+    text_only_said,
 )
 from blossom.screenshot_page import SAID as PAGE_SAID
+from blossom.screenshot_page import SHOT_SAID as PAGE_SHOT_SAID
 from blossom.screenshot_posts import (
     PROGRESS_SHAPE,
     ReviewPost,
@@ -253,15 +260,6 @@ NOTHING_READ: Final = (
 )
 """What Upload and read says when the household's file refused the read of its review before
 the reading began, for a reason that isn't a busy file; the upload itself is stored."""
-
-
-def screenshots_named(places: Sequence[int]) -> str:
-    """Screenshots by their places in the review: "Screenshot 2", "Screenshot 2 and Screenshot
-    3", or "Screenshot 1, Screenshot 2, and Screenshot 3"."""
-    named = [f"Screenshot {place}" for place in places]
-    if len(named) <= 2:
-        return " and ".join(named)
-    return ", ".join(named[:-1]) + ", and " + named[-1]
 
 
 def read_disclosed(places: Sequence[int]) -> str:
@@ -1813,19 +1811,18 @@ def read_lines(
     return busy, read_said(after, state.real_clock.now())
 
 
-def label_of(snapshot: DraftSnapshot, index: int) -> str:
-    """How one image of the review stands, in ``LABELS`` and ``FAILED``'s words."""
-    image = snapshot.images[index]
-    if image.read:
-        kinds = {reading.sha256: reading.kind for reading in snapshot.readings}
-        return (
-            LABELS["read"] if kinds.get(image.sha256) == "homework_list" else LABELS["wrong_kind"]
-        )
-    if image.failure is not None:
-        return FAILED[image.failure]
-    if image.in_ended_attempt:
-        return LABELS["ended"]
-    return LABELS["unread"]
+def label_of(outcome: ShotOutcome) -> str:
+    """How one image of the review stands, in ``LABELS`` and ``FAILED``'s words, a homework
+    list read with homework followed by its own counts, and one read with none saying so."""
+    if outcome.state == "homework":
+        return f"{LABELS['read']} {found_said(outcome)}"
+    if outcome.state == "text_only":
+        return text_only_said(outcome)
+    if outcome.state == "nothing":
+        return PAGE_SHOT_SAID["nothing"]
+    if outcome.state == "failed" and outcome.failure is not None:
+        return FAILED[outcome.failure]
+    return LABELS[outcome.state]
 
 
 def picked(progress: str | None) -> frozenset[str] | None:
@@ -2094,16 +2091,19 @@ def review_page(
 ) -> Response:
     """The review: what a press did and found wrong, each in its own style, what it typed that has
     no box here and wasn't shown stored, to copy (``typed``, under ``typed_said``), its images with
-    their labels and how many are uploaded and read, those read as her homework list marked so
-    the page can fold them away, the Read press for the unread ones when a key is set and no
-    attempt is current, the form that adds more, "Discard the review" whatever is read, and
-    once anything is read, the rows with their cards, questions and what saving adds."""
+    their labels and how many are uploaded and read, those read with homework marked so the page
+    can fold them away and those needing attention marked so they stay in view, the Read press
+    for the unread ones when a key is set and no attempt is current, the form that adds more,
+    "Discard the review" whatever is read, and once anything is read, the rows with their cards,
+    questions and what saving adds. Once some homework is saved, each image needing attention
+    says what can be done; before, while one does, the line beside Save says saving fixes the
+    screenshots (``save_fixes``)."""
     keyed = model_configured(state.settings)
     unread = [image.image_id for image in snapshot.images if not image.read]
     unread_places = [index + 1 for index, image in enumerate(snapshot.images) if not image.read]
-    homework_lists = {
-        reading.sha256 for reading in snapshot.readings if reading.kind == "homework_list"
-    }
+    outcomes = shot_outcomes(snapshot.images, snapshot.readings, now=state.real_clock.now())
+    attention = [index + 1 for index, outcome in enumerate(outcomes) if outcome.attention]
+    after = PAGE_SHOT_SAID["after_a_save"]
     ends = snapshot.attempt_ends
     when = None if ends is None else ends_text(state, ends)
     return templates.TemplateResponse(
@@ -2118,11 +2118,15 @@ def review_page(
                 {
                     "id": image.image_id,
                     "place": index + 1,
-                    "label": label_of(snapshot, index),
-                    "read": image.read and image.sha256 in homework_lists,
+                    "label": label_of(outcome),
+                    "read": outcome.folds,
+                    "after": after if snapshot.frozen and outcome.attention else None,
                 }
-                for index, image in enumerate(snapshot.images)
+                for index, (image, outcome) in enumerate(
+                    zip(snapshot.images, outcomes, strict=True)
+                )
             ],
+            "save_fixes": (save_fixes(attention) if attention and not snapshot.frozen else None),
             "said": list(said),
             "told": list(told),
             "done": list(done),

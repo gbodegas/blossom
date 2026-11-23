@@ -32,15 +32,17 @@
   {% if typed %}<section class="panel">{{ typed_back(typed, typed_said) }}</section>{% endif %}
   {#
     Each screenshot as one compact row: its thumbnail at a fixed width, its place and how it
-    stands, then View screenshot and, while the review is open to changes, its Remove press on
-    one line. Once the review asks its questions, Remove points to the note that says typing in
-    the fold isn't kept.
+    stands and why, then View screenshot and, while the review is open to changes, its Remove
+    press on one line. Once the review asks its questions, Remove points to the note that says
+    typing in the fold isn't kept. Once some homework is saved, a screenshot that needs
+    attention says what can be done instead.
   #}
   {% macro shown(image) %}
         <li>
           <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}"><img src="/parent/imports/{{ draft_id }}/images/{{ image.id }}" alt="Screenshot {{ image.place }}" width="72"></a>
           <div>
             <p>Screenshot {{ image.place }} · {{ image.label }}</p>
+            {% if image.after %}<p class="note">{{ image.after }}</p>{% endif %}
             <div class="actions">
               <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot<span class="visually-hidden"> {{ image.place }}</span></a>
               {% if not frozen %}
@@ -51,9 +53,9 @@
         </li>
   {% endmacro %}
   {#
-    The screenshots read as her homework list, folded under their count: open on the page
-    when nothing is asked, and closed after the review's questions, preview and presses once
-    something is, so the questions come first whether the fold is opened or not.
+    The screenshots read with homework, folded under their count: open on the page when nothing
+    is asked, and closed after the review's questions, preview and presses once something is,
+    so the questions come first whether the fold is opened or not.
   #}
   {% macro read_fold(read, opened, classes) %}
     <details class="{{ classes }}"{% if opened %} open{% endif %}>
@@ -66,11 +68,11 @@
 
   {#
     Once the review asks its questions, a way to the first one still to answer comes first.
-    A screenshot still to read, one whose reading failed and one read as something else stay
-    in view at the top, above Read, with the note that says why reading waits or why the
-    screenshots are fixed. Before anything is read, every screenshot shows there. The page
-    names Screenshots in one heading: at the top before the review asks anything, and over
-    the screenshots read once they follow the review form.
+    A screenshot still to read, one whose reading failed, one read as something else and one
+    read with no homework on it stay in view at the top, above Read, with the note that says
+    why reading waits or why the screenshots are fixed. Before anything is read, every
+    screenshot shows there. The page names Screenshots in one heading: at the top before the
+    review asks anything, and over the screenshots read once they follow the review form.
   #}
   {% set read = images|selectattr("read")|list %}
   {% set rest = images|rejectattr("read")|list %}

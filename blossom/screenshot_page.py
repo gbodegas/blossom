@@ -18,7 +18,7 @@ import hmac
 import json
 import zlib
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from datetime import date
+from datetime import date, datetime
 from typing import Final
 
 from blossom.grades.draft import folded
@@ -76,7 +76,14 @@ from blossom.screenshot_save import (
     unit_digests,
     unreadable_dates,
 )
-from blossom.screenshots import CardPlace, ScreenshotRow, UnreadCard, note_tag
+from blossom.screenshots import (
+    CardPlace,
+    ScreenshotRow,
+    UnreadCard,
+    homework_assembly,
+    note_tag,
+)
+from blossom.stores.import_drafts import ImageState, StoredReading
 from blossom.teacher_notes import Milestone, NoteTask
 
 SAID: Final = {
@@ -907,6 +914,148 @@ def unread_shown(
             UnreadGroup(f"Screenshot {place}: {heading}" if place else heading, said, tuple(cards))
         )
     return tuple(out), forms
+
+
+def screenshots_named(places: Sequence[int]) -> str:
+    """Screenshots by their places in the review: "Screenshot 2", "Screenshot 2 and Screenshot
+    3", or "Screenshot 1, Screenshot 2, and Screenshot 3"."""
+    named = [f"Screenshot {place}" for place in places]
+    if len(named) <= 2:
+        return " and ".join(named)
+    return ", ".join(named[:-1]) + ", and " + named[-1]
+
+
+SHOT_SAID: Final = {
+    "text_only": "Read, but none of it became homework",
+    "nothing": "Read, but no homework was found on it.",
+    "after_a_save": (
+        "To fix it, add the right screenshot in a new upload, or enter its homework by hand "
+        "from Family review. Finish without the rest closes this review."
+    ),
+    "save_fixes": (
+        "Saving fixes this review's screenshots, so remove or replace {named} first to fix "
+        "{them} here."
+    ),
+}
+"""How a screenshot read as a homework list says nothing on it became homework: with text read
+that none of became homework, and with no card at all; what a screenshot needing attention says
+once some homework from its review is saved; and the line beside Save while one needs attention
+and nothing is saved. A save is refused while a screenshot isn't read, so a review with saved
+homework holds no screenshot unread or failed, and one needing attention there still has rows to
+finish beside it."""
+
+ATTENTION: Final = frozenset({"failed", "ended", "wrong_kind", "text_only", "nothing"})
+"""The states of a screenshot that needs attention: nothing from it can be saved as it stands."""
+
+
+@dataclasses.dataclass(frozen=True)
+class ShotOutcome:
+    """How one screenshot of a review stands, from what is stored alone. ``state`` is one of:
+    ``unread``, no attempt covers it; ``ended``, its attempt ended with no result kept;
+    ``failed``, its read failed for ``failure``; ``wrong_kind``, read as something other than a
+    homework list; ``homework``, some row or teacher's note was read from it, ``found``
+    assignments and ``notes`` notes to check; ``text_only``, a homework list with cards none of
+    which became homework, ``unusable`` of them couldn't be used and ``clipped`` the reader
+    marked cut off at its edge; ``nothing``, a homework list with no card."""
+
+    state: str
+    failure: str | None = None
+    found: int = 0
+    notes: int = 0
+    unusable: int = 0
+    clipped: int = 0
+
+    @property
+    def attention(self) -> bool:
+        """Whether it needs attention (``ATTENTION``)."""
+        return self.state in ATTENTION
+
+    @property
+    def folds(self) -> bool:
+        """Whether it folds with the screenshots read: only one read with homework does."""
+        return self.state == "homework"
+
+
+def shot_outcomes(
+    images: Sequence[ImageState], readings: Sequence[StoredReading], *, now: datetime
+) -> tuple[ShotOutcome, ...]:
+    """How each screenshot stands, in the order given, from the stored images and readings
+    alone: nothing is read and nothing is stored. A screenshot's counts are its own: each row
+    with a card from it counts once, as an assignment or, read from a teacher's note, as a note
+    to check, and each joined note with a card from it counts as a note to check. A screenshot
+    no row or note draws on is ``text_only`` when it holds a card that couldn't be read as a
+    row, or a reading that couldn't be decoded; else ``nothing``. A row's later copy in one
+    layer belongs to no screenshot and counts nowhere. ``now`` only stamps what the assembly
+    reads, which no count depends on."""
+    kinds = {reading.sha256: reading.kind for reading in readings}
+    found: dict[str, int] = {}
+    notes: dict[str, int] = {}
+    unusable: dict[str, int] = {}
+    clipped: dict[str, int] = {}
+    undecoded: set[str] = set()
+    if any(kind == "homework_list" for kind in kinds.values()):
+        assembly = homework_assembly(readings, now=now)
+        for row in assembly.rows:
+            counted = notes if row.reading.teacher_note is not None else found
+            for sha in {place.sha256 for place in row.sources}:
+                counted[sha] = counted.get(sha, 0) + 1
+            for source in row.joined:
+                for sha in {place.sha256 for place in source.places}:
+                    notes[sha] = notes.get(sha, 0) + 1
+        for item in assembly.unread:
+            if item.place is None:
+                undecoded.add(item.sha256)
+                continue
+            each = clipped if item.reason == "clipped" else unusable
+            each[item.sha256] = each.get(item.sha256, 0) + 1
+    out = []
+    for image in images:
+        sha = image.sha256
+        if not image.read:
+            if image.failure is not None:
+                out.append(ShotOutcome("failed", image.failure))
+            else:
+                out.append(ShotOutcome("ended" if image.in_ended_attempt else "unread"))
+        elif kinds.get(sha) != "homework_list":
+            out.append(ShotOutcome("wrong_kind"))
+        elif sha in found or sha in notes:
+            out.append(ShotOutcome("homework", found=found.get(sha, 0), notes=notes.get(sha, 0)))
+        elif sha in unusable or sha in clipped or sha in undecoded:
+            out.append(
+                ShotOutcome("text_only", unusable=unusable.get(sha, 0), clipped=clipped.get(sha, 0))
+            )
+        else:
+            out.append(ShotOutcome("nothing"))
+    return tuple(out)
+
+
+def found_said(outcome: ShotOutcome) -> str:
+    """ "2 assignments found.", or with notes to check, "1 assignment found, 1 note to check."."""
+    checks = (
+        f", {outcome.notes} note{'' if outcome.notes == 1 else 's'} to check"
+        if outcome.notes
+        else ""
+    )
+    return f"{outcome.found} assignment{'' if outcome.found == 1 else 's'} found{checks}."
+
+
+def text_only_said(outcome: ShotOutcome) -> str:
+    """ "Read, but none of it became homework: 2 cards couldn't be used.", naming cards cut off at
+    the screenshot's edge only when the reader marked one so."""
+    parts = []
+    if outcome.unusable:
+        cards = f" card{'' if outcome.unusable == 1 else 's'}"
+        parts.append(f"{outcome.unusable}{cards} couldn't be used")
+    if outcome.clipped:
+        cards = "" if parts else f" card{'' if outcome.clipped == 1 else 's'}"
+        parts.append(f"{outcome.clipped}{cards} cut off at the screenshot's edge")
+    return SHOT_SAID["text_only"] + (": " + ", ".join(parts) if parts else "") + "."
+
+
+def save_fixes(places: Sequence[int]) -> str:
+    """The line beside Save while the screenshots at these places need attention."""
+    them = "it" if len(places) == 1 else "them"
+    return SHOT_SAID["save_fixes"].format(named=screenshots_named(places), them=them)
 
 
 def fact_text(fact_kind: str, entry_day: date | None, piece_day: date | None, about: str) -> str:
@@ -1782,15 +1931,21 @@ def signed_action(action: str, page_key: bytes, version: int) -> OutsideForm:
 
 
 def _names(
-    images: Sequence[ImageName], values: Mapping[tuple[str, str], str], frozen: bool = False
+    images: Sequence[ImageName],
+    values: Mapping[tuple[str, str], str],
+    frozen: bool = False,
+    drawn: Collection[str] | None = None,
 ) -> tuple[list[NameQuestion], set[str]]:
     """The name questions, and the images whose rows wait on one. Once some homework is saved,
-    no screenshot can be removed, so none offers "Remove only this screenshot"."""
+    no screenshot can be removed, so none offers "Remove only this screenshot". The question for
+    screenshots showing no name covers only those some piece draws on (``drawn``, by SHA-256),
+    as a save checks only those, and names each one beneath it."""
     out: list[NameQuestion] = []
     waiting: set[str] = set()
-    missing = [i for i in images if i.status == "missing"]
+    missing = [i for i in images if i.status == "missing" and (drawn is None or i.sha256 in drawn)]
     if missing:
         got = values.get(("name", "missing"))
+        places = sorted(i.place for i in missing)
         out.append(
             NameQuestion(
                 answer_field("name", "missing"),
@@ -1799,6 +1954,10 @@ def _names(
                 "saving.",
                 (("confirmed", "These are her homework", got == "confirmed"),),
                 (),
+                notes=(
+                    f"{screenshots_named(places)} show{'s' if len(places) == 1 else ''} no "
+                    "student name.",
+                ),
             )
         )
         if got != "confirmed":
@@ -1968,7 +2127,8 @@ def rows_shown(
             for offer in offers(state.pieces, state.mapping, unit, entry_values, recheck)
         ]
     labels = page_labels(state, [pair for found in reworked.values() for pair in found])
-    names, waiting = _names(images, values, frozen)
+    drawn_on = {c.sha256 for piece in state.pieces for c in (*piece.cards, *piece.noted_cards)}
+    names, waiting = _names(images, values, frozen, drawn_on)
     splits = tuple(_split_question(r, places, values) for r in state.asking)
 
     def first_card(piece: Piece) -> tuple[int, int, str]:
