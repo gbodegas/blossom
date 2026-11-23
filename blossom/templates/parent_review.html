@@ -1,6 +1,7 @@
 {# SPDX-License-Identifier: AGPL-3.0-or-later #}
 {#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
 {% extends "base.html" %}
+{% from "import_upload.html" import upload_presses %}
 {% set page = "parent" %}
 {% block title %}Blossom - Family review{% endblock %}
 {% macro steps_list(steps, title) %}
@@ -597,9 +598,7 @@
               <input type="file" id="screenshot-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="screenshot-summary screenshot-disclosure">
             </div>
             <p class="note" role="status" data-chosen></p>
-            <div class="actions">
-              <button type="submit" class="primary">Upload chosen screenshots</button>
-            </div>
+            {{ upload_presses("screenshot", screenshots.keyed) }}
           </form>
         {% endif %}
         {% if screenshots.reviews %}

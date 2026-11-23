@@ -2,6 +2,7 @@
 {#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
 {% extends "base.html" %}
 {% from "import_typed_back.html" import typed_back %}
+{% from "import_upload.html" import upload_presses %}
 {% block title %}Blossom - Homework screenshots{% endblock %}
 {% block content %}
   <h1>Home&shy;work screen&shy;shots</h1>
@@ -128,9 +129,7 @@
           <input type="file" id="more-files" name="screenshots" accept="image/png,image/jpeg" multiple aria-describedby="more-limits">
         </div>
         <p class="note" role="status" data-chosen></p>
-        <div class="actions">
-          <button type="submit" class="primary"{% if rows %} aria-describedby="typing-lost"{% endif %}>Upload chosen screenshots</button>
-        </div>
+        {{ upload_presses("more", not no_key, rows) }}
       </form>
     </section>
   {% endif %}

@@ -431,8 +431,10 @@ linked note gives counts only as one more source for that due date. Her
 requests for help and her reports about turning work in stay out of every
 call.
 
-Homework screenshots go to Anthropic's API only when a parent presses Read on
-a screenshot review, and only the screenshots that page showed. A review's
+Homework screenshots go to Anthropic's API only when a parent presses Upload
+and read, which sends only the screenshots that upload added, or Read on a
+screenshot review, which sends only the unread screenshots that page named.
+Upload without reading sends none. A review's
 screenshots, what Blossom read from them, and any progress saved for later are
 removed from Blossom's database file when the review finishes, is discarded,
 or expires. The removal can wait for Blossom's next hourly cleanup, or for its

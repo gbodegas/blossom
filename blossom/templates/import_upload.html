@@ -1,0 +1,23 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{#
+  The presses of every screenshot upload form, each with its line directly after it, which its
+  button names as its description. "Upload and read" sends read=now: the upload is stored, then
+  the images it added are read. "Upload without reading" sends no read field: the upload is
+  stored and nothing is read. With no key only "Upload without reading" is offered, as the
+  form's one press. ``prefix`` keeps the lines' ids apart on a page; ``typing`` adds the note
+  that typing in the review's fold isn't kept by this form.
+#}
+{% macro upload_presses(prefix, keyed, typing=false) %}
+  {% set lost = " typing-lost" if typing else "" %}
+  {% if keyed %}
+    <div class="actions">
+      <button type="submit" class="primary" name="read" value="now" aria-describedby="{{ prefix }}-and-read{{ lost }}">Upload and read</button>
+    </div>
+    <p class="note" id="{{ prefix }}-and-read">Upload and read sends these screenshots to Blossom, then to Anthropic's API to be read.</p>
+  {% endif %}
+    <div class="actions">
+      <button type="submit" class="{{ 'secondary' if keyed else 'primary' }}" aria-describedby="{{ prefix }}-without{{ lost }}">Upload without reading</button>
+    </div>
+    <p class="note" id="{{ prefix }}-without">Upload without reading keeps them in Blossom; nothing is sent to Anthropic's API until you press Read.</p>
+{% endmacro %}

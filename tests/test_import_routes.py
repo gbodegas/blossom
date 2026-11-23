@@ -624,7 +624,14 @@ def test_the_form_of_an_uncertain_upload_waits_for_the_parent(tmp_path: pathlib.
     assert picker is not None
     assert 'name="screenshots"' in picker.group(0)
     assert " value=" not in picker.group(0)
-    assert '<button type="submit" class="primary">Upload chosen screenshots</button>' in form
+    assert (
+        '<button type="submit" class="primary" name="read" value="now" '
+        'aria-describedby="again-and-read">Upload and read</button>'
+    ) in form
+    assert (
+        '<button type="submit" class="secondary" '
+        'aria-describedby="again-without">Upload without reading</button>'
+    ) in form
     assert 'http-equiv="refresh"' not in answer.text.lower()
     assert "autofocus" not in form
     shown = html.unescape(answer.text)
@@ -5214,12 +5221,13 @@ def test_every_import_answer_is_no_store_with_the_sign_in_off(
 
 SCREENSHOT_SUMMARY: Final = (
     "Up to 10 screenshots per review, PNG or JPEG, 12 MB each. Screenshots are sent to "
-    "Anthropic's API only when you press Read."
+    "Anthropic's API only when you press Upload and read or Read."
 )
 """The approved line above the picker, written out here rather than taken from the code, so a
 change to its words fails here."""
 SCREENSHOT_DISCLOSURE: Final = (
-    "When you press Read, Blossom sends the screenshots to Anthropic's API to be read. A "
+    "Blossom sends screenshots to Anthropic's API to be read only when you press Upload and "
+    "read, which sends the ones it uploads, or Read, which sends the ones its review names. A "
     "review's screenshots, what Blossom read from them, and any progress saved for later are "
     "removed from Blossom's database file when the review finishes, is discarded, or expires, "
     "48 hours after it starts. The removal can wait for Blossom's next hourly cleanup, or its "
@@ -5596,6 +5604,7 @@ def test_no_import_address_carries_anything_but_ids() -> None:
         "import_rows.html",
         "import_said.html",
         "import_typed_back.html",
+        "import_upload.html",
     ]
     assert [(n, f) for n, found in forms.items() for f in found if 'method="post"' not in f] == []
     assert [n for n, text in pages.items() if re.search(r'href="[^"]*\?', text)] == []
@@ -11371,7 +11380,8 @@ def test_the_pane_and_the_list_say_chosen_uploaded_and_read(
         page = browser.get(sent.headers["location"]).text
         again = browser.get(sent.headers["location"]).text
 
-    assert "Upload chosen screenshots</button>" in family
+    assert "Upload and read</button>" in family
+    assert "Upload without reading</button>" in family
     assert '<p class="note" role="status" data-chosen></p>' in family
     assert lines_in(TOLD.search(page)) == ["2 screenshots uploaded. None read yet."]
     assert focused(page) == [TOLD_LANDS]
@@ -11380,7 +11390,8 @@ def test_the_pane_and_the_list_say_chosen_uploaded_and_read(
     assert says(page, "Screenshot 1 · Not read yet.")
     assert ">Read 2 screenshots</button>" in page
     assert 'data-pending="Reading the screenshots"' in page
-    assert "Upload chosen screenshots</button>" in page
+    assert "Upload and read</button>" in page
+    assert "Upload without reading</button>" in page
     assert '<p class="note" role="status" data-chosen></p>' in page
 
 
@@ -11592,9 +11603,9 @@ def described(page: str, words: str) -> list[str]:
 def test_read_and_upload_point_to_the_typing_note_while_rows_show(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Read and Upload chosen screenshots are forms of their own, which carry none of the fold's
-    typing: with rows on the page, each points to the note that says so, Read beside its
-    disclosure; before any row shows, there is no such note, and they don't."""
+    """Read and the two upload presses are forms of their own, which carry none of the fold's
+    typing: with rows on the page, each points to the note that says so, each beside its own
+    line; before any row shows, there is no such note, and they don't."""
     reader = Reader(monkeypatch)
     reader.answers[RED] = ScreenshotAnswer(homework_answer(), None, 10, 5)
     with here(open_settings(tmp_path)) as browser:
@@ -11607,10 +11618,12 @@ def test_read_and_upload_point_to_the_typing_note_while_rows_show(
 
     assert 'id="typing-lost"' not in plain
     assert described(plain, "Read") == ["read-disclosed"]
-    assert described(plain, "Upload chosen screenshots") == []
+    assert described(plain, "Upload and read") == ["more-and-read"]
+    assert described(plain, "Upload without reading") == ["more-without"]
     assert rows.count('id="typing-lost"') == 1
     assert described(rows, "Read") == ["read-disclosed", "typing-lost"]
-    assert described(rows, "Upload chosen screenshots") == ["typing-lost"]
+    assert described(rows, "Upload and read") == ["more-and-read", "typing-lost"]
+    assert described(rows, "Upload without reading") == ["more-without", "typing-lost"]
 
 
 def test_each_separate_form_says_typing_isn_t_kept(
@@ -11619,8 +11632,8 @@ def test_each_separate_form_says_typing_isn_t_kept(
     """The note that typing in the fold isn't kept by a form of its own is said once, beside the
     status line, and every button of such a form, which reads saved progress, points to it:
     Find under another name, Leave this group unsaved, Use this change, Set aside, Finish
-    without the rest, Remove, Remove only this screenshot, Read and Upload chosen
-    screenshots."""
+    without the rest, Remove, Remove only this screenshot, Read, Upload and read and Upload
+    without reading."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, first = read_review(browser, monkeypatch, (RED, homework_answer()))
         sent = upload(browser, BLUE, form={}, to=f"/parent/imports/{draft_id}/images")
@@ -11666,7 +11679,8 @@ SEPARATE_FORMS: Final = (
     "Remove",
     "Remove only this screenshot",
     "Read 1 screenshot",
-    "Upload chosen screenshots",
+    "Upload and read",
+    "Upload without reading",
 )
 """The buttons whose forms read saved progress, not the review form's typing."""
 

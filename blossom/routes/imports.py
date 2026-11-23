@@ -153,9 +153,14 @@ from blossom.uploads import Upload, UploadRefused, prepare_upload, read_upload
 PREFIX: Final = "/parent/imports"
 HOMEWORK: Final = "homework_screenshot"
 FILE_FIELD: Final = "screenshots"
-FIRST_FIELDS: Final = {"token": 32, "issued": 40}
+FIRST_FIELDS: Final = {"token": 32, "issued": 40, "read": 3}
 """The text fields a first upload's form sends, each with its most bytes: the creation token
-and the instant its page was made, read once each."""
+and the instant its page was made, read once each, and "read" when Upload and read sent it."""
+MORE_FIELDS: Final = {"read": 3}
+"""The one text field an upload to an open review may send: "read", from Upload and read."""
+READ_NOW: Final = "now"
+"""The value Upload and read sends as its "read" field; any other value is an upload that can't
+be read."""
 NOTE_COOKIE: Final = "blossom_upload_note"
 NOTE_SECONDS: Final = 300
 """How long an upload's note waits for its review to show it."""
@@ -241,10 +246,29 @@ LIMITS: Final = (
 READING: Final = "Reading the screenshots"
 """What the Read press says while it waits; the script's pulsing dots after it are its
 ellipsis."""
-DISCLOSED: Final = (
-    "These screenshots will be sent to Anthropic's API to be read. Nothing is sent until you "
-    "press Read."
+DISCLOSED: Final = "Nothing is sent until you press Read."
+"""How the line directly above the Read press ends, after naming each screenshot it sends."""
+NOTHING_READ: Final = (
+    "Blossom couldn't start reading, so nothing was read. Press Read to try again."
 )
+"""What Upload and read says when the household's file refused the read of its review before
+the reading began, for a reason that isn't a busy file; the upload itself is stored."""
+
+
+def screenshots_named(places: Sequence[int]) -> str:
+    """Screenshots by their places in the review: "Screenshot 2", "Screenshot 2 and Screenshot
+    3", or "Screenshot 1, Screenshot 2, and Screenshot 3"."""
+    named = [f"Screenshot {place}" for place in places]
+    if len(named) <= 2:
+        return " and ".join(named)
+    return ", ".join(named[:-1]) + ", and " + named[-1]
+
+
+def read_disclosed(places: Sequence[int]) -> str:
+    """The line directly above the Read press: each screenshot it sends, by its place, and that
+    nothing is sent before the press."""
+    return f"Read sends {screenshots_named(places)} to Anthropic's API to be read. {DISCLOSED}"
+
 
 templates = page_templates()
 logger = logging.getLogger(__name__)
@@ -438,12 +462,13 @@ def to_review(
 
 def uploaded_said(added: int, total: int, read: int) -> list[str]:
     """What an upload says it added, from what the review holds after it: nothing when it added
-    none; the first upload's count; or the count it added beside the review's."""
+    none; the first upload's count, with "None read yet." when none of it is read; or the count
+    it added beside the review's."""
     if added == 0:
         return []
     noun = "screenshot" if added == 1 else "screenshots"
     if added == total:
-        return [f"{added} {noun} uploaded. None read yet."]
+        return [f"{added} {noun} uploaded." + (" None read yet." if read == 0 else "")]
     return [f"{added} more {noun} uploaded. {total} in this review, {read} read."]
 
 
@@ -621,7 +646,12 @@ def unwritten_upload(
         "import_said.html",
         {
             "said": [UNKNOWN_SAID["upload"]],
-            "again": {"said": TRY_UPLOAD_AGAIN, "token": token, "issued": issued},
+            "again": {
+                "said": TRY_UPLOAD_AGAIN,
+                "token": token,
+                "issued": issued,
+                "keyed": model_configured(state.settings),
+            },
             "marks": marks_of(state),
             "page": "parent",
         },
@@ -1491,7 +1521,8 @@ async def first_upload(request: Request, state: State) -> Response:
     fields = upload.fields
     token = fields.get("token")
     in_time = issued_in_time(state, fields.get("issued"))
-    if token is None or not opaque(token) or in_time is None:
+    wanted = read_wanted(fields)
+    if token is None or not opaque(token) or in_time is None or wanted is None:
         return said_page(request, marks_of(state), UPLOAD_SAID["unreadable"], 400)
     if not in_time:
         return said_page(request, marks_of(state), SAID["too_old"], 400)
@@ -1519,8 +1550,84 @@ async def first_upload(request: Request, state: State) -> Response:
         lines = [image_refusal(place + 1, kind) for place, kind in prepared.refused]
         return said_page(request, marks_of(state), NOTHING_ADDED, 422, *lines)
     places = [place for place, _ in prepared.images]
+    return await uploaded(request, state, student, added, places, prepared.refused, read=wanted)
+
+
+def read_wanted(fields: Mapping[str, str]) -> bool | None:
+    """Whether an upload asks for its images to be read once stored: no read field, no;
+    "now", yes; any other value None, an upload that can't be read. A read field sent twice
+    never gets here, since the body is refused whole as a repeated field."""
+    value = fields.get("read")
+    if value is None:
+        return False
+    return True if value == READ_NOW else None
+
+
+async def uploaded(
+    request: Request,
+    state: ApplicationState,
+    student: str,
+    added: Added,
+    places: Sequence[int],
+    refused: Sequence[tuple[int, str]],
+    *,
+    read: bool,
+) -> Response:
+    """The way back to the review after an upload's commit, its note saying what the upload
+    stored and set aside, and, for Upload and read, what reading the images it added did."""
+    said = upload_said(added, places, refused)
+    more_said: list[str] = []
+    more_told: list[str] = []
+    if read:
+        found = await read_added(request, state, student, added)
+        if isinstance(found, Response):
+            return found
+        more_said, more_told = found
     told = await upload_told(state, added)
-    return to_review(state, added.draft_id, upload_said(added, places, prepared.refused), told)
+    return to_review(state, added.draft_id, [*said, *more_said], [*told, *more_told])
+
+
+async def read_added(
+    request: Request, state: ApplicationState, student: str, added: Added
+) -> Response | tuple[list[str], list[str]]:
+    """Upload and read, once its images are stored: the images this upload added are read, and
+    no other, through the helper the Read press reads with. A duplicate set aside and a refused
+    file were never added, and an earlier image of the review is never named. With no key, or
+    while an attempt is under way, nothing is read and the line says why. Its note's lines
+    (problems, then status lines), or the page a store's refusal of the read answers with, as
+    the Read press's."""
+    if not added.added:
+        return [], []
+    if not model_configured(state.settings):
+        return [SAID["no_key"]], []
+    draft_id = added.draft_id
+    try:
+        before = await tables_of(state, draft_id)
+    except sqlite3.Error as error:
+        noted(error)
+        return [SAID["read_busy"] if busy_file(error) else NOTHING_READ], []
+    try:
+        outcome = await read_named(state, student, draft_id, added.added)
+    except (StoreBusy, WriterBusy):
+        return [SAID["read_busy"]], []
+    except (DraftClosed, DraftExpired, DraftFrozen, DraftNotFound) as error:
+        return store_refusal(request, state, error)
+    except sqlite3.Error as error:
+        noted(error)
+        return [READINGS_UNCONFIRMED], []
+    if not outcome.started:
+        ends = outcome.under_way_until
+        return ([] if ends is None else [under_way(ends_text(state, ends))]), []
+    try:
+        after = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except (StoreBusy, WriterBusy, sqlite3.Error) as error:
+        noted(error)
+        return [], kept_readings(outcome)
+    except STORE_REFUSALS as error:
+        return store_refusal(request, state, error)
+    changed = await change_lines(state, draft_id, before)
+    busy, told = read_lines(state, after, outcome)
+    return [*changed, *busy], told
 
 
 async def upload_told(state: ApplicationState, added: Added) -> list[str]:
@@ -1541,7 +1648,8 @@ async def upload_told(state: ApplicationState, added: Added) -> list[str]:
 @router.post("/{draft_id}/images")
 async def more_images(request: Request, draft_id: str, state: State) -> Response:
     """Add an upload's images to an open review, with no version comparison; the review is
-    checked before any byte of the body is read, and again when the images are stored."""
+    checked before any byte of the body is read, and again when the images are stored. Upload
+    and read then reads the images it added."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
     try:
@@ -1557,9 +1665,12 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
         noted(error)
         return unread_page(request, state, error, upload=True)
     try:
-        upload = await body_of(request, {})
+        upload = await body_of(request, MORE_FIELDS)
     except UploadRefused as refusal:
         return refused_upload(request, state, refusal)
+    wanted = read_wanted(upload.fields)
+    if wanted is None:
+        return said_page(request, marks_of(state), UPLOAD_SAID["unreadable"], 400)
     prepared = await asyncio.to_thread(prepare_upload, upload.files)
     try:
         added = await asyncio.to_thread(
@@ -1574,8 +1685,7 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
         noted(error)
         return unwritten_page(request, state, error, UNKNOWN_SAID["upload"], upload=True)
     places = [place for place, _ in prepared.images]
-    told = await upload_told(state, added)
-    return to_review(state, draft_id, upload_said(added, places, prepared.refused), told)
+    return await uploaded(request, state, student, added, places, prepared.refused, read=wanted)
 
 
 async def tables_of(state: ApplicationState, draft_id: str) -> DraftForSave | None:
@@ -1661,6 +1771,46 @@ def until_text(state: ApplicationState, moment: datetime) -> str:
     hour = local.hour % 12 or 12
     half = "AM" if local.hour < 12 else "PM"
     return f"{local:%A}, {local:%B} {local.day}, {hour}:{local:%M} {half}"
+
+
+def ends_text(state: ApplicationState, ends: float) -> str:
+    """When an attempt whose deadline is ``ends`` on the monotonic clock ends, as the review
+    says an instant."""
+    left = max(0.0, ends - state.monotonic())
+    return until_text(state, state.real_clock.now() + timedelta(seconds=left))
+
+
+async def read_named(
+    state: ApplicationState, student: str, draft_id: str, image_ids: Sequence[str]
+) -> ReadOutcome:
+    """Read the unread images among ``image_ids`` and no other: the one way a press reads, for
+    the Read press over the images its page named and for Upload and read over the images it
+    added. An image with a stored reading is never read again; an attempt under way starts no
+    call, and the outcome says when it ends."""
+    return await read_screenshots(
+        state.import_drafts,
+        state.settings,
+        student,
+        draft_id,
+        image_ids,
+        monotonic=state.monotonic,
+        held=state.detached,
+    )
+
+
+def read_lines(
+    state: ApplicationState, after: DraftSnapshot, outcome: ReadOutcome
+) -> tuple[list[str], list[str]]:
+    """What a press that read says, from the review as it stands after: each reading the busy
+    file couldn't keep, by the image's place, and how the review's screenshots read."""
+    places = {image.image_id: index + 1 for index, image in enumerate(after.images)}
+    read_now = {image.image_id for image in after.images if image.read}
+    busy = [
+        busy_reading(places[image_id])
+        for image_id in outcome.busy
+        if image_id in places and image_id not in read_now
+    ]
+    return busy, read_said(after, state.real_clock.now())
 
 
 def label_of(snapshot: DraftSnapshot, index: int) -> str:
@@ -1950,14 +2100,12 @@ def review_page(
     once anything is read, the rows with their cards, questions and what saving adds."""
     keyed = model_configured(state.settings)
     unread = [image.image_id for image in snapshot.images if not image.read]
+    unread_places = [index + 1 for index, image in enumerate(snapshot.images) if not image.read]
     homework_lists = {
         reading.sha256 for reading in snapshot.readings if reading.kind == "homework_list"
     }
     ends = snapshot.attempt_ends
-    when = None
-    if ends is not None:
-        left = max(0.0, ends - state.monotonic())
-        when = until_text(state, state.real_clock.now() + timedelta(seconds=left))
+    when = None if ends is None else ends_text(state, ends)
     return templates.TemplateResponse(
         request,
         "import_review.html",
@@ -1996,7 +2144,7 @@ def review_page(
             "discard": signed_action("discard", snapshot.page_key, snapshot.version),
             "read_check": read_check(snapshot.page_key, unread),
             "no_key": None if keyed else SAID["no_key"],
-            "disclosed": DISCLOSED,
+            "disclosed": read_disclosed(unread_places),
             "limits": LIMITS,
             "full": len(snapshot.images) >= MOST_IMAGES_PRESENT,
             "rows": rows,
@@ -2081,15 +2229,7 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
             return review_page(request, state, found, [SAID["read_busy"]], 503)
         return said_page(request, marks_of(state), REVIEW_UNAVAILABLE, 503)
     try:
-        outcome = await read_screenshots(
-            state.import_drafts,
-            state.settings,
-            student,
-            draft_id,
-            named,
-            monotonic=state.monotonic,
-            held=state.detached,
-        )
+        outcome = await read_named(state, student, draft_id, named)
     except AttemptUnderWay:
         outcome = None
     except (StoreBusy, WriterBusy):
@@ -2113,14 +2253,8 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
     said = list(changed)
     told: list[str] = []
     if outcome is not None:
-        places = {image.image_id: index + 1 for index, image in enumerate(after.images)}
-        read_now = {image.image_id for image in after.images if image.read}
-        said += [
-            busy_reading(places[image_id])
-            for image_id in outcome.busy
-            if image_id in places and image_id not in read_now
-        ]
-        told = read_said(after, state.real_clock.now())
+        busy, told = read_lines(state, after, outcome)
+        said += busy
     try:
         rows = await rows_of(request, state, after, said)
     except sqlite3.Error as error:
@@ -5810,11 +5944,12 @@ ASIDE: Final = "Pasting the school's text stays the exact way on a computer."
 """What Family review says beside Paste school text while screenshots are offered."""
 SUMMARY: Final = (
     "Up to 10 screenshots per review, PNG or JPEG, 12 MB each. Screenshots are sent to "
-    "Anthropic's API only when you press Read."
+    "Anthropic's API only when you press Upload and read or Read."
 )
 """What Family review shows above its screenshot picker: the limits, and what is sent and when."""
 DISCLOSURE: Final = (
-    "When you press Read, Blossom sends the screenshots to Anthropic's API to be read. A "
+    "Blossom sends screenshots to Anthropic's API to be read only when you press Upload and "
+    "read, which sends the ones it uploads, or Read, which sends the ones its review names. A "
     "review's screenshots, what Blossom read from them, and any progress saved for later are "
     "removed from Blossom's database file when the review finishes, is discarded, or expires, "
     "48 hours after it starts. The removal can wait for Blossom's next hourly cleanup, or its "
@@ -5852,6 +5987,7 @@ def screenshot_entry(request: Request, state: ApplicationState) -> dict[str, obj
         "only_here": None,
         "summary": SUMMARY,
         "disclosure": DISCLOSURE,
+        "keyed": model_configured(state.settings),
         "token": new_creation_token(),
         "issued": state.real_clock.now().isoformat(),
         "reviews": reviews,
