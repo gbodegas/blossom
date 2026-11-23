@@ -12858,9 +12858,6 @@ CALL_SITES: Final = {
         imports.AFTER_SAID["busy"],
     ),
     # After a commit: what the press did, as its commit says it.
-    "upload, then her record": ("first upload", "upload_told", "student_id", 1, 303, None),
-    "upload, then the review": ("first upload", "upload_told", "snapshot", 1, 303, None),
-    "more, then her record": ("more images", "upload_told", "student_id", 1, 303, None),
     "remove, then the tables": ("remove", "tables_of", "student_id", 2, 303, None),
     "read, then the review": ("read", "read", "snapshot", 1, 303, None),
     "read, then the tables": ("read", "tables_of", "draft_for_save", 2, 200, None),
