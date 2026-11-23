@@ -352,17 +352,64 @@ def test_an_unlabeled_card_whose_due_line_has_words_and_title_is_past_the_limit_
     assert one_card(card) is None
 
 
-@pytest.mark.parametrize("footer", ["", "  "], ids=["an-empty-text", "only-spaces"])
+@pytest.mark.parametrize(
+    "footer", ["", "  ", "\t\n"], ids=["an-empty-text", "only-spaces", "a-tab-and-a-line-break"]
+)
 def test_a_due_line_with_no_words_is_no_due_line_for_a_long_first_line(footer: str) -> None:
-    """A due line that is a text with no words is no due line, as a note's due line is read:
-    the unlabeled card's long first line is read as its instruction, and the due line is kept
-    as given. The same card with a label is one that couldn't be read."""
+    """A due line that is present and is an empty text or only whitespace is no due line, as
+    a note's due line is read: the unlabeled card's long first line is read as its
+    instruction, and the due line is kept as given. The same card with a label is one that
+    couldn't be read."""
     card = one_card(a_card(badge=None, title=LONG_LINE, instruction=None, footer=footer))
     labeled = a_card(badge="DUE", title=LONG_LINE, instruction=None, footer=footer)
 
     assert card is not None
     assert (card.title, card.instruction, card.footer) == (None, LONG_LINE, footer)
     assert one_card(labeled) is None
+
+
+@pytest.mark.parametrize("missing", ["footer", "badge", "instruction"])
+def test_a_long_first_line_on_a_card_that_lacks_a_property_couldnt_be_read(missing: str) -> None:
+    """A card that lacks its due line, its label or its instruction as a property is one that
+    couldn't be read, with a long first line as with a title that fits: a due line that is
+    null or has no words is no due line, a due line that is absent is a card that doesn't fit,
+    and the move supplies no property."""
+    long_card = unlabeled(LONG_LINE)
+    fitting = unlabeled("Read page 3")
+    del long_card[missing]
+    del fitting[missing]
+
+    assert one_card(long_card) is None
+    assert one_card(fitting) is None
+
+
+@pytest.mark.parametrize(
+    "more",
+    ["11/17/2026 - Tuesday", "Due: Essay", "Then write a summary.\n11/17/2026 - Tuesday"],
+    ids=["a-day-line", "a-card-line", "a-day-line-after-a-line-break"],
+)
+def test_a_long_first_line_with_a_continuation_line_shaped_as_structure_couldnt_be_read(
+    more: str,
+) -> None:
+    """A continuation with a line shaped as a day or a card, the shapes the note rule refuses
+    in a note, leaves the card as answered, so it is one that couldn't be read: each line is
+    checked as given, before the continuation is joined to the first line. Under a title that
+    fits, the same card is kept as answered, for the note rule to refuse when its rows are
+    read."""
+    fitting = one_card(unlabeled("Read page 3", more))
+
+    assert one_card(unlabeled(LONG_LINE, more)) is None
+    assert fitting is not None
+    assert (fitting.title, fitting.instruction) == ("Read page 3", more)
+
+
+def test_a_long_first_line_shaped_as_structure_itself_couldnt_be_read() -> None:
+    """A long first line that is itself shaped as a card line is left as answered, so the card
+    is one that couldn't be read."""
+    line = "Due: " + "essay " * 60 + "draft"
+
+    assert len(line) > screenshots.TITLE_MOST
+    assert one_card(unlabeled(line)) is None
 
 
 OTHERWISE_WRONG: dict[str, dict[str, object]] = {

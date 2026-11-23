@@ -45795,6 +45795,35 @@ def test_a_printed_subject_with_a_long_first_line_is_offered_and_saved_with_its_
     ]
 
 
+def test_a_long_first_line_followed_by_a_line_shaped_as_a_day_stays_a_card_that_couldnt_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A printed English subject whose long first line is followed by a line shaped as a day
+    stays a card that couldn't be read, as the note rule refuses such a line under a title
+    that fits: the review names the unread card and offers the Spanish subject alone, and Save
+    selected homework writes Spanish alone."""
+    answer = printed_answer(
+        PRINTED_DAY,
+        printed_card("English", LONG_FIRST_LINE, "11/17/2026 - Tuesday", 200),
+        printed_card("Spanish", FULL_FIRST_LINE, None, 320),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    assert 'id="unread-heading"' in page
+    assert len(units_on(page)) == 1
+    assert courses_offered(page) == ["Spanish"]
+    assert says(after, imports.counted(1, 0, 0, 0))
+    assert [(course, due, kept) for course, _, due, kept in rows] == [
+        ("Spanish", None, FULL_FIRST_LINE)
+    ]
+
+
 def note_under(day: str, words: str) -> dict[str, object]:
     """An English 8 teacher's note alone under one day heading."""
     heading = {"text": day, "y": 150, "uncertain": None}

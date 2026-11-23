@@ -389,16 +389,20 @@ def _long_first_line(value: object) -> object:
     label null and its due line null or a text with no words, as a note's due line is read
     (``_is_note``), whose title is a text longer than that is given back with no title and
     with the title's text as its instruction, followed, when the card has an instruction, by
-    one space and that instruction. This is done only when the instruction is null or a text
-    and the whole text fits an instruction's limit (``INSTRUCTION_MOST``). Both texts are kept
-    exactly as given: nothing is cut, folded, trimmed or reworded. A mark of uncertainty that
-    names the title goes with its words and names the instruction, its reason as given.
+    one space and that instruction. This is done only when the card has its instruction as a
+    property, null or a text, when no line of the title or of the instruction, as given, is
+    shaped as a day, a card or another line the note rule refuses (``_structure_among``), and
+    when the whole text fits an instruction's limit (``INSTRUCTION_MOST``). Both texts are
+    kept exactly as given: nothing is cut, folded, trimmed or reworded. A mark of uncertainty
+    that names the title goes with its words and names the instruction, its reason as given.
 
-    Any other value is given back as it is, a labeled card and a card whose due line has words
-    among them. The value given is never changed, and the card's own check decides what is
-    kept.
+    Any other value is given back as it is, a labeled card, a card whose due line has words
+    and a card that lacks a property among them. The value given is never changed, and the
+    card's own check decides what is kept.
     """
     if not isinstance(value, dict) or value.get("badge") is not None:
+        return value
+    if "instruction" not in value:
         return value
     footer = value.get("footer")
     if footer is not None and not (isinstance(footer, str) and not footer.strip()):
@@ -407,6 +411,8 @@ def _long_first_line(value: object) -> object:
     if not isinstance(title, str) or len(title) <= TITLE_MOST:
         return value
     if more is not None and not isinstance(more, str):
+        return value
+    if _structure_among(title, more):
         return value
     whole = title if more is None else f"{title} {more}"
     if len(whole) > INSTRUCTION_MOST:
@@ -936,9 +942,15 @@ def _has_structure(card: Card) -> bool:
     """Whether a line of a note card's title or instruction, as read, before its words are
     single-spaced, is shaped as a day, a Missing line, a card or a mail program's date line,
     as a line of a pasted note that makes it suspect is."""
+    return _structure_among(card.title, card.instruction)
+
+
+def _structure_among(*texts: str | None) -> bool:
+    """Whether a line of any of the texts, as given, before its words are single-spaced, is
+    shaped as a day, a Missing line, a card or a mail program's date line."""
     return any(
         is_shaped_as_structure(line.strip())
-        for text in (card.title, card.instruction)
+        for text in texts
         if text is not None
         for line in text.splitlines()
     )
