@@ -231,6 +231,236 @@ def test_a_card_that_doesnt_fit_stays_at_its_place_as_one_that_couldnt_be_read(
     assert "Sentinel" not in reading.model_dump_json()
 
 
+# ------------------------------------------------- a long first line on an unlabeled card
+
+LONG_LINE = "Read " + "one " * 73 + "page"
+"""A first line of 301 characters, one past a title's limit."""
+ODD_LINE = " Read  The OUTSIDERS,  chapter Two " + "and  Annotate it " * 16 + " "
+"""A first line past a title's limit with inner double spaces, a leading and a trailing
+space and mixed case."""
+
+
+def unlabeled(title: object, instruction: object = None, **fields: object) -> dict[str, Any]:
+    """A card with no label and no due line, as a printed list's subject is answered."""
+    return a_card(badge=None, footer=None, title=title, instruction=instruction, **fields)
+
+
+def one_card(card: object) -> Card | None:
+    """The one card of an answer as it is checked: the card, or ``None`` for one that
+    couldn't be read."""
+    [found] = checked(an_answer(cards=[card])).cards
+    return found
+
+
+@pytest.mark.parametrize(
+    "instruction", [None, "Then answer the questions."], ids=["alone", "with-an-instruction"]
+)
+def test_a_first_line_of_exactly_the_title_limit_stays_the_title(instruction: str | None) -> None:
+    """An unlabeled card with no due line whose title is exactly 300 characters is kept as
+    answered: its title is its title and its instruction is its instruction."""
+    title = "T" * screenshots.TITLE_MOST
+    card = one_card(unlabeled(title, instruction))
+
+    assert card is not None
+    assert (card.title, card.instruction) == (title, instruction)
+
+
+def test_a_first_line_past_the_title_limit_is_read_as_the_instruction() -> None:
+    """An unlabeled card with no due line whose title is 301 characters is read with those
+    words in its instruction, exactly as given, and no title. The answer itself is left as
+    given."""
+    given = unlabeled(LONG_LINE)
+    card = one_card(given)
+
+    assert len(LONG_LINE) == screenshots.TITLE_MOST + 1
+    assert card is not None
+    assert (card.title, card.instruction) == (None, LONG_LINE)
+    assert (card.badge, card.course, card.footer) == (None, "English 8", None)
+    assert (given["title"], given["instruction"]) == (LONG_LINE, None)
+
+
+def test_a_long_first_line_is_followed_by_one_space_and_its_continuation() -> None:
+    """With an instruction, the long first line comes first, then one space, then the
+    instruction, each exactly as given."""
+    more = "Then write three sentences about it."
+    card = one_card(unlabeled(LONG_LINE, more))
+
+    assert card is not None
+    assert (card.title, card.instruction) == (None, f"{LONG_LINE} {more}")
+
+
+@pytest.mark.parametrize("more", [None, "  THEN  rest. "], ids=["alone", "with-an-instruction"])
+def test_a_long_first_line_keeps_its_wording_character_for_character(more: str | None) -> None:
+    """Inner double spaces, a leading and a trailing space and mixed case are kept as given:
+    nothing is folded, trimmed or reworded."""
+    card = one_card(unlabeled(ODD_LINE, more))
+
+    assert len(ODD_LINE) > screenshots.TITLE_MOST
+    assert card is not None
+    assert card.title is None
+    assert card.instruction == (ODD_LINE if more is None else ODD_LINE + " " + more)
+
+
+@pytest.mark.parametrize(
+    ("first", "more", "fits"),
+    [(4_000, None, True), (4_001, None, False), (301, 3_698, True), (301, 3_699, False)],
+    ids=[
+        "alone-4000",
+        "alone-4001",
+        "with-a-continuation-4000",
+        "with-a-continuation-4001",
+    ],
+)
+def test_a_long_first_line_is_moved_only_when_the_whole_text_fits_an_instruction(
+    first: int, more: int | None, fits: bool
+) -> None:
+    """The whole text, the first line or the first line, one space and the instruction, is
+    moved when it is 4,000 characters, an instruction's limit. At 4,001 nothing is moved and
+    nothing is cut: the card is one that couldn't be read."""
+    title = "T" * first
+    instruction = None if more is None else "i" * more
+    whole = title if instruction is None else f"{title} {instruction}"
+    card = one_card(unlabeled(title, instruction))
+
+    assert len(whole) == screenshots.INSTRUCTION_MOST + (0 if fits else 1)
+    if fits:
+        assert card is not None
+        assert (card.title, card.instruction) == (None, whole)
+    else:
+        assert card is None
+
+
+@pytest.mark.parametrize("badge", ["DUE", "ASSIGNED"])
+def test_a_labeled_card_with_a_title_past_the_limit_couldnt_be_read(badge: str) -> None:
+    """A card with a DUE or ASSIGNED label is checked as answered: with a title of 301
+    characters, and no due line and no instruction, it is one that couldn't be read."""
+    card = a_card(badge=badge, title=LONG_LINE, instruction=None, footer=None)
+
+    assert one_card(card) is None
+
+
+@pytest.mark.parametrize(
+    "footer", ["Due (10/8/2026)", "See the class page"], ids=["a-due-line", "other-words"]
+)
+def test_an_unlabeled_card_whose_due_line_has_words_and_title_is_past_the_limit_couldnt_be_read(
+    footer: str,
+) -> None:
+    """An unlabeled card whose due line has words is checked as answered: with a title of 301
+    characters it is one that couldn't be read."""
+    card = a_card(badge=None, title=LONG_LINE, instruction=None, footer=footer)
+
+    assert one_card(card) is None
+
+
+@pytest.mark.parametrize("footer", ["", "  "], ids=["an-empty-text", "only-spaces"])
+def test_a_due_line_with_no_words_is_no_due_line_for_a_long_first_line(footer: str) -> None:
+    """A due line that is a text with no words is no due line, as a note's due line is read:
+    the unlabeled card's long first line is read as its instruction, and the due line is kept
+    as given. The same card with a label is one that couldn't be read."""
+    card = one_card(a_card(badge=None, title=LONG_LINE, instruction=None, footer=footer))
+    labeled = a_card(badge="DUE", title=LONG_LINE, instruction=None, footer=footer)
+
+    assert card is not None
+    assert (card.title, card.instruction, card.footer) == (None, LONG_LINE, footer)
+    assert one_card(labeled) is None
+
+
+OTHERWISE_WRONG: dict[str, dict[str, object]] = {
+    "a-position-out-of-range": {"y_bottom": 1001},
+    "edges-reversed": {"y_top": 400, "y_bottom": 300},
+    "a-wrong-type": {"clipped": 1},
+    "an-unknown-name": {"teacher": "Sentinel-Teacher-T3"},
+}
+
+
+@pytest.mark.parametrize("fields", OTHERWISE_WRONG.values(), ids=OTHERWISE_WRONG.keys())
+def test_a_long_first_line_on_a_card_that_fails_another_check_couldnt_be_read(
+    fields: dict[str, object],
+) -> None:
+    """Every other check still decides: an unlabeled card that fails one is a card that
+    couldn't be read, with a short title and with a title of 301 characters alike."""
+    assert one_card(unlabeled("Read page 12.", **fields)) is None
+    assert one_card(unlabeled(LONG_LINE, **fields)) is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [42, [LONG_LINE], {"text": LONG_LINE}],
+    ids=["a-number", "a-list-holding-a-long-text", "an-object-holding-a-long-text"],
+)
+def test_a_title_that_is_not_a_text_is_not_moved(title: object) -> None:
+    """Only a title that is a text is moved; any other value leaves a card that couldn't be
+    read."""
+    assert one_card(unlabeled(title)) is None
+
+
+def test_a_mark_on_a_long_first_line_names_the_instruction_it_is_read_as() -> None:
+    """A mark of uncertainty that names the title goes with the words: on a card read with its
+    long first line in its instruction, the mark names the instruction, its reason as given,
+    and every other mark stays as given, in order."""
+    marks = [
+        {"field": "course", "reason": "blurred"},
+        {"field": "title", "reason": "smudged ink"},
+        {"field": "instruction", "reason": "cut off"},
+    ]
+    card = one_card(unlabeled(LONG_LINE, "Then rest.", uncertain=marks))
+
+    assert card is not None
+    assert [(mark.field, mark.reason) for mark in card.uncertain] == [
+        ("course", "blurred"),
+        ("instruction", "smudged ink"),
+        ("instruction", "cut off"),
+    ]
+    assert card.uncertain_fields == frozenset({"course", "instruction"})
+
+
+def test_the_row_of_a_long_first_line_asks_about_its_marked_words_as_its_instruction() -> None:
+    """The row read from the stored reading carries the mark under the instruction, the field
+    that holds the marked words, so the review asks the family about them."""
+    mark = {"field": "title", "reason": "smudged ink"}
+    answer = an_answer(cards=[unlabeled(LONG_LINE, uncertain=[mark])])
+
+    [row] = homework_assembly([stored_homework("long-line", answer)], now=NOW).rows
+
+    assert row.marks == frozenset({"instruction"})
+    assert [seen.text for seen in row.reading.instructions] == [LONG_LINE]
+
+
+def test_a_mark_on_a_title_that_fits_stays_on_the_title() -> None:
+    mark = {"field": "title", "reason": "smudged ink"}
+    card = one_card(unlabeled("T" * screenshots.TITLE_MOST, uncertain=[mark]))
+
+    assert card is not None
+    assert [(m.field, m.reason) for m in card.uncertain] == [("title", "smudged ink")]
+
+
+def test_the_stored_text_of_a_long_first_line_holds_it_as_the_instruction() -> None:
+    """A reading's stored text holds the card as read, no title and the words in its
+    instruction, and decodes to the same reading."""
+    reading = checked(an_answer(cards=[unlabeled(LONG_LINE)]))
+    [stored] = json.loads(reading.model_dump_json())["cards"]
+
+    assert (stored["title"], stored["instruction"]) == (None, LONG_LINE)
+    assert HomeworkReading.model_validate_json(reading.model_dump_json()) == reading
+
+
+def test_a_stored_reading_holding_a_title_past_the_limit_does_not_decode() -> None:
+    """A long first line is moved when an answer is checked, never when a stored reading is
+    decoded: a stored text whose card holds a title of 301 characters is a reading that
+    couldn't be read."""
+    title = "Study " + "two " * 72 + "sheets"
+    fits = stored_homework("stored-long-title", an_answer(cards=[unlabeled(title)]))
+    longer = fits._replace(body=fits.body.replace(title, title + "s"))
+
+    assembly = homework_assembly([longer], now=NOW)
+
+    assert len(title) == screenshots.TITLE_MOST
+    assert json.loads(longer.body)["cards"][0]["title"] == title + "s"
+    assert len(homework_assembly([fits], now=NOW).rows) == 1
+    assert assembly.rows == ()
+    assert [item.reason for item in assembly.unread] == ["reading_unreadable"]
+
+
 # ------------------------------------------------------------------ the selected student
 
 

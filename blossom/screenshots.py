@@ -10,8 +10,10 @@ that doesn't fit is a failed read, never repaired.
 The image's kind is read first. A homework list keeps its day headings, its cards and the
 selected student's name as read, with the reader's note on it, inside the reading only. Any
 other kind keeps its kind alone. A card that doesn't fit stays at its place as one that
-couldn't be read. A report's cells, the teacher's among them, are declared so that a report
-fits, and none is kept. Dates are kept as the text shown and read as dates here.
+couldn't be read. One thing is done to a card before its check: with no label and no due
+line, a title past a title's limit is read as the card's instruction, whole, when it fits
+there (``_long_first_line``). A report's cells, the teacher's among them, are declared so
+that a report fits, and none is kept. Dates are kept as the text shown and read as dates here.
 
 A draft's readings are put together into rows by their content alone, never by the order
 the screenshots came in, and read as today's portal claims through ``intake.read_cards``. A
@@ -370,11 +372,55 @@ def homework_reading(answer: object) -> Checked:
 
 
 def _card(value: object) -> Card | None:
-    """One card as read, or ``None`` when it doesn't fit, so it shows as one not read."""
+    """One card as read, or ``None`` when it doesn't fit, so it shows as one not read. A long
+    first line on an unlabeled card is read as its instruction (``_long_first_line``), and the
+    card is then checked as every card is."""
     try:
-        return Card.model_validate(value)
+        return Card.model_validate(_long_first_line(value))
     except (ValueError, RecursionError):
         return None
+
+
+def _long_first_line(value: object) -> object:
+    """A card of an answer, with a first line too long for a title read as its instruction.
+
+    A printed list's subject is answered with its whole first line as its title, and a title
+    holds 300 characters at most (``TITLE_MOST``). A card with no label and no due line, its
+    label null and its due line null or a text with no words, as a note's due line is read
+    (``_is_note``), whose title is a text longer than that is given back with no title and
+    with the title's text as its instruction, followed, when the card has an instruction, by
+    one space and that instruction. This is done only when the instruction is null or a text
+    and the whole text fits an instruction's limit (``INSTRUCTION_MOST``). Both texts are kept
+    exactly as given: nothing is cut, folded, trimmed or reworded. A mark of uncertainty that
+    names the title goes with its words and names the instruction, its reason as given.
+
+    Any other value is given back as it is, a labeled card and a card whose due line has words
+    among them. The value given is never changed, and the card's own check decides what is
+    kept.
+    """
+    if not isinstance(value, dict) or value.get("badge") is not None:
+        return value
+    footer = value.get("footer")
+    if footer is not None and not (isinstance(footer, str) and not footer.strip()):
+        return value
+    title, more = value.get("title"), value.get("instruction")
+    if not isinstance(title, str) or len(title) <= TITLE_MOST:
+        return value
+    if more is not None and not isinstance(more, str):
+        return value
+    whole = title if more is None else f"{title} {more}"
+    if len(whole) > INSTRUCTION_MOST:
+        return value
+    moved = {**value, "title": None, "instruction": whole}
+    marks = value.get("uncertain")
+    if isinstance(marks, list):
+        moved["uncertain"] = [
+            {**mark, "field": "instruction"}
+            if isinstance(mark, dict) and mark.get("field") == "title"
+            else mark
+            for mark in marks
+        ]
+    return moved
 
 
 # ------------------------------------------------------------------ from readings to rows

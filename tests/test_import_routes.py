@@ -45749,6 +45749,52 @@ def test_a_printed_subject_with_a_hyphen_in_its_name_keeps_its_name_whole(
     ]
 
 
+LONG_FIRST_LINE: Final = "Read " + "one " * 73 + "page"
+"""A printed subject's first line of 301 characters, one past a title's limit."""
+FULL_FIRST_LINE: Final = "Study " + "two " * 72 + "sheets"
+"""A printed subject's first line of exactly 300 characters, a title's limit."""
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    [None, "and write three sentences about it"],
+    ids=["first-line-alone", "with-a-continuation"],
+)
+def test_a_printed_subject_with_a_long_first_line_is_offered_and_saved_with_its_full_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, continuation: str | None
+) -> None:
+    """A printed list whose English subject has a first line of 301 characters, answered as
+    its title, beside a Spanish subject whose first line is exactly 300: the review offers
+    both subjects with their words, Save selected homework with both ticked writes both, and
+    the school instructions kept under each assignment are its words in full, the long first
+    line followed by one space and its continuation where it has one."""
+    words = LONG_FIRST_LINE if continuation is None else f"{LONG_FIRST_LINE} {continuation}"
+    answer = printed_answer(
+        PRINTED_DAY,
+        printed_card("English", LONG_FIRST_LINE, continuation, 200),
+        printed_card("Spanish", FULL_FIRST_LINE, None, 320),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    form = html.unescape(review_form(page))
+    assert (len(LONG_FIRST_LINE), len(FULL_FIRST_LINE)) == (TITLE_MOST + 1, TITLE_MOST)
+    assert 'id="unread-heading"' not in page
+    assert len(units_on(page)) == 2
+    assert sorted(courses_offered(page)) == ["English", "Spanish"]
+    assert [text for text in (words, FULL_FIRST_LINE) if text not in form] == []
+    assert says(after, imports.counted(2, 0, 0, 0))
+    assert [(course, due, kept) for course, _, due, kept in rows] == [
+        ("English", None, words),
+        ("Spanish", None, FULL_FIRST_LINE),
+    ]
+
+
 def note_under(day: str, words: str) -> dict[str, object]:
     """An English 8 teacher's note alone under one day heading."""
     heading = {"text": day, "y": 150, "uncertain": None}
