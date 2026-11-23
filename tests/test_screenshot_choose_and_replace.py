@@ -78,16 +78,8 @@ from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.import_drafts import READ_DEADLINE_SECONDS, ImageState, StoredReading
 from blossom.uploads import prepare_upload
 from tests import import_review_cases
+from tests.import_review_cases import page_post, send
 from tests.support import (
-    Answer,
-    FakeTime,
-    first_button_of,
-    homework_answer,
-    homework_card,
-    state_of,
-    stored_homework,
-)
-from tests.test_import_routes import (
     ASK_NAME_AGAIN,
     BLUE,
     CLEARED_INTRO,
@@ -96,22 +88,31 @@ from tests.test_import_routes import (
     JOINED_TICK,
     LOOPBACK,
     PROBLEM,
+    PS,
     RED,
+    RL,
+    THU,
     TOLD,
+    Answer,
+    FakeTime,
     Reader,
     again_form,
     box_subject,
     busy_store,
+    card,
     checked_names,
     drafts,
     essay_answer,
     essay_row,
+    first_button_of,
     first_form,
     followed,
     frozen_after_a_partial_save,
     gif,
     her_name_answered,
     here,
+    homework_answer,
+    homework_card,
     images_of,
     joined_field,
     lines_in,
@@ -119,7 +120,6 @@ from tests.test_import_routes import (
     note_card,
     open_settings,
     opened_for_typing,
-    page_post,
     png,
     press_outside,
     progress_on,
@@ -128,16 +128,18 @@ from tests.test_import_routes import (
     review_form,
     says,
     says_each,
-    send,
+    shot,
     split_answers,
+    state_of,
     stored_answers,
+    stored_homework,
     token_of,
     uncertain_upload,
     units_on,
     unnamed,
     upload,
 )
-from tests.test_screenshots import NOW, PS, RL, THU, card, shot
+from tests.support import SCREENSHOT_NOW as NOW
 
 READ_NOW = {"read": "now"}
 AND_READ_SAID = (
