@@ -2319,8 +2319,8 @@ pre.example {
   }
 }
 
-/* A screenshot's Replace and Enter it by hand, where they are links, keep their place in its
-   line of actions and are as tall as the buttons beside them. */
+/* A screenshot's Replace and Enter it by hand, where they are links, and the replace step's
+   View screenshot keep their place in a line of actions and are as tall as a button. */
 .screenshot-list a.step-link {
   display: inline-flex;
   align-items: center;

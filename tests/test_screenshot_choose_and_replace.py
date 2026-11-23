@@ -1757,24 +1757,32 @@ def test_family_review_with_add_open_differs_only_in_the_fold_s_state(
 
 
 STEP_LINK_RULE = (
-    "/* A screenshot's Replace and Enter it by hand, where they are links, keep their place in its"
-    "\n   line of actions and are as tall as the buttons beside them. */\n"
+    "/* A screenshot's Replace and Enter it by hand, where they are links, and the replace step's"
+    "\n   View screenshot keep their place in a line of actions and are as tall as a button. */\n"
     ".screenshot-list a.step-link {\n  display: inline-flex;\n  align-items: center;\n"
     "  min-height: 2.75rem;\n}\n"
 )
 
 
 def test_the_links_this_journey_adds_are_as_tall_as_a_button() -> None:
-    """Replace and Enter it by hand where they are links carry the one rule that makes them as
-    tall as the buttons beside them; the replace step's way back sits in a line of the app's
-    ways back, which give each link its height."""
+    """Replace and Enter it by hand where they are links, and the replace step's View
+    screenshot, which stands alone in its line of actions, carry the one rule that makes them
+    as tall as a button; the replace step's way back sits in a line of the app's ways back,
+    which give each link its height."""
     css = (pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css").read_text(
         encoding="utf-8"
     )
-    step = pathlib.Path(imports.__file__).parents[1] / "templates" / "import_replace.html"
+    step = (
+        pathlib.Path(imports.__file__).parents[1] / "templates" / "import_replace.html"
+    ).read_text(encoding="utf-8")
     assert css.count(STEP_LINK_RULE) == 1
     assert css.count("step-link") == 1
     assert (
         '<p class="return"><a href="/parent/imports/{{ draft_id }}">Back to the review</a></p>'
-        in step.read_text(encoding="utf-8")
+        in step
     )
+    assert (
+        '<a class="step-link" href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">'
+        "View screenshot<span"
+    ) in step
+    assert step.count("View screenshot") == 1
