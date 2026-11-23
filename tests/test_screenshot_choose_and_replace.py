@@ -1601,22 +1601,29 @@ def test_a_keep_refused_as_save_review_for_later_refuses_it_goes_nowhere_and_say
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, words: str
 ) -> None:
     """A title longer than its field takes: the press answers as Save review for later answers
-    the same post, 422 with the review and the same lines, keeps nothing and goes nowhere."""
+    the same post, 422 with the review and the same lines, keeps nothing and goes nowhere: no
+    progress is stored before the press, and none after it, though the press posted a tick and
+    a correction."""
     too_long = "y" * 301
     with here(open_settings(tmp_path)) as browser:
         draft_id, _, _ = one_read_one_failed(browser, monkeypatch, Reader(monkeypatch))
         page, typed, tick = typed_and_ticked(browser, draft_id)
+        student = state_of(browser).project_state.student_id()
+        drafts = state_of(browser).import_drafts
+        before = drafts.snapshot(student, draft_id).progress
         typed = dict.fromkeys(typed, too_long)
         press = press_value(control_for(page, words, 2))
         sent = send(browser, draft_id, page_post(page, press, typed=typed, tick=tick))
-        progress = progress_on(browser, draft_id)
+        after = drafts.snapshot(student, draft_id).progress
         later = send(browser, draft_id, page_post(page, "later", typed=typed, tick=tick))
 
     assert sent.status_code == later.status_code == 422
     assert "location" not in sent.headers
     assert says(sent.text, imports.PRESS_SAID["too_long"])
     assert lines_in(PROBLEM.search(sent.text)) == lines_in(PROBLEM.search(later.text))
-    assert progress is None or not progress.corrected
+    assert tick
+    assert before is None
+    assert after is None
 
 
 @pytest.mark.parametrize("prefix", ["replace:", "by-hand:"])
