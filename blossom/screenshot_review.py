@@ -2246,13 +2246,15 @@ class ClearedRow:
 
 @dataclasses.dataclass(frozen=True)
 class ChangeTold:
-    """What a change of readings did that the next page says."""
+    """What a change of readings did that the next page says. Each list holds one entry for each
+    row it touched, rows sharing a title included, so the page counts rows, not titles."""
 
     cleared: tuple[ClearedRow, ...]
+    """Each row, or piece split by assigned day, whose answers it cleared."""
     carried: tuple[str, ...]
-    """The titles of the rows it keeps left unsaved."""
+    """The title of each row it keeps left unsaved."""
     asked: tuple[str, ...]
-    """The titles of the rows it asks about again, though some of their cards were left
+    """The title of each row it asks about again, though some of its cards were left
     unsaved."""
     name_asked: bool = False
     """Whether it cleared the confirmation that the screenshots showing no name are her
@@ -2269,7 +2271,8 @@ def change_told(
     as the draft store's change transaction works it out: the rows whose answers it cleared,
     in the order the rows came before it, the rows left unsaved that it keeps or asks about
     again, and whether it cleared the confirmation that the screenshots showing no name are
-    her homework."""
+    her homework. Every row is listed, rows sharing a title as well; the page names a title
+    once and counts the rows."""
     old_rows = homework_assembly(list(before), now=KEY_INSTANT).rows
     new_rows = homework_assembly(list(after), now=KEY_INSTANT).rows
     result = _cleared_with_name(before, after, old_rows, new_rows, answers, aside)
@@ -2283,12 +2286,9 @@ def change_told(
         if key not in old or (part and key in result.named):
             continue
         day = date.fromisoformat(part) if part[:1].isdigit() else None
-        row = ClearedRow(old[key].reading.title, day, copy_group(old[key]) in shown)
-        if row not in rows:
-            rows.append(row)
+        rows.append(ClearedRow(old[key].reading.title, day, copy_group(old[key]) in shown))
 
     def titles(note: str) -> tuple[str, ...]:
-        found = [new[key].reading.title for key, said in result.notes if said == note]
-        return tuple(dict.fromkeys(found))
+        return tuple(new[key].reading.title for key, said in result.notes if said == note)
 
     return ChangeTold(tuple(rows), titles("aside_carried"), titles("asks_again"), result.name_asked)

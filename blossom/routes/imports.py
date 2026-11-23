@@ -280,12 +280,23 @@ stored."""
 RESENT_SAID: Final = {
     "many": "These screenshots are already in this review. This retry didn't read them again.",
     "one": "This screenshot is already in this review. This retry didn't read it again.",
+    "gone_many": "These screenshots were in this review when this retry ran. This retry didn't "
+    "read them again.",
+    "gone_one": "This screenshot was in this review when this retry ran. This retry didn't read "
+    "it again.",
     "read_many": "Press Read to read them.",
     "read_one": "Press Read to read it.",
 }
 """What Upload and read sent again by its first upload's token says when every screenshot it
-stored was already in the review, in place of a line for each, and what it adds when the review
+stored was already in the review, in place of a line for each; what the review says in its place
+when it doesn't hold every one of them as it shows the line; and what it adds when the review
 offers Read for every one of them."""
+RESENT_GONE: Final = {
+    RESENT_SAID["many"]: RESENT_SAID["gone_many"],
+    RESENT_SAID["one"]: RESENT_SAID["gone_one"],
+}
+"""A retry's line as the review says it when one of the screenshots it names, by hash, isn't
+among the review's images (``still_held``)."""
 READ_AGAIN: Final = {
     NOT_READ["busy"]: "Press Read again.",
     NOT_READ["not_started"]: "Press Read to try again.",
@@ -2496,13 +2507,24 @@ def read_covers(state: ApplicationState, snapshot: DraftSnapshot, reread: Sequen
     )
 
 
-def read_again(said: Sequence[str], covered: bool) -> list[str]:
-    """A note's problem lines as the review says them: each line about screenshots left unread
-    followed by what it says to do (``READ_AGAIN``) when the review's Read press sends them
-    (``covered``), and standing alone otherwise."""
-    return [
-        f"{line} {READ_AGAIN[line]}" if covered and line in READ_AGAIN else line for line in said
-    ]
+def still_held(snapshot: DraftSnapshot, reread: Sequence[str]) -> bool:
+    """Whether the review holds every screenshot a note names by hash (``reread``), read or not;
+    a note that names none is taken as holding them, as its line was written."""
+    held = {image.sha256 for image in snapshot.images}
+    return all(digest in held for digest in reread)
+
+
+def read_again(said: Sequence[str], covered: bool, *, held: bool) -> list[str]:
+    """A note's problem lines as the review says them, two questions answered apart: a retry's
+    line says the screenshots it names are in the review only while the review holds every one
+    of them (``held``), and that they were there when the retry ran otherwise (``RESENT_GONE``);
+    each line about screenshots left unread is followed by what it says to do (``READ_AGAIN``)
+    when the review's Read press sends them (``covered``), and stands alone otherwise."""
+    out = []
+    for line in said:
+        words = line if held else RESENT_GONE.get(line, line)
+        out.append(f"{words} {READ_AGAIN[line]}" if covered and line in READ_AGAIN else words)
+    return out
 
 
 async def snapshot_or_page(
@@ -2539,7 +2561,11 @@ async def review(request: Request, draft_id: str, state: State) -> Response:
     if isinstance(found, Response):
         return found
     note = note_read(state.result_key, draft_id, request.cookies.get(NOTE_COOKIE))
-    said = read_again(note.said, read_covers(state, found, note.reread))
+    said = read_again(
+        note.said,
+        read_covers(state, found, note.reread),
+        held=still_held(found, note.reread),
+    )
     if said or note.told or note.done:
         answering(request)
     try:

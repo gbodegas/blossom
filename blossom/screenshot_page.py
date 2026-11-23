@@ -392,19 +392,21 @@ def change_said(told: ChangeTold, most: int = NAMED_MOST) -> list[str]:
     it cleared, by title and, for a piece split by assigned day, that day; that identical cards
     can't be told apart, when any of those rows is one of them; each row left unsaved it kept
     or asks about again; and that her homework must be confirmed again, when it cleared that
-    confirmation. Each list names its first rows (``named_few`` of ``most``), titles shortened
-    (``short_title``), and says how many more; with ``most`` at none, each list says only how
-    many rows it holds."""
+    confirmation. An entry a list holds more than once is named once. Each list names its first
+    titles (``named_few`` of ``most``), shortened (``short_title``), and says how many more of
+    its rows there are: every row it holds less the titles named; with ``most`` at none, each
+    list says only how many rows it holds."""
     out = []
     if told.cleared:
         count = len(told.cleared)
-        shown = named_few(count, most)
+        named = list(dict.fromkeys(told.cleared))
+        shown = named_few(len(named), most)
         if not shown:
             out.append(counted("cleared", count))
         else:
             labels = "; ".join(
                 short_title(row.title) + (f", assigned {day_text(row.day)}" if row.day else "")
-                for row in told.cleared[:shown]
+                for row in named[:shown]
             )
             if count > shown:
                 labels += f"; and {count - shown} more"
@@ -412,11 +414,12 @@ def change_said(told: ChangeTold, most: int = NAMED_MOST) -> list[str]:
     if any(row.copies for row in told.cleared):
         out.append(CHANGE_SAID["copies"])
     for rows, said in ((told.carried, "carried"), (told.asked, "asked")):
-        shown = named_few(len(rows), most)
+        titles = list(dict.fromkeys(rows))
+        shown = named_few(len(titles), most)
         if rows and not shown:
             out.append(counted(said, len(rows)))
             continue
-        out += [CHANGE_SAID[said].format(label=short_title(title)) for title in rows[:shown]]
+        out += [CHANGE_SAID[said].format(label=short_title(title)) for title in titles[:shown]]
         if len(rows) - shown == 1:
             out.append(CHANGE_SAID[f"{said}_more_one"])
         elif len(rows) > shown:

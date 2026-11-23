@@ -9,7 +9,9 @@ exactly those.
 
 Choosing sends nothing: each picker carries a line that says so, a list the page script fills
 with what was chosen, and the page script holds no network call and no submit call. Each press
-carries its own busy words, and the busy-text handler keeps a named press's value.
+carries its own busy words, and the busy-text handler keeps a named press's value. Once the
+browser has built what an upload sends, the list and its pickers are held, so the page can't say
+it removed or replaced a file once the files are sent; a page shown again hands them back.
 
 Each screenshot on the review says in words how it stands and why. One that needs attention stays
 in view above the review; one read with homework folds. The missing-name question leaves out a
@@ -30,7 +32,8 @@ assignments. Where it holds no form, they are links.
 A screenshot whose read ended with no reading kept still says so, and offers Enter it by hand,
 after another screenshot is read. The note after a change of screenshots stays small enough for
 a browser to keep, whatever script its titles are in: one budget on its whole Set-Cookie header,
-met by naming fewer rows in every list while every outcome and its count stays.
+met by naming fewer rows in every list while every outcome and its count stays. Rows sharing a
+title are named once by it, and every count is of the rows.
 
 A line about screenshots left unread says "Press Read" only when the page that shows it offers
 Read for those same screenshots, by their hashes, whatever another browser did in between. Enter
@@ -51,12 +54,12 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom import screenshot_page, screenshots
+from blossom import screenshot_page, screenshot_review, screenshots
 from blossom.anthropic_client import ReadFailure, ScreenshotAnswer
 from blossom.intake import CardsRead, PortalCard, Reading, read_cards
 from blossom.routes import imports
 from blossom.screenshot_review import ChangeTold, ClearedRow
-from blossom.screenshots import homework_assembly
+from blossom.screenshots import KEY_INSTANT, homework_assembly
 from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.import_drafts import ImageState, StoredReading
 from tests.support import (
@@ -756,6 +759,75 @@ def test_the_chosen_list_lets_go_of_its_previews_and_inserts_text_only() -> None
     assert script.count("name.textContent = file.name;") == 1
     assert script.count('whose.textContent = " " + file.name;') == 1
     assert script.count('"To change what you chose, choose again."') == 1
+
+
+LOCK: Final = """    function lock(holding) {
+      locked = holding;
+      picker.disabled = holding;
+      if (swap) {
+        swap.disabled = holding;
+      }
+      Array.prototype.forEach.call(list ? list.querySelectorAll("button") : [], function (button) {
+        button.disabled = holding;
+      });
+    }"""
+"""How the list holds, or hands back, its picker, its Replace picker and each file's Remove and
+Replace."""
+
+TAKEN: Final = """    form.addEventListener("formdata", function () {
+      if (form.dataset.busy) {
+        lock(true);
+      }
+    });"""
+"""Where the list is held: as the browser builds what the submission sends, the submit having
+gone ahead (the busy-text handler marks the form busy then)."""
+
+HAND_BACK: Final = """    function handBack() {
+      lock(false);
+      show("");
+    }"""
+"""What a page shown again does first: hands the controls back, then lists what is chosen."""
+
+HELD_STEPS: Final = ("remove(place)", "replace(place)", "swapped()", "chose()")
+"""Each step of the list that changes what is chosen or what the page says of it."""
+
+
+def test_an_upload_under_way_holds_the_list_and_its_pickers_once_the_files_are_taken() -> None:
+    """A disabled field sends nothing, so the picker is never disabled before the browser has
+    built what the submission sends: the list is held from the form's formdata event, which a
+    browser fires while it builds those entries, after the submit went ahead and with the
+    picker's files already among them, and only on a form the busy-text handler marked busy.
+    The submit handler holds nothing. Once held, no step of the list changes what is chosen
+    or what the page says of it."""
+    script = SCRIPT.read_text(encoding="utf-8")
+    handler = lines_of_block(
+        script, '    form.addEventListener("submit", function (event) {\n', "\n    });\n"
+    )
+
+    assert script.count(LOCK) == 1
+    assert script.count(TAKEN) == 1
+    assert script.count('addEventListener("formdata"') == 1
+    assert script.count("lock(true);") == 1
+    assert script.count("picker.disabled") == 1
+    assert script.count("swap.disabled") == 1
+    assert script.count("    var locked = false;\n") == 1
+    assert [line for line in handler if "lock(" in line or "picker" in line] == []
+    for step in HELD_STEPS:
+        opening = f"    function {step} {{\n      if (locked) {{\n        return;\n      }}\n"
+        assert script.count(opening) == 1, step
+
+
+def test_a_page_shown_again_hands_the_list_and_its_pickers_back() -> None:
+    """Every showing of the page, a first one, one restored from the browser's cache or one
+    fetched again by Back, hands the controls back before the list is drawn again; the busy
+    handler's own reset hands its buttons back as before."""
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert script.count(HAND_BACK) == 1
+    assert script.count("lock(false);") == 1
+    assert script.count('    window.addEventListener("pageshow", handBack);\n') == 1
+    assert 'addEventListener("pageshow", chose)' not in script
+    assert script.index(LOCK) < script.index(HAND_BACK) < script.index(TAKEN)
 
 
 # ------------------------------------------------------------------ C8: how each screenshot stands
@@ -2335,6 +2407,14 @@ PRESS_READ = "Press Read to read them."
 PRESS_READ_ONE = "Press Read to read it."
 """What a retried Upload and read says when every screenshot it sent is already in the review,
 and what it adds when the page offers Read for them."""
+WERE_THERE = (
+    "These screenshots were in this review when this retry ran. This retry didn't read them again."
+)
+WAS_THERE = (
+    "This screenshot was in this review when this retry ran. This retry didn't read it again."
+)
+"""The retry's line when the review doesn't hold every screenshot it resent, as the page shows
+it."""
 RETRIED: Final = {
     "stored unread": ((RED, BLUE), f"{RESENT} {PRESS_READ}"),
     "stored and read": ((RED, BLUE), RESENT),
@@ -2583,6 +2663,158 @@ def test_a_change_s_lists_name_three_two_one_then_no_rows_keeping_every_count() 
     assert not hasattr(screenshot_page, "CHANGE_BYTES_MOST")
 
 
+LOG = "Reading log"
+QUIZ = "Vocab Quiz"
+LAB = "Lab Report"
+MAP = "Map project"
+POSTER = "Timeline poster"
+ESSAY = "Essay outline"
+
+
+def sharing_titles() -> ChangeTold:
+    """A report whose rows share titles in every list: five cleared rows under three titles
+    (two Reading log, one Vocab Quiz, two Lab Report), two rows kept unsaved under one title and
+    four rows asked about again under two (three Timeline poster, one Essay outline)."""
+    return ChangeTold(
+        (
+            ClearedRow(LOG, None, False),
+            ClearedRow(LOG, None, False),
+            ClearedRow(QUIZ, None, False),
+            ClearedRow(LAB, None, False),
+            ClearedRow(LAB, None, False),
+        ),
+        (MAP, MAP),
+        (POSTER, POSTER, POSTER, ESSAY),
+    )
+
+
+def kept_line(title: str) -> str:
+    return screenshot_page.CHANGE_SAID["carried"].format(label=title)
+
+
+def asked_line(title: str) -> str:
+    return screenshot_page.CHANGE_SAID["asked"].format(label=title)
+
+
+KEPT_ONE_MORE = (
+    "Your screenshots changed. 1 more row is still left unsaved, as you chose for its cards."
+)
+ASKED_TWO_MORE = (
+    "Your screenshots changed. 2 more rows now have cards you hadn't left unsaved, so they ask "
+    "again. You can leave them unsaved again."
+)
+ASKED_THREE_MORE = ASKED_TWO_MORE.replace("2 more", "3 more")
+SHARING_SAID: Final = {
+    3: [
+        f"{CLEARED_INTRO} {LOG}; {QUIZ}; {LAB}; and 2 more. Answer them again.",
+        kept_line(MAP),
+        KEPT_ONE_MORE,
+        asked_line(POSTER),
+        asked_line(ESSAY),
+        ASKED_TWO_MORE,
+    ],
+    1: [
+        f"{CLEARED_INTRO} {LOG}; and 4 more. Answer them again.",
+        kept_line(MAP),
+        KEPT_ONE_MORE,
+        asked_line(POSTER),
+        ASKED_THREE_MORE,
+    ],
+    0: [
+        "Your screenshots changed, so 5 rows' answers were cleared. Answer them again.",
+        "Your screenshots changed. 2 rows are still left unsaved, as you chose for their cards.",
+        "Your screenshots changed. 4 rows now have cards you hadn't left unsaved, so they ask "
+        "again. You can leave them unsaved again.",
+    ],
+}
+"""The lines of ``sharing_titles`` naming at most three, one and no rows a list. Each title is
+named once; every count is of the rows: five cleared, two kept unsaved, four asked again. At two
+the lines are those at three, since naming two titles of three would leave one title over."""
+
+
+def test_counts_after_a_change_are_of_the_rows_and_titles_are_named_once() -> None:
+    """Rows sharing a title are named once by it, and "and N more", "N more rows" and the
+    count-only lines count every row the change touched: N is the rows less the titles named."""
+    told = sharing_titles()
+
+    assert screenshot_page.change_said(told) == SHARING_SAID[3]
+    assert screenshot_page.change_said(told, 3) == SHARING_SAID[3]
+    assert screenshot_page.change_said(told, 2) == SHARING_SAID[3]
+    assert screenshot_page.change_said(told, 1) == SHARING_SAID[1]
+    assert screenshot_page.change_said(told, 0) == SHARING_SAID[0]
+
+
+def two_logs(words: str = "Read 20 minutes.") -> dict[str, Any]:
+    """One screenshot of two cards titled Reading log, in two classes: two rows sharing a
+    title."""
+    return homework_answer(
+        cards=[
+            homework_card(course="English 8", title=LOG, instruction=words),
+            homework_card(
+                course="History 8", title=LOG, instruction=words, y_top=400, y_bottom=520
+            ),
+        ]
+    )
+
+
+def logs_before() -> tuple[list[StoredReading], list[str]]:
+    """The screenshot of ``two_logs`` as stored, and its two rows' keys."""
+    before = [stored_homework("logs", two_logs())]
+    keys = [row.key for row in homework_assembly(before, now=KEY_INSTANT).rows]
+    assert len(keys) == 2
+    return before, keys
+
+
+def test_the_report_of_a_change_holds_every_row_it_touched_titles_shared_or_not() -> None:
+    """Two rows titled Reading log: removing their screenshot clears both, reading it again
+    with other words keeps both unsaved, and a second copy of it asks about both again. The
+    report holds both rows each time, and the page counts both."""
+    before, keys = logs_before()
+    answered = {("destination", key): "{}" for key in keys}
+    aside = frozenset(keys)
+    reread = [stored_homework("logs", two_logs("Read 30 minutes."))]
+    copied = [*before, stored_homework("logs-again", two_logs())]
+
+    cleared = screenshot_review.change_told(before, [], answered, frozenset())
+    kept = screenshot_review.change_told(before, reread, {}, aside)
+    asked = screenshot_review.change_told(before, copied, {}, aside)
+
+    assert cleared.cleared == (ClearedRow(LOG, None, False), ClearedRow(LOG, None, False))
+    assert screenshot_page.change_said(cleared) == [
+        f"{CLEARED_INTRO} {LOG}; and 1 more. Answer them again."
+    ]
+    assert kept.carried == (LOG, LOG)
+    assert screenshot_page.change_said(kept, 0) == [
+        "Your screenshots changed. 2 rows are still left unsaved, as you chose for their cards."
+    ]
+    assert asked.asked == (LOG, LOG)
+    assert screenshot_page.change_said(asked) == [
+        asked_line(LOG),
+        "Your screenshots changed. 1 more row now has cards you hadn't left unsaved, so it asks "
+        "again. You can leave it unsaved again.",
+    ]
+
+
+def test_replacing_a_screenshot_whose_two_rows_share_a_title_counts_both(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Screenshot 2 holds two answered rows titled Reading log; Replace clears both, and the
+    page names the title once and counts the other row."""
+    with here(open_settings(tmp_path)) as browser:
+        shots = ((RED, homework_answer()), (BLUE, two_logs()))
+        draft_id, page = read_review(browser, monkeypatch, *shots)
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        before = stored_answers(browser, draft_id)
+        [_, blue] = images_of(browser, draft_id)
+        sent = replace_with(browser, draft_id, blue, GREEN)
+        page = followed(browser, sent)
+
+    assert sent.status_code == 303, sent.text
+    assert len([key for key in before if key[0] == "destination"]) >= 3
+    assert says(page, f"{CLEARED_INTRO} {LOG}; and 1 more. Answer them again.")
+    assert lines_in(TOLD.search(page)) == [REPLACED]
+
+
 CHANGES: Final = ["replace and read", "replace", "remove", "add and read", "add with refusals"]
 """Each press whose note carries a change's report: Replace and read carries two, the replace's
 and its read's; the others one, Add screenshots with refused files beside it."""
@@ -2673,12 +2905,15 @@ def other_browser(browser: TestClient) -> TestClient:
 RACED: Final = {
     "nobody touches it": ((RED,), f"{RESENT_ONE} {PRESS_READ_ONE}"),
     "the other browser reads it": ((RED,), RESENT_ONE),
-    "the other browser replaces it": ((RED,), RESENT_ONE),
+    "the other browser replaces it": ((RED,), WAS_THERE),
     "nobody touches them": ((RED, BLUE), f"{RESENT} {PRESS_READ}"),
     "the other browser reads one": ((RED, BLUE), RESENT),
+    "the other browser removes one": ((RED, BLUE), WERE_THERE),
 }
 """What another browser of the family does between the retry's redirect and its landing, with
-the screenshots the first upload stored, and the line the landing page says."""
+the screenshots the first upload stored, and the line the landing page says: "already in this
+review" only while it holds every one of them, read or not, and "Press Read" only when its Read
+press sends every one."""
 
 
 @pytest.mark.parametrize("between", list(RACED))
@@ -2687,10 +2922,12 @@ def test_a_retry_s_landing_page_says_press_read_only_when_its_read_sends_those_s
 ) -> None:
     """Browser A's first Upload and read committed though its page couldn't tell, and A sends it
     again with Upload and read: zero reader calls. Before A follows the redirect, browser B reads
-    the screenshot, reads both with one failing, or replaces it without reading, or nobody does
-    anything. A's landing page says "Press Read" only when its own Read form sends every one of
-    the resent screenshots; otherwise the line stands alone, and no Read form is offered for them
-    as though it were."""
+    the screenshot, reads both with one failing, replaces it without reading, or removes one of
+    two, or nobody does anything. A's landing page says they are already in the review only
+    while it holds every one of them, and that they were there when the retry ran once one is
+    gone; it says "Press Read" only when its own Read form sends every one of the resent
+    screenshots; otherwise the line stands alone, and no Read form is offered for them as though
+    it were."""
     images, expected = RACED[between]
     reader = Reader(monkeypatch)
     reader.answers[BLUE] = ScreenshotAnswer(None, "not_json", 10, 5)
@@ -2707,11 +2944,14 @@ def test_a_retry_s_landing_page_says_press_read_only_when_its_read_sends_those_s
             other.post(f"{review}/read", data=read_form(other.get(review).text))
         elif between == "the other browser replaces it":
             replace_with(other, draft_id, stored[0], GREEN)
+        elif between == "the other browser removes one":
+            assert other.post(f"{review}/images/{stored[1]}/remove").status_code == 303
         page = browser.get(again.headers["location"]).text
         held = images_of(browser, draft_id)
 
     assert again.status_code == 303, again.text[:400]
     assert calls == []
+    assert reader.calls == calls or between.startswith("the other browser reads")
     assert lines_in(PROBLEM.search(page)) == [expected]
     if "Press Read" in expected:
         assert held == stored
@@ -2721,6 +2961,9 @@ def test_a_retry_s_landing_page_says_press_read_only_when_its_read_sends_those_s
         assert read_form(page)["images"] == held[0]
     elif between == "the other browser reads one":
         assert read_form(page)["images"] == stored[1]
+    elif between == "the other browser removes one":
+        assert held == stored[:1]
+        assert read_form(page)["images"] == stored[0]
     else:
         assert f'action="{review}/read"' not in page
 
@@ -2747,6 +2990,20 @@ def test_a_note_s_screenshot_hashes_are_read_strictly_and_older_notes_still_read
         ["a"], ["b"], ["c"]
     )
     assert read(key, draft_id, signed([draft_id, ["a"]])) == imports.Note(["a"], [], [])
+
+
+def test_a_retry_s_line_asks_if_its_screenshots_are_held_apart_from_if_read_sends_them() -> None:
+    """Held and sent by Read: already in the review, and Press Read. Held, read by then: already
+    in the review, alone. One gone: they were in the review when the retry ran, alone. Other
+    lines keep their words whether or not the screenshots are held."""
+    other = "Screenshot 1 couldn't be uploaded."
+    read_again = imports.read_again
+
+    assert read_again([RESENT, other], True, held=True) == [f"{RESENT} {PRESS_READ}", other]
+    assert read_again([RESENT_ONE], True, held=True) == [f"{RESENT_ONE} {PRESS_READ_ONE}"]
+    assert read_again([RESENT, other], False, held=True) == [RESENT, other]
+    assert read_again([RESENT, other], False, held=False) == [WERE_THERE, other]
+    assert read_again([RESENT_ONE], False, held=False) == [WAS_THERE]
 
 
 BUSY_LINE = "Blossom was busy, so nothing was read."

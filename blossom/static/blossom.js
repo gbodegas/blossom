@@ -45,8 +45,11 @@
   name, with its size and a preview this browser makes from the file, and says
   how many are chosen, since a phone hides the browser's own line with its
   button. Remove and Replace beside each change only what this browser holds
-  as chosen, and send nothing. Without this file the browser's line still
-  shows, beside the page's line that choosing sends nothing.
+  as chosen, and send nothing. Once an upload goes ahead and the browser has
+  taken the files it sends, the list and its pickers are held until the page
+  is shown again, so the page never says it removed or replaced a file once
+  the files are sent. Without this file the browser's line still shows, beside
+  the page's line that choosing sends nothing.
 */
 (function () {
   "use strict";
@@ -376,6 +379,7 @@
     var previews = [];
     var swap = null;
     var swapping = -1;
+    var locked = false;
 
     function release() {
       previews.forEach(function (url) {
@@ -469,9 +473,25 @@
       list.hidden = files.length === 0;
     }
 
+    /* While an upload is under way, the picker, the Replace picker and each file's Remove and
+       Replace are held, and no step below changes what is chosen or what the line says of it. */
+    function lock(holding) {
+      locked = holding;
+      picker.disabled = holding;
+      if (swap) {
+        swap.disabled = holding;
+      }
+      Array.prototype.forEach.call(list ? list.querySelectorAll("button") : [], function (button) {
+        button.disabled = holding;
+      });
+    }
+
     /* After a Remove the focus goes to the next file's Remove, or the one before it when the
        last file went, or to the picker when none is left. */
     function remove(place) {
+      if (locked) {
+        return;
+      }
       var files = chosen();
       var gone = files.splice(place, 1)[0];
       hold(files);
@@ -481,6 +501,9 @@
     }
 
     function replace(place) {
+      if (locked) {
+        return;
+      }
       if (!swap) {
         swap = document.createElement("input");
         swap.type = "file";
@@ -496,6 +519,9 @@
 
     /* The file chosen takes the place of the one replaced, and the focus stays on its Replace. */
     function swapped() {
+      if (locked) {
+        return;
+      }
       var files = chosen();
       var into = swap.files ? swap.files[0] : null;
       if (!into || swapping < 0 || swapping >= files.length) {
@@ -512,10 +538,28 @@
     }
 
     function chose() {
+      if (locked) {
+        return;
+      }
       show("");
     }
+
+    function handBack() {
+      lock(false);
+      show("");
+    }
+
+    /* A browser fires formdata as it builds what a submission sends, once the submit went
+       ahead, with the picker's files already in it. A disabled field sends nothing, so the
+       list is held only from here, and only on a form the submit marked busy; every showing of
+       the page hands it back. */
+    form.addEventListener("formdata", function () {
+      if (form.dataset.busy) {
+        lock(true);
+      }
+    });
     picker.addEventListener("change", chose);
-    window.addEventListener("pageshow", chose);
+    window.addEventListener("pageshow", handBack);
     window.addEventListener("pagehide", release);
   });
 })();
