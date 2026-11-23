@@ -738,8 +738,8 @@ WITH_A_CUT_OFF_CARD = (
 with one of those and one the reader marked cut off."""
 
 SAVE_FIXES = (
-    "Saving fixes this review's screenshots, so remove or replace Screenshot 2 first to fix it "
-    "here."
+    "After a save, this review's screenshots can't be replaced or removed, so replace or remove "
+    "Screenshot 2 before saving."
 )
 """The line beside Save while Screenshot 2 needs attention and nothing is saved."""
 AFTER_A_SAVE = (
@@ -984,7 +984,7 @@ def test_with_every_screenshot_read_with_homework_no_line_sits_beside_save(
         page = her_name_answered(browser, draft_id, browser.get(f"/parent/imports/{draft_id}").text)
 
     assert 'name="press" value="save"' in page
-    assert "Saving fixes" not in page
+    assert "After a save, this review" not in page
 
 
 def test_after_a_save_a_screenshot_needing_attention_says_what_can_be_done(
@@ -1005,7 +1005,7 @@ def test_after_a_save_a_screenshot_needing_attention_says_what_can_be_done(
     assert page.count(str(escape(AFTER_A_SAVE))) == 1
     assert where_each_stands(page)[f"Screenshot 2 · {NOTHING_FOUND}"] == "above"
     assert 'form="remove-shot-' not in page
-    assert "Saving fixes" not in page
+    assert "After a save, this review" not in page
     assert 'form="finish"' in page
 
 
@@ -1473,8 +1473,8 @@ KEPT_FIRST_BY_HAND = (
     "does."
 )
 STAYS_OPEN = (
-    "Until then this review stays open with its screenshots, saved corrections and kept answers; "
-    "find it on Family review under Open screenshot reviews."
+    "Until then, unless it is finished or discarded, this review stays open with its screenshots, "
+    "saved corrections and kept answers; find it on Family review under Open screenshot reviews."
 )
 CONTROL = re.compile(r"<(button|a) [^>]*>.*?</\1>", re.S)
 ADD_FOLD = '<details class="steps panel-fold" id="add-assignments"'

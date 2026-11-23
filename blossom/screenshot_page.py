@@ -933,8 +933,8 @@ SHOT_SAID: Final = {
         "from Family review. Finish without the rest closes this review."
     ),
     "save_fixes": (
-        "Saving fixes this review's screenshots, so remove or replace {named} first to fix "
-        "{them} here."
+        "After a save, this review's screenshots can't be replaced or removed, so replace or "
+        "remove {named} before saving."
     ),
     "kept_first": (
         "Replace and Enter it by hand keep your corrections, ticks and answers first, as Save "
@@ -945,8 +945,9 @@ SHOT_SAID: Final = {
         "later does."
     ),
     "stays_open": (
-        "Until then this review stays open with its screenshots, saved corrections and kept "
-        "answers; find it on Family review under Open screenshot reviews."
+        "Until then, unless it is finished or discarded, this review stays open with its "
+        "screenshots, saved corrections and kept answers; find it on Family review under Open "
+        "screenshot reviews."
     ),
 }
 """How a screenshot read as a homework list says nothing on it became homework: with text read
@@ -1068,8 +1069,7 @@ def text_only_said(outcome: ShotOutcome) -> str:
 
 def save_fixes(places: Sequence[int]) -> str:
     """The line beside Save while the screenshots at these places need attention."""
-    them = "it" if len(places) == 1 else "them"
-    return SHOT_SAID["save_fixes"].format(named=screenshots_named(places), them=them)
+    return SHOT_SAID["save_fixes"].format(named=screenshots_named(places))
 
 
 def fact_text(fact_kind: str, entry_day: date | None, piece_day: date | None, about: str) -> str:
