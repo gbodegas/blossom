@@ -44,6 +44,11 @@ screenshot it replaced, and says what is in the review as its list shows it, wha
 browser did in between: the totals and how the screenshots read, the new screenshot's place, and
 each reading the busy file couldn't keep, by its place only while the list holds it and with
 "Read again." only when Read sends it. A Read press's own page says those readings the same way.
+
+An Upload and read or a Replace and read that read nothing because a read was under way says
+reading is under way, with the time it ends, only while the page it lands on shows that same
+read as current; otherwise it says a read was already under way, so the press didn't start
+another, and the page offers Read as it would for any other unread screenshot.
 """
 
 import base64
@@ -52,7 +57,8 @@ import json
 import pathlib
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Final, get_args
 
@@ -62,15 +68,19 @@ from markupsafe import escape
 
 from blossom import screenshot_page, screenshot_review, screenshots
 from blossom.anthropic_client import ReadFailure, ScreenshotAnswer
+from blossom.app import create_app
 from blossom.intake import CardsRead, PortalCard, Reading, read_cards
 from blossom.routes import imports
 from blossom.screenshot_review import ChangeTold, ClearedRow
 from blossom.screenshots import KEY_INSTANT, homework_assembly
+from blossom.settings import Settings
 from blossom.stores.drafts import StoreBusy, WriterBusy
-from blossom.stores.import_drafts import ImageState, StoredReading
+from blossom.stores.import_drafts import READ_DEADLINE_SECONDS, ImageState, StoredReading
 from blossom.uploads import prepare_upload
+from tests import import_review_cases
 from tests.support import (
     Answer,
+    FakeTime,
     first_button_of,
     homework_answer,
     homework_card,
@@ -3498,3 +3508,213 @@ def test_a_note_with_every_new_reading_kept_back_fits_one_header_and_says_each(
         == screenshot_page.change_said(two_of_each(), most)
         for most in screenshot_page.NAMED_STEPS
     )
+
+
+# ------------------------------------------------------------------ a read already under way
+
+UNDER_WAY_PAST: Final = "A read was already under way, so this press didn't start another."
+"""What a press that found a read under way says once the page it lands on doesn't show that
+same read as current, written out here so a change to its words fails here."""
+UNDER_WAY_RACED: Final = (
+    "the read is still running",
+    "the read ended",
+    "the read ran out of time",
+    "another read began",
+    "the read ended and the other browser read them",
+)
+"""What happens between a press that found a read under way and its landing: nothing, the read
+ends as one whose calls all ended does, its deadline passes on the clock attempts are timed on,
+it ends and another begins, or it ends and another browser reads the screenshots."""
+OWN_UNDER_WAY: Final = re.compile(r'<p class="note">(Reading is under way until [^<]*)</p>')
+"""The review's own line in place of its Read press while a read is current."""
+
+
+@contextmanager
+def here_on(settings: Settings, clock: FakeTime) -> Iterator[TestClient]:
+    """The app as ``here`` gives it, with its attempts timed on ``clock``, which the test
+    moves by hand."""
+    with (
+        TestClient(
+            create_app(settings, monotonic=clock),
+            follow_redirects=False,
+            headers={"Host": LOOPBACK, "Origin": f"http://{LOOPBACK}"},
+            client=("127.0.0.1", 50000),
+        ) as browser,
+        import_review_cases.reached_by(browser),
+    ):
+        yield browser
+
+
+def shown_under_way(browser: TestClient, draft_id: str) -> str | None:
+    """The under-way line for the review's current read, from a fresh snapshot, with the time
+    it ends as the review says it; None while no read is current."""
+    state = state_of(browser)
+    student = state.project_state.student_id()
+    ends = state.import_drafts.snapshot(student, draft_id).attempt_ends
+    return None if ends is None else imports.under_way(imports.ends_text(state, ends))
+
+
+def under_way_lines(page: str) -> list[str]:
+    """The lines of a page's problems about a read under way."""
+    return [line for line in lines_in(PROBLEM.search(page)) if "under way" in line]
+
+
+@pytest.mark.parametrize("how", ["upload and read", "replace and read"])
+@pytest.mark.parametrize("between", UNDER_WAY_RACED)
+def test_a_press_that_found_a_read_under_way_says_until_when_only_while_that_read_is_current(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_property: Callable[[str, object], None],
+    between: str,
+    how: str,
+) -> None:
+    """A read is forced current over every screenshot of browser A's review, through the store
+    as a press starts one, and A adds a screenshot with Upload and read, or puts one in
+    Screenshot 2's place with Replace and read: nothing is read. Before A follows the redirect,
+    that read keeps running, ends, runs out of time, ends while another begins, or ends and
+    browser B reads the screenshots. A's landing says reading is under way until the time the
+    page shows only while that same read is current; otherwise it says a read was already under
+    way, so the press didn't start another, and offers Read for the unread screenshots whenever
+    no read is current. The landing calls no reader."""
+    reader = Reader(monkeypatch)
+    clock = FakeTime()
+    with here_on(open_settings(tmp_path), clock) as browser:
+        state = state_of(browser)
+        store = state.import_drafts
+        student = state.project_state.student_id()
+        draft_id = made(browser, RED) if how == "upload and read" else made(browser, RED, BLUE)
+        review = f"/parent/imports/{draft_id}"
+        attempt = store.start_attempt(student, draft_id, images_of(browser, draft_id))
+        assert attempt is not None
+        if how == "upload and read":
+            sent = upload(browser, GREEN, form=READ_NOW, to=f"{review}/images")
+        else:
+            second = images_of(browser, draft_id)[1]
+            sent = replace_with(browser, draft_id, second, GREEN, form=READ_NOW)
+        header = note_header(sent)
+        pressed = list(reader.calls)
+        if between == "the read ran out of time":
+            clock.advance(READ_DEADLINE_SECONDS)
+        elif between != "the read is still running":
+            assert store.end_attempt(student, draft_id, attempt.attempt_id)
+        if between == "another read began":
+            clock.advance(1)
+            assert store.start_attempt(student, draft_id, images_of(browser, draft_id))
+        elif between == "the read ended and the other browser read them":
+            clock.advance(1)
+            other = other_browser(browser)
+            other.post(f"{review}/read", data=read_form(other.get(review).text))
+        calls = list(reader.calls)
+        shown = {shown_under_way(browser, draft_id)}
+        page = browser.get(sent.headers["location"]).text
+        shown.add(shown_under_way(browser, draft_id))
+        held = images_of(browser, draft_id)
+
+    offered = f'action="{review}/read"' in page
+    sends = read_form(page)["images"].split(",") if offered else []
+    record_property("problems", lines_in(PROBLEM.search(page)))
+    record_property("own_line", OWN_UNDER_WAY.findall(page))
+    record_property("read_sends_places", [held.index(image) + 1 for image in sends])
+    record_property("reader_calls_before_landing", len(calls))
+    record_property("reader_calls_after_landing", len(reader.calls))
+    assert sent.status_code == 303, sent.text[:400]
+    assert len(header.encode()) <= NOTE_HEADER_MOST
+    assert pressed == []
+    assert reader.calls == calls
+    assert len(held) == 2
+    if between == "the read ended and the other browser read them":
+        assert sorted(calls) == sorted([RED, GREEN])
+    else:
+        assert calls == []
+    if between == "the read is still running":
+        [line] = under_way_lines(page)
+        assert line in shown
+        assert OWN_UNDER_WAY.findall(page) == [line]
+    else:
+        assert under_way_lines(page) == [UNDER_WAY_PAST]
+    if between == "another read began":
+        [line] = OWN_UNDER_WAY.findall(page)
+        assert line in shown
+    elif between != "the read is still running":
+        assert OWN_UNDER_WAY.findall(page) == []
+    if between in ("the read ended", "the read ran out of time"):
+        assert read_form(page)["images"] == ",".join(held)
+    else:
+        assert f'action="{review}/read"' not in page
+
+
+def test_a_note_s_under_way_deadline_is_read_strictly() -> None:
+    """A note's facts may hold the deadline of the read under way that kept its press from
+    starting one, on the clock attempts are timed on: kept when it is a finite float, the whole
+    part ignored otherwise, with the note's lines and hashes read either way."""
+    key, draft_id = bytes(32), "0" * 32
+    digest = "c" * 64
+    facts = imports.PressFacts(added=1, under_way=1120.0)
+
+    def signed(parts: list[object]) -> str:
+        body = base64.urlsafe_b64encode(json.dumps(parts).encode()).decode()
+        return f"{body}.{imports.note_check(key, body)}"
+
+    def read(*more: object) -> imports.Note:
+        return imports.note_read(key, draft_id, signed([draft_id, ["a"], ["b"], ["c"], *more]))
+
+    assert read([], {"added": 1, "under_way": 1120.0}) == imports.Note(
+        ["a"], ["b"], ["c"], (), facts
+    )
+    assert read([digest], {"under_way": 0.0}) == imports.Note(
+        ["a"], ["b"], ["c"], (digest,), imports.PressFacts(under_way=0.0)
+    )
+    malformed: tuple[object, ...] = (
+        {"under_way": 1120},
+        {"under_way": True},
+        {"under_way": "1120.0"},
+        {"under_way": None},
+        {"under_way": [1120.0]},
+        {"under_way": float("nan")},
+        {"under_way": float("inf")},
+        {"under_way": float("-inf")},
+        {"under_way": 1120.0, "forged": 1},
+        {"added": 0, "under_way": 1120.0},
+    )
+    for bad in malformed:
+        assert read([digest], bad) == imports.Note(["a"], ["b"], ["c"], (digest,)), bad
+    for sent in (facts, imports.PressFacts(under_way=0.0)):
+        value = imports.note_for(key, draft_id, ["a"], facts=sent)
+        assert imports.note_read(key, draft_id, value) == imports.Note(["a"], [], [], (), sent)
+
+
+WRITTEN_UNDER_WAY: Final = "Reading is under way until Monday, November 23, 12:00 PM."
+FIRST_RECEIPT: Final = "1 screenshot uploaded. None read yet."
+OLDER_NOTES: Final = {
+    "with the press's facts": ([], imports.PressFacts(added=1, first=True)),
+    "with its receipt written": ([FIRST_RECEIPT], imports.NO_FACTS),
+}
+"""Notes written with the under-way sentence among their problem lines: one whose press's facts
+carry no deadline, and one with no facts and its receipt written out; each with its status lines
+and its facts."""
+
+
+@pytest.mark.parametrize("written", list(OLDER_NOTES))
+def test_an_older_note_s_under_way_line_shows_once_as_it_was_written(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, written: str
+) -> None:
+    """A note whose lines already hold "Reading is under way until ..." and whose facts carry no
+    deadline: with no read current, the review shows that line once, as written, works out no
+    under-way line of its own and calls no reader."""
+    told, facts = OLDER_NOTES[written]
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        review = f"/parent/imports/{draft_id}"
+        key = state_of(browser).result_key
+        note = imports.note_for(key, draft_id, [WRITTEN_UNDER_WAY], told, facts=facts)
+        cookie = f"{imports.NOTE_COOKIE}={note}".encode()
+        page = other_browser(browser).get(review, headers={b"Cookie": cookie}).text
+        held = images_of(browser, draft_id)
+
+    assert reader.calls == []
+    assert under_way_lines(page) == [WRITTEN_UNDER_WAY]
+    assert page.count(WRITTEN_UNDER_WAY) == 1
+    assert OWN_UNDER_WAY.findall(page) == []
+    assert lines_in(TOLD.search(page)) == [FIRST_RECEIPT]
+    assert read_form(page)["images"] == ",".join(held)

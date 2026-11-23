@@ -355,6 +355,11 @@ def under_way(until: str) -> str:
     return f"Reading is under way until {until}."
 
 
+UNDER_WAY_SAID: Final = "A read was already under way, so this press didn't start another."
+"""What Upload and read, or Replace and read, that read nothing because a read was under way
+says once the review it lands on doesn't show that same read as current (``under_way_said``)."""
+
+
 class ScreenshotsNotHere(Exception):
     """An import route asked with sign-in off from anywhere but the computer running Blossom;
     nothing was read and nothing was written."""
@@ -458,18 +463,28 @@ class PressFacts(NamedTuple):
     stood at the press: how many screenshots it added (``added``, none when 0) and whether the
     review held none before it (``first``); whether it read, so the review says how its
     screenshots read (``read``); the hashes of the screenshots whose readings the busy file
-    couldn't keep (``busy``); and the hash of the screenshot a replace put in (``replaced``)."""
+    couldn't keep (``busy``); the hash of the screenshot a replace put in (``replaced``); and,
+    when a read already under way kept it from reading, that read's deadline on the clock
+    attempts are timed on, as the store holds it (``under_way``)."""
 
     added: int = 0
     first: bool = False
     read: bool = False
     busy: tuple[str, ...] = ()
     replaced: str = ""
+    under_way: float | None = None
 
 
 NO_FACTS: Final = PressFacts()
 """The facts of a press that has none for the review to work out."""
-FACT_KINDS: Final = {"added": int, "first": bool, "read": bool, "busy": list, "replaced": str}
+FACT_KINDS: Final = {
+    "added": int,
+    "first": bool,
+    "read": bool,
+    "busy": list,
+    "replaced": str,
+    "under_way": float,
+}
 """Each key a note's facts may hold, with its one type."""
 
 
@@ -477,13 +492,14 @@ def facts_encoded(facts: PressFacts) -> dict[str, object]:
     """A press's facts as its note carries them: only what differs from a press that did
     nothing."""
     whole: dict[str, object] = {**facts._asdict(), "busy": list(facts.busy)}
-    return {name: value for name, value in whole.items() if value}
+    plain: dict[str, object] = {**NO_FACTS._asdict(), "busy": []}
+    return {name: value for name, value in whole.items() if value != plain[name]}
 
 
 def facts_read(found: object) -> PressFacts:
     """A note's facts, kept only when they are an object of known keys, each of its one exact
-    type: a count of at least one, flags, and hashes of ``DIGEST_SHAPE``; anything else is
-    ignored whole."""
+    type: a count of at least one, flags, hashes of ``DIGEST_SHAPE`` and a finite deadline;
+    anything else is ignored whole."""
     nothing = NO_FACTS
     if not isinstance(found, dict) or not set(found) <= set(FACT_KINDS):
         return nothing
@@ -492,14 +508,17 @@ def facts_read(found: object) -> PressFacts:
     added = found.get("added", 0)
     busy = found.get("busy", [])
     replaced = found.get("replaced", "")
+    ends = found.get("under_way")
     if "added" in found and added < 1:
         return nothing
     if not all(isinstance(digest, str) and DIGEST_SHAPE.fullmatch(digest) for digest in busy):
         return nothing
     if "replaced" in found and not DIGEST_SHAPE.fullmatch(replaced):
         return nothing
+    if ends is not None and not float("-inf") < ends < float("inf"):
+        return nothing
     return PressFacts(
-        added, found.get("first", False), found.get("read", False), tuple(busy), replaced
+        added, found.get("first", False), found.get("read", False), tuple(busy), replaced, ends
     )
 
 
@@ -1789,21 +1808,23 @@ async def uploaded(
         said += found.said
         told = found.told
         reread = found.reread or reread
-        facts = facts._replace(read=found.read, busy=found.busy)
+        facts = facts._replace(read=found.read, busy=found.busy, under_way=found.under_way)
     return to_review(state, added.draft_id, said, told, reread=reread, facts=facts)
 
 
 class ReadAdded(NamedTuple):
     """What reading the images a press added says: its problems and status lines, the hashes of
     those images when nothing was read for them (``reread``), whether it read, so the review
-    says how its screenshots read when it shows the note (``read``), and the hashes of those
-    whose readings the busy file couldn't keep (``busy``)."""
+    says how its screenshots read when it shows the note (``read``), the hashes of those
+    whose readings the busy file couldn't keep (``busy``), and the deadline of the read already
+    under way that kept it from reading (``under_way``)."""
 
     said: list[NoteLine]
     told: list[str]
     reread: tuple[str, ...] = ()
     read: bool = False
     busy: tuple[str, ...] = ()
+    under_way: float | None = None
 
 
 async def read_added(
@@ -1815,8 +1836,10 @@ async def read_added(
 ) -> Response | ReadAdded:
     """Upload and read, once its images are stored: the images this upload added are read, and
     no other, through the helper the Read press reads with. A duplicate set aside and a refused
-    file were never added, and an earlier image of the review is never named. With no key, or
-    while an attempt is under way, nothing is read and the line says why. When the household's
+    file were never added, and an earlier image of the review is never named. With no key,
+    nothing is read and the line says why. While an attempt is under way, nothing is read and
+    its deadline is kept, so the review says why when it shows the note (``under_way_said``),
+    by whether that same attempt is current then. When the household's
     file refuses the read before it begins, the line carries the added images' hashes
     (``digests``), so the review says "Press Read" after it only when its Read press sends them.
     Once the read is done and the review read again, the hashes of the images whose readings the
@@ -1845,8 +1868,7 @@ async def read_added(
         noted(error)
         return ReadAdded([READINGS_UNCONFIRMED], [])
     if not outcome.started:
-        ends = outcome.under_way_until
-        return ReadAdded([] if ends is None else [under_way(ends_text(state, ends))], [])
+        return ReadAdded([], [], under_way=outcome.under_way_until)
     try:
         # The review read again once the read is done: one the household's file can't read says
         # only the readings kept, and one the store refuses answers with that refusal's page.
@@ -2138,7 +2160,7 @@ async def replace_image(request: Request, draft_id: str, image_id: str, state: S
         if isinstance(found, Response):
             return found
         said, told, reread = [*said, *found.said], found.told, found.reread
-        facts = facts._replace(read=found.read, busy=found.busy)
+        facts = facts._replace(read=found.read, busy=found.busy, under_way=found.under_way)
     return to_review(state, draft_id, said, told, reread=reread, facts=facts)
 
 
@@ -2226,6 +2248,23 @@ def busy_said(state: ApplicationState, snapshot: DraftSnapshot, busy: Sequence[s
         if digest in held
     ]
     return [*said, *busy_unplaced(sum(1 for digest in busy if digest not in held))]
+
+
+def under_way_said(
+    state: ApplicationState, snapshot: DraftSnapshot, ends: float | None
+) -> list[str]:
+    """Why a press read nothing when a read was already under way, by that read's deadline
+    (``ends``), as the review shown from ``snapshot`` says it: the time it ends while that same
+    read is the review's current one (its deadline equal to ``ends``, and still ahead on the
+    clock attempts are timed on), with the time from ``snapshot``; that a read was already under
+    way, so the press didn't start another, once it isn't; nothing for a press with no such
+    deadline."""
+    if ends is None:
+        return []
+    current = snapshot.attempt_ends
+    if current is not None and current == ends and current > state.monotonic():
+        return [under_way(ends_text(state, current))]
+    return [UNDER_WAY_SAID]
 
 
 def press_told(state: ApplicationState, snapshot: DraftSnapshot, note: Note) -> list[str]:
@@ -2681,6 +2720,7 @@ async def review(request: Request, draft_id: str, state: State) -> Response:
         held=still_held(found, note.reread),
     )
     said += busy_said(state, found, note.facts.busy)
+    said += under_way_said(state, found, note.facts.under_way)
     told = press_told(state, found, note)
     if said or told or note.done:
         answering(request)
