@@ -973,6 +973,83 @@ def test_an_attempt_covers_only_the_unread_images_it_names(world: World) -> None
     assert attempt.ends == world.ticks.at + READ_DEADLINE_SECONDS
 
 
+def draft_and_image_rows(world: World) -> dict[str, dict[str, dict[str, object]]]:
+    """Every row of the draft and image tables as the file holds them, PNGs left out, by id."""
+    connection = sqlite3.connect(world.path)
+    connection.row_factory = sqlite3.Row
+    try:
+        drafts = connection.execute("SELECT * FROM import_drafts").fetchall()
+        images = connection.execute("SELECT * FROM import_draft_images").fetchall()
+    finally:
+        connection.close()
+    return {
+        "drafts": {row["draft_id"]: dict(row) for row in drafts},
+        "images": {
+            row["image_id"]: {
+                key: value for key, value in zip(row.keys(), row, strict=True) if key != "png"
+            }
+            for row in images
+        },
+    }
+
+
+def test_an_attempt_writes_its_id_on_the_images_it_covers_and_on_no_other(world: World) -> None:
+    """Image a's attempt ended with no result kept, image b is read and image c was never
+    covered. An attempt over c writes its id and deadline on the draft and its id on c, and
+    changes nothing else: a keeps its ended attempt's id, so it reads as in an ended attempt
+    while c's attempt runs and after it ends, and b stays read. Only an attempt naming a covers
+    it again."""
+    draft_id = world.draft("a", "b", "c")
+    ids = world.image_ids(draft_id)
+    assert world.read(draft_id, "b", "r1")
+    world.ticks.at += READ_DEADLINE_SECONDS
+    first = attempt_over(world, draft_id, "a")
+    world.ticks.at += READ_DEADLINE_SECONDS
+    before = draft_and_image_rows(world)
+
+    second = world.store.start_attempt(world.student, draft_id, [ids[sha("c")]])
+
+    assert second is not None
+    drafts, images = dict(before["drafts"]), dict(before["images"])
+    drafts[draft_id] = {
+        **drafts[draft_id],
+        "attempt_id": second.attempt_id,
+        "attempt_ends": second.ends,
+    }
+    images[ids[sha("c")]] = {**images[ids[sha("c")]], "attempt_id": second.attempt_id}
+    assert draft_and_image_rows(world) == {"drafts": drafts, "images": images}
+    assert images[ids[sha("a")]]["attempt_id"] == first
+
+    def flags() -> dict[str, tuple[bool, bool, bool]]:
+        snapshot = world.store.snapshot(world.student, draft_id)
+        return {
+            label: (item.read, item.covered, item.in_ended_attempt)
+            for label in "abc"
+            for item in snapshot.images
+            if item.sha256 == sha(label)
+        }
+
+    assert flags() == {
+        "a": (False, False, True),
+        "b": (True, False, False),
+        "c": (False, True, False),
+    }
+    world.ticks.at = second.ends
+    assert flags() == {
+        "a": (False, False, True),
+        "b": (True, False, False),
+        "c": (False, False, True),
+    }
+    again = world.store.start_attempt(world.student, draft_id, [ids[sha("a")]])
+    assert again is not None
+    assert again.covered == (ids[sha("a")],)
+    assert flags() == {
+        "a": (False, True, False),
+        "b": (True, False, False),
+        "c": (False, False, True),
+    }
+
+
 def test_a_failure_leaves_the_image_open_and_it_can_be_read_again(world: World) -> None:
     draft_id = world.draft("a")
     attempt_id = attempt_over(world, draft_id, "a")

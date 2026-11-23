@@ -144,8 +144,10 @@ class ImageState(NamedTuple):
     covered: bool
     """Whether the draft's current attempt covers it."""
     in_ended_attempt: bool
-    """Whether the draft's last attempt covered it and has ended. Every start clears it, since
-    a stopped process's deadline is never seen to pass."""
+    """Whether an attempt that has ended covered it last and kept no reading of it: it holds
+    an attempt's id, not the current attempt's, and no reading. An attempt over other images
+    leaves it so; a process's start clears it, since a stopped process's deadline is never seen
+    to pass."""
 
 
 class RowView(NamedTuple):
@@ -827,7 +829,8 @@ class ImportDraftsStore:
     ) -> Attempt | None:
         """Start a Read attempt over the unread images among ``image_ids``, failed ones
         included, with no version comparison. None when none of them is unread. An id that
-        isn't an image of the draft is passed over."""
+        isn't an image of the draft is passed over. Its id goes on the draft and on the images
+        it covers alone: another image keeps the id of the attempt that last covered it."""
         with self._writing(wait) as now:
             draft = self._open_draft(student_id, draft_id, now)
             if self._frozen(draft):
@@ -849,9 +852,6 @@ class ImportDraftsStore:
             self._connection.execute(
                 "UPDATE import_drafts SET attempt_id = ?, attempt_ends = ? WHERE draft_id = ?",
                 (attempt.attempt_id, attempt.ends, draft_id),
-            )
-            self._connection.execute(
-                "UPDATE import_draft_images SET attempt_id = NULL WHERE draft_id = ?", (draft_id,)
             )
             self._connection.executemany(
                 "UPDATE import_draft_images SET attempt_id = ? WHERE image_id = ?",
@@ -1584,7 +1584,9 @@ class ImportDraftsStore:
                     read=row["reading"] is not None,
                     failure=None if row["failure"] is None else str(row["failure"]),
                     covered=ends is not None and in_attempt(row, draft),
-                    in_ended_attempt=ends is None and in_attempt(row, draft),
+                    in_ended_attempt=row["attempt_id"] is not None
+                    and row["reading"] is None
+                    and not (ends is not None and in_attempt(row, draft)),
                 )
                 for row in worked.images
             ),

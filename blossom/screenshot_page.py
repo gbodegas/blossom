@@ -262,6 +262,12 @@ NAMED_MOST: Final = 3
 """How many rows each line after a change of screenshots names when more than one more would
 follow, so the note that carries those lines stays within what a browser keeps for one
 cookie."""
+CHANGE_BYTES_MOST: Final = 1800
+"""The most bytes the lines after a change of screenshots take as the note encodes them
+(``note_encoded``). Past it, each list names fewer rows, down to one, and counts the rest, so
+long titles in a script that takes several bytes a character still leave the note small
+enough to keep. Lines naming three rows a list, with titles of up to 60 ASCII letters, digits
+and spaces, stay under it."""
 
 OPEN_NAMES: Final = {
     "due": "the due date",
@@ -335,10 +341,16 @@ def short_title(title: str) -> str:
     return title if len(title) <= 60 else title[:57] + "..."
 
 
-def named_few(count: int) -> int:
+def named_few(count: int, most: int = NAMED_MOST) -> int:
     """How many of ``count`` rows a line after a change of screenshots names: all of them, or
-    ``NAMED_MOST`` when two or more would be left over."""
-    return count if count <= NAMED_MOST + 1 else NAMED_MOST
+    ``most`` when two or more would be left over."""
+    return count if count <= most + 1 else most
+
+
+def note_encoded(lines: Sequence[object]) -> bytes:
+    """Lines as the note after a press carries them: JSON, with each character outside ASCII
+    as its UTF-8 bytes rather than an escape."""
+    return json.dumps(lines, ensure_ascii=False).encode()
 
 
 def change_said(told: ChangeTold) -> list[str]:
@@ -347,10 +359,21 @@ def change_said(told: ChangeTold) -> list[str]:
     can't be told apart, when any of those rows is one of them; each row left unsaved it kept
     or asks about again; and that her homework must be confirmed again, when it cleared that
     confirmation. Each list names its first rows (``named_few``), titles shortened
-    (``short_title``), and says how many more, so the note stays small."""
+    (``short_title``), and says how many more, so the note stays small: ``NAMED_MOST`` of them,
+    or fewer while the lines would pass ``CHANGE_BYTES_MOST``."""
+    most = NAMED_MOST
+    out = _change_lines(told, most)
+    while most > 1 and len(note_encoded(out)) > CHANGE_BYTES_MOST:
+        most -= 1
+        out = _change_lines(told, most)
+    return out
+
+
+def _change_lines(told: ChangeTold, most: int) -> list[str]:
+    """``change_said``'s sentences with each list naming at most ``most`` rows."""
     out = []
     if told.cleared:
-        shown = named_few(len(told.cleared))
+        shown = named_few(len(told.cleared), most)
         labels = "; ".join(
             short_title(row.title) + (f", assigned {day_text(row.day)}" if row.day else "")
             for row in told.cleared[:shown]
@@ -361,7 +384,7 @@ def change_said(told: ChangeTold) -> list[str]:
     if any(row.copies for row in told.cleared):
         out.append(CHANGE_SAID["copies"])
     for rows, said in ((told.carried, "carried"), (told.asked, "asked")):
-        shown = named_few(len(rows))
+        shown = named_few(len(rows), most)
         out += [CHANGE_SAID[said].format(label=short_title(title)) for title in rows[:shown]]
         if len(rows) > shown:
             out.append(CHANGE_SAID[f"{said}_more"].format(count=len(rows) - shown))

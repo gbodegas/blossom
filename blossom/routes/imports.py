@@ -62,6 +62,7 @@ from blossom.screenshot_page import (
     found_said,
     kept_ref,
     labels_for,
+    note_encoded,
     page_check,
     piece_text,
     rows_shown,
@@ -266,6 +267,15 @@ NOTHING_READ: Final = (
 )
 """What Upload and read says when the household's file refused the read of its review before
 the reading began, for a reason that isn't a busy file; the upload itself is stored."""
+RESENT_SAID: Final = {
+    "many": "These screenshots are already in this review. This retry didn't read them again.",
+    "one": "This screenshot is already in this review. This retry didn't read it again.",
+    "read_many": "Press Read to read them.",
+    "read_one": "Press Read to read it.",
+}
+"""What Upload and read sent again by its first upload's token says when every screenshot it
+stored was already in the review, in place of a line for each, and what it adds when the review
+offers Read for every one of them."""
 
 
 def read_disclosed(places: Sequence[int]) -> str:
@@ -418,9 +428,9 @@ def note_for(
     done: Sequence[str] = (),
 ) -> str:
     """A note for one review: what a press found wrong, what it did and what a save did,
-    signed."""
-    payload = json.dumps([draft_id, list(said), list(told), list(done)])
-    body = base64.urlsafe_b64encode(payload.encode()).decode()
+    encoded as ``note_encoded`` gives them and signed."""
+    payload = note_encoded([draft_id, list(said), list(told), list(done)])
+    body = base64.urlsafe_b64encode(payload).decode()
     return f"{body}.{note_check(key, body)}"
 
 
@@ -1575,7 +1585,19 @@ async def first_upload(request: Request, state: State) -> Response:
         lines = [image_refusal(place + 1, kind) for place, kind in prepared.refused]
         return said_page(request, marks_of(state), NOTHING_ADDED, 422, *lines)
     places = [place for place, _ in prepared.images]
-    return await uploaded(request, state, student, added, places, prepared.refused, read=wanted)
+    held = frozenset(
+        hashlib.sha256(prepared.images[index][1].png).hexdigest() for index in added.duplicates
+    )
+    return await uploaded(
+        request,
+        state,
+        student,
+        added,
+        places,
+        prepared.refused,
+        read=wanted,
+        resent=frozenset() if added.added else held,
+    )
 
 
 def read_wanted(fields: Mapping[str, str]) -> bool | None:
@@ -1597,10 +1619,18 @@ async def uploaded(
     refused: Sequence[tuple[int, str]],
     *,
     read: bool,
+    resent: frozenset[str] = frozenset(),
 ) -> Response:
     """The way back to the review after an upload's commit, its note saying what the upload
-    stored and set aside, and, for Upload and read, what reading the images it added did."""
-    said = upload_said(added, places, refused)
+    stored and set aside, and, for Upload and read, what reading the images it added did. A
+    first upload's form sent again adds nothing when the review its token names already holds
+    every screenshot it stores, whose hashes are ``resent``: Upload and read then says so in one
+    line (``resent_said``) in place of a line for each, and reads nothing."""
+    if read and resent:
+        said = upload_said(added._replace(duplicates=()), places, refused)
+        said.append(await resent_said(state, student, added.draft_id, resent))
+    else:
+        said = upload_said(added, places, refused)
     more_said: list[str] = []
     more_told: list[str] = []
     if read:
@@ -1610,6 +1640,32 @@ async def uploaded(
         more_said, more_told = found
     told = await upload_told(state, added)
     return to_review(state, added.draft_id, [*said, *more_said], [*told, *more_told])
+
+
+async def resent_said(
+    state: ApplicationState, student: str, draft_id: str, resent: frozenset[str]
+) -> str:
+    """What Upload and read sent again says when the review already holds every screenshot it
+    stores, by their hashes (``resent``): that they are in it and weren't read again, then
+    "Press Read" only when the review, as one read sees it after the commit, offers Read for
+    every one of them: a key set, no attempt current, its screenshots not fixed, and none of
+    them read. When the review can't be read, the line goes without it."""
+    one = len(resent) == 1
+    line = RESENT_SAID["one" if one else "many"]
+    try:
+        after = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except (*STORE_REFUSALS, sqlite3.Error) as error:
+        noted(error)
+        return line
+    held = [image for image in after.images if image.sha256 in resent]
+    offered = (
+        model_configured(state.settings)
+        and after.attempt_ends is None
+        and not after.frozen
+        and len(held) == len(resent)
+        and not any(image.read for image in held)
+    )
+    return f"{line} {RESENT_SAID['read_one' if one else 'read_many']}" if offered else line
 
 
 async def read_added(
@@ -2298,8 +2354,9 @@ def review_page(
     questions and what saving adds. Once some homework is saved, each image needing attention
     says what can be done; before, while one does, the line beside Save says saving fixes the
     screenshots (``save_fixes``). Beneath the expiry, a line says the review stays until then and
-    where to find it; with the rows' form, each image's Replace and each image needing attention's
-    Enter it by hand are presses of it, which the line saying they keep first describes."""
+    where to find it. Each image needing attention offers Enter it by hand, and so, with no key
+    set, does each image not read. With the rows' form, each image's Replace and Enter it by hand
+    are presses of it, which the line saying they keep first describes."""
     keyed = model_configured(state.settings)
     unread = [image.image_id for image in snapshot.images if not image.read]
     unread_places = [index + 1 for index, image in enumerate(snapshot.images) if not image.read]
@@ -2323,7 +2380,7 @@ def review_page(
                     "label": label_of(outcome),
                     "read": outcome.folds,
                     "after": after if snapshot.frozen and outcome.attention else None,
-                    "attention": outcome.attention,
+                    "by_hand": outcome.attention or (not keyed and outcome.state == "unread"),
                 }
                 for index, (image, outcome) in enumerate(
                     zip(snapshot.images, outcomes, strict=True)

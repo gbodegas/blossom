@@ -26,13 +26,17 @@ Where the review holds its form, Replace and Enter it by hand are presses of tha
 keeps the corrections, ticks and answers as Save review for later does, with its refusals, then
 goes on to the replace step or to hand entry on Family review, whose query only opens Add
 assignments. Where it holds no form, they are links.
+
+A screenshot whose read ended with no reading kept still says so, and offers Enter it by hand,
+after another screenshot is read. The note after a change of screenshots stays small enough for
+a browser to keep, whatever script its titles are in.
 """
 
 import html
 import pathlib
 import re
 from datetime import datetime
-from typing import Any, get_args
+from typing import Any, Final, get_args
 
 import pytest
 from fastapi.testclient import TestClient
@@ -44,6 +48,7 @@ from blossom.intake import CardsRead, PortalCard, Reading, read_cards
 from blossom.routes import imports
 from blossom.screenshot_review import ChangeTold, ClearedRow
 from blossom.screenshots import homework_assembly
+from blossom.stores.drafts import WriterBusy
 from blossom.stores.import_drafts import ImageState, StoredReading
 from tests.support import (
     Answer,
@@ -64,6 +69,7 @@ from tests.test_import_routes import (
     RED,
     TOLD,
     Reader,
+    again_form,
     box_subject,
     checked_names,
     drafts,
@@ -90,6 +96,7 @@ from tests.test_import_routes import (
     read_review,
     review_form,
     says,
+    says_each,
     send,
     stored_answers,
     token_of,
@@ -2153,3 +2160,277 @@ def test_every_line_after_a_change_names_a_few_rows_and_how_many_more() -> None:
     assert len(f"{imports.NOTE_COOKIE}={note}".encode()) <= COOKIE_MOST
     assert len(four) == 4
     assert not any("more rows" in line for line in four)
+
+
+NOTE_MOST = 4000
+"""The most bytes the note cookie's name and value may take here, below what a browser keeps."""
+WIDE_TITLES = ["".join(chr(0x4E00 + 60 * n + place) for place in range(60)) for n in range(16)]
+"""Sixteen titles of 60 CJK characters each, written as code points so this file stays ASCII."""
+
+
+def wide_lists() -> ChangeTold:
+    """Sixteen rows with 60-character CJK titles in each list a change can name: cleared, as
+    identical cards, kept unsaved and asked about again, and the confirmation cleared."""
+    return ChangeTold(
+        tuple(ClearedRow(title, None, True) for title in WIDE_TITLES),
+        tuple(WIDE_TITLES),
+        tuple(WIDE_TITLES),
+        name_asked=True,
+    )
+
+
+def test_lines_with_long_non_ascii_titles_name_fewer_rows_so_the_note_stays_small() -> None:
+    """Three lists of sixteen rows with 60-character CJK titles: each list names fewer rows than
+    with short titles, and at least one, and counts the rest; the note carrying them stays under
+    4,000 bytes and reads back whole and signed."""
+    told = wide_lists()
+    said = screenshot_page.change_said(told)
+    note = imports.note_for(bytes(32), "0" * 32, said, ["Screenshot 2 was replaced."])
+    named = {
+        list_: [title for title in WIDE_TITLES if any(title in line for line in lines)]
+        for list_, lines in (
+            ("cleared", said[:1]),
+            ("carried", [line for line in said if line.endswith("as you chose for these cards.")]),
+            ("asked", [line for line in said if line.endswith("You can leave it unsaved again.")]),
+        )
+    }
+
+    assert len(f"{imports.NOTE_COOKIE}={note}".encode()) < NOTE_MOST
+    assert imports.note_read(bytes(32), "0" * 32, note) == imports.Note(
+        said, ["Screenshot 2 was replaced."], []
+    )
+    for list_, titles in named.items():
+        assert 1 <= len(titles) < screenshot_page.NAMED_MOST, list_
+        assert titles == WIDE_TITLES[: len(titles)], list_
+    shown = len(named["cleared"])
+    assert said[0].endswith(f"; and {16 - shown} more. Answer them again.")
+    assert screenshot_page.CHANGE_SAID["carried_more"].format(count=16 - shown) in said
+    assert screenshot_page.CHANGE_SAID["asked_more"].format(count=16 - shown) in said
+    assert said[-1] == screenshot_page.CHANGE_SAID["name"]
+
+
+@pytest.mark.parametrize("how", ["replace", "remove", "upload and read"])
+def test_a_change_naming_long_non_ascii_titles_leaves_a_note_a_browser_keeps(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """A change whose three lists each hold sixteen rows with 60-character CJK titles, through
+    Replace, Remove and Upload and read: the note cookie's name and value stay under 4,000 bytes,
+    and the page after reads it and says each of its lines."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(
+            browser, monkeypatch, (RED, homework_answer()), (BLUE, homework_answer(cards=[]))
+        )
+        [_, blue] = images_of(browser, draft_id)
+        monkeypatch.setattr(imports, "change_told", lambda *_: wide_lists())
+        if how == "replace":
+            sent = replace_with(browser, draft_id, blue, GREEN)
+        elif how == "remove":
+            sent = browser.post(f"/parent/imports/{draft_id}/images/{blue}/remove")
+        else:
+            sent = upload(browser, GREEN, form=READ_NOW, to=f"/parent/imports/{draft_id}/images")
+        cookie = note_cookie(sent)
+        page = followed(browser, sent)
+
+    assert sent.status_code == 303, sent.text
+    assert len(cookie.encode()) < NOTE_MOST, len(cookie.encode())
+    assert says_each(page, screenshot_page.change_said(wide_lists()))
+
+
+ENDED_FIRST = f"Screenshot 1 · {imports.LABELS['ended']}"
+
+
+def busy_for(patch: pytest.MonkeyPatch, browser: TestClient, image_id: str | None) -> None:
+    """While ``patch`` holds, the household file's writer is busy whenever a reading of
+    ``image_id``, or of any screenshot when it is None, is stored, as when another connection
+    holds a write transaction: the reader answers, and its reading isn't kept."""
+    store = state_of(browser).import_drafts
+    real = store.store_reading
+
+    def busy(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        if image_id is None or kwargs.get("image_id") == image_id:
+            raise WriterBusy
+        return real(*args, **kwargs)
+
+    patch.setattr(store, "store_reading", busy)
+
+
+@pytest.mark.parametrize("how", ["upload and read", "replace and read", "read"])
+def test_a_screenshot_whose_read_ended_keeps_its_outcome_when_another_is_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Screenshot 1's read ended with no reading kept, as the writer was busy: it says so and
+    offers Enter it by hand. Then another screenshot is read: a new file by Upload and read,
+    Screenshot 2's new file by Replace and read, or Screenshot 2 by a Read press from a page that
+    named it alone. On the page after and when the review is opened again, Screenshot 1 still
+    says so and offers Enter it by hand, Read still offers it, and it was sent once only."""
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        stale: dict[str, str] = {}
+        if how == "read":
+            draft_id = made(browser, RED)
+            review = f"/parent/imports/{draft_id}"
+            browser.post(f"{review}/read", data=read_form(browser.get(review).text))
+            assert upload(browser, BLUE, form={}, to=f"{review}/images").status_code == 303
+            stale = read_form(browser.get(review).text)
+            [red, blue] = images_of(browser, draft_id)
+            assert stale["images"] == blue
+            with monkeypatch.context() as patch:
+                busy_for(patch, browser, None)
+                replace_with(browser, draft_id, red, GREEN, form=READ_NOW)
+        else:
+            draft_id = made(browser, RED) if how == "upload and read" else made(browser, RED, BLUE)
+            review = f"/parent/imports/{draft_id}"
+            with monkeypatch.context() as patch:
+                busy_for(patch, browser, images_of(browser, draft_id)[0])
+                browser.post(f"{review}/read", data=read_form(browser.get(review).text))
+        first = images_of(browser, draft_id)[0]
+        first_png = prepared(browser, draft_id, first)
+        ended = browser.get(review).text
+        if how == "upload and read":
+            other = upload(browser, png(color=(9, 9, 9)), form=READ_NOW, to=f"{review}/images")
+        elif how == "replace and read":
+            second = images_of(browser, draft_id)[1]
+            other = replace_with(browser, draft_id, second, png(color=(9, 9, 9)), form=READ_NOW)
+        else:
+            other = browser.post(f"{review}/read", data=stale)
+        after = followed(browser, other)
+        reopened = browser.get(review).text
+        held = images_of(browser, draft_id)
+
+    assert other.status_code in (200, 303), other.text[:400]
+    assert len(held) == 2
+    assert held[0] == first
+    assert says(ended, ENDED_FIRST)
+    assert control_for(ended, BY_HAND, 1)
+    for page in (after, reopened):
+        assert says(page, ENDED_FIRST), where_each_stands(page)
+        assert control_for(page, BY_HAND, 1)
+    assert read_form(reopened)["images"] == first
+    assert reader.calls.count(first_png) == 1
+
+
+RESENT = "These screenshots are already in this review. This retry didn't read them again."
+RESENT_ONE = "This screenshot is already in this review. This retry didn't read it again."
+PRESS_READ = "Press Read to read them."
+PRESS_READ_ONE = "Press Read to read it."
+"""What a retried Upload and read says when every screenshot it sent is already in the review,
+and what it adds when the page offers Read for them."""
+RETRIED: Final = {
+    "stored unread": ((RED, BLUE), f"{RESENT} {PRESS_READ}"),
+    "stored and read": ((RED, BLUE), RESENT),
+    "no key": ((RED, BLUE), RESENT),
+    "one file": ((RED,), f"{RESENT_ONE} {PRESS_READ_ONE}"),
+}
+"""Each way the first send stood when it was sent again: its screenshots, and the line the
+review then says."""
+
+
+def the_open_review(browser: TestClient) -> str:
+    """The one open review's id."""
+    student = state_of(browser).project_state.student_id()
+    [only] = state_of(browser).import_drafts.open_drafts(student)
+    return only.draft_id
+
+
+@pytest.mark.parametrize("first", list(RETRIED))
+def test_a_retried_upload_and_read_reads_nothing_already_stored_and_says_so(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str
+) -> None:
+    """A first Upload and read whose write committed, though the page couldn't tell, is sent
+    again with Upload and read from that page's own form: its screenshots stored unread, stored
+    and then read by the review's Read press, with no key set, or a single screenshot. The retry
+    calls the reader zero times and the review says, in place of a line per screenshot, that
+    they are already in it and weren't read again, adding "Press Read" only where the page offers
+    Read for them."""
+    images, expected = RETRIED[first]
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path, key=first != "no key")) as browser:
+        sent = {**first_form(browser), **READ_NOW}
+        answer, _ = uncertain_upload(browser, *images, committed=True, form=sent)
+        draft_id = the_open_review(browser)
+        review = f"/parent/imports/{draft_id}"
+        if first == "stored and read":
+            browser.post(f"{review}/read", data=read_form(browser.get(review).text))
+        calls = list(reader.calls)
+        again = upload(browser, *images, form={**again_form(answer.text), **READ_NOW})
+        page = followed(browser, again)
+        held = images_of(browser, draft_id)
+
+    assert answer.status_code == 503
+    assert again.status_code == 303, again.text[:400]
+    assert again.headers["location"] == review
+    assert len(calls) == (len(images) if first == "stored and read" else 0)
+    assert reader.calls == calls
+    assert len(held) == len(images)
+    assert lines_in(PROBLEM.search(page)) == [expected]
+    if "Press Read" in expected:
+        assert read_form(page)["images"] == ",".join(held)
+    else:
+        assert 'action="' + review + '/read"' not in page
+
+
+@pytest.mark.parametrize("key", [False, True], ids=["no key", "a key"])
+def test_with_no_key_and_no_rows_each_unread_screenshot_links_to_hand_entry(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, key: bool
+) -> None:
+    """Two screenshots uploaded without reading and no rows to review. With no key, each offers
+    Enter it by hand as a link to hand entry, which opens Family review with Enter one assignment
+    open; with a key, Read is offered and Enter it by hand isn't. The reader is never called."""
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path, key=key)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        family = browser.get(HAND_ENTRY.split("#")[0]).text
+
+    assert 'id="review-form"' not in page
+    assert reader.calls == []
+    if key:
+        assert f">{BY_HAND}<" not in page
+        return
+    for place in (1, 2):
+        assert control_for(page, BY_HAND, place) == (
+            f'<a class="step-link" href="{HAND_ENTRY}" aria-describedby="stays-open">Enter it '
+            f'by hand<span class="visually-hidden"> for screenshot {place}</span></a>'
+        )
+        assert says(page, f"Screenshot {place} · {imports.LABELS['unread']}")
+    assert f"{ADD_FOLD} open>" in family
+    assert '<h2 class="entry-heading" id="enter-one">Enter one assignment</h2>' in family
+
+
+def test_with_no_key_an_unread_screenshot_s_enter_it_by_hand_keeps_the_edits(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Screenshot 1 was read while a key was set, so the review has rows; Screenshot 2 was
+    uploaded without reading. With the key gone, Screenshot 2 offers Enter it by hand as a press
+    of the review form. With Screenshot 1's title corrected and its group ticked on the page and
+    nothing saved, the press keeps both and goes to Family review with Enter one assignment open;
+    the review, opened again, shows the correction and the tick, and the reader isn't called once
+    the key is gone."""
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        review = f"/parent/imports/{draft_id}"
+        browser.post(f"{review}/read", data=read_form(browser.get(review).text))
+        assert upload(browser, BLUE, form={}, to=f"{review}/images").status_code == 303
+        calls = list(reader.calls)
+    with here(open_settings(tmp_path, key=False)) as browser:
+        [_, blue] = images_of(browser, draft_id)
+        page, typed, tick = typed_and_ticked(browser, draft_id)
+        control = control_for(page, BY_HAND, 2)
+        press = press_value(control)
+        sent = send(browser, draft_id, page_post(page, press, typed=typed, tick=tick))
+        kept_by_the_press(browser, draft_id, tick)
+        family = browser.get(sent.headers.get("location", "/missing").split("#")[0]).text
+        reopened = browser.get(review).text
+
+    assert calls == [RED]
+    assert says(page, f"Screenshot 2 · {imports.LABELS['unread']}")
+    assert press == f"by-hand:{blue}"
+    assert 'aria-describedby="kept-first stays-open"' in control
+    assert f">{BY_HAND}<span" not in page.replace(control, "")
+    assert sent.status_code == 303, sent.text[:400]
+    assert sent.headers["location"] == HAND_ENTRY
+    assert f"{ADD_FOLD} open>" in family
+    assert '<h2 class="entry-heading" id="enter-one">Enter one assignment</h2>' in family
+    shows_the_edits(reopened, tick)
+    assert reader.calls == calls
