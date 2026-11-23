@@ -69,6 +69,7 @@ from blossom.screenshot_save import (
     confirm_subject,
     fold_answers,
     instruction_subject,
+    name_scope,
     noting,
     own_carried,
     own_wordless,
@@ -249,9 +250,18 @@ CHANGE_SAID: Final = {
     "asked": "Your screenshots changed. {label} now has cards you hadn't left unsaved, so it asks "
     "again. You can leave it unsaved again.",
     "name": "Your screenshots changed, so confirm again that these are her homework.",
+    "carried_more": "Your screenshots changed. {count} more rows are still left unsaved, as you "
+    "chose for their cards.",
+    "asked_more": "Your screenshots changed. {count} more rows now have cards you hadn't left "
+    "unsaved, so they ask again. You can leave them unsaved again.",
 }
 """What the page after a change of screenshots says of the answers it cleared, the rows left
-unsaved it kept or asks about again, and a confirmation of her homework it cleared."""
+unsaved it kept or asks about again, how many more of those it doesn't name, and a confirmation
+of her homework it cleared."""
+NAMED_MOST: Final = 3
+"""How many rows each line after a change of screenshots names when more than one more would
+follow, so the note that carries those lines stays within what a browser keeps for one
+cookie."""
 
 OPEN_NAMES: Final = {
     "due": "the due date",
@@ -319,23 +329,42 @@ def cards_named(state: ReviewState, places: Mapping[str, int]) -> dict[str, str]
     return out
 
 
+def short_title(title: str) -> str:
+    """A title as a line after a change of screenshots names it: shortened past 60 characters,
+    as ``words_line`` shortens instructions."""
+    return title if len(title) <= 60 else title[:57] + "..."
+
+
+def named_few(count: int) -> int:
+    """How many of ``count`` rows a line after a change of screenshots names: all of them, or
+    ``NAMED_MOST`` when two or more would be left over."""
+    return count if count <= NAMED_MOST + 1 else NAMED_MOST
+
+
 def change_said(told: ChangeTold) -> list[str]:
     """The sentences the page after a change of screenshots opens with: the rows whose answers
     it cleared, by title and, for a piece split by assigned day, that day; that identical cards
     can't be told apart, when any of those rows is one of them; each row left unsaved it kept
     or asks about again; and that her homework must be confirmed again, when it cleared that
-    confirmation."""
+    confirmation. Each list names its first rows (``named_few``), titles shortened
+    (``short_title``), and says how many more, so the note stays small."""
     out = []
     if told.cleared:
+        shown = named_few(len(told.cleared))
         labels = "; ".join(
-            row.title + (f", assigned {day_text(row.day)}" if row.day else "")
-            for row in told.cleared
+            short_title(row.title) + (f", assigned {day_text(row.day)}" if row.day else "")
+            for row in told.cleared[:shown]
         )
+        if len(told.cleared) > shown:
+            labels += f"; and {len(told.cleared) - shown} more"
         out.append(CHANGE_SAID["cleared"].format(labels=labels))
     if any(row.copies for row in told.cleared):
         out.append(CHANGE_SAID["copies"])
-    out += [CHANGE_SAID["carried"].format(label=title) for title in told.carried]
-    out += [CHANGE_SAID["asked"].format(label=title) for title in told.asked]
+    for rows, said in ((told.carried, "carried"), (told.asked, "asked")):
+        shown = named_few(len(rows))
+        out += [CHANGE_SAID[said].format(label=short_title(title)) for title in rows[:shown]]
+        if len(rows) > shown:
+            out.append(CHANGE_SAID[f"{said}_more"].format(count=len(rows) - shown))
     if told.name_asked:
         out.append(CHANGE_SAID["name"])
     return out
@@ -1984,8 +2013,9 @@ def _names(
 ) -> tuple[list[NameQuestion], set[str]]:
     """The name questions, and the images whose rows wait on one. Once some homework is saved,
     no screenshot can be removed, so none offers "Remove only this screenshot". The question for
-    screenshots showing no name covers only those some piece draws on (``drawn``, by SHA-256),
-    as a save checks only those, and names each one beneath it."""
+    screenshots showing no name covers only those a row the review offers draws a card or a
+    joined note from (``drawn``, by SHA-256, from ``name_scope``), ticked or not, so a save
+    draws on none it didn't name, and names each one beneath it."""
     out: list[NameQuestion] = []
     waiting: set[str] = set()
     missing = [i for i in images if i.status == "missing" and (drawn is None or i.sha256 in drawn)]
@@ -2173,8 +2203,7 @@ def rows_shown(
             for offer in offers(state.pieces, state.mapping, unit, entry_values, recheck)
         ]
     labels = page_labels(state, [pair for found in reworked.values() for pair in found])
-    drawn_on = {c.sha256 for piece in state.pieces for c in (*piece.cards, *piece.noted_cards)}
-    names, waiting = _names(images, values, frozen, drawn_on)
+    names, waiting = _names(images, values, frozen, name_scope(state))
     splits = tuple(_split_question(r, places, values) for r in state.asking)
 
     def first_card(piece: Piece) -> tuple[int, int, str]:

@@ -6170,12 +6170,13 @@ ASIDE: Final = "Pasting the school's text stays the exact way on a computer."
 """What Family review says beside Paste school text while screenshots are offered."""
 SUMMARY: Final = (
     "Up to 10 screenshots per review, PNG or JPEG, 12 MB each. Screenshots are sent to "
-    "Anthropic's API only when you press Upload and read or Read."
+    "Anthropic's API only when you press Upload and read, Replace and read, or Read."
 )
 """What Family review shows above its screenshot picker: the limits, and what is sent and when."""
 DISCLOSURE: Final = (
     "Blossom sends screenshots to Anthropic's API to be read only when you press Upload and "
-    "read, which sends the ones it uploads, or Read, which sends the ones its review names. A "
+    "read, which sends the ones it uploads; Replace and read, which sends the one screenshot it "
+    "puts in another's place; or Read, which sends the ones its review names. A "
     "review's screenshots, what Blossom read from them, and any progress saved for later are "
     "removed from Blossom's database file when the review finishes, is discarded, or expires, "
     "48 hours after it starts. The removal can wait for Blossom's next hourly cleanup, or its "

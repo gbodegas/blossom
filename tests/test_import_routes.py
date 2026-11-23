@@ -5236,13 +5236,14 @@ def test_every_import_answer_is_no_store_with_the_sign_in_off(
 
 SCREENSHOT_SUMMARY: Final = (
     "Up to 10 screenshots per review, PNG or JPEG, 12 MB each. Screenshots are sent to "
-    "Anthropic's API only when you press Upload and read or Read."
+    "Anthropic's API only when you press Upload and read, Replace and read, or Read."
 )
 """The approved line above the picker, written out here rather than taken from the code, so a
 change to its words fails here."""
 SCREENSHOT_DISCLOSURE: Final = (
     "Blossom sends screenshots to Anthropic's API to be read only when you press Upload and "
-    "read, which sends the ones it uploads, or Read, which sends the ones its review names. A "
+    "read, which sends the ones it uploads; Replace and read, which sends the one screenshot it "
+    "puts in another's place; or Read, which sends the ones its review names. A "
     "review's screenshots, what Blossom read from them, and any progress saved for later are "
     "removed from Blossom's database file when the review finishes, is discarded, or expires, "
     "48 hours after it starts. The removal can wait for Blossom's next hourly cleanup, or its "

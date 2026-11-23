@@ -2072,12 +2072,27 @@ def joined_of(subject: str) -> tuple[str, str] | None:
     return found[0], found[1]
 
 
-def unnamed(readings: Sequence[StoredReading]) -> frozenset[tuple[str, str]]:
-    """Each homework screenshot whose reading shows no student name, as the name question counts
-    it, with that reading: what one confirmation that they are her homework covers."""
+def drawn_from(rows: Iterable[ScreenshotRow]) -> frozenset[str]:
+    """Each screenshot, by SHA-256, that one of these rows draws a card or a joined note from,
+    whether or not the note is ticked or the row's split answered: every screenshot a save of
+    those rows can draw on."""
+    return frozenset(
+        place.sha256
+        for row in rows
+        for place in (*row.sources, *(p for found in row.joined for p in found.places))
+    )
+
+
+def unnamed(
+    readings: Sequence[StoredReading], drawn: Collection[str]
+) -> frozenset[tuple[str, str]]:
+    """Each homework screenshot whose reading shows no student name and that a row the review
+    offers draws on (``drawn``, by SHA-256, from ``drawn_from``), as the name question counts it,
+    with that reading: what one confirmation that they are her homework covers. A screenshot
+    with nothing to save is left out."""
     out: set[tuple[str, str]] = set()
     for reading in readings:
-        if reading.kind != "homework_list":
+        if reading.kind != "homework_list" or reading.sha256 not in drawn:
             continue
         try:
             name = HomeworkReading.model_validate_json(reading.body).student.name
@@ -2191,9 +2206,31 @@ def carry(
     store's change transaction."""
     old_rows = homework_assembly(list(before), now=KEY_INSTANT).rows
     new_rows = homework_assembly(list(after), now=KEY_INSTANT).rows
-    added = bool(unnamed(after) - unnamed(before))
-    result = cleared(old_rows, new_rows, answers, aside, unnamed_added=added)
+    result = _cleared_with_name(before, after, old_rows, new_rows, answers, aside)
     return Carry(result.delete, result.marks, result.aside_insert, result.aside_delete)
+
+
+def _cleared_with_name(
+    before: Sequence[StoredReading],
+    after: Sequence[StoredReading],
+    old_rows: Sequence[ScreenshotRow],
+    new_rows: Sequence[ScreenshotRow],
+    answers: Mapping[tuple[str, str], Any],
+    aside: frozenset[str],
+) -> Cleared:
+    """What a change of readings clears (``cleared``), the confirmation that the screenshots
+    showing no name are her homework among it only when the screenshots that question covers
+    gain one: a screenshot showing no name that a row not set aside draws on after the change,
+    or the same screenshot read with other words. Rows set aside after the change are those set
+    aside before, with those the change keeps unsaved and without those it asks about again. A
+    screenshot with nothing to save never clears it."""
+    result = cleared(old_rows, new_rows, answers, aside)
+    still_aside = (aside | result.aside_insert) - result.aside_delete
+    covered = unnamed(before, drawn_from(r for r in old_rows if r.key not in aside))
+    covered_after = unnamed(after, drawn_from(r for r in new_rows if r.key not in still_aside))
+    if not covered_after - covered:
+        return result
+    return cleared(old_rows, new_rows, answers, aside, unnamed_added=True)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2235,8 +2272,7 @@ def change_told(
     her homework."""
     old_rows = homework_assembly(list(before), now=KEY_INSTANT).rows
     new_rows = homework_assembly(list(after), now=KEY_INSTANT).rows
-    added = bool(unnamed(after) - unnamed(before))
-    result = cleared(old_rows, new_rows, answers, aside, unnamed_added=added)
+    result = _cleared_with_name(before, after, old_rows, new_rows, answers, aside)
     order = {row.key: index for index, row in enumerate(old_rows)}
     old = {row.key: row for row in old_rows}
     new = {row.key: row for row in new_rows}

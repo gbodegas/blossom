@@ -62,6 +62,7 @@ from blossom.screenshot_review import (
     dates_key,
     defaults,
     destination_kind,
+    drawn_from,
     entries,
     holds_note,
     holds_words,
@@ -1829,8 +1830,19 @@ def _unconfirmed(
     )
 
 
+def name_scope(state: ReviewState) -> frozenset[str]:
+    """The screenshots, by SHA-256, that the question for screenshots showing no name covers
+    when they show none: each one a row the review offers (every row but those set aside) draws
+    a card or a joined note from, whether or not the note is ticked or the row's split answered.
+    Ticks and split answers never change it, and the units of a save draw on no other screenshot
+    (``_screenshots_of``)."""
+    offered = {p.key for p in state.pieces} | {r.key for r in state.asking}
+    return drawn_from(r for r in state.every_row if r.key in offered)
+
+
 def _screenshots_of(state: ReviewState, ready: Sequence[tuple[str, ...]]) -> dict[str, set[str]]:
-    """Each screenshot the units came from, by its SHA-256, with the units that drew on it."""
+    """Each screenshot the units came from, by its SHA-256, with the units that drew on it: each
+    one is within ``name_scope``."""
     images: dict[str, set[str]] = {}
     for unit in ready:
         for name in unit:
@@ -1866,7 +1878,10 @@ def _identity(
     yet is open, and units needing two different answers are refused. A unit drawing on both
     one unconfirmed name and screenshots with no name needs both answers, and carries the
     name's status, answer and form; a unit of unnamed screenshots alone, pressed beside it,
-    is still refused."""
+    is still refused. Each screenshot with no name its units draw on is within ``name_scope``,
+    which the question names and which no tick or split answer changes, and a change of
+    screenshots that adds one to it clears the confirmation, so the confirmation read here was
+    given for a question naming it."""
     images = _screenshots_of(state, ready)
     seen = {sha: names.get(sha, ("unknown", None)) for sha in images}
 

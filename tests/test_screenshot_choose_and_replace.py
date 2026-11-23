@@ -42,6 +42,7 @@ from blossom import screenshot_page, screenshots
 from blossom.anthropic_client import ReadFailure, ScreenshotAnswer
 from blossom.intake import CardsRead, PortalCard, Reading, read_cards
 from blossom.routes import imports
+from blossom.screenshot_review import ChangeTold, ClearedRow
 from blossom.screenshots import homework_assembly
 from blossom.stores.import_drafts import ImageState, StoredReading
 from tests.support import (
@@ -53,15 +54,21 @@ from tests.support import (
     stored_homework,
 )
 from tests.test_import_routes import (
+    ASK_NAME_AGAIN,
     BLUE,
     CLEARED_INTRO,
+    ESSAY_NOTE,
     GREEN,
+    JOINED_TICK,
     PROBLEM,
     RED,
     TOLD,
     Reader,
     box_subject,
+    checked_names,
     drafts,
+    essay_answer,
+    essay_row,
     first_form,
     followed,
     frozen_after_a_partial_save,
@@ -69,8 +76,10 @@ from tests.test_import_routes import (
     her_name_answered,
     here,
     images_of,
+    joined_field,
     lines_in,
     made,
+    note_card,
     open_settings,
     opened_for_typing,
     page_post,
@@ -79,6 +88,7 @@ from tests.test_import_routes import (
     progress_on,
     read_form,
     read_review,
+    review_form,
     says,
     send,
     stored_answers,
@@ -966,6 +976,133 @@ def test_the_missing_name_question_names_every_screenshot_it_covers(
     assert panel is not None
     assert says(panel.group(0), "No student name was found on 2 screenshots.")
     assert says(panel.group(0), "Screenshot 1 and Screenshot 2 show no student name.")
+
+
+NO_NAME: dict[str, Any] = {"name": None, "uncertain": None}
+CONFIRMED = "answer:name:missing"
+
+
+def name_panel(page: str) -> str:
+    panel = NAME_PANEL.search(page)
+    assert panel is not None, page
+    return panel.group(0)
+
+
+@pytest.mark.parametrize("how", ["replace and read", "upload and read"])
+def test_a_nameless_screenshot_with_nothing_to_save_keeps_the_confirmation(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Screenshot 1 shows no name and has a row, and her homework is confirmed; Screenshot 2
+    failed. A homework list showing no name and holding no card, read in Screenshot 2's place or
+    added and read beside it, has nothing to save: the confirmation stays stored and checked, the
+    page doesn't ask for it again, and the question still names Screenshot 1 alone."""
+    reader = Reader(monkeypatch)
+    reader.answers[RED] = ScreenshotAnswer(unnamed("Sentence Composing"), None, 10, 5)
+    reader.answers[BLUE] = ScreenshotAnswer(None, "not_json", 10, 5)
+    reader.answers[GREEN] = ScreenshotAnswer(
+        homework_answer(active_student=NO_NAME, cards=[]), None, 10, 5
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        page = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+        followed(
+            browser,
+            send(browser, draft_id, page_post(page, "keep", choose={CONFIRMED: "confirmed"})),
+        )
+        held = stored_answers(browser, draft_id)
+        [_, blue] = images_of(browser, draft_id)
+        if how == "replace and read":
+            sent = replace_with(browser, draft_id, blue, GREEN, form=READ_NOW)
+        else:
+            sent = upload(browser, GREEN, form=READ_NOW, to=f"/parent/imports/{draft_id}/images")
+        page = followed(browser, sent)
+        after = stored_answers(browser, draft_id)
+
+    assert held[("name", "missing")] == "confirmed"
+    assert sent.status_code == 303, sent.text
+    assert says(page, NOTHING_FOUND)
+    assert after.get(("name", "missing")) == "confirmed"
+    assert not says(page, ASK_NAME_AGAIN)
+    assert CONFIRMED in checked_names(page)
+    assert says(name_panel(page), "No student name was found on 1 screenshot.")
+    assert says(name_panel(page), "Screenshot 1 shows no student name.")
+
+
+def nameless_essay_and_note() -> tuple[dict[str, Any], dict[str, Any]]:
+    """The essay card in a screenshot showing no name, and the note that joins it in another
+    screenshot showing no name."""
+    card = essay_answer()["cards"][0]  # type: ignore[index]
+    note = note_card("Religion 8", ESSAY_NOTE, 300)
+    return (
+        homework_answer(cards=[card], active_student=NO_NAME),
+        homework_answer(cards=[note], active_student=NO_NAME),
+    )
+
+
+def test_the_missing_name_question_covers_a_joined_note_s_screenshot_before_it_is_ticked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Screenshot 1 holds the essay card and Screenshot 2 only the note that joins it, neither
+    showing a name. Before the note is ticked, the question already counts and names both
+    screenshots, so the confirmation given there covers the note's screenshot too; ticking the
+    note then saves once with it."""
+    card, note = nameless_essay_and_note()
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(browser, monkeypatch, (RED, card), (BLUE, note))
+        shown = browser.get(f"/parent/imports/{draft_id}").text
+        confirmed = followed(
+            browser,
+            send(browser, draft_id, page_post(shown, "keep", choose={CONFIRMED: "confirmed"})),
+        )
+        choose = {joined_field(confirmed): "1"}
+        saved = followed(
+            browser,
+            send(
+                browser,
+                draft_id,
+                page_post(confirmed, "save", choose=choose, tick=units_on(confirmed)),
+            ),
+        )
+        _, _, words = essay_row(browser)
+
+    assert says(saved, imports.counted(1, 0, 0, 0))
+    assert words == [ESSAY_NOTE]
+    assert says(name_panel(shown), "No student name was found on 2 screenshots.")
+    assert says(name_panel(shown), "Screenshot 1 and Screenshot 2 show no student name.")
+    assert JOINED_TICK.findall(review_form(shown)) == [""]
+
+
+def test_a_joined_note_s_nameless_screenshot_added_after_the_confirmation_asks_for_it_again(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Screenshot 1 holds the essay card with no name, and her homework is confirmed. Then a
+    screenshot showing no name and holding only the note that joins it is added and read: the
+    question gains a screenshot, so the confirmation is cleared and asked for again, naming both
+    screenshots."""
+    card, note = nameless_essay_and_note()
+    reader = Reader(monkeypatch)
+    reader.answers[RED] = ScreenshotAnswer(card, None, 10, 5)
+    reader.answers[BLUE] = ScreenshotAnswer(note, None, 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        page = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page)).text
+        followed(
+            browser,
+            send(browser, draft_id, page_post(page, "keep", choose={CONFIRMED: "confirmed"})),
+        )
+        held = stored_answers(browser, draft_id)
+        sent = upload(browser, BLUE, form=READ_NOW, to=f"/parent/imports/{draft_id}/images")
+        page = followed(browser, sent)
+        after = stored_answers(browser, draft_id)
+
+    assert held[("name", "missing")] == "confirmed"
+    assert sent.status_code == 303, sent.text
+    assert ("name", "missing") not in after
+    assert says(page, ASK_NAME_AGAIN)
+    assert CONFIRMED not in checked_names(page)
+    assert says(name_panel(page), "Screenshot 1 and Screenshot 2 show no student name.")
 
 
 # ------------------------------------------------------------------ C13: the frozen rule, said
@@ -1923,3 +2060,96 @@ def test_a_screenshot_whose_lone_card_repeats_another_row_says_none_of_it_became
     assert by_sha[other].state == "text_only"
     assert by_sha[other].attention
     assert imports.label_of(by_sha[other]) == "Read, but none of it became homework."
+
+
+COOKIE_MOST = 4096
+"""The most bytes a browser keeps for one cookie's name and value."""
+LONG_TITLES = [(f"Reading log {n:02d} " + "with a long title " * 11)[:200] for n in range(16)]
+"""Sixteen titles of 200 characters each."""
+
+
+def sixteen_long_rows() -> dict[str, Any]:
+    """A homework list of sixteen cards, each its own row with a 200-character title."""
+    return homework_answer(
+        cards=[
+            homework_card(title=title, y_top=200 + 40 * n, y_bottom=230 + 40 * n)
+            for n, title in enumerate(LONG_TITLES)
+        ]
+    )
+
+
+def note_cookie(answer: Answer) -> str:
+    """The note cookie a redirect sets, as name=value."""
+    found = re.search(rf"{imports.NOTE_COOKIE}=[^;]*", answer.headers.get("set-cookie", ""))
+    assert found is not None, answer.headers
+    return found.group(0)
+
+
+@pytest.mark.parametrize("how", ["replace", "remove", "upload and read"])
+def test_a_change_that_clears_many_long_rows_leaves_a_note_a_browser_keeps(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """Screenshot 2 holds sixteen answered rows with 200-character titles. Replacing or removing
+    it, or adding and reading a screenshot that copies its cards, clears all sixteen; the note
+    the page after reads stays within what a browser keeps for one cookie, and names the first
+    three rows, shortened, and how many more."""
+    long_rows = sixteen_long_rows()
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(
+            browser, monkeypatch, (RED, homework_answer()), (BLUE, long_rows), (GREEN, long_rows)
+        )
+        [_, blue, green] = images_of(browser, draft_id)
+        browser.post(f"/parent/imports/{draft_id}/images/{green}/remove")
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        before = stored_answers(browser, draft_id)
+        if how == "replace":
+            sent = replace_with(browser, draft_id, blue, png(color=(9, 9, 9)))
+        elif how == "remove":
+            sent = browser.post(f"/parent/imports/{draft_id}/images/{blue}/remove")
+        else:
+            sent = upload(browser, GREEN, form=READ_NOW, to=f"/parent/imports/{draft_id}/images")
+        cookie = note_cookie(sent)
+        page = followed(browser, sent)
+
+    assert len(before) >= 16, sorted(before)
+    assert sent.status_code == 303, sent.text
+    assert len(cookie.encode()) <= COOKIE_MOST, len(cookie.encode())
+    line = re.search(
+        rf"{re.escape(CLEARED_INTRO)} ([^<]*?); and 13 more\. Answer them again\.",
+        html.unescape(page),
+    )
+    assert line is not None
+    named = line.group(1).split("; ")
+    assert len(named) == 3
+    assert set(named) <= {title[:57] + "..." for title in LONG_TITLES}
+
+
+def test_every_line_after_a_change_names_a_few_rows_and_how_many_more() -> None:
+    """Sixteen rows with 200-character titles cleared, sixteen kept unsaved and sixteen asked
+    about again: each list names its first three, shortened, and says how many more, and the
+    note carrying every line, the confirmation's and the replace's among them, stays within what
+    a browser keeps for one cookie. Four rows are all named, as "1 more" is never said."""
+    many = ChangeTold(
+        tuple(ClearedRow(title, None, True) for title in LONG_TITLES),
+        tuple(LONG_TITLES),
+        tuple(LONG_TITLES),
+        name_asked=True,
+    )
+    said = screenshot_page.change_said(many)
+    note = imports.note_for(bytes(32), "0" * 32, said, ["Screenshot 2 was replaced."])
+    short = [title[:57] + "..." for title in LONG_TITLES[:3]]
+    four = screenshot_page.change_said(ChangeTold((), tuple(LONG_TITLES[:4]), ()))
+
+    assert said == [
+        f"{CLEARED_INTRO} {'; '.join(short)}; and 13 more. Answer them again.",
+        screenshot_page.CHANGE_SAID["copies"],
+        *(screenshot_page.CHANGE_SAID["carried"].format(label=title) for title in short),
+        screenshot_page.CHANGE_SAID["carried_more"].format(count=13),
+        *(screenshot_page.CHANGE_SAID["asked"].format(label=title) for title in short),
+        screenshot_page.CHANGE_SAID["asked_more"].format(count=13),
+        screenshot_page.CHANGE_SAID["name"],
+    ]
+    assert len(f"{imports.NOTE_COOKIE}={note}".encode()) <= COOKIE_MOST
+    assert len(four) == 4
+    assert not any("more rows" in line for line in four)
