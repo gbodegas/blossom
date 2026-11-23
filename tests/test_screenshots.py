@@ -112,6 +112,12 @@ def test_dates_are_kept_as_the_text_shown_and_parsed_in_code() -> None:
         ("Monday 13/45/2026", None),
         ("Week of 10/5/2026", None),
         ("10/5/2026", None),
+        ("11/16/2026 - Monday", date(2026, 11, 16)),
+        ("- 11/16/2026 - Monday", date(2026, 11, 16)),
+        (" 1/9/2026 - Friday ", date(2026, 1, 9)),
+        ("13/45/2026 - Monday", None),
+        ("11/16/2026 - Someday", None),
+        ("11/16/2026 - Monday and more", None),
     ],
 )
 def test_a_heading_names_a_day_only_when_its_text_reads_as_one(text: str, day: date | None) -> None:
@@ -223,6 +229,284 @@ def test_a_card_that_doesnt_fit_stays_at_its_place_as_one_that_couldnt_be_read(
         "Vocab Quiz",
     ]
     assert "Sentinel" not in reading.model_dump_json()
+
+
+# ------------------------------------------------- a long first line on an unlabeled card
+
+LONG_LINE = "Read " + "one " * 73 + "page"
+"""A first line of 301 characters, one past a title's limit."""
+ODD_LINE = " Read  The OUTSIDERS,  chapter Two " + "and  Annotate it " * 16 + " "
+"""A first line past a title's limit with inner double spaces, a leading and a trailing
+space and mixed case."""
+
+
+def unlabeled(title: object, instruction: object = None, **fields: object) -> dict[str, Any]:
+    """A card with no label and no due line, as a printed list's subject is answered."""
+    return a_card(badge=None, footer=None, title=title, instruction=instruction, **fields)
+
+
+def one_card(card: object) -> Card | None:
+    """The one card of an answer as it is checked: the card, or ``None`` for one that
+    couldn't be read."""
+    [found] = checked(an_answer(cards=[card])).cards
+    return found
+
+
+@pytest.mark.parametrize(
+    "instruction", [None, "Then answer the questions."], ids=["alone", "with-an-instruction"]
+)
+def test_a_first_line_of_exactly_the_title_limit_stays_the_title(instruction: str | None) -> None:
+    """An unlabeled card with no due line whose title is exactly 300 characters is kept as
+    answered: its title is its title and its instruction is its instruction."""
+    title = "T" * screenshots.TITLE_MOST
+    card = one_card(unlabeled(title, instruction))
+
+    assert card is not None
+    assert (card.title, card.instruction) == (title, instruction)
+
+
+def test_a_first_line_past_the_title_limit_is_read_as_the_instruction() -> None:
+    """An unlabeled card with no due line whose title is 301 characters is read with those
+    words in its instruction, exactly as given, and no title. The answer itself is left as
+    given."""
+    given = unlabeled(LONG_LINE)
+    card = one_card(given)
+
+    assert len(LONG_LINE) == screenshots.TITLE_MOST + 1
+    assert card is not None
+    assert (card.title, card.instruction) == (None, LONG_LINE)
+    assert (card.badge, card.course, card.footer) == (None, "English 8", None)
+    assert (given["title"], given["instruction"]) == (LONG_LINE, None)
+
+
+def test_a_long_first_line_is_followed_by_a_line_break_and_its_continuation() -> None:
+    """With an instruction, the long first line comes first, then one line break, then the
+    instruction, each exactly as given, so the two stay lines of their own."""
+    more = "Then write three sentences about it."
+    card = one_card(unlabeled(LONG_LINE, more))
+
+    assert card is not None
+    assert (card.title, card.instruction) == (None, f"{LONG_LINE}\n{more}")
+    assert (card.instruction or "").splitlines() == [LONG_LINE, more]
+
+
+@pytest.mark.parametrize("more", [None, "  THEN  rest. "], ids=["alone", "with-an-instruction"])
+def test_a_long_first_line_keeps_its_wording_character_for_character(more: str | None) -> None:
+    """Inner double spaces, a leading and a trailing space and mixed case are kept as given:
+    nothing is folded, trimmed or reworded."""
+    card = one_card(unlabeled(ODD_LINE, more))
+
+    assert len(ODD_LINE) > screenshots.TITLE_MOST
+    assert card is not None
+    assert card.title is None
+    assert card.instruction == (ODD_LINE if more is None else ODD_LINE + "\n" + more)
+
+
+@pytest.mark.parametrize(
+    ("first", "more", "fits"),
+    [(4_000, None, True), (4_001, None, False), (301, 3_698, True), (301, 3_699, False)],
+    ids=[
+        "alone-4000",
+        "alone-4001",
+        "with-a-continuation-4000",
+        "with-a-continuation-4001",
+    ],
+)
+def test_a_long_first_line_is_moved_only_when_the_whole_text_fits_an_instruction(
+    first: int, more: int | None, fits: bool
+) -> None:
+    """The whole text, the first line or the first line, one line break and the instruction,
+    is moved when it is 4,000 characters, an instruction's limit. At 4,001 nothing is moved
+    and nothing is cut: the card is one that couldn't be read."""
+    title = "T" * first
+    instruction = None if more is None else "i" * more
+    whole = title if instruction is None else f"{title}\n{instruction}"
+    card = one_card(unlabeled(title, instruction))
+
+    assert len(whole) == screenshots.INSTRUCTION_MOST + (0 if fits else 1)
+    if fits:
+        assert card is not None
+        assert (card.title, card.instruction) == (None, whole)
+    else:
+        assert card is None
+
+
+@pytest.mark.parametrize("badge", ["DUE", "ASSIGNED"])
+def test_a_labeled_card_with_a_title_past_the_limit_couldnt_be_read(badge: str) -> None:
+    """A card with a DUE or ASSIGNED label is checked as answered: with a title of 301
+    characters, and no due line and no instruction, it is one that couldn't be read."""
+    card = a_card(badge=badge, title=LONG_LINE, instruction=None, footer=None)
+
+    assert one_card(card) is None
+
+
+@pytest.mark.parametrize(
+    "footer", ["Due (10/8/2026)", "See the class page"], ids=["a-due-line", "other-words"]
+)
+def test_an_unlabeled_card_whose_due_line_has_words_and_title_is_past_the_limit_couldnt_be_read(
+    footer: str,
+) -> None:
+    """An unlabeled card whose due line has words is checked as answered: with a title of 301
+    characters it is one that couldn't be read."""
+    card = a_card(badge=None, title=LONG_LINE, instruction=None, footer=footer)
+
+    assert one_card(card) is None
+
+
+@pytest.mark.parametrize(
+    "footer", ["", "  ", "\t\n"], ids=["an-empty-text", "only-spaces", "a-tab-and-a-line-break"]
+)
+def test_a_due_line_with_no_words_is_no_due_line_for_a_long_first_line(footer: str) -> None:
+    """A due line that is present and is an empty text or only whitespace is no due line, as
+    a note's due line is read: the unlabeled card's long first line is read as its
+    instruction, and the due line is kept as given. The same card with a label is one that
+    couldn't be read."""
+    card = one_card(a_card(badge=None, title=LONG_LINE, instruction=None, footer=footer))
+    labeled = a_card(badge="DUE", title=LONG_LINE, instruction=None, footer=footer)
+
+    assert card is not None
+    assert (card.title, card.instruction, card.footer) == (None, LONG_LINE, footer)
+    assert one_card(labeled) is None
+
+
+@pytest.mark.parametrize("missing", ["footer", "badge", "instruction"])
+def test_a_long_first_line_on_a_card_that_lacks_a_property_couldnt_be_read(missing: str) -> None:
+    """A card that lacks its due line, its label or its instruction as a property is one that
+    couldn't be read, with a long first line as with a title that fits: a due line that is
+    null or has no words is no due line, a due line that is absent is a card that doesn't fit,
+    and the move supplies no property."""
+    long_card = unlabeled(LONG_LINE)
+    fitting = unlabeled("Read page 3")
+    del long_card[missing]
+    del fitting[missing]
+
+    assert one_card(long_card) is None
+    assert one_card(fitting) is None
+
+
+@pytest.mark.parametrize(
+    "more",
+    ["11/17/2026 - Tuesday", "Due: Essay", "Then write a summary.\n11/17/2026 - Tuesday"],
+    ids=["a-day-line", "a-card-line", "a-day-line-after-a-line-break"],
+)
+def test_a_long_first_line_with_a_continuation_line_shaped_as_structure_couldnt_be_read(
+    more: str,
+) -> None:
+    """A continuation with a line shaped as a day or a card, the shapes the note rule refuses
+    in a note, leaves the card as answered, so it is one that couldn't be read: each line is
+    checked as given, before the continuation is joined to the first line. Under a title that
+    fits, the same card is kept as answered, for the note rule to refuse when its rows are
+    read."""
+    fitting = one_card(unlabeled("Read page 3", more))
+
+    assert one_card(unlabeled(LONG_LINE, more)) is None
+    assert fitting is not None
+    assert (fitting.title, fitting.instruction) == ("Read page 3", more)
+
+
+def test_a_long_first_line_shaped_as_structure_itself_couldnt_be_read() -> None:
+    """A long first line that is itself shaped as a card line is left as answered, so the card
+    is one that couldn't be read."""
+    line = "Due: " + "essay " * 60 + "draft"
+
+    assert len(line) > screenshots.TITLE_MOST
+    assert one_card(unlabeled(line)) is None
+
+
+OTHERWISE_WRONG: dict[str, dict[str, object]] = {
+    "a-position-out-of-range": {"y_bottom": 1001},
+    "edges-reversed": {"y_top": 400, "y_bottom": 300},
+    "a-wrong-type": {"clipped": 1},
+    "an-unknown-name": {"teacher": "Sentinel-Teacher-T3"},
+}
+
+
+@pytest.mark.parametrize("fields", OTHERWISE_WRONG.values(), ids=OTHERWISE_WRONG.keys())
+def test_a_long_first_line_on_a_card_that_fails_another_check_couldnt_be_read(
+    fields: dict[str, object],
+) -> None:
+    """Every other check still decides: an unlabeled card that fails one is a card that
+    couldn't be read, with a short title and with a title of 301 characters alike."""
+    assert one_card(unlabeled("Read page 12.", **fields)) is None
+    assert one_card(unlabeled(LONG_LINE, **fields)) is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [42, [LONG_LINE], {"text": LONG_LINE}],
+    ids=["a-number", "a-list-holding-a-long-text", "an-object-holding-a-long-text"],
+)
+def test_a_title_that_is_not_a_text_is_not_moved(title: object) -> None:
+    """Only a title that is a text is moved; any other value leaves a card that couldn't be
+    read."""
+    assert one_card(unlabeled(title)) is None
+
+
+def test_a_mark_on_a_long_first_line_names_the_instruction_it_is_read_as() -> None:
+    """A mark of uncertainty that names the title goes with the words: on a card read with its
+    long first line in its instruction, the mark names the instruction, its reason as given,
+    and every other mark stays as given, in order."""
+    marks = [
+        {"field": "course", "reason": "blurred"},
+        {"field": "title", "reason": "smudged ink"},
+        {"field": "instruction", "reason": "cut off"},
+    ]
+    card = one_card(unlabeled(LONG_LINE, "Then rest.", uncertain=marks))
+
+    assert card is not None
+    assert [(mark.field, mark.reason) for mark in card.uncertain] == [
+        ("course", "blurred"),
+        ("instruction", "smudged ink"),
+        ("instruction", "cut off"),
+    ]
+    assert card.uncertain_fields == frozenset({"course", "instruction"})
+
+
+def test_the_row_of_a_long_first_line_asks_about_its_marked_words_as_its_instruction() -> None:
+    """The row read from the stored reading carries the mark under the instruction, the field
+    that holds the marked words, so the review asks the family about them."""
+    mark = {"field": "title", "reason": "smudged ink"}
+    answer = an_answer(cards=[unlabeled(LONG_LINE, uncertain=[mark])])
+
+    [row] = homework_assembly([stored_homework("long-line", answer)], now=NOW).rows
+
+    assert row.marks == frozenset({"instruction"})
+    assert [seen.text for seen in row.reading.instructions] == [LONG_LINE]
+
+
+def test_a_mark_on_a_title_that_fits_stays_on_the_title() -> None:
+    mark = {"field": "title", "reason": "smudged ink"}
+    card = one_card(unlabeled("T" * screenshots.TITLE_MOST, uncertain=[mark]))
+
+    assert card is not None
+    assert [(m.field, m.reason) for m in card.uncertain] == [("title", "smudged ink")]
+
+
+def test_the_stored_text_of_a_long_first_line_holds_it_as_the_instruction() -> None:
+    """A reading's stored text holds the card as read, no title and the words in its
+    instruction, and decodes to the same reading."""
+    reading = checked(an_answer(cards=[unlabeled(LONG_LINE)]))
+    [stored] = json.loads(reading.model_dump_json())["cards"]
+
+    assert (stored["title"], stored["instruction"]) == (None, LONG_LINE)
+    assert HomeworkReading.model_validate_json(reading.model_dump_json()) == reading
+
+
+def test_a_stored_reading_holding_a_title_past_the_limit_does_not_decode() -> None:
+    """A long first line is moved when an answer is checked, never when a stored reading is
+    decoded: a stored text whose card holds a title of 301 characters is a reading that
+    couldn't be read."""
+    title = "Study " + "two " * 72 + "sheets"
+    fits = stored_homework("stored-long-title", an_answer(cards=[unlabeled(title)]))
+    longer = fits._replace(body=fits.body.replace(title, title + "s"))
+
+    assembly = homework_assembly([longer], now=NOW)
+
+    assert len(title) == screenshots.TITLE_MOST
+    assert json.loads(longer.body)["cards"][0]["title"] == title + "s"
+    assert len(homework_assembly([fits], now=NOW).rows) == 1
+    assert assembly.rows == ()
+    assert [item.reason for item in assembly.unread] == ["reading_unreadable"]
 
 
 # ------------------------------------------------------------------ the selected student
@@ -1871,6 +2155,178 @@ def test_the_same_body_under_other_versions_gives_a_new_item_key() -> None:
 
     assert [[item.reason for item in found] for found in items] == [["reading_unreadable"]] * 3
     assert len({found[0].key for found in items}) == 3
+
+
+@pytest.mark.parametrize("prompt_version", ["v1b", "v1c"])
+def test_a_reading_stored_under_either_prompt_of_this_schema_decodes(prompt_version: str) -> None:
+    """The prompts v1b and v1c share the answer schema, so a reading stored under either one
+    reads as its rows and places its cards."""
+    stored = stored_homework("m", an_answer())._replace(prompt_version=prompt_version)
+
+    assembly = homework_assembly([stored], now=NOW)
+
+    assert stored.schema_version == "screenshot-reading/1"
+    assert len(assembly.rows) == 2
+    assert assembly.unread == ()
+    assert len(screenshots.cards_placed([stored])) == 2
+
+
+def test_the_prompt_in_use_is_one_a_stored_reading_decodes_under() -> None:
+    stored = stored_homework("m", an_answer())
+
+    assert stored.prompt_version == PROMPT_VERSION == "v1c"
+    assert len(homework_assembly([stored], now=NOW).rows) == 2
+
+
+@pytest.mark.parametrize(
+    ("prompt_version", "schema_version"),
+    [
+        ("v1", "screenshot-reading/1"),
+        ("v1a", "screenshot-reading/1"),
+        ("v1d", "screenshot-reading/1"),
+        ("V1B", "screenshot-reading/1"),
+        ("v1b ", "screenshot-reading/1"),
+        ("", "screenshot-reading/1"),
+        ("v1b", "screenshot-reading/0"),
+        ("v1b", "screenshot-reading/2"),
+        ("v1c", "screenshot-reading/0"),
+        ("v1c", "screenshot-reading/2"),
+        ("v1c", ""),
+    ],
+)
+def test_a_reading_stored_under_any_other_prompt_or_schema_version_is_not_decoded(
+    prompt_version: str, schema_version: str
+) -> None:
+    """The decoder takes the closed set of prompt versions that share this schema and this
+    schema version alone: the same text under any other version is one item that couldn't be
+    read, and places no card."""
+    stored = stored_homework("m", an_answer())._replace(
+        prompt_version=prompt_version, schema_version=schema_version
+    )
+
+    assembly = homework_assembly([stored], now=NOW)
+
+    assert assembly.rows == ()
+    assert [item.reason for item in assembly.unread] == ["reading_unreadable"]
+    assert screenshots.cards_placed([stored]) == {}
+
+
+def test_a_decoded_reading_s_item_keys_hold_the_prompt_version_it_was_made_with() -> None:
+    """A stored reading's digest holds its own prompt version, so the same reading stored
+    under v1b and under v1c gives its clipped card two keys, and each key is steady."""
+    clipped = an_answer(cards=[a_card(clipped=True)])
+    older = stored_homework("m", clipped)._replace(prompt_version="v1b")
+    newer = older._replace(prompt_version="v1c")
+
+    [first] = homework_assembly([older], now=NOW).unread
+    [again] = homework_assembly([older], now=NOW).unread
+    [second] = homework_assembly([newer], now=NOW).unread
+
+    assert first.reason == second.reason == "clipped"
+    assert first.key == again.key
+    assert first.key != second.key
+
+
+PORTAL_FORM = "Monday 10/5/2026"
+"""A day heading as the portal's homework list shows it."""
+PRINTED_FORM = "10/5/2026 - Monday"
+"""The same day as a printed homework list's dated day line."""
+BULLETED_FORM = "- 10/5/2026 - Monday"
+"""The printed day line with the bullet the print view can put before it."""
+THAT_MONDAY = date(2026, 10, 5)
+
+
+def stored_under(prompt_version: str, text: str) -> StoredReading:
+    """The default list, an assigned card with its due line and a due card with none, under
+    one heading with this text, stored under a prompt version."""
+    answer = an_answer(headings=[heading(text, 150)])
+    return stored_homework("m", answer)._replace(prompt_version=prompt_version)
+
+
+@pytest.mark.parametrize(
+    ("prompt_version", "text", "day"),
+    [
+        ("v1b", PORTAL_FORM, THAT_MONDAY),
+        ("v1b", PRINTED_FORM, None),
+        ("v1b", BULLETED_FORM, None),
+        ("v1c", PORTAL_FORM, THAT_MONDAY),
+        ("v1c", PRINTED_FORM, THAT_MONDAY),
+        ("v1c", BULLETED_FORM, THAT_MONDAY),
+    ],
+    ids=["v1b-portal", "v1b-printed", "v1b-bulleted", "v1c-portal", "v1c-printed", "v1c-bulleted"],
+)
+def test_a_stored_reading_s_heading_names_a_day_as_its_prompt_version_reads_it(
+    prompt_version: str, text: str, day: date | None
+) -> None:
+    """A reading stored under prompt v1b names a day by the portal's form alone. One stored
+    under v1c, the prompt in use, names it by a printed list's dated day line too, with or
+    without its bullet. The rows follow the heading as its reading's version reads it: the
+    assigned card is assigned on that day or on none, and the due card, dated by its heading
+    alone, is a row or a card with no day."""
+    stored = stored_under(prompt_version, text)
+
+    placed = screenshots.cards_placed([stored]).values()
+    assembly = homework_assembly([stored], now=NOW)
+
+    assert [None if found.heading is None else found.heading.day for found in placed] == [day] * 2
+    assert [row.reading.assigned_on for row in assembly.rows if row.reading.assigned_on] == (
+        [] if day is None else [day]
+    )
+    assert [item.reason for item in assembly.unread] == (["no_day"] if day is None else [])
+    assert len(assembly.rows) == (1 if day is None else 2)
+
+
+@pytest.mark.parametrize(
+    ("prompt_version", "day"), [("v1b", None), ("v1c", THAT_MONDAY)], ids=["v1b", "v1c"]
+)
+def test_a_copy_of_a_decoded_reading_reads_its_headings_as_the_reading_does(
+    prompt_version: str, day: date | None
+) -> None:
+    """A copy of a decoded reading, shallow or deep, and a copy of one of its headings, read
+    a printed day line as the decoded reading does: as no day under v1b, as its day under
+    v1c. The decoded reading and each copy write the text the reading was stored as."""
+    stored = stored_under(prompt_version, PRINTED_FORM)
+    reading = screenshots._decoded(stored)
+    assert reading is not None
+    [found] = reading.headings
+
+    readings = [
+        copy.copy(reading),
+        copy.deepcopy(reading),
+        reading.model_copy(),
+        reading.model_copy(deep=True),
+    ]
+    headings = [
+        copy.copy(found),
+        copy.deepcopy(found),
+        found.model_copy(),
+        found.model_copy(deep=True),
+        found.model_copy(update={"uncertain": "smudged"}),
+    ]
+
+    assert found.day == day
+    assert [made.headings[0].day for made in readings] == [day] * 4
+    assert [made.day for made in headings] == [day] * 5
+    assert reading.model_dump_json() == stored.body
+    assert [made.model_dump_json() for made in readings] == [stored.body] * 4
+
+
+@pytest.mark.parametrize("name", ["printed", *screenshots.Heading.__private_attributes__])
+def test_no_answer_and_no_stored_text_can_say_how_its_headings_are_read(name: str) -> None:
+    """How a heading's day is read is no property of an answer or of a stored reading: a
+    heading that carries any name but the schema's three, a private one of the model
+    included, makes a fresh answer not valid and a stored text one that can't be decoded."""
+    carried = {"text": PRINTED_FORM, "y": 150, "uncertain": None, name: False}
+    stored = stored_under("v1b", PRINTED_FORM)
+    body = json.loads(stored.body)
+    body["headings"] = [carried]
+
+    assembly = homework_assembly([stored._replace(body=json.dumps(body))], now=NOW)
+
+    assert homework_reading(an_answer(headings=[carried])) == (None, "not_valid")
+    assert [item.reason for item in assembly.unread] == ["reading_unreadable"]
+    assert assembly.rows == ()
+    assert set(screenshots.Heading.model_json_schema()["properties"]) == {"text", "y", "uncertain"}
 
 
 @pytest.mark.parametrize(

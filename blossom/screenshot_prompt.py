@@ -1,10 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""The screenshot reader's prompt and answer schema, exactly as the reader was tested.
+"""The screenshot reader's prompt and answer schema, exactly as the reader is sent them.
 
-The system prompt is prompt v1b: the reading instructions, then the answer schema as JSON
+The system prompt is prompt v1c: the reading instructions, then the answer schema as JSON
 text. The model is asked for JSON by instruction, with no tool or output format, and the
 answer is validated in code. Positions are thousandths of the image height.
+
+The instructions name a homework list in two layouts: the portal's list, with day headings
+and course cards marked DUE or ASSIGNED, and the printed list, with a "Homework for" heading
+that names the student, dated day lines, and subject labels each on a line of its own with
+the homework words beneath. Both are answered in the one schema: a printed subject is a
+card with its subject as the course, the closing hyphen of its label left out, and no label
+or due line. A grade report is named by its categories and term grade, and anything else is
+unsupported.
 """
 
 import json
@@ -13,8 +21,9 @@ from typing import Final
 SCHEMA_VERSION: Final = "screenshot-reading/1"
 """The answer schema's name, stored with every reading."""
 
-PROMPT_VERSION: Final = "v1b"
-"""The prompt's name, stored with every reading."""
+PROMPT_VERSION: Final = "v1c"
+"""The prompt's name, stored with every reading. Prompt v1b, which names the portal's
+homework list alone, has the same answer schema, so a reading stored under it decodes too."""
 
 CARD_FIELDS: Final = ["badge", "course", "title", "instruction", "footer"]
 HEADER_FIELDS: Final = ["school_year", "term", "class_code", "class_name", "teacher"]
@@ -286,20 +295,36 @@ PROMPT_V1: Final = (
     "compute or normalize a value.\n"
     "\n"
     'Decide the image kind first. A homework list has day headings such as "Monday '
-    "10/5/2026\" and course cards marked DUE or ASSIGNED. A grade report shows one class's "
+    '10/5/2026" and course cards marked DUE or ASSIGNED. A printed homework list is a '
+    'homework list too: it has a heading that names the student, such as "Homework for Wren", '
+    'a dated day line such as "11/16/2026 - Monday", subject labels each on a line of its own, '
+    'such as "Humanities -", and the homework words beneath each subject. A subject on a '
+    "printed list can have homework with no drawn card and no DUE or ASSIGNED label. A grade "
+    "report shows one class's "
     'grading categories with "Weight =", assignment rows, "Category Average" lines and a '
     '"Term Grade". Anything else, such as a message thread, is unsupported: return no '
-    "headings, no cards and no report for it.\n"
+    "headings, no cards and no report for it. A printed grade report with its grading "
+    'categories and a "Term Grade" is a grade report even with no homework day heading; a '
+    "letter is unsupported, and so is a printed homework list with no dated day line or with "
+    "no subject label that has words beneath it.\n"
     "\n"
     "The student: give only the selected student, which is the highlighted tab of a homework "
     "list's student picker, or the name on a grade report's student line. Names on unselected "
-    "tabs are not the student. If no selected student is visible, the name is null.\n"
+    "tabs are not the student. On a printed homework list the student is the name in the "
+    '"Homework for" heading, such as Wren in "Homework for Wren". If no selected student is '
+    "visible, the name is null.\n"
     "\n"
     "Homework lists: list every day heading and every card, top to bottom, with their vertical "
     "positions. Copy course, title, instruction and footer verbatim, joining wrapped lines "
     'with single spaces. The footer is the italic due line such as "Due (10/8/2026)". The '
     "status bar's clock or date and the week range are not headings. Mark a card clipped when "
-    "it runs off an edge of the image.\n"
+    "it runs off an edge of the image. On a printed homework list, each dated day line is a "
+    "heading, copied as printed, and each subject label with words beneath it is one card. In "
+    'a subject label the closing " -" is a separator, not part of the name: "Humanities -" '
+    'gives the course "Humanities" and "Pre-Algebra -" gives "Pre-Algebra", so a hyphen inside '
+    "a subject's name stays. The card's badge and footer are null, the first line of the words "
+    "beneath the label is its title and any further lines are its instruction, copied as "
+    "shown.\n"
     "\n"
     'Grade reports: copy every cell as raw text, exactly as shown. Use "" for a cell that '
     "is visibly empty and null for anything outside the image. Category Average and Term Grade "
@@ -318,7 +343,7 @@ SYSTEM_PROMPT: Final = (
     + "allows it:\n"
     + json.dumps(SCHEMA, separators=(",", ":"))
 )
-"""Prompt v1b: the instructions, then the schema itself, since the answer is JSON by
+"""Prompt v1c: the instructions, then the schema itself, since the answer is JSON by
 instruction alone."""
 
 USER_TEXT: Final = "Read this screenshot."

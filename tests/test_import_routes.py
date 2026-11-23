@@ -87,9 +87,11 @@ from blossom.stores.import_drafts import (
     DraftFrozen,
     DraftNotFound,
     ImportDraftsStore,
+    ReadTiming,
     ReviewChanged,
     SavedForLater,
     TooManyImages,
+    UploadedReading,
     new_creation_token,
 )
 from blossom.stores.project_state import (
@@ -2107,6 +2109,205 @@ def test_saved_progress_keeps_the_groups_ticked_and_ticks_only_those_still_open(
     assert units_on(after_save) == [second]
     assert units_ticked(after_save) == []
     assert says(refused, imports.PRESS_SAID["later_invalid"])
+
+
+def read_under(browser: TestClient, draft_id: str, answer: object, prompt_version: str) -> None:
+    """The review's one screenshot with this answer's reading stored under a prompt version,
+    as a Read made with that prompt stored it, with no reader called."""
+    student = state_of(browser).project_state.student_id()
+    store = state_of(browser).import_drafts
+    [image] = store.snapshot(student, draft_id).images
+    attempt = store.start_attempt(student, draft_id, [image.image_id])
+    assert attempt is not None
+    checked = screenshots.homework_reading(answer)
+    assert checked.reading is not None
+    stored = store.store_reading(
+        student,
+        draft_id,
+        attempt_id=attempt.attempt_id,
+        image_id=image.image_id,
+        sha256=image.sha256,
+        reading=UploadedReading(
+            checked.reading.image_kind,
+            prompt_version,
+            "screenshot-reading/1",
+            checked.reading.model_dump_json(),
+        ),
+        timing=ReadTiming(1.0, 10, 5),
+    )
+    assert stored
+    assert store.end_attempt(student, draft_id, attempt.attempt_id)
+
+
+def test_a_review_read_with_prompt_v1b_and_saved_for_later_reopens_with_its_choices_and_no_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reading stored under prompt v1b, which shares the answer schema of the prompt in use,
+    reads as its cards. The review saved for later with her name answered and one group ticked
+    reopens with both cards shown, that answer kept and that tick drawn, and the reader is
+    never called."""
+    called: list[bytes] = []
+
+    def never(settings: Settings, png_bytes: bytes, *, timeout: float) -> ScreenshotAnswer:
+        called.append(png_bytes)
+        pytest.fail("the reader was called")
+
+    monkeypatch.setattr(screenshot_reading, "read_screenshot", never)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        read_under(browser, draft_id, homework_answer(), "v1b")
+        page = her_name_answered(browser, draft_id, loaded(browser, draft_id))
+        first, second = units_on(page)
+        followed(browser, send(browser, draft_id, page_post(page, "later", tick=[first])))
+        reopened = loaded(browser, draft_id)
+        student = state_of(browser).project_state.student_id()
+        snapshot = state_of(browser).import_drafts.snapshot(student, draft_id)
+        answers = stored_answers(browser, draft_id)
+
+    form = html.unescape(review_form(reopened))
+    name_drawn = [
+        [pair for pair in checked_values(review_form(shown)) if pair[0].startswith("answer:name:")]
+        for shown in (page, reopened)
+    ]
+    assert [reading.prompt_version for reading in snapshot.readings] == ["v1b"]
+    assert json.loads(str(snapshot.progress))["selected"] == [first]
+    assert [value for (kind, _), value in answers.items() if kind == "name"] == ["hers"]
+    assert name_drawn[1] == name_drawn[0]
+    assert 'id="unread-heading"' not in reopened
+    assert "Sentence Composing" in form
+    assert "Chains Reading Guide 6" in form
+    assert units_on(reopened) == [first, second]
+    assert units_ticked(reopened) == [first]
+    assert called == []
+
+
+PRINTED_OCTOBER_DAY_LINES: Final = pytest.mark.parametrize(
+    "day_line",
+    ["10/5/2026 - Monday", "- 10/5/2026 - Monday"],
+    ids=["printed-day-line", "printed-day-line-with-a-bullet"],
+)
+"""A printed homework list's dated day line for Monday, October 5, 2026, without and with
+the bullet the print view can put before it."""
+POSTER_KEY: Final = "80911b05c6024bf9fff2108feaf9b8db1ea21408b23f48b833f72399544b6125"
+"""The row key of Art / Poster due 2026-10-08 with no assigned date: the key a reading stored
+under prompt v1b gives that card under a printed day line, which it doesn't read as a day."""
+WORKSHEET_KEY: Final = "12aaee64a9ff3ac48c732526f7edf0a0810e77109bbe3738151e7f42e84eaf86"
+"""The row key of Math / Worksheet due 2026-10-09 with no assigned date, as ``POSTER_KEY``."""
+
+
+def poster_and_worksheet(day_line: str) -> dict[str, object]:
+    """The reader's answer for two ASSIGNED cards under one heading, each with its due line
+    and no instruction: Art / Poster due 10/8/2026 and Math / Worksheet due 10/9/2026."""
+    return homework_answer(
+        headings=[{"text": day_line, "y": 150, "uncertain": None}],
+        cards=[
+            homework_card(
+                course="Art",
+                title="Poster",
+                instruction=None,
+                footer="Due (10/8/2026)",
+                y_top=210,
+                y_bottom=290,
+            ),
+            homework_card(
+                course="Math",
+                title="Worksheet",
+                instruction=None,
+                footer="Due (10/9/2026)",
+                y_top=320,
+                y_bottom=400,
+            ),
+        ],
+    )
+
+
+def written_with_assigned_dates(
+    browser: TestClient, before: set[str]
+) -> list[tuple[str, str, date | None, date | None]]:
+    """Every assignment on record that isn't among ``before`` as its class, title, due date
+    and assigned date, by class."""
+    rows = state_of(browser).project_state.all_assignments()
+    return sorted(
+        (a.course, a.title, a.due_date, a.assigned_on)
+        for a in rows
+        if a.assignment_id not in before
+    )
+
+
+@PRINTED_OCTOBER_DAY_LINES
+def test_a_v1b_review_under_a_printed_day_line_keeps_its_row_keys_and_its_one_tick(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, day_line: str
+) -> None:
+    """A reading stored under prompt v1b names a day by the portal's heading alone, so its
+    two assigned cards under a printed day line are dated by their due lines with no assigned
+    date, and their row keys are the pinned ones. Saved for later with Poster alone ticked by
+    that key, the review keeps that key as its progress and reopens with Poster ticked and
+    Worksheet not. Save selected homework from the reopened page writes Poster alone, and the
+    reader is never called."""
+    called: list[bytes] = []
+
+    def never(settings: Settings, png_bytes: bytes, *, timeout: float) -> ScreenshotAnswer:
+        called.append(png_bytes)
+        pytest.fail("the reader was called")
+
+    monkeypatch.setattr(screenshot_reading, "read_screenshot", never)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        read_under(browser, draft_id, poster_and_worksheet(day_line), "v1b")
+        page = her_name_answered(browser, draft_id, loaded(browser, draft_id))
+        student = state_of(browser).project_state.student_id()
+        drafts = state_of(browser).import_drafts
+        stored = drafts.snapshot(student, draft_id).readings
+        keys = screenshots.homework_rows(stored)
+        followed(browser, send(browser, draft_id, page_post(page, "later", tick=[POSTER_KEY])))
+        progress = drafts.snapshot(student, draft_id).progress
+        reopened = loaded(browser, draft_id)
+        before = ids_on_record(browser)
+        sent = page_post(reopened, "save", tick=units_ticked(reopened))
+        after = followed(browser, send(browser, draft_id, sent))
+        rows = written_with_assigned_dates(browser, before)
+
+    assert [reading.prompt_version for reading in stored] == ["v1b"]
+    assert [(row.key, row.readable) for row in keys] == [(WORKSHEET_KEY, True), (POSTER_KEY, True)]
+    assert units_on(page) == [POSTER_KEY, WORKSHEET_KEY]
+    assert progress is not None
+    assert json.loads(progress) == {"v": 4, "corrected": {}, "selected": [POSTER_KEY]}
+    assert units_on(reopened) == [POSTER_KEY, WORKSHEET_KEY]
+    assert units_ticked(reopened) == [POSTER_KEY]
+    assert says(after, imports.counted(1, 0, 0, 0))
+    assert rows == [("Art", "Poster", date(2026, 10, 8), None)]
+    assert called == []
+
+
+@PRINTED_OCTOBER_DAY_LINES
+def test_the_same_cards_read_with_the_prompt_in_use_are_assigned_on_the_printed_day(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, day_line: str
+) -> None:
+    """The same two cards read with the prompt in use, v1c, take the printed day line as
+    their day, with or without its bullet: each row carries 2026-10-05 as its assigned date
+    under a key of its own, and saving both writes that date."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, poster_and_worksheet(day_line)))
+        page = answered(browser, draft_id, read)
+        student = state_of(browser).project_state.student_id()
+        stored = state_of(browser).import_drafts.snapshot(student, draft_id).readings
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_with_assigned_dates(browser, before)
+
+    read_as = screenshots.homework_assembly(stored, now=screenshots.KEY_INSTANT).rows
+    assert [reading.prompt_version for reading in stored] == ["v1c"]
+    assert sorted((row.reading.title, row.reading.assigned_on) for row in read_as) == [
+        ("Poster", date(2026, 10, 5)),
+        ("Worksheet", date(2026, 10, 5)),
+    ]
+    assert {row.key for row in read_as}.isdisjoint({POSTER_KEY, WORKSHEET_KEY})
+    assert says(after, imports.counted(2, 0, 0, 0))
+    assert rows == [
+        ("Art", "Poster", date(2026, 10, 8), date(2026, 10, 5)),
+        ("Math", "Worksheet", date(2026, 10, 9), date(2026, 10, 5)),
+    ]
 
 
 def test_with_no_saved_progress_every_group_on_its_default_is_ticked_an_open_question_or_not(
@@ -45405,6 +45606,291 @@ def test_a_note_saved_and_read_again_is_ticked_as_already_saved(
     assert UNIT_TICK.findall(review_form(again)) == [" checked"]
     assert says(resaved, imports.counted(0, 0, 1, 0))
     assert rows == [("The class project", date(2026, 10, 5))]
+
+
+# ------------------------------------------------------------------ a printed homework list
+
+PORTAL_DAY: Final = "Monday 11/16/2026"
+"""A day heading as the portal's homework list shows it."""
+PRINTED_DAY: Final = "11/16/2026 - Monday"
+"""The same day as a printed homework list's dated day line."""
+BULLETED_DAY: Final = "- 11/16/2026 - Monday"
+"""The printed day line with the bullet the print view can put before it."""
+BOTH_DAY_LINES: Final = pytest.mark.parametrize(
+    "day_line",
+    [PORTAL_DAY, PRINTED_DAY, BULLETED_DAY],
+    ids=["portal-day-heading", "printed-day-line", "printed-day-line-with-a-bullet"],
+)
+TENER_LINES: Final = (
+    'Study and memorize the categories for the verb "tener"',
+    "Be ready to form sentences with each of the categories.",
+)
+"""The two lines beneath Spanish on the made-up printed list."""
+
+
+def printed_card(course: str, title: str, instruction: str | None, y_top: int) -> dict[str, object]:
+    """One subject of a printed homework list as the reader answers it: the subject label
+    without its closing hyphen as the course, no label and no due line, the first line of the
+    words beneath as the title and any further lines as the instruction."""
+    return homework_card(
+        badge=None,
+        course=course,
+        title=title,
+        instruction=instruction,
+        footer=None,
+        y_top=y_top,
+        y_bottom=y_top + 80,
+    )
+
+
+def printed_answer(day_line: str, *cards: dict[str, object]) -> dict[str, object]:
+    """The reader's answer for a made-up printed homework list for Wren: one dated day line
+    and these subjects under it."""
+    return homework_answer(
+        headings=[{"text": day_line, "y": 150, "uncertain": None}], cards=list(cards)
+    )
+
+
+def courses_offered(page: str) -> list[str]:
+    """The class each course box of "Correct what was read" holds, in page order."""
+    form = review_form(page)
+    subjects = [s for s in fields_named(form, "correct:") if json.loads(s)[1] == "course"]
+    boxes = [box_of(form, f"correct:{subject}") for subject in subjects]
+    return [box[1] for box in boxes if box is not None]
+
+
+def ids_on_record(browser: TestClient) -> set[str]:
+    """The id of every assignment on record."""
+    return {a.assignment_id for a in state_of(browser).project_state.all_assignments()}
+
+
+def written_since(browser: TestClient, before: set[str]) -> list[tuple[str, str, date | None, str]]:
+    """Every assignment on record that isn't among ``before`` as its class, title and due
+    date, with the words of the school instructions kept under it joined by single spaces,
+    by class and title."""
+    record = state_of(browser).project_state
+    rows = [a for a in record.all_assignments() if a.assignment_id not in before]
+    readable = record.school_instruction_readings([a.assignment_id for a in rows]).readable
+    return sorted(
+        (
+            (
+                a.course,
+                a.title,
+                a.due_date,
+                " ".join(each.text for each in readable[a.assignment_id].kept)
+                if a.assignment_id in readable
+                else "",
+            )
+            for a in rows
+        ),
+        key=lambda row: row[:2],
+    )
+
+
+@BOTH_DAY_LINES
+def test_a_printed_homework_list_s_subjects_are_offered_and_saved_as_their_assignments(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, day_line: str
+) -> None:
+    """The reader's answer for a printed homework list, Humanities and Spanish under one dated
+    day line, reads under the day line as printed as it does under the portal's heading for
+    that day: the review offers the Humanities project due on that day and one Spanish
+    assignment holding both of its lines with no due date, each under its subject's name, and
+    Save selected homework with every group ticked writes those two."""
+    answer = printed_answer(
+        day_line,
+        printed_card("Humanities", "The Outsiders project due today.", None, 200),
+        printed_card("Spanish", TENER_LINES[0], TENER_LINES[1], 320),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    form = html.unescape(review_form(page))
+    assert 'id="unread-heading"' not in page
+    assert len(units_on(page)) == 2
+    assert courses_offered(page) == ["Humanities", "Spanish"]
+    assert "The Outsiders project" in form
+    assert [line for line in TENER_LINES if line not in form] == []
+    assert says(after, imports.counted(2, 0, 0, 0))
+    assert [(course, due) for course, _, due, _ in rows] == [
+        ("Humanities", date(2026, 11, 16)),
+        ("Spanish", None),
+    ]
+    assert rows[0][1] == "The Outsiders project"
+    assert [line for line in TENER_LINES if line not in f"{rows[1][1]} {rows[1][3]}"] == []
+
+
+@BOTH_DAY_LINES
+def test_a_printed_subject_with_a_hyphen_in_its_name_keeps_its_name_whole(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, day_line: str
+) -> None:
+    """A subject whose name holds a hyphen, answered as its label without the closing hyphen,
+    is offered and saved under that name whole."""
+    answer = printed_answer(
+        day_line, printed_card("Pre-Algebra", "Study the fractions on page 30.", None, 200)
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    assert 'id="unread-heading"' not in page
+    assert courses_offered(page) == ["Pre-Algebra"]
+    assert says(after, imports.counted(1, 0, 0, 0))
+    assert [(course, title, due) for course, title, due, _ in rows] == [
+        ("Pre-Algebra", "Study the fractions on page 30", None)
+    ]
+
+
+LONG_FIRST_LINE: Final = "Read " + "one " * 73 + "page"
+"""A printed subject's first line of 301 characters, one past a title's limit."""
+FULL_FIRST_LINE: Final = "Study " + "two " * 72 + "sheets"
+"""A printed subject's first line of exactly 300 characters, a title's limit."""
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    [None, "and write three sentences about it"],
+    ids=["first-line-alone", "with-a-continuation"],
+)
+def test_a_printed_subject_with_a_long_first_line_is_offered_and_saved_with_its_full_words(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, continuation: str | None
+) -> None:
+    """A printed list whose English subject has a first line of 301 characters, answered as
+    its title, beside a Spanish subject whose first line is exactly 300: the review offers
+    both subjects with their words, Save selected homework with both ticked writes both, and
+    the school instructions kept under each assignment are its words in full, single-spaced
+    as every note's words are: the long first line, one space and its continuation where it
+    has one."""
+    words = LONG_FIRST_LINE if continuation is None else f"{LONG_FIRST_LINE} {continuation}"
+    answer = printed_answer(
+        PRINTED_DAY,
+        printed_card("English", LONG_FIRST_LINE, continuation, 200),
+        printed_card("Spanish", FULL_FIRST_LINE, None, 320),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    form = html.unescape(review_form(page))
+    assert (len(LONG_FIRST_LINE), len(FULL_FIRST_LINE)) == (TITLE_MOST + 1, TITLE_MOST)
+    assert 'id="unread-heading"' not in page
+    assert len(units_on(page)) == 2
+    assert sorted(courses_offered(page)) == ["English", "Spanish"]
+    assert [text for text in (words, FULL_FIRST_LINE) if text not in form] == []
+    assert says(after, imports.counted(2, 0, 0, 0))
+    assert [(course, due, kept) for course, _, due, kept in rows] == [
+        ("English", None, words),
+        ("Spanish", None, FULL_FIRST_LINE),
+    ]
+
+
+def test_a_long_first_line_followed_by_a_line_shaped_as_a_day_stays_a_card_that_couldnt_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A printed English subject whose long first line is followed by a line shaped as a day
+    stays a card that couldn't be read, as the note rule refuses such a line under a title
+    that fits: the review names the unread card and offers the Spanish subject alone, and Save
+    selected homework writes Spanish alone."""
+    answer = printed_answer(
+        PRINTED_DAY,
+        printed_card("English", LONG_FIRST_LINE, "11/17/2026 - Tuesday", 200),
+        printed_card("Spanish", FULL_FIRST_LINE, None, 320),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    assert 'id="unread-heading"' in page
+    assert len(units_on(page)) == 1
+    assert courses_offered(page) == ["Spanish"]
+    assert says(after, imports.counted(1, 0, 0, 0))
+    assert [(course, due, kept) for course, _, due, kept in rows] == [
+        ("Spanish", None, FULL_FIRST_LINE)
+    ]
+
+
+BOTH_FIRST_LINES: Final = pytest.mark.parametrize(
+    "first", ["Read page 3", LONG_FIRST_LINE], ids=["a-short-first-line", "a-long-first-line"]
+)
+"""A printed subject's first line that fits a title, and one of 301 characters."""
+
+
+@BOTH_FIRST_LINES
+def test_a_continuation_that_is_no_card_line_by_itself_is_offered_and_saved_with_every_word(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str
+) -> None:
+    """A printed English subject whose first line is followed by the line "- Due: Essay",
+    which is no card line by itself, is offered in the review and saved, under a short first
+    line and under a long one: the long first line and its continuation stay lines of their
+    own, so no line is formed that the note rule refuses. The school instructions kept under
+    the assignment hold every word, single-spaced: the first line, one space and the
+    continuation."""
+    answer = printed_answer(
+        PRINTED_DAY,
+        printed_card("English", first, "- Due: Essay", 200),
+        printed_card("Spanish", FULL_FIRST_LINE, None, 320),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    assert 'id="unread-heading"' not in page
+    assert len(units_on(page)) == 2
+    assert sorted(courses_offered(page)) == ["English", "Spanish"]
+    assert says(after, imports.counted(2, 0, 0, 0))
+    assert [(course, due, kept) for course, _, due, kept in rows] == [
+        ("English", None, f"{first} - Due: Essay"),
+        ("Spanish", None, FULL_FIRST_LINE),
+    ]
+
+
+@BOTH_FIRST_LINES
+def test_a_continuation_that_is_a_card_line_as_written_stays_a_card_that_couldnt_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str
+) -> None:
+    """A printed English subject whose first line is followed by the line "Due: Essay", a
+    card line as written, is a card that couldn't be read, under a short first line and under
+    a long one: the review names the unread card and offers the Spanish subject alone, and
+    Save selected homework writes Spanish alone."""
+    answer = printed_answer(
+        PRINTED_DAY,
+        printed_card("English", first, "Due: Essay", 200),
+        printed_card("Spanish", FULL_FIRST_LINE, None, 320),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    assert 'id="unread-heading"' in page
+    assert courses_offered(page) == ["Spanish"]
+    assert says(after, imports.counted(1, 0, 0, 0))
+    assert [(course, due, kept) for course, _, due, kept in rows] == [
+        ("Spanish", None, FULL_FIRST_LINE)
+    ]
 
 
 def note_under(day: str, words: str) -> dict[str, object]:

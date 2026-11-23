@@ -39,7 +39,7 @@ from langsmith import utils as langsmith_utils
 from PIL import Image
 from pydantic import SecretStr
 
-from blossom import anthropic_client
+from blossom import anthropic_client, screenshot_prompt
 from blossom.anthropic_client import (
     ENDPOINT,
     MAX_TOKENS,
@@ -386,8 +386,28 @@ def test_an_error_the_service_did_not_raise_is_not_the_services() -> None:
 
 # ------------------------------------------------------------ the screenshot reader
 
-PROMPT_V1B_SHA256 = "e85ede52600be9d0276324198f37cb1e1737e81664b58e586ccfd21aafebe2fc"
-"""The system prompt the reader was measured with: prompt v1b, its schema as JSON text."""
+PROMPT_V1C_SHA256 = "1963750148b5c3874abdad017e6f20aff093ebd2349a2e5c3944d8a094d47bab"
+"""The system prompt the reader is sent: prompt v1c, its schema as JSON text."""
+
+PRINTED_PAGES_SENTENCE = (
+    'A printed grade report with its grading categories and a "Term Grade" is a grade report '
+    "even with no homework day heading; a letter is unsupported, and so is a printed homework "
+    "list with no dated day line or with no subject label that has words beneath it."
+)
+"""The instructions' one sentence on a printed grade report, a letter and a printed homework
+list that lacks its day line or its subjects' words."""
+
+SCHEMA_SHA256 = "1ee0627a347e8c3b269428306c8558ab9a8487c49a46d0a4582e1e302675f2eb"
+"""The answer schema as the JSON text the system prompt ends with, shared by the prompts v1b
+and v1c."""
+
+PRINTED_LIST_SIGNS = (
+    'a heading that names the student, such as "Homework for Wren"',
+    'a dated day line such as "11/16/2026 - Monday"',
+    'subject labels each on a line of its own, such as "Humanities -"',
+    "the homework words beneath each subject",
+)
+"""The four signs the instructions name a printed homework list by."""
 
 SDK_LOGGERS = (
     "anthropic",
@@ -474,7 +494,7 @@ def test_a_reading_sends_the_request_the_reader_was_measured_with() -> None:
     assert body["model"] == MODEL
     assert body["max_tokens"] == 6_000
     assert body["output_config"] == {"effort": "low"}
-    assert hashlib.sha256(body["system"].encode("utf-8")).hexdigest() == PROMPT_V1B_SHA256
+    assert hashlib.sha256(body["system"].encode("utf-8")).hexdigest() == PROMPT_V1C_SHA256
     assert body["messages"] == [
         {
             "role": "user",
@@ -493,6 +513,87 @@ def test_a_reading_sends_the_request_the_reader_was_measured_with() -> None:
     ]
     assert "anthropic-beta" not in sent.headers
     assert "x-stainless-raw-response" not in sent.headers
+
+
+def test_the_prompt_has_its_own_version_and_the_schema_keeps_its_own() -> None:
+    assert screenshot_prompt.PROMPT_VERSION == "v1c"
+    assert screenshot_prompt.SCHEMA_VERSION == "screenshot-reading/1"
+
+
+def test_the_answer_schema_is_the_text_the_system_prompt_ends_with() -> None:
+    """The answer schema is pinned by the digest of its JSON text, so a reading stored under
+    either prompt of this schema has the shape the schema gives."""
+    schema_text = json.dumps(screenshot_prompt.SCHEMA, separators=(",", ":"))
+
+    assert hashlib.sha256(schema_text.encode("utf-8")).hexdigest() == SCHEMA_SHA256
+    assert screenshot_prompt.SYSTEM_PROMPT.endswith(
+        "null where the schema allows it:\n" + schema_text
+    )
+
+
+def test_the_instructions_name_a_printed_homework_list_by_its_four_signs() -> None:
+    """A printed homework list is named beside the portal's list of day headings and course
+    cards: its heading that names the student, its dated day line, its subject labels each
+    on a line of its own and the words beneath each, with no drawn card and no label."""
+    instructions = screenshot_prompt.PROMPT_V1
+
+    assert [sign for sign in PRINTED_LIST_SIGNS if sign not in instructions] == []
+    assert "A printed homework list is a homework list too" in instructions
+    assert "can have homework with no drawn card and no DUE or ASSIGNED label" in instructions
+    assert 'the student is the name in the "Homework for" heading' in instructions
+    assert (
+        'A homework list has day headings such as "Monday 10/5/2026" and course cards marked '
+        "DUE or ASSIGNED."
+    ) in instructions
+    assert "the highlighted tab of a homework list's student picker" in instructions
+
+
+def test_the_instructions_drop_a_subject_label_s_closing_separator_alone() -> None:
+    """Only the hyphen that closes a printed subject label, set off by a space, is left out
+    of the course; a hyphen inside the subject's name stays, and the words are copied as
+    shown."""
+    instructions = screenshot_prompt.PROMPT_V1
+
+    assert 'In a subject label the closing " -" is a separator, not part of the name' in (
+        instructions
+    )
+    assert (
+        '"Humanities -" gives the course "Humanities" and "Pre-Algebra -" gives "Pre-Algebra"'
+    ) in instructions
+    assert "a hyphen inside a subject's name stays" in instructions
+    assert "copied as shown" in instructions
+
+
+def test_the_instructions_call_anything_else_unsupported() -> None:
+    instructions = screenshot_prompt.PROMPT_V1
+
+    assert (
+        "Anything else, such as a message thread, is unsupported: return no headings, no cards "
+        "and no report for it."
+    ) in instructions
+    assert f"no report for it. {PRINTED_PAGES_SENTENCE}\n" in instructions
+
+
+def test_the_instructions_sort_a_printed_grade_report_a_letter_and_an_incomplete_list() -> None:
+    """One sentence sorts the printed pages that aren't a whole homework list: a printed grade
+    report with its grading categories and a term grade is a grade report with no homework
+    day heading, a letter is unsupported, and a printed homework list with no dated day line
+    or with no subject that has words beneath it is unsupported. Only a homework list is
+    called unsupported for a missing day line or subject, so the sentence can't apply to a
+    grade report."""
+    instructions = screenshot_prompt.PROMPT_V1
+
+    assert instructions.count(PRINTED_PAGES_SENTENCE) == 1
+    assert (
+        'A printed grade report with its grading categories and a "Term Grade" is a grade '
+        "report even with no homework day heading"
+    ) in instructions
+    assert "a letter is unsupported" in instructions
+    assert (
+        "so is a printed homework list with no dated day line or with no subject label that "
+        "has words beneath it."
+    ) in instructions
+    assert "printed page" not in instructions
 
 
 @pytest.mark.parametrize("variable", ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL"])

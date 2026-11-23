@@ -10,8 +10,10 @@ that doesn't fit is a failed read, never repaired.
 The image's kind is read first. A homework list keeps its day headings, its cards and the
 selected student's name as read, with the reader's note on it, inside the reading only. Any
 other kind keeps its kind alone. A card that doesn't fit stays at its place as one that
-couldn't be read. A report's cells, the teacher's among them, are declared so that a report
-fits, and none is kept. Dates are kept as the text shown and read as dates here.
+couldn't be read. One thing is done to a card before its check: with no label and no due
+line, a title past a title's limit is read as the card's instruction, whole, when it fits
+there (``_long_first_line``). A report's cells, the teacher's among them, are declared so
+that a report fits, and none is kept. Dates are kept as the text shown and read as dates here.
 
 A draft's readings are put together into rows by their content alone, never by the order
 the screenshots came in, and read as today's portal claims through ``intake.read_cards``. A
@@ -54,13 +56,22 @@ from collections.abc import Collection, Sequence
 from datetime import UTC, date, datetime
 from typing import Annotated, Final, Literal, NamedTuple, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
 
 from blossom.grades.draft import folded
 from blossom.intake import (
     ANOTHER_OCCURRENCE,
     DAY_LINE,
     PORTAL_CONFIDENCE,
+    SUMMARY_DAY_LINE,
     TEACHER_NOTE,
     PortalCard,
     Reading,
@@ -76,7 +87,7 @@ from blossom.intake import (
 )
 from blossom.reconciliation import SourceChannel
 from blossom.school_instructions import InstructionSeen, instruction_words
-from blossom.screenshot_prompt import PROMPT_VERSION, SCHEMA_VERSION
+from blossom.screenshot_prompt import SCHEMA_VERSION
 from blossom.stores.import_drafts import DraftRow, StoredReading
 from blossom.teacher_notes import NoteBlock, NoteTask, read_notes
 
@@ -100,6 +111,16 @@ MOST_MARKS: Final = 20
 """The most uncertain fields one item may list."""
 MOST_CATEGORIES: Final = 30
 MOST_ROWS: Final = 200
+
+PROMPT_VERSIONS: Final = frozenset({"v1b", "v1c"})
+"""Every prompt version whose answers have this schema's shape: the closed set a stored
+reading may carry and still decode. The prompt in use is one of them."""
+
+PRINTED_DAY_VERSIONS: Final = frozenset({"v1c"})
+"""The prompt versions that name a printed homework list, so a reading made under one names
+a day by a printed list's dated day line as well as by the portal's heading. A reading stored
+under any other version names a day by the portal's heading alone, so the rows of a review
+saved with it keep their keys."""
 
 ImageKind = Literal["homework_list", "grade_report", "unsupported"]
 Badge = Literal["DUE", "ASSIGNED"]
@@ -204,11 +225,23 @@ class Heading(_Closed):
     text: Line
     y: Position
     uncertain: Note | None
+    _portal_form_alone: bool = PrivateAttr(default=False)
+    """Whether only the portal's form names a day here. It is no field: no answer and no
+    stored text can carry it, and no dump holds it. The decoder sets it on the headings of a
+    reading stored under a prompt version outside ``PRINTED_DAY_VERSIONS``, and a copy of the
+    heading or of its reading keeps it."""
 
     @property
     def day(self) -> date | None:
-        """The day the heading names, read here from its text, or ``None``."""
-        found = DAY_LINE.match(self.text.strip())
+        """The day the heading names, read here from its text, or ``None``: the portal's
+        form, such as "Monday 11/16/2026", or a printed list's dated day line, such as
+        "11/16/2026 - Monday", with or without the bullet the print view can put before it.
+        In a reading stored under a prompt version outside ``PRINTED_DAY_VERSIONS``, only the
+        portal's form names a day."""
+        text = self.text.strip()
+        found = DAY_LINE.match(text)
+        if found is None and not self._portal_form_alone:
+            found = SUMMARY_DAY_LINE.match(text)
         return None if found is None else a_date(found["year"], found["month"], found["day"])
 
 
@@ -339,11 +372,64 @@ def homework_reading(answer: object) -> Checked:
 
 
 def _card(value: object) -> Card | None:
-    """One card as read, or ``None`` when it doesn't fit, so it shows as one not read."""
+    """One card as read, or ``None`` when it doesn't fit, so it shows as one not read. A long
+    first line on an unlabeled card is read as its instruction (``_long_first_line``), and the
+    card is then checked as every card is."""
     try:
-        return Card.model_validate(value)
+        return Card.model_validate(_long_first_line(value))
     except (ValueError, RecursionError):
         return None
+
+
+def _long_first_line(value: object) -> object:
+    """A card of an answer, with a first line too long for a title read as its instruction.
+
+    A printed list's subject is answered with its whole first line as its title, and a title
+    holds 300 characters at most (``TITLE_MOST``). A card with no label and no due line, its
+    label null and its due line null or a text with no words, as a note's due line is read
+    (``_is_note``), whose title is a text longer than that is given back with no title and
+    with the title's text as its instruction, followed, when the card has an instruction, by
+    one line break and that instruction, so the first line and its continuation stay lines of
+    their own for every later check of a note's lines. This is done only when the card has
+    its instruction as a property, null or a text, when no line of the title or of the
+    instruction, as given, is shaped as a day, a card or another line the note rule refuses
+    (``_structure_among``), and when the whole text fits an instruction's limit
+    (``INSTRUCTION_MOST``). Both texts are kept exactly as given: nothing is cut, folded,
+    trimmed or reworded. A mark of uncertainty that names the title goes with its words and
+    names the instruction, its reason as given.
+
+    Any other value is given back as it is, a labeled card, a card whose due line has words
+    and a card with no instruction property among them. A card that lacks another property
+    is not excused: moved or not, the card's own check refuses it. The value given is never
+    changed, and the card's own check decides what is kept.
+    """
+    if not isinstance(value, dict) or value.get("badge") is not None:
+        return value
+    if "instruction" not in value:
+        return value
+    footer = value.get("footer")
+    if footer is not None and not (isinstance(footer, str) and not footer.strip()):
+        return value
+    title, more = value.get("title"), value.get("instruction")
+    if not isinstance(title, str) or len(title) <= TITLE_MOST:
+        return value
+    if more is not None and not isinstance(more, str):
+        return value
+    if _structure_among(title, more):
+        return value
+    whole = title if more is None else f"{title}\n{more}"
+    if len(whole) > INSTRUCTION_MOST:
+        return value
+    moved = {**value, "title": None, "instruction": whole}
+    marks = value.get("uncertain")
+    if isinstance(marks, list):
+        moved["uncertain"] = [
+            {**mark, "field": "instruction"}
+            if isinstance(mark, dict) and mark.get("field") == "title"
+            else mark
+            for mark in marks
+        ]
+    return moved
 
 
 # ------------------------------------------------------------------ from readings to rows
@@ -723,13 +809,23 @@ def cards_placed(readings: Sequence[StoredReading]) -> dict[CardPlace, PlacedCar
 
 
 def _decoded(stored: StoredReading) -> HomeworkReading | None:
-    """A stored reading as its model, or ``None`` when it can't be decoded as this schema's."""
-    if (stored.prompt_version, stored.schema_version) != (PROMPT_VERSION, SCHEMA_VERSION):
+    """A stored reading as its model, or ``None`` when it can't be decoded as this schema's:
+    its schema version is another, its prompt version is none of ``PROMPT_VERSIONS``, or its
+    text doesn't fit the model. A reading made with any prompt of this schema decodes, and
+    keeps the prompt version it was made with in its digest. Its headings name a day as that
+    version reads one: stored under a version outside ``PRINTED_DAY_VERSIONS``, by the
+    portal's form alone, which every reader of a heading's day then follows. That choice is
+    made here from the stored version and is in neither the stored text nor the digest."""
+    if stored.schema_version != SCHEMA_VERSION or stored.prompt_version not in PROMPT_VERSIONS:
         return None
     try:
-        return HomeworkReading.model_validate_json(stored.body)
+        reading = HomeworkReading.model_validate_json(stored.body)
     except (ValueError, RecursionError):
         return None
+    if stored.prompt_version not in PRINTED_DAY_VERSIONS:
+        for heading in reading.headings:
+            heading._portal_form_alone = True
+    return reading
 
 
 def _placed(sha: str, stored: str, reading: HomeworkReading) -> list[_Seen]:
@@ -849,9 +945,15 @@ def _has_structure(card: Card) -> bool:
     """Whether a line of a note card's title or instruction, as read, before its words are
     single-spaced, is shaped as a day, a Missing line, a card or a mail program's date line,
     as a line of a pasted note that makes it suspect is."""
+    return _structure_among(card.title, card.instruction)
+
+
+def _structure_among(*texts: str | None) -> bool:
+    """Whether a line of any of the texts, as given, before its words are single-spaced, is
+    shaped as a day, a Missing line, a card or a mail program's date line."""
     return any(
         is_shaped_as_structure(line.strip())
-        for text in (card.title, card.instruction)
+        for text in texts
         if text is not None
         for line in text.splitlines()
     )
