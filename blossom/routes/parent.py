@@ -1906,6 +1906,9 @@ def review(
     plan: Annotated[
         str | None, Query(description="the plan whose folds to open; changes nothing")
     ] = None,
+    add: Annotated[
+        str | None, Query(description="1 to open Add assignments; changes nothing")
+    ] = None,
     run: Annotated[
         str | None, Query(description="a planning run to say where it stands; changes nothing")
     ] = None,
@@ -1939,6 +1942,7 @@ def review(
             if said
             else (CheckState(focus) if focus else None),
             open_plan=plan,
+            entry_open=add == "1",
             run_notice=run_notice(state, run, FAMILY_PAGE, parent=True, today=None),
             run_asked=run,
         )

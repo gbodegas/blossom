@@ -2319,6 +2319,14 @@ pre.example {
   }
 }
 
+/* A screenshot's Replace and Enter it by hand, where they are links, keep their place in its
+   line of actions and are as tall as the buttons beside them. */
+.screenshot-list a.step-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+}
+
 /* The paste review's questions give way as the grade review's do: on a phone with text at
    200%, a card reaches into the page's 1.25rem side margin until it is 13vw - 1rem from the
    screen's edge, and a fieldset reaches into its card's side padding, staying 13vw - 1rem

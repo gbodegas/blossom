@@ -83,7 +83,7 @@ from blossom.screenshots import (
     homework_assembly,
     note_tag,
 )
-from blossom.stores.import_drafts import ImageState, StoredReading
+from blossom.stores.import_drafts import TOKEN_SHAPE, ImageState, StoredReading
 from blossom.teacher_notes import Milestone, NoteTask
 
 SAID: Final = {
@@ -936,13 +936,27 @@ SHOT_SAID: Final = {
         "Saving fixes this review's screenshots, so remove or replace {named} first to fix "
         "{them} here."
     ),
+    "kept_first": (
+        "Replace and Enter it by hand keep your corrections, ticks and answers first, as Save "
+        "review for later does."
+    ),
+    "kept_first_by_hand": (
+        "Enter it by hand keeps your corrections, ticks and answers first, as Save review for "
+        "later does."
+    ),
+    "stays_open": (
+        "Until then this review stays open with its screenshots, saved corrections and kept "
+        "answers; find it on Family review under Open screenshot reviews."
+    ),
 }
 """How a screenshot read as a homework list says nothing on it became homework: with text read
 that none of became homework, and with no card at all; what a screenshot needing attention says
 once some homework from its review is saved; and the line beside Save while one needs attention
 and nothing is saved. A save is refused while a screenshot isn't read, so a review with saved
 homework holds no screenshot unread or failed, and one needing attention there still has rows to
-finish beside it."""
+finish beside it. Then the line Replace and Enter it by hand point to where they are presses of
+the review form, the same for Enter it by hand alone once homework is saved, and the line
+beneath the review's expiry that says what stays until then and where to find it."""
 
 ATTENTION: Final = frozenset({"failed", "ended", "wrong_kind", "text_only", "nothing"})
 """The states of a screenshot that needs attention: nothing from it can be saved as it stands."""
@@ -1155,6 +1169,26 @@ UNRESOLVED: Final = "unresolved:"
 twice with different answers, holding the values sent, until the family answers it."""
 CORRECT_PRESS: Final = "correct:"
 """What starts the value of a card's Correct what was read press, before its piece name."""
+REPLACE_PRESS: Final = "replace:"
+"""What starts the value of a screenshot's Replace press on the review form, before its image
+id: it keeps the review as Save review for later does, then goes to that screenshot's replace
+step."""
+BY_HAND_PRESS: Final = "by-hand:"
+"""What starts the value of a screenshot's Enter it by hand press on the review form, before its
+image id: it keeps the review as Save review for later does, then goes to hand entry."""
+ONWARD_PRESSES: Final = (REPLACE_PRESS, BY_HAND_PRESS)
+
+
+def onward_of(value: str) -> tuple[str, str] | None:
+    """A Replace or Enter it by hand press's kind and the image id it names, by the shape the
+    store gives ids; None for any other value."""
+    for kind in ONWARD_PRESSES:
+        image_id = value.removeprefix(kind)
+        if value.startswith(kind) and TOKEN_SHAPE.fullmatch(image_id) is not None:
+            return kind, image_id
+    return None
+
+
 OPEN_MARK: Final = "open:"
 """The prefix of the hidden field a card shown with its boxes open carries, before its piece
 name, so the page a press returns shows it open too."""

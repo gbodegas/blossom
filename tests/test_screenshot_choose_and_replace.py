@@ -21,6 +21,11 @@ While the review isn't frozen, each screenshot links to a replace step for it. O
 new file in its place; the other screenshots, their readings and answers, the name answer and
 the saved corrections and ticks stay, the replaced screenshot's own answers are cleared and
 named, and a refused new file keeps the old one. Replace and read sends the new file only.
+
+Where the review holds its form, Replace and Enter it by hand are presses of that form: each
+keeps the corrections, ticks and answers as Save review for later does, with its refusals, then
+goes on to the replace step or to hand entry on Family review, whose query only opens Add
+assignments. Where it holds no form, they are links.
 """
 
 import html
@@ -35,7 +40,7 @@ from markupsafe import escape
 from blossom import screenshot_page
 from blossom.anthropic_client import ReadFailure, ScreenshotAnswer
 from blossom.routes import imports
-from tests.support import Answer, homework_answer, homework_card, state_of
+from tests.support import Answer, first_button_of, homework_answer, homework_card, state_of
 from tests.test_import_routes import (
     BLUE,
     CLEARED_INTRO,
@@ -60,6 +65,7 @@ from tests.test_import_routes import (
     page_post,
     png,
     press_outside,
+    progress_on,
     read_form,
     read_review,
     says,
@@ -1435,8 +1441,9 @@ def test_the_replace_step_offers_one_file_and_its_presses_with_their_lines(
 def test_each_screenshot_on_the_review_offers_replace_beside_remove(
     tmp_path: pathlib.Path,
 ) -> None:
-    """While the review isn't frozen, each screenshot's row links to its replace step, named
-    for that screenshot, beside its Remove press."""
+    """While the review isn't frozen and holds no review form, each screenshot's row links to
+    its replace step, named for that screenshot and as tall as a button, beside its Remove
+    press."""
     with here(open_settings(tmp_path)) as browser:
         draft_id = made(browser, RED, BLUE)
         ids = images_of(browser, draft_id)
@@ -1444,8 +1451,330 @@ def test_each_screenshot_on_the_review_offers_replace_beside_remove(
 
     for place, image_id in enumerate(ids, start=1):
         link = (
-            f'<a href="{replace_path(draft_id, image_id)}">Replace<span class="visually-hidden">'
-            f" screenshot {place}</span></a>"
+            f'<a class="step-link" href="{replace_path(draft_id, image_id)}">Replace'
+            f'<span class="visually-hidden"> screenshot {place}</span></a>'
         )
         assert page.count(link) == 1
         assert page.index(link) < page.index(f'form="remove-shot-{image_id}"')
+
+
+# ------------------------------------------------------------------ D1, C11: edits kept on the way
+
+REPLACE = "Replace"
+BY_HAND = "Enter it by hand"
+HAND_ENTRY = "/parent?add=1#enter-one"
+CORRECTED = "Sentence Composing, corrected"
+KEPT_FIRST = (
+    "Replace and Enter it by hand keep your corrections, ticks and answers first, as Save review "
+    "for later does."
+)
+KEPT_FIRST_BY_HAND = (
+    "Enter it by hand keeps your corrections, ticks and answers first, as Save review for later "
+    "does."
+)
+STAYS_OPEN = (
+    "Until then this review stays open with its screenshots, saved corrections and kept answers; "
+    "find it on Family review under Open screenshot reviews."
+)
+CONTROL = re.compile(r"<(button|a) [^>]*>.*?</\1>", re.S)
+ADD_FOLD = '<details class="steps panel-fold" id="add-assignments"'
+TICKED = re.compile(r'<input type="checkbox" name="unit" value="([^"]+)" checked>')
+
+
+def control_for(page: str, words: str, place: int) -> str:
+    """The one button or link with these words for Screenshot N, whole."""
+    hidden = f" for screenshot {place}" if words == BY_HAND else f" screenshot {place}"
+    end = f'>{words}<span class="visually-hidden">{hidden}</span></'
+    found = [m.group(0) for m in CONTROL.finditer(page) if end in m.group(0)]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def press_value(control: str) -> str:
+    """The value a review form's press sends, as the page offers it."""
+    assert control.startswith('<button type="submit" class="secondary" form="review-form" ')
+    assert 'name="press"' in control
+    assert "formnovalidate" in control
+    found = re.search(r'value="([^"]+)"', control)
+    assert found is not None
+    return html.unescape(found.group(1))
+
+
+def typed_and_ticked(browser: TestClient, draft_id: str) -> tuple[str, dict[str, str], list[str]]:
+    """The review with Screenshot 1's answers kept, its title corrected in its open box and its
+    group ticked on the page, and nothing pressed that keeps the correction or the tick: the
+    page, the typing and the tick."""
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    page = followed(browser, send(browser, draft_id, page_post(page, "keep")))
+    typed = {f"correct:{box_subject(page, 'title')}": CORRECTED}
+    page = opened_for_typing(browser, draft_id, page, typed)
+    tick = units_on(page)[:1]
+    assert tick
+    return page, typed, tick
+
+
+def kept_by_the_press(browser: TestClient, draft_id: str, tick: list[str]) -> None:
+    """The saved progress holds the title correction and the tick the press posted."""
+    progress = progress_on(browser, draft_id)
+    assert progress is not None
+    assert list(progress.corrected.values()) == [{"title": CORRECTED}]
+    assert progress.selected
+    assert len(tick) == 1
+
+
+def shows_the_edits(page: str, tick: list[str]) -> None:
+    """The review shows the saved correction and the ticked group."""
+    assert CORRECTED in html.unescape(page)
+    assert [html.unescape(unit) for unit in TICKED.findall(page)] == tick
+
+
+def test_replace_keeps_the_typing_and_the_tick_then_goes_to_its_replace_step(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Screenshot 1 is read with homework, Screenshot 2 failed. With Screenshot 1's title
+    corrected and its group ticked on the page, and Save review for later never pressed,
+    Screenshot 2's Replace keeps both and goes to Screenshot 2's replace step; once Screenshot 2
+    is replaced, the review shows the correction and the tick, Screenshot 1's reading is as it
+    was, and the reader is never called."""
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, red, blue = one_read_one_failed(browser, monkeypatch, reader)
+        page, typed, tick = typed_and_ticked(browser, draft_id)
+        before = kept_state(browser, draft_id, red)
+        calls = list(reader.calls)
+        press = press_value(control_for(page, REPLACE, 2))
+        sent = send(browser, draft_id, page_post(page, press, typed=typed, tick=tick))
+        kept_by_the_press(browser, draft_id, tick)
+        progress = kept_state(browser, draft_id, red)["progress"]
+        step = browser.get(sent.headers.get("location", "/missing"))
+        replaced = replace_with(browser, draft_id, blue, GREEN)
+        review = followed(browser, replaced)
+        after = kept_state(browser, draft_id, red)
+
+    assert CORRECTED not in str(before["progress"])
+    assert sent.status_code == 303, sent.text[:400]
+    assert sent.headers["location"] == replace_path(draft_id, blue)
+    assert step.status_code == 200
+    assert "Replace Screenshot 2" in step.text
+    assert replaced.status_code == 303, replaced.text[:400]
+    assert after["readings"] == before["readings"]
+    assert after["image"] == before["image"]
+    assert after["progress"] == progress
+    assert lines_in(TOLD.search(review)) == [REPLACED]
+    shows_the_edits(review, tick)
+    assert reader.calls == calls
+
+
+def test_enter_it_by_hand_keeps_the_typing_and_the_tick_then_opens_hand_entry(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Screenshot 2's Enter it by hand keeps Screenshot 1's typed correction and tick, then goes
+    to Family review with Add assignments open at Enter one assignment; the review, reopened
+    from Open screenshot reviews, shows the correction and the tick, and the reader is never
+    called."""
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, red, _ = one_read_one_failed(browser, monkeypatch, reader)
+        page, typed, tick = typed_and_ticked(browser, draft_id)
+        before = kept_state(browser, draft_id, red)
+        calls = list(reader.calls)
+        press = press_value(control_for(page, BY_HAND, 2))
+        sent = send(browser, draft_id, page_post(page, press, typed=typed, tick=tick))
+        kept_by_the_press(browser, draft_id, tick)
+        family = browser.get(sent.headers.get("location", "/missing").split("#")[0]).text
+        listed = re.search(rf'<li><a href="(/parent/imports/{draft_id})">', family)
+        reopened = browser.get(listed.group(1) if listed else "/missing").text
+        after = kept_state(browser, draft_id, red)
+
+    assert sent.status_code == 303, sent.text[:400]
+    assert sent.headers["location"] == HAND_ENTRY
+    assert f"{ADD_FOLD} open>" in family
+    assert '<h2 class="entry-heading" id="enter-one">Enter one assignment</h2>' in family
+    assert listed is not None
+    assert after["readings"] == before["readings"]
+    shows_the_edits(reopened, tick)
+    assert reader.calls == calls
+
+
+@pytest.mark.parametrize("words", [REPLACE, BY_HAND])
+def test_a_keep_refused_as_save_review_for_later_refuses_it_goes_nowhere_and_says_why(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, words: str
+) -> None:
+    """A title longer than its field takes: the press answers as Save review for later answers
+    the same post, 422 with the review and the same lines, keeps nothing and goes nowhere."""
+    too_long = "y" * 301
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, _ = one_read_one_failed(browser, monkeypatch, Reader(monkeypatch))
+        page, typed, tick = typed_and_ticked(browser, draft_id)
+        typed = dict.fromkeys(typed, too_long)
+        press = press_value(control_for(page, words, 2))
+        sent = send(browser, draft_id, page_post(page, press, typed=typed, tick=tick))
+        progress = progress_on(browser, draft_id)
+        later = send(browser, draft_id, page_post(page, "later", typed=typed, tick=tick))
+
+    assert sent.status_code == later.status_code == 422
+    assert "location" not in sent.headers
+    assert says(sent.text, imports.PRESS_SAID["too_long"])
+    assert lines_in(PROBLEM.search(sent.text)) == lines_in(PROBLEM.search(later.text))
+    assert progress is None or not progress.corrected
+
+
+@pytest.mark.parametrize("prefix", ["replace:", "by-hand:"])
+def test_a_press_naming_a_screenshot_the_review_doesn_t_hold_is_refused(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    """A press naming another image id keeps nothing, goes nowhere and says the screenshot
+    isn't in this review; one naming no id at all is refused as a post its page didn't make."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, _ = one_read_one_failed(browser, monkeypatch, Reader(monkeypatch))
+        page, typed, tick = typed_and_ticked(browser, draft_id)
+        other = send(browser, draft_id, page_post(page, prefix + "0" * 32, typed=typed, tick=tick))
+        after_other = progress_on(browser, draft_id)
+        bare = send(browser, draft_id, page_post(page, prefix + "x", typed=typed, tick=tick))
+        after_bare = progress_on(browser, draft_id)
+        bare_page = followed(browser, bare)
+
+    assert other.status_code == 409, other.text[:400]
+    assert "location" not in other.headers
+    assert says(other.text, imports.SAID["image_gone"])
+    assert after_other is None or not after_other.corrected
+    assert bare.status_code == 303
+    assert bare.headers["location"] == f"/parent/imports/{draft_id}"
+    assert says(bare_page, imports.PRESS_SAID["later_invalid"])
+    assert after_bare is None or not after_bare.corrected
+
+
+def test_with_no_review_form_replace_and_enter_it_by_hand_are_links(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lone screenshot whose read failed has nothing to correct: Replace links to its replace
+    step and Enter it by hand to hand entry, each as tall as a button, and the page says once
+    that the review stays open, with no line about keeping first."""
+    reader = Reader(monkeypatch)
+    reader.answers[BLUE] = ScreenshotAnswer(None, "not_json", 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, BLUE)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
+        [blue] = images_of(browser, draft_id)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert 'id="review-form"' not in page
+    assert 'form="review-form"' not in page
+    assert control_for(page, REPLACE, 1) == (
+        f'<a class="step-link" href="{replace_path(draft_id, blue)}">Replace'
+        '<span class="visually-hidden"> screenshot 1</span></a>'
+    )
+    assert control_for(page, BY_HAND, 1) == (
+        f'<a class="step-link" href="{HAND_ENTRY}" aria-describedby="stays-open">Enter it by hand'
+        '<span class="visually-hidden"> for screenshot 1</span></a>'
+    )
+    assert page.count(str(escape(STAYS_OPEN))) == 1
+    assert "keep your corrections, ticks and answers first" not in page
+
+
+def test_with_the_review_form_each_press_says_it_keeps_first_and_only_attention_offers_by_hand(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each screenshot's Replace, and Enter it by hand on the one needing attention only, are
+    presses of the review form that point to the one line saying they keep first; Enter it by
+    hand also points to the line saying the review stays open. Remove still points to the typing
+    note, and Enter in a box still presses Review changes, above the form or below."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, red, blue = one_read_one_failed(browser, monkeypatch, Reader(monkeypatch))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        typed_page, _, _ = typed_and_ticked(browser, draft_id)
+
+    for shown in (page, typed_page):
+        assert shown.count(str(escape(KEPT_FIRST))) == 1
+        assert shown.count(str(escape(STAYS_OPEN))) == 1
+        assert f'<p class="note" id="kept-first">{escape(KEPT_FIRST)}</p>' in shown
+        assert f'<p class="note" id="stays-open">{escape(STAYS_OPEN)}</p>' in shown
+        for place, image_id in ((1, red), (2, blue)):
+            replace = control_for(shown, REPLACE, place)
+            assert press_value(replace) == f"replace:{image_id}"
+            assert 'aria-describedby="kept-first"' in replace
+        by_hand = control_for(shown, BY_HAND, 2)
+        assert press_value(by_hand) == f"by-hand:{blue}"
+        assert 'aria-describedby="kept-first stays-open"' in by_hand
+        assert f">{BY_HAND}<span" not in shown.replace(by_hand, "")
+        remove = re.search(rf'<button [^>]*form="remove-shot-{red}"[^>]*>', shown)
+        assert remove is not None
+        assert 'aria-describedby="typing-lost"' in remove.group(0)
+        first = first_button_of(shown, "review-form")
+        assert (first.get("name"), first.get("value")) == ("press", "review")
+
+
+def test_a_frozen_review_offers_enter_it_by_hand_and_no_replace(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once some homework is saved, the screenshot needing attention still offers Enter it by
+    hand, as a press of the review form, whose line names it alone, and no screenshot offers
+    Replace."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(
+            browser, monkeypatch, (RED, homework_answer()), (BLUE, homework_answer(cards=[]))
+        )
+        page = her_name_answered(browser, draft_id, browser.get(f"/parent/imports/{draft_id}").text)
+        send(browser, draft_id, page_post(page, "save", tick=units_on(page)[:1]))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        [_, blue] = images_of(browser, draft_id)
+
+    assert says(page, imports.SAID["frozen"])
+    by_hand = control_for(page, BY_HAND, 2)
+    assert press_value(by_hand) == f"by-hand:{blue}"
+    assert 'aria-describedby="kept-first stays-open"' in by_hand
+    assert f'<p class="note" id="kept-first">{escape(KEPT_FIRST_BY_HAND)}</p>' in page
+    assert str(escape(KEPT_FIRST)) not in page
+    assert f">{REPLACE}<span" not in page
+    assert "/replace" not in page
+
+
+def masked(page: str) -> str:
+    """A family page with what each showing makes anew masked: the upload form's time and every
+    one-time id, its token among them."""
+    page = re.sub(r'(name="issued" value=")[^"]*"', r'\1-"', page)
+    return re.sub(r'value="[0-9a-f]{32}"', 'value="-"', page)
+
+
+def test_family_review_with_add_open_differs_only_in_the_fold_s_state(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The query that Enter it by hand goes to opens Add assignments and changes nothing else,
+    and Enter one assignment carries the id it lands on."""
+    with here(open_settings(tmp_path)) as browser:
+        plain = browser.get("/parent")
+        opened = browser.get("/parent?add=1")
+        other = browser.get("/parent?add=yes")
+
+    assert plain.status_code == opened.status_code == other.status_code == 200
+    assert f"{ADD_FOLD}>" in plain.text
+    assert f"{ADD_FOLD} open>" in opened.text
+    assert masked(opened.text) == masked(plain.text).replace(f"{ADD_FOLD}>", f"{ADD_FOLD} open>")
+    assert masked(other.text) == masked(plain.text)
+    assert plain.text.count('id="enter-one"') == 1
+    assert '<h2 class="entry-heading" id="enter-one">Enter one assignment</h2>' in plain.text
+
+
+STEP_LINK_RULE = (
+    "/* A screenshot's Replace and Enter it by hand, where they are links, keep their place in its"
+    "\n   line of actions and are as tall as the buttons beside them. */\n"
+    ".screenshot-list a.step-link {\n  display: inline-flex;\n  align-items: center;\n"
+    "  min-height: 2.75rem;\n}\n"
+)
+
+
+def test_the_links_this_journey_adds_are_as_tall_as_a_button() -> None:
+    """Replace and Enter it by hand where they are links carry the one rule that makes them as
+    tall as the buttons beside them; the replace step's way back sits in a line of the app's
+    ways back, which give each link its height."""
+    css = (pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css").read_text(
+        encoding="utf-8"
+    )
+    step = pathlib.Path(imports.__file__).parents[1] / "templates" / "import_replace.html"
+    assert css.count(STEP_LINK_RULE) == 1
+    assert css.count("step-link") == 1
+    assert (
+        '<p class="return"><a href="/parent/imports/{{ draft_id }}">Back to the review</a></p>'
+        in step.read_text(encoding="utf-8")
+    )

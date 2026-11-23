@@ -7,6 +7,8 @@
 {% block content %}
   <h1>Home&shy;work screen&shy;shots</h1>
   <p class="note">Available until {{ until }}</p>
+  <p class="note" id="stays-open">{{ stays_open }}</p>
+  {% if rows and kept_first %}<p class="note" id="kept-first">{{ kept_first }}</p>{% endif %}
   <div class="import-review">
   {#
     What a press answered takes the focus on the page that first shows it, so the next Tab
@@ -32,10 +34,13 @@
   {% if typed %}<section class="panel">{{ typed_back(typed, typed_said) }}</section>{% endif %}
   {#
     Each screenshot as one compact row: its thumbnail at a fixed width, its place and how it
-    stands and why, then View screenshot and, while the review is open to changes, the link to
-    its replace step and its Remove press, on one line. Once the review asks its questions,
-    Remove points to the note that says typing in the fold isn't kept. Once some homework is
-    saved, a screenshot that needs attention says what can be done instead.
+    stands and why, then View screenshot, Replace while the review is open to changes, Enter it
+    by hand while the screenshot needs attention, and Remove while the review is open to
+    changes, on one line. Once the review asks its questions, Replace and Enter it by hand are
+    presses of its form, which keep the review as Save review for later does and then go on, and
+    they point to the line that says so; Remove points to the note that says typing in the fold
+    isn't kept. Before, they are links. Once some homework is saved, a screenshot that needs
+    attention says what can be done instead.
   #}
   {% macro shown(image) %}
         <li>
@@ -46,7 +51,20 @@
             <div class="actions">
               <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot<span class="visually-hidden"> {{ image.place }}</span></a>
               {% if not frozen %}
-                <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}/replace">Replace<span class="visually-hidden"> screenshot {{ image.place }}</span></a>
+                {% if rows %}
+                  <button type="submit" class="secondary" form="review-form" name="press" value="replace:{{ image.id }}" formnovalidate aria-describedby="kept-first">Replace<span class="visually-hidden"> screenshot {{ image.place }}</span></button>
+                {% else %}
+                  <a class="step-link" href="/parent/imports/{{ draft_id }}/images/{{ image.id }}/replace">Replace<span class="visually-hidden"> screenshot {{ image.place }}</span></a>
+                {% endif %}
+              {% endif %}
+              {% if image.attention %}
+                {% if rows %}
+                  <button type="submit" class="secondary" form="review-form" name="press" value="by-hand:{{ image.id }}" formnovalidate aria-describedby="kept-first stays-open">Enter it by hand<span class="visually-hidden"> for screenshot {{ image.place }}</span></button>
+                {% else %}
+                  <a class="step-link" href="{{ hand_entry }}" aria-describedby="stays-open">Enter it by hand<span class="visually-hidden"> for screenshot {{ image.place }}</span></a>
+                {% endif %}
+              {% endif %}
+              {% if not frozen %}
                 <button type="submit" class="secondary" form="remove-shot-{{ image.id }}"{% if rows %} aria-describedby="typing-lost"{% endif %}>Remove<span class="visually-hidden"> screenshot {{ image.place }}</span></button>
               {% endif %}
             </div>
@@ -87,6 +105,8 @@
     <p class="note">{{ counts }}</p>{% endif %}
     {% if read and not rows %}{{ read_fold(read, true, "screenshot-fold") }}{% endif %}
     {% if rest or not read %}
+      {#- Above the form, its presses here follow a copy of its hidden first submit button, so Enter in a box still shows the review again. #}
+      {% if rows and rows.offers_review and rest %}<button type="submit" class="visually-hidden" form="review-form" name="press" value="review" formnovalidate tabindex="-1" aria-hidden="true">Review changes</button>{% endif %}
       <ul class="screenshot-list">
         {% for image in rest %}{{ shown(image) }}{% endfor %}
       </ul>

@@ -34,6 +34,7 @@ from blossom.screenshot_page import (
     answer_field,
     asks_read,
     carried_digest,
+    onward_of,
     page_check,
     same_signature,
     shown_digest,
@@ -75,9 +76,13 @@ from blossom.screenshot_save import (
 )
 from blossom.stores.import_drafts import AnswerToKeep
 
-PRESSES: Final = frozenset({"keep", "save", "later", "review"})
+LATER: Final = "later"
+"""Save review for later's press value, which a screenshot's Replace or Enter it by hand is read
+as (``ReviewPost.onward``)."""
+PRESSES: Final = frozenset({"keep", "save", LATER, "review"})
 """The review form's presses by value, besides each card's Correct what was read
-(``CORRECT_PRESS`` and the card's piece name)."""
+(``CORRECT_PRESS`` and the card's piece name) and each screenshot's Replace and Enter it by hand
+(``ONWARD_PRESSES`` and the image id)."""
 ANSWER_KINDS: Final = frozenset(
     {
         "destination",
@@ -219,6 +224,11 @@ class ReviewPost:
     """The rows an offer or a found row gives saved progress: the selection its page showed and
     the rows of the cards it chose; for a Save that left rows open, the rows it selected. None for
     any other press that posts its ticks, and for a form that carried no selection."""
+    onward: tuple[str, str] | None = None
+    """For a screenshot's Replace or Enter it by hand, its kind (``REPLACE_PRESS`` or
+    ``BY_HAND_PRESS``) and the image id it names: the press is read as Save review for later,
+    and where that keeps everything as sent, it goes on to the replace step or to hand entry.
+    None for every other press."""
 
     @property
     def refused(self) -> bool:
@@ -405,9 +415,10 @@ def _shown_card(piece: str, offered: Mapping[str, Collection[str]]) -> bool:
 
 
 def _a_press(value: str, offered: Mapping[str, Collection[str]]) -> bool:
-    """Whether a press's value is one of the review form's: a press of ``PRESSES``, or Correct
-    what was read on a card the page showed."""
-    if value in PRESSES:
+    """Whether a press's value is one of the review form's: a press of ``PRESSES``, a
+    screenshot's Replace or Enter it by hand by an id of the store's shape (``onward_of``; the
+    route checks the review holds it), or Correct what was read on a card the page showed."""
+    if value in PRESSES or onward_of(value) is not None:
         return True
     return value.startswith(CORRECT_PRESS) and _shown_card(
         value.removeprefix(CORRECT_PRESS), offered
@@ -653,7 +664,9 @@ def read_review(
     marked_cards = [n.removeprefix(OPEN_MARK) for n, _ in rest if n.startswith(OPEN_MARK)]
     if any(not _shown_card(piece, offered) for piece in marked_cards):
         raise PostRefused
-    pressed = presses[0].removeprefix(CORRECT_PRESS) if presses[0] not in PRESSES else None
+    onward = onward_of(presses[0])
+    press = LATER if onward is not None else presses[0]
+    pressed = press.removeprefix(CORRECT_PRESS) if press not in PRESSES else None
     opened = tuple(sorted({*marked_cards, *([pressed] if pressed else [])}))
     units = tuple(dict.fromkeys(v for n, v in rest if n == "unit"))
     if any(u not in digests for u in units):
@@ -829,7 +842,7 @@ def read_review(
         **{name: marked[name] for name in unanswered},
     }
     return ReviewPost(
-        presses[0],
+        press,
         _number(hidden["version"]),
         hidden["acceptance"],
         _number(hidden["progress_revision"]),
@@ -915,6 +928,7 @@ def read_review(
             for name, values in offered.items()
             if name.startswith(CHOSEN_SHOWN) and values
         },
+        onward=onward,
     )
 
 

@@ -3187,7 +3187,8 @@ def test_screenshots_still_to_read_or_read_as_something_else_stay_in_view_with_r
     assert says(above, imports.LABELS["wrong_kind"])
     assert f'action="/parent/imports/{draft_id}/read"' in above
     assert says(above, imports.DISCLOSED)
-    assert above.index('id="saving-heading"') < above.index("</form>", above.index("review-form"))
+    form_start = above.index('id="review-form"')
+    assert above.index('id="saving-heading"') < above.index("</form>", form_start)
 
 
 def eight_read(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:

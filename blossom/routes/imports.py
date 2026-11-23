@@ -44,8 +44,10 @@ from blossom.routes.store_refusals import busy_file as busy_file
 from blossom.screenshot_page import (
     CORRECT_PRESS,
     NEEDED,
+    ONWARD_PRESSES,
     READY_ASKING,
     READY_WHOLE,
+    REPLACE_PRESS,
     SELECTION_CHECK,
     SELECTION_SHOWN,
     Box,
@@ -75,6 +77,7 @@ from blossom.screenshot_page import (
 from blossom.screenshot_page import SAID as PAGE_SAID
 from blossom.screenshot_page import SHOT_SAID as PAGE_SHOT_SAID
 from blossom.screenshot_posts import (
+    LATER,
     PROGRESS_SHAPE,
     ReviewPost,
     answer_pieces,
@@ -444,9 +447,13 @@ def to_review(
     said: Sequence[str] = (),
     told: Sequence[str] = (),
     done: Sequence[str] = (),
+    *,
+    onward: str | None = None,
 ) -> Response:
-    """The redirect every committed press answers with, carrying its note when it has one."""
-    answer = RedirectResponse(f"{PREFIX}/{draft_id}", status_code=303)
+    """The redirect every committed press answers with, carrying its note when it has one: to the
+    review, or to the address a screenshot's Replace or Enter it by hand goes on to (``onward``),
+    the note then waiting for the review's next showing."""
+    answer = RedirectResponse(onward or f"{PREFIX}/{draft_id}", status_code=303)
     if said or told or done:
         answer.set_cookie(
             NOTE_COOKIE,
@@ -457,6 +464,22 @@ def to_review(
             samesite="strict",
         )
     return answer
+
+
+HAND_ENTRY: Final = "/parent?add=1#enter-one"
+"""Family review with Add assignments open at Enter one assignment: where a screenshot's Enter it
+by hand goes."""
+
+
+def onward_address(draft_id: str, onward: tuple[str, str] | None) -> str | None:
+    """Where a screenshot's Replace or Enter it by hand goes on to once it has kept the review:
+    that screenshot's replace step, or hand entry; None for every other press."""
+    if onward is None:
+        return None
+    kind, image_id = onward
+    if kind == REPLACE_PRESS:
+        return f"{PREFIX}/{draft_id}/images/{image_id}/replace"
+    return HAND_ENTRY
 
 
 def uploaded_said(added: int, total: int, read: int) -> list[str]:
@@ -2271,7 +2294,9 @@ def review_page(
     "Discard the review" whatever is read, and once anything is read, the rows with their cards,
     questions and what saving adds. Once some homework is saved, each image needing attention
     says what can be done; before, while one does, the line beside Save says saving fixes the
-    screenshots (``save_fixes``)."""
+    screenshots (``save_fixes``). Beneath the expiry, a line says the review stays until then and
+    where to find it; with the rows' form, each image's Replace and each image needing attention's
+    Enter it by hand are presses of it, which the line saying they keep first describes."""
     keyed = model_configured(state.settings)
     unread = [image.image_id for image in snapshot.images if not image.read]
     unread_places = [index + 1 for index, image in enumerate(snapshot.images) if not image.read]
@@ -2295,12 +2320,20 @@ def review_page(
                     "label": label_of(outcome),
                     "read": outcome.folds,
                     "after": after if snapshot.frozen and outcome.attention else None,
+                    "attention": outcome.attention,
                 }
                 for index, (image, outcome) in enumerate(
                     zip(snapshot.images, outcomes, strict=True)
                 )
             ],
             "save_fixes": (save_fixes(attention) if attention and not snapshot.frozen else None),
+            "kept_first": (
+                None
+                if snapshot.frozen and not attention
+                else PAGE_SHOT_SAID["kept_first_by_hand" if snapshot.frozen else "kept_first"]
+            ),
+            "stays_open": PAGE_SHOT_SAID["stays_open"],
+            "hand_entry": HAND_ENTRY,
             "said": list(said),
             "told": list(told),
             "done": list(done),
@@ -2993,13 +3026,16 @@ async def review_post(
     request: Request, state: ApplicationState, found: DraftSnapshot
 ) -> tuple[ReviewPost | None, str]:
     """The post read against what its page signed, or None when it doesn't match or the review
-    has no homework to read it against, with the press it named. Kept rows are read only for a post
+    has no homework to read it against, with the press it named, a screenshot's Replace or Enter
+    it by hand named as Save review for later. Kept rows are read only for a post
     its page signed. Anything in it nested too deep to read doesn't match either. A signed list past
     its ceiling is left for the caller to answer (``ListTooLarge``). A post that matches leaves the
     cards its boxes are drawn for on the request alone, to label its copies (``copy_label``)."""
     form = await form_of(request)
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     named = next((value for name, value in items if name == "press"), "keep")
+    if named.startswith(ONWARD_PRESSES):
+        named = LATER
     saved = await saved_corrections(state, found)
     review = await state_of_review(state, found, saved)
     if review is None:
@@ -3097,7 +3133,9 @@ async def save_pressed(request: Request) -> bool:
 @router.post("/{draft_id}/review")
 async def review_press(request: Request, draft_id: str, state: State) -> Response:
     """The review form's three presses, and an offer or a found row posted whole: Keep these
-    answers, Save selected homework and Save review for later. A press with a correction
+    answers, Save selected homework and Save review for later, which each screenshot's Replace
+    and Enter it by hand also press once the review is found to hold that screenshot. A press
+    with a correction
     longer than its field takes keeps and saves nothing, and answers 422 with the review and
     its typing, that correction whole in its box. Whichever post this is, its form is read first,
     within this route's limits, and every later read of it gets that one, so a body past them
@@ -3181,6 +3219,10 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         )
     if post.press == "review" or post.press.startswith(CORRECT_PRESS):
         return await nothing_written(request, state, found, post)
+    if post.onward is not None and place_of(found, post.onward[1]) is None:
+        # A screenshot's Replace or Enter it by hand naming one the review doesn't hold keeps
+        # nothing and goes nowhere, as Save review for later answers a review that changed.
+        return await with_typing(request, state, draft_id, post, [SAID["image_gone"]], 409)
     if post.press == "later":
         return await later_press(request, state, found, post)
     if post.press == "save":
@@ -4181,7 +4223,9 @@ async def later_press(
     the copies owed choose the page and never whether a box comes back (``unshown_page_for``): the
     one saying the review can't be shown, or the one saying this attempt saved it, each box under
     its card's name. A read saying the review ended says the answers were kept before it did only
-    when this write stored some."""
+    when this write stored some. A screenshot's Replace or Enter it by hand is this press: only its
+    redirect, with the same note, goes on instead, to that screenshot's replace step or to hand
+    entry (``onward_address``), and every other answer is this press's own and goes nowhere."""
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         review = await state_of_review(state, found, post.corrections)
@@ -4264,7 +4308,8 @@ async def later_press(
                 request, state, found.draft_id, lines, [], kept_as=kept
             )
         lines = [*stored, PRESS_SAID["later"], saved_for_later_at(state)]
-        return to_review(state, found.draft_id, lines)
+        onward = onward_address(found.draft_id, post.onward)
+        return to_review(state, found.draft_id, lines, onward=onward)
     answered = done.answers.stored > 0
     said = [*answers_said(done.answers), PRESS_SAID["later_behind"]]
     return await with_typing(
