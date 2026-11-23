@@ -257,8 +257,10 @@ LIMITS: Final = (
 READING: Final = "Reading the screenshots"
 """What the Read press says while it waits; the script's pulsing dots after it are its
 ellipsis."""
-DISCLOSED: Final = "Nothing is sent until you press Read."
-"""How the line directly above the Read press ends, after naming each screenshot it sends."""
+DISCLOSED: Final = "They aren't sent until you press Read."
+DISCLOSED_ONE: Final = "It isn't sent until you press Read."
+"""How the line directly above the Read press ends, after naming each screenshot it sends: of
+the screenshots it names alone, since Upload and read sends the screenshots it uploads."""
 NOTHING_READ: Final = (
     "Blossom couldn't start reading, so nothing was read. Press Read to try again."
 )
@@ -268,8 +270,9 @@ the reading began, for a reason that isn't a busy file; the upload itself is sto
 
 def read_disclosed(places: Sequence[int]) -> str:
     """The line directly above the Read press: each screenshot it sends, by its place, and that
-    nothing is sent before the press."""
-    return f"Read sends {screenshots_named(places)} to Anthropic's API to be read. {DISCLOSED}"
+    they aren't sent before the press."""
+    ends = DISCLOSED_ONE if len(places) == 1 else DISCLOSED
+    return f"Read sends {screenshots_named(places)} to Anthropic's API to be read. {ends}"
 
 
 templates = page_templates()
@@ -1931,7 +1934,7 @@ async def replace_image(request: Request, draft_id: str, image_id: str, state: S
         if isinstance(found, Response):
             return found
         said, told = [*said, *found[0]], found[1]
-    return to_review(state, draft_id, said, [replaced_said(place), *told])
+    return to_review(state, draft_id, said, [replaced_said(added.place), *told])
 
 
 @router.get("/{draft_id}/images/{image_id}")

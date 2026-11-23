@@ -78,6 +78,7 @@ from blossom.screenshot_save import (
 )
 from blossom.screenshots import (
     CardPlace,
+    HomeworkReading,
     ScreenshotRow,
     UnreadCard,
     homework_assembly,
@@ -999,9 +1000,11 @@ def shot_outcomes(
     with a card from it counts once, as an assignment or, read from a teacher's note, as a note
     to check, and each joined note with a card from it counts as a note to check. A screenshot
     no row or note draws on is ``text_only`` when it holds a card that couldn't be read as a
-    row, or a reading that couldn't be decoded; else ``nothing``. A row's later copy in one
-    layer belongs to no screenshot and counts nowhere. ``now`` only stamps what the assembly
-    reads, which no count depends on."""
+    row, or a reading that couldn't be decoded; also when its reading holds a card that no row
+    or item names, such as one whose row would write what another row of its layer does, which
+    counts nowhere; else ``nothing``. ``now`` only stamps what the assembly reads, which no
+    count depends on."""
+    bodies = {reading.sha256: reading.body for reading in readings}
     kinds = {reading.sha256: reading.kind for reading in readings}
     found: dict[str, int] = {}
     notes: dict[str, int] = {}
@@ -1035,13 +1038,22 @@ def shot_outcomes(
             out.append(ShotOutcome("wrong_kind"))
         elif sha in found or sha in notes:
             out.append(ShotOutcome("homework", found=found.get(sha, 0), notes=notes.get(sha, 0)))
-        elif sha in unusable or sha in clipped or sha in undecoded:
+        elif sha in unusable or sha in clipped or sha in undecoded or holds_a_card(bodies[sha]):
             out.append(
                 ShotOutcome("text_only", unusable=unusable.get(sha, 0), clipped=clipped.get(sha, 0))
             )
         else:
             out.append(ShotOutcome("nothing"))
     return tuple(out)
+
+
+def holds_a_card(body: str) -> bool:
+    """Whether a stored homework list's reading holds any card. One that can't be decoded holds
+    none here: the assembly gives it an item of its own."""
+    try:
+        return bool(HomeworkReading.model_validate_json(body).cards)
+    except (ValueError, RecursionError):
+        return False
 
 
 def found_said(outcome: ShotOutcome) -> str:

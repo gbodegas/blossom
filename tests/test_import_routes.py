@@ -2533,7 +2533,7 @@ def test_the_disclosure_stands_directly_above_read(tmp_path: pathlib.Path) -> No
         draft_id = made(browser, RED)
         page = browser.get(f"/parent/imports/{draft_id}").text
 
-    disclosed = page.index(str(escape(imports.DISCLOSED)))
+    disclosed = page.index(str(escape(imports.DISCLOSED_ONE)))
     read = page.index(f'action="/parent/imports/{draft_id}/read"')
     assert disclosed < read
     assert "<p" not in page[disclosed:read].split("</p>", 1)[1]
@@ -3186,7 +3186,7 @@ def test_screenshots_still_to_read_or_read_as_something_else_stay_in_view_with_r
     assert says(above, imports.FAILED["not_json"])
     assert says(above, imports.LABELS["wrong_kind"])
     assert f'action="/parent/imports/{draft_id}/read"' in above
-    assert says(above, imports.DISCLOSED)
+    assert says(above, imports.DISCLOSED_ONE)
     form_start = above.index('id="review-form"')
     assert above.index('id="saving-heading"') < above.index("</form>", form_start)
 

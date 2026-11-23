@@ -206,6 +206,9 @@ class Added(NamedTuple):
     that the list repeated. A caller maps them back to places in its upload."""
     free: int
     """Places left for more images after this commit."""
+    place: int = 0
+    """For a replace, the new image's place in the draft as this commit left it, counted from
+    one; 0 for an upload."""
 
 
 class Attempt(NamedTuple):
@@ -752,7 +755,8 @@ class ImportDraftsStore:
         answers is applied in the same transaction, as a removal's is. A new image the draft
         already holds, the one it would replace included, is refused (``AlreadyHeld``) and
         nothing is written. The expiry is unchanged, and the draft can't finish by it, since
-        the new image is unread. What it returns names the new image alone."""
+        the new image is unread. What it returns names the new image alone, and its place as
+        this write left it, which an image removed since the caller looked can have moved."""
         [(digest, item)] = digested([image])
         with self._writing(wait) as now:
             draft = self._open_draft(student_id, draft_id, now)
@@ -789,7 +793,12 @@ class ImportDraftsStore:
             self._connection.execute(RAISE_VERSION, (draft_id,))
             self._carried(draft, before)
             return Added(
-                draft_id, self._version(draft_id), (new_id,), (), MOST_IMAGES_PRESENT - len(held)
+                draft_id,
+                self._version(draft_id),
+                (new_id,),
+                (),
+                MOST_IMAGES_PRESENT - len(held),
+                held.index(old) + 1,
             )
 
     def image_png(

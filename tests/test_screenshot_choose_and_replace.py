@@ -31,16 +31,27 @@ assignments. Where it holds no form, they are links.
 import html
 import pathlib
 import re
+from datetime import datetime
 from typing import Any, get_args
 
 import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
-from blossom import screenshot_page
+from blossom import screenshot_page, screenshots
 from blossom.anthropic_client import ReadFailure, ScreenshotAnswer
+from blossom.intake import CardsRead, PortalCard, Reading, read_cards
 from blossom.routes import imports
-from tests.support import Answer, first_button_of, homework_answer, homework_card, state_of
+from blossom.screenshots import homework_assembly
+from blossom.stores.import_drafts import ImageState, StoredReading
+from tests.support import (
+    Answer,
+    first_button_of,
+    homework_answer,
+    homework_card,
+    state_of,
+    stored_homework,
+)
 from tests.test_import_routes import (
     BLUE,
     CLEARED_INTRO,
@@ -77,6 +88,7 @@ from tests.test_import_routes import (
     unnamed,
     upload,
 )
+from tests.test_screenshots import NOW, PS, RL, THU, card, shot
 
 READ_NOW = {"read": "now"}
 AND_READ_SAID = (
@@ -451,12 +463,12 @@ def test_the_read_press_names_each_screenshot_it_sends_and_reads_exactly_those(
     assert says(
         first,
         "Read sends Screenshot 1 and Screenshot 2 to Anthropic's API to be read. "
-        "Nothing is sent until you press Read.",
+        "They aren't sent until you press Read.",
     )
     assert says(
         page,
         "Read sends Screenshot 2 and Screenshot 3 to Anthropic's API to be read. "
-        "Nothing is sent until you press Read.",
+        "They aren't sent until you press Read.",
     )
     assert pressed.status_code == 200
     assert sorted(reader.calls) == sorted([BLUE, GREEN])
@@ -1793,3 +1805,121 @@ def test_the_links_this_journey_adds_are_as_tall_as_a_button() -> None:
         "View screenshot<span"
     ) in step
     assert step.count("View screenshot") == 1
+
+
+# ------------------------------------------------------------------ what the review's lines name
+
+
+@pytest.mark.parametrize(
+    ("images", "line"),
+    [
+        (
+            (RED,),
+            "Read sends Screenshot 1 to Anthropic's API to be read. It isn't sent until you "
+            "press Read.",
+        ),
+        (
+            (RED, BLUE),
+            "Read sends Screenshot 1 and Screenshot 2 to Anthropic's API to be read. They "
+            "aren't sent until you press Read.",
+        ),
+    ],
+    ids=["one screenshot", "two screenshots"],
+)
+def test_the_line_above_read_says_only_the_screenshots_it_names_wait_for_read(
+    tmp_path: pathlib.Path, images: tuple[bytes, ...], line: str
+) -> None:
+    """The review's Add screenshots form offers Upload and read, which sends what it uploads
+    with no Read press, so the line directly above Read says the screenshots it names wait for
+    Read, and never that nothing is sent until then."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, *images)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert any(">Upload and read</button>" in form for form in upload_forms(page))
+    assert f'<p class="note" id="read-disclosed">{escape(line)}</p>' in page
+    assert "Nothing is sent until you press Read." not in page
+
+
+@pytest.mark.parametrize("read", [False, True], ids=["without reading", "and read"])
+def test_the_replace_note_names_the_place_the_new_screenshot_holds_after_its_write(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, read: bool
+) -> None:
+    """Another tab's Remove of Screenshot 1 commits while a replace of Screenshot 3 reads its
+    body: once the replace's write commits, the new screenshot holds place 2, and the note
+    names that place."""
+    Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE, GREEN)
+        red, _, green = images_of(browser, draft_id)
+        store = state_of(browser).import_drafts
+        student = state_of(browser).project_state.student_id()
+        real = store.replace_image
+
+        def after_a_removal(*args: Any, **kwargs: Any) -> object:  # noqa: ANN401
+            store.remove_image(student, draft_id, red)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(store, "replace_image", after_a_removal)
+        sent = replace_with(
+            browser, draft_id, green, png(color=(9, 9, 9)), form=READ_NOW if read else None
+        )
+        page = followed(browser, sent)
+        ids = images_of(browser, draft_id)
+
+    assert sent.status_code == 303, sent.text
+    assert len(ids) == 2
+    assert green not in ids
+    assert red not in ids
+    assert lines_in(TOLD.search(page))[0] == "Screenshot 2 was replaced."
+
+
+def every_card_read_as_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stand-in for the card reader that reads every card as one fixed reading, so cards of
+    one layer from different screenshots would write the same row."""
+    fixed: list[Reading] = []
+
+    def all_the_same(cards: list[PortalCard], *, now: datetime) -> CardsRead:
+        if not fixed:
+            fixed.append(read_cards(cards[:1], now=now).readings[0])
+        return CardsRead(readings=(fixed[0],) * len(cards), joined=tuple(range(len(cards))))
+
+    monkeypatch.setattr(screenshots, "read_cards", all_the_same)
+
+
+def read_image(place: int, reading: StoredReading) -> ImageState:
+    """A stored image read as ``reading``, at its place in the review."""
+    return ImageState(
+        f"{place:032x}", place, reading.sha256, 390, 844, 1, NOW, True, None, False, False
+    )
+
+
+def test_a_screenshot_whose_lone_card_repeats_another_row_says_none_of_it_became_homework(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each of two screenshots holds one card, and the second card's row would write what the
+    first card's row does, so it is a ``repeated`` item drawn from no place. That screenshot
+    needs attention and says none of it became homework, never that no homework was found on
+    it."""
+    every_card_read_as_one(monkeypatch)
+    readings = [
+        stored_homework("first", shot((THU, 150), card(RL, 200))),
+        stored_homework("second", shot((THU, 150), card(PS, 200))),
+    ]
+    assembly = homework_assembly(readings, now=NOW)
+    [row] = assembly.rows
+    [repeated] = assembly.unread
+    with_row = {place.sha256 for place in row.sources}
+
+    outcomes = screenshot_page.shot_outcomes(
+        [read_image(index, reading) for index, reading in enumerate(readings)], readings, now=NOW
+    )
+
+    assert repeated.reason == "repeated"
+    assert len(with_row) == 1
+    by_sha = {reading.sha256: outcome for reading, outcome in zip(readings, outcomes, strict=True)}
+    [other] = [sha for sha in by_sha if sha not in with_row]
+    assert by_sha[next(iter(with_row))].state == "homework"
+    assert by_sha[other].state == "text_only"
+    assert by_sha[other].attention
+    assert imports.label_of(by_sha[other]) == "Read, but none of it became homework."
