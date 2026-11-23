@@ -16,6 +16,11 @@ in view above the review; one read with homework folds. The missing-name questio
 screenshot with nothing to save and names the ones it covers. Before a save, a line beside Save
 says saving fixes the screenshots; after one, a screenshot that needs attention says what can be
 done. No press but a read calls the reader.
+
+While the review isn't frozen, each screenshot links to a replace step for it. One press puts a
+new file in its place; the other screenshots, their readings and answers, the name answer and
+the saved corrections and ticks stay, the replaced screenshot's own answers are cleared and
+named, and a refused new file keeps the old one. Replace and read sends the new file only.
 """
 
 import html
@@ -27,16 +32,19 @@ import pytest
 from fastapi.testclient import TestClient
 from markupsafe import escape
 
+from blossom import screenshot_page
 from blossom.anthropic_client import ReadFailure, ScreenshotAnswer
 from blossom.routes import imports
 from tests.support import Answer, homework_answer, homework_card, state_of
 from tests.test_import_routes import (
     BLUE,
+    CLEARED_INTRO,
     GREEN,
     PROBLEM,
     RED,
     TOLD,
     Reader,
+    box_subject,
     drafts,
     first_form,
     followed,
@@ -48,6 +56,7 @@ from tests.test_import_routes import (
     lines_in,
     made,
     open_settings,
+    opened_for_typing,
     page_post,
     png,
     press_outside,
@@ -55,6 +64,7 @@ from tests.test_import_routes import (
     read_review,
     says,
     send,
+    stored_answers,
     token_of,
     uncertain_upload,
     units_on,
@@ -1025,3 +1035,417 @@ def test_no_press_but_a_read_calls_the_reader(
     assert sorted(reader.calls) == read_once
     assert finished.status_code == 200
     assert closed is not None
+
+
+# ------------------------------------------------------------------ C10: replace one screenshot
+
+REPLACE_AND_READ_SAID = (
+    "Replace and read sends this screenshot to Blossom, then to Anthropic's API to be read."
+)
+REPLACE_WITHOUT_SAID = (
+    "Replace without reading keeps it in Blossom; nothing is sent to Anthropic's API until you "
+    "press Read."
+)
+"""The line beside each press of a screenshot's replace step."""
+REPLACE_SENDS_NOTHING = (
+    "Choosing sends nothing. The chosen screenshot stays in this browser until you press a "
+    "replace button below."
+)
+KEPT_AS_IT_WAS = "Screenshot 2 wasn't replaced; it stays as it was."
+REPLACED = "Screenshot 2 was replaced."
+BIG = b"\x89PNG\r\n\x1a\n" + bytes(12 * 1_000_000)
+"""A file just over the 12 MB a screenshot may be."""
+
+
+def replace_path(draft_id: str, image_id: str) -> str:
+    return f"/parent/imports/{draft_id}/images/{image_id}/replace"
+
+
+def replace_with(
+    browser: TestClient,
+    draft_id: str,
+    image_id: str,
+    *images: bytes,
+    form: dict[str, str] | None = None,
+) -> Answer:
+    """A press of the replace step with these files chosen, as a browser sends its one-file
+    form; Replace and read adds read=now."""
+    return upload(browser, *images, form=form or {}, to=replace_path(draft_id, image_id))
+
+
+def one_read_one_failed(
+    browser: TestClient, monkeypatch: pytest.MonkeyPatch, reader: Reader
+) -> tuple[str, str, str]:
+    """A review whose Screenshot 1 (RED) is read with homework and whose Screenshot 2 (BLUE)
+    failed: its id, and the two image ids."""
+    reader.answers[BLUE] = ScreenshotAnswer(None, "not_json", 10, 5)
+    draft_id = made(browser, RED, BLUE)
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
+    red, blue = images_of(browser, draft_id)
+    return draft_id, red, blue
+
+
+def edited(browser: TestClient, draft_id: str) -> str:
+    """The family's edits on the review: its answers kept with Keep these answers, its name
+    answered, a title corrected and one group ticked, saved with Save review for later. The
+    page after."""
+    page = browser.get(f"/parent/imports/{draft_id}").text
+    kept = followed(browser, send(browser, draft_id, page_post(page, "keep")))
+    page = her_name_answered(browser, draft_id, kept)
+    box = f"correct:{box_subject(page, 'title')}"
+    typed = {box: "Sentence Composing, corrected"}
+    page = opened_for_typing(browser, draft_id, page, typed)
+    return followed(
+        browser,
+        send(browser, draft_id, page_post(page, "later", typed=typed, tick=units_on(page)[:1])),
+    )
+
+
+def kept_state(browser: TestClient, draft_id: str, image_id: str) -> dict[str, object]:
+    """What the replace must leave alone: one image's id and place, every reading but the
+    replaced one's, the stored answers, the saved progress and the expiry."""
+    student = state_of(browser).project_state.student_id()
+    snapshot = state_of(browser).import_drafts.snapshot(student, draft_id)
+    [kept] = [item for item in snapshot.images if item.image_id == image_id]
+    return {
+        "image": (kept.image_id, snapshot.images.index(kept), kept.sha256),
+        "readings": [r for r in snapshot.readings if r.sha256 == kept.sha256],
+        "answers": stored_answers(browser, draft_id),
+        "progress": snapshot.progress,
+        "expires_at": snapshot.expires_at,
+    }
+
+
+def test_replace_without_reading_keeps_the_other_screenshot_and_the_family_s_edits(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Screenshot 1 is read, answered, named, corrected and ticked; Screenshot 2 failed. Replace
+    without reading puts the new file at place 2, unread, and leaves Screenshot 1's image,
+    reading, answers, name answer, saved corrections and ticks and the review's expiry as they
+    were, with zero reader calls."""
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, red, blue = one_read_one_failed(browser, monkeypatch, reader)
+        later = edited(browser, draft_id)
+        answers = stored_answers(browser, draft_id)
+        before = kept_state(browser, draft_id, red)
+        calls = list(reader.calls)
+        sent = replace_with(browser, draft_id, blue, GREEN)
+        page = followed(browser, sent)
+        after = kept_state(browser, draft_id, red)
+        ids = images_of(browser, draft_id)
+
+    assert says(later, imports.PRESS_SAID["later"])
+    assert "Sentence Composing, corrected" in str(before["progress"])
+    assert '"selected"' in str(before["progress"])
+    assert ("name", "hers") in {(kind, value) for (kind, _), value in answers.items()}
+    assert any(kind == "destination" for kind, _ in answers)
+    assert sent.status_code == 303, sent.text
+    assert sent.headers["location"] == f"/parent/imports/{draft_id}"
+    assert after == before
+    assert ids[0] == red
+    assert ids[1] != blue
+    assert len(ids) == 2
+    assert reader.calls == calls
+    assert lines_in(TOLD.search(page)) == [REPLACED]
+    assert PROBLEM.search(page) is None
+    assert says(page, f"Screenshot 2 · {imports.LABELS['unread']}")
+
+
+def test_replacing_a_screenshot_read_with_homework_clears_and_names_its_own_answers(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Screenshot 2 was read with its own card and answered: replacing it clears that card's
+    answers and the review names them; Screenshot 1's answers stay."""
+    vocab = homework_answer(
+        cards=[homework_card(title="Vocab Quiz", instruction="Study list one.")]
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()), (BLUE, vocab))
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        before = stored_answers(browser, draft_id)
+        [_, blue] = images_of(browser, draft_id)
+        sent = replace_with(browser, draft_id, blue, GREEN)
+        page = followed(browser, sent)
+        after = stored_answers(browser, draft_id)
+
+    assert sent.status_code == 303, sent.text
+    assert says(page, f"{CLEARED_INTRO} Vocab Quiz. Answer them again.")
+    assert lines_in(TOLD.search(page)) == [REPLACED]
+    assert after
+    assert after == {key: value for key, value in before.items() if key in after}
+    assert len(after) < len(before)
+
+
+def test_replace_and_read_sends_the_new_file_and_nothing_else(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stand-in reader receives exactly the new file's prepared PNG, once; Screenshot 1's
+    reading is unchanged and the failed file is never sent again."""
+    reader = Reader(monkeypatch)
+    lab = homework_answer(cards=[homework_card(title="Lab Report")])
+    reader.answers[GREEN] = ScreenshotAnswer(lab, None, 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, red, blue = one_read_one_failed(browser, monkeypatch, reader)
+        before = kept_state(browser, draft_id, red)
+        calls = list(reader.calls)
+        sent = replace_with(browser, draft_id, blue, GREEN, form=READ_NOW)
+        ids = images_of(browser, draft_id)
+        new_png = prepared(browser, draft_id, ids[1])
+        after = kept_state(browser, draft_id, red)
+        page = followed(browser, sent)
+
+    assert sent.status_code == 303, sent.text
+    assert reader.calls[: len(calls)] == calls
+    assert reader.calls[len(calls) :] == [new_png]
+    assert after == before
+    told = lines_in(TOLD.search(page))
+    assert told[0] == REPLACED
+    assert told[1].startswith("2 screenshots read: ")
+    assert says(page, "Screenshot 2 · Read. 1 assignment found.")
+    assert says(page, f"Screenshot 1 · {WITH_HOMEWORK}")
+
+
+def test_a_new_file_that_copies_a_card_of_the_other_screenshot_follows_the_identical_cards_rule(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Screenshot 1's lone card is answered; the new file read in place of the failed
+    Screenshot 2 holds the same card, so the existing rule clears that card's answers and says
+    the copies can't be told apart."""
+    lone = homework_answer(cards=[homework_card()])
+    reader = Reader(monkeypatch)
+    reader.answers[RED] = ScreenshotAnswer(lone, None, 10, 5)
+    reader.answers[GREEN] = ScreenshotAnswer(lone, None, 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _, blue = one_read_one_failed(browser, monkeypatch, reader)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        followed(browser, send(browser, draft_id, page_post(page, "keep")))
+        kept = [kind for kind, _ in stored_answers(browser, draft_id)]
+        sent = replace_with(browser, draft_id, blue, GREEN, form=READ_NOW)
+        page = followed(browser, sent)
+        left = [kind for kind, _ in stored_answers(browser, draft_id)]
+
+    assert "destination" in kept
+    assert "destination" not in left
+    assert says(page, f"{CLEARED_INTRO} Sentence Composing. Answer them again.")
+    assert says(page, screenshot_page.CHANGE_SAID["copies"])
+
+
+REFUSED_FILES: dict[str, tuple[tuple[bytes, ...], int, str]] = {
+    "a GIF": ((gif(),), 422, "The new file wasn't added: it isn't a PNG or JPEG."),
+    "over 12 MB": ((BIG,), 413, imports.UPLOAD_SAID["file_too_large"]),
+    "a copy of Screenshot 1": (
+        (RED,),
+        422,
+        "The new file is already in this review as Screenshot 1.",
+    ),
+    "the same as Screenshot 2": ((BLUE,), 422, "The new file is the same as Screenshot 2."),
+    "no file": ((), 400, "Choose one screenshot to put in its place."),
+    "two files": (
+        (GREEN, png(color=(9, 9, 9))),
+        400,
+        "Choose one screenshot only; more than one was sent.",
+    ),
+}
+"""Each new file the replace step refuses: the files sent, the answer's status, and why."""
+
+
+@pytest.mark.parametrize("case", list(REFUSED_FILES))
+@pytest.mark.parametrize("read", [False, True], ids=["without reading", "and read"])
+def test_a_refused_new_file_keeps_the_old_one_and_says_why(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str, read: bool
+) -> None:
+    files, status, why = REFUSED_FILES[case]
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, red, blue = one_read_one_failed(browser, monkeypatch, reader)
+        calls = list(reader.calls)
+        before = kept_state(browser, draft_id, red)
+        path = replace_path(draft_id, blue)
+        if files:
+            sent = replace_with(browser, draft_id, blue, *files, form=READ_NOW if read else None)
+        else:
+            # A browser sends a picker left empty as a file part with an empty name.
+            field = (
+                '--b\r\nContent-Disposition: form-data; name="read"\r\n\r\nnow\r\n' if read else ""
+            )
+            body = (
+                f"{field}--b\r\n"
+                'Content-Disposition: form-data; name="screenshots"; filename=""\r\n'
+                "Content-Type: application/octet-stream\r\n\r\n\r\n"
+                "--b--\r\n"
+            )
+            sent = browser.post(
+                path,
+                content=body.encode(),
+                headers={"content-type": "multipart/form-data; boundary=b"},
+            )
+        ids = images_of(browser, draft_id)
+        after = kept_state(browser, draft_id, red)
+
+    assert sent.status_code == status
+    assert ids == [red, blue]
+    assert after == before
+    assert reader.calls == calls
+    problem = PROBLEM.search(sent.text)
+    assert lines_in(problem) == [KEPT_AS_IT_WAS, why]
+    assert f'action="{path}"' in sent.text
+
+
+def test_a_frozen_review_offers_no_replace_and_refuses_one(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = frozen_after_a_partial_save(browser, monkeypatch)
+        [red] = images_of(browser, draft_id)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        step = browser.get(replace_path(draft_id, red))
+        sent = replace_with(browser, draft_id, red, GREEN)
+        ids = images_of(browser, draft_id)
+
+    assert "/replace" not in page
+    assert step.status_code == 409
+    assert says(step.text, imports.SAID["frozen"])
+    assert sent.status_code == 409
+    assert says(sent.text, imports.SAID["frozen"])
+    assert ids == [red]
+
+
+def test_an_unknown_screenshot_or_review_is_refused_as_today(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An image not in the review: the step answers as View screenshot does and the press as
+    Remove does; a review that isn't there: the missing review's page."""
+    unknown = "0" * 32
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        step = browser.get(replace_path(draft_id, unknown))
+        sent = replace_with(browser, draft_id, unknown, GREEN)
+        page = followed(browser, sent)
+        nowhere = browser.get(replace_path(unknown, unknown))
+        pressed = replace_with(browser, unknown, unknown, GREEN)
+        count = len(images_of(browser, draft_id))
+
+    assert step.status_code == 404
+    assert says(step.text, imports.SAID["image_gone"])
+    assert sent.status_code == 303
+    assert lines_in(PROBLEM.search(page)) == [imports.SAID["image_gone"]]
+    assert (nowhere.status_code, pressed.status_code) == (404, 404)
+    assert says(nowhere.text, imports.SAID["absent"])
+    assert says(pressed.text, imports.SAID["absent"])
+    assert count == 2
+
+
+def test_a_review_holding_ten_screenshots_can_replace_one(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ten = [png(color=(n * 20, 7, 7)) for n in range(10)]
+    Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, *ten)
+        before = images_of(browser, draft_id)
+        sent = replace_with(browser, draft_id, before[4], GREEN)
+        after = images_of(browser, draft_id)
+        page = followed(browser, sent)
+
+    assert sent.status_code == 303, sent.text
+    assert len(after) == 10
+    assert after[:4] == before[:4]
+    assert after[5:] == before[5:]
+    assert after[4] not in before
+    assert lines_in(TOLD.search(page)) == ["Screenshot 5 was replaced."]
+
+
+def test_with_no_key_a_stale_replace_and_read_replaces_and_reads_nothing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path, key=False)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        [red, blue] = images_of(browser, draft_id)
+        sent = replace_with(browser, draft_id, blue, GREEN, form=READ_NOW)
+        ids = images_of(browser, draft_id)
+        page = followed(browser, sent)
+
+    assert sent.status_code == 303, sent.text
+    assert ids[0] == red
+    assert ids[1] != blue
+    assert reader.calls == []
+    assert lines_in(PROBLEM.search(page)) == [imports.SAID["no_key"]]
+    assert lines_in(TOLD.search(page)) == [REPLACED]
+
+
+STEP_FORM = re.compile(
+    r'<form method="post" action="(/parent/imports/[0-9a-f]{32}/images/[0-9a-f]{32}/replace)" '
+    r'enctype="multipart/form-data" data-pending="Replacing the screenshot">(.*?)</form>',
+    re.S,
+)
+
+
+@pytest.mark.parametrize("key", [True, False], ids=["with a key", "with no key"])
+def test_the_replace_step_offers_one_file_and_its_presses_with_their_lines(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, key: bool
+) -> None:
+    """The step shows the screenshot by its place, its state and its preview linked to the
+    stored copy; its form takes one file, says choosing sends nothing, and offers Replace and
+    read with the sharing line beside it (with a key) and Replace without reading with its own
+    line; and a way back to the review. Opening the step reads nothing."""
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path, key=key)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        [_, blue] = images_of(browser, draft_id)
+        step = browser.get(replace_path(draft_id, blue))
+
+    assert step.status_code == 200
+    assert reader.calls == []
+    page = step.text
+    shot = f"/parent/imports/{draft_id}/images/{blue}"
+    assert f'<a href="{shot}"><img src="{shot}" alt="Screenshot 2" width="72"></a>' in page
+    assert says(page, f"Screenshot 2 · {imports.LABELS['unread']}")
+    assert f'<a href="/parent/imports/{draft_id}">Back to the review</a>' in page
+    [(action, form)] = STEP_FORM.findall(page)
+    assert action == replace_path(draft_id, blue)
+    pickers = re.findall(r'<input type="file"[^>]*>', form)
+    assert len(pickers) == 1
+    assert 'name="screenshots"' in pickers[0]
+    assert "multiple" not in pickers[0]
+    assert says(form, REPLACE_SENDS_NOTHING)
+    assert "data-chosen" in form
+    presses = presses_of(form)
+    without = (
+        '<button type="submit" class="{}" data-pending="Replacing the screenshot" '
+        'aria-describedby="replace-without">Replace without reading</button>'
+    ).format("secondary" if key else "primary")
+    and_read = (
+        '<button type="submit" class="primary" name="read" value="now" data-pending="Replacing '
+        'and reading the screenshot" aria-describedby="replace-and-read">Replace and read</button>'
+    )
+    assert presses == ([and_read, without] if key else [without])
+    # The lines are the template's own text, written as it is, not escaped.
+    assert f'<p class="note" id="replace-without">{REPLACE_WITHOUT_SAID}</p>' in form
+    if key:
+        beside = form[form.index(and_read) :]
+        assert beside.index(REPLACE_AND_READ_SAID) < beside.index(without)
+        assert f'<p class="note" id="replace-and-read">{REPLACE_AND_READ_SAID}</p>' in form
+    else:
+        assert "Replace and read" not in page
+
+
+def test_each_screenshot_on_the_review_offers_replace_beside_remove(
+    tmp_path: pathlib.Path,
+) -> None:
+    """While the review isn't frozen, each screenshot's row links to its replace step, named
+    for that screenshot, beside its Remove press."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        ids = images_of(browser, draft_id)
+        page = browser.get(f"/parent/imports/{draft_id}").text
+
+    for place, image_id in enumerate(ids, start=1):
+        link = (
+            f'<a href="{replace_path(draft_id, image_id)}">Replace<span class="visually-hidden">'
+            f" screenshot {place}</span></a>"
+        )
+        assert page.count(link) == 1
+        assert page.index(link) < page.index(f'form="remove-shot-{image_id}"')

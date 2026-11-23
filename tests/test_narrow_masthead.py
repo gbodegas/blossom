@@ -4043,6 +4043,7 @@ SOFT_HYPHENED_HEADINGS = {
         '    <h1 id="homework" tabindex="-1">Home&shy;work for this result</h1>',
     ],
     "import_find.html": ["  <h1>Home&shy;work screen&shy;shots</h1>"],
+    "import_replace.html": ["  <h1>Home&shy;work screen&shy;shots</h1>"],
     "import_review.html": ["  <h1>Home&shy;work screen&shy;shots</h1>"],
     "import_said.html": ["  <h1>Home&shy;work screen&shy;shots</h1>"],
     "inbox_preview.html": ["  <h1>Review assign&shy;ments</h1>"],

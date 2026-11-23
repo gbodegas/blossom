@@ -4943,6 +4943,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
     # The page of an uncertain upload carries it for the upload form it offers again.
     assert carriers == [
         "import_find.html",
+        "import_replace.html",
         "import_review.html",
         "import_said.html",
         "parent_review.html",
@@ -5118,6 +5119,8 @@ def every_route(draft_id: str, image_id: str) -> list[tuple[str, str]]:
         ("POST", f"/parent/imports/{draft_id}/images"),
         ("GET", f"/parent/imports/{draft_id}/images/{image_id}"),
         ("POST", f"/parent/imports/{draft_id}/images/{image_id}/remove"),
+        ("GET", f"/parent/imports/{draft_id}/images/{image_id}/replace"),
+        ("POST", f"/parent/imports/{draft_id}/images/{image_id}/replace"),
         ("POST", f"/parent/imports/{draft_id}/read"),
         ("POST", f"/parent/imports/{draft_id}/review"),
         ("POST", f"/parent/imports/{draft_id}/find"),
@@ -5140,6 +5143,8 @@ def test_every_import_route_is_one_this_module_names() -> None:
         ("POST", "/parent/imports/{draft_id}/images"),
         ("GET", "/parent/imports/{draft_id}/images/{image_id}"),
         ("POST", "/parent/imports/{draft_id}/images/{image_id}/remove"),
+        ("GET", "/parent/imports/{draft_id}/images/{image_id}/replace"),
+        ("POST", "/parent/imports/{draft_id}/images/{image_id}/replace"),
         ("POST", "/parent/imports/{draft_id}/read"),
         ("POST", "/parent/imports/{draft_id}/review"),
         ("POST", "/parent/imports/{draft_id}/find"),
@@ -5388,7 +5393,7 @@ def test_turned_off_every_import_address_answers_as_a_missing_one_before_any_bod
         }
         count = drafts(browser)
 
-    assert len(answers) == 84
+    assert len(answers) == 91
     assert {method: answer[0] for method, answer in missing.items()} == dict.fromkeys(METHODS, 404)
     assert answers == {(method, path): missing[method] for method, path in answers}
     assert all("allow" not in dict(answer[2]) for answer in answers.values())
@@ -5414,7 +5419,7 @@ def test_turned_off_a_signed_in_parent_finds_no_import_address(tmp_path: pathlib
         }
         count = drafts(parent)
 
-    assert len(answers) == 84
+    assert len(answers) == 91
     assert answers == {(method, path): missing[method] for method, path in answers}
     assert all("allow" not in dict(answer[2]) for answer in answers.values())
     assert count == 0
@@ -5610,6 +5615,7 @@ def test_no_import_address_carries_anything_but_ids() -> None:
     assert "query_params" not in names
     assert sorted(pages) == [
         "import_find.html",
+        "import_replace.html",
         "import_review.html",
         "import_rows.html",
         "import_said.html",
@@ -5618,7 +5624,11 @@ def test_no_import_address_carries_anything_but_ids() -> None:
     ]
     assert [(n, f) for n, found in forms.items() for f in found if 'method="post"' not in f] == []
     assert [n for n, text in pages.items() if re.search(r'href="[^"]*\?', text)] == []
-    assert reads == ["/parent/imports/{draft_id}", "/parent/imports/{draft_id}/images/{image_id}"]
+    assert reads == [
+        "/parent/imports/{draft_id}",
+        "/parent/imports/{draft_id}/images/{image_id}",
+        "/parent/imports/{draft_id}/images/{image_id}/replace",
+    ]
 
 
 def find_button(page: str, piece: str) -> str:

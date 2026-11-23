@@ -180,6 +180,8 @@ IMPORT_PAGES = {
     ("POST", "/parent/imports"),
     ("POST", "/parent/imports/{draft_id}/images"),
     ("POST", "/parent/imports/{draft_id}/images/{image_id}/remove"),
+    ("GET", "/parent/imports/{draft_id}/images/{image_id}/replace"),
+    ("POST", "/parent/imports/{draft_id}/images/{image_id}/replace"),
     ("GET", "/parent/imports/{draft_id}/images/{image_id}"),
     ("GET", "/parent/imports/{draft_id}"),
     ("POST", "/parent/imports/{draft_id}/read"),

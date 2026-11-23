@@ -138,6 +138,7 @@ from blossom.stores.import_drafts import (
     MOST_IMAGES_PRESENT,
     TOKEN_SHAPE,
     Added,
+    AlreadyHeld,
     AnswersKept,
     AnswerToKeep,
     AttemptUnderWay,
@@ -1735,6 +1736,179 @@ async def remove_image(request: Request, draft_id: str, image_id: str, state: St
         noted(error)
         return unwritten_page(request, state, error, UNKNOWN_SAID["remove"])
     return to_review(state, draft_id, await change_lines(state, draft_id, before))
+
+
+REPLACE_SAID: Final = {
+    "none": "Choose one screenshot to put in its place.",
+    "several": "Choose one screenshot only; more than one was sent.",
+    "same": "The new file is the same as Screenshot {n}.",
+    "held": "The new file is already in this review as Screenshot {n}.",
+}
+"""Why a replace step's press replaced nothing, beside the upload's own words for a file it
+refuses: no file chosen, more than one, or a new file the review already holds, as the
+screenshot it would replace or as another."""
+REPLACE_UNKNOWN: Final = "Blossom couldn't tell whether the screenshot was replaced."
+"""What a replace says when the household's file refused its write for a reason that isn't a
+busy file."""
+
+
+def kept_as_it_was(place: int) -> str:
+    """The first line of a replace that replaced nothing."""
+    return f"Screenshot {place} wasn't replaced; it stays as it was."
+
+
+def replaced_said(place: int) -> str:
+    """What the review says first after a replace."""
+    return f"Screenshot {place} was replaced."
+
+
+def new_file_refusal(kind: str) -> str:
+    """The upload's own words for a file it refuses, said of a replace step's new file."""
+    return IMAGE_SAID[kind].replace("Screenshot {n}", "The new file")
+
+
+def replace_limits(place: int) -> str:
+    """The line beside a replace step's picker: what it takes, and what it leaves."""
+    return (
+        f"One screenshot, PNG or JPEG, up to 12 MB, takes the place of Screenshot {place}. The "
+        "other screenshots stay as they are."
+    )
+
+
+def place_of(snapshot: DraftSnapshot, image_id: str) -> int | None:
+    """An image's place in its review, counted from one, or None when the review doesn't hold
+    it."""
+    for index, image in enumerate(snapshot.images):
+        if image.image_id == image_id:
+            return index + 1
+    return None
+
+
+def replace_page(
+    request: Request,
+    state: ApplicationState,
+    snapshot: DraftSnapshot,
+    place: int,
+    said: Sequence[str] = (),
+    status: int = 200,
+) -> Response:
+    """One screenshot's replace step: what a press found wrong, the screenshot by its place with
+    its preview and how it stands, and the form for the one file that takes its place, with
+    Replace and read offered only when a key is set."""
+    image = snapshot.images[place - 1]
+    outcomes = shot_outcomes(snapshot.images, snapshot.readings, now=state.real_clock.now())
+    return templates.TemplateResponse(
+        request,
+        "import_replace.html",
+        {
+            "marks": marks_of(state),
+            "page": "parent",
+            "draft_id": snapshot.draft_id,
+            "until": until_text(state, snapshot.expires_at),
+            "image": {"id": image.image_id, "place": place, "label": label_of(outcomes[place - 1])},
+            "said": list(said),
+            "keyed": model_configured(state.settings),
+            "limits": replace_limits(place),
+        },
+        status_code=status,
+    )
+
+
+@router.get("/{draft_id}/images/{image_id}/replace")
+async def replace_step(request: Request, draft_id: str, image_id: str, state: State) -> Response:
+    """One screenshot's replace step, while its review is open to changes; a review closed,
+    finished, frozen, expired or missing, and an image it doesn't hold, are refused as the
+    review's other pages refuse them. Nothing is read or written."""
+    if not opaque(image_id):
+        return said_page(request, marks_of(state), SAID["absent"], 404)
+    found = await snapshot_or_page(request, state, draft_id, address=True)
+    if isinstance(found, Response):
+        return found
+    if found.finished:
+        return store_refusal(request, state, DraftClosed())
+    if found.frozen:
+        return store_refusal(request, state, DraftFrozen())
+    place = place_of(found, image_id)
+    if place is None:
+        return said_page(request, marks_of(state), SAID["image_gone"], 404)
+    return replace_page(request, state, found, place)
+
+
+@router.post("/{draft_id}/images/{image_id}/replace")
+async def replace_image(request: Request, draft_id: str, image_id: str, state: State) -> Response:
+    """Put one new file in the place of one image, with no version comparison. The review and
+    the image are checked before any byte of the body is read, and the review again when the
+    new image is stored. Exactly one file, checked as an upload checks each file, and not one the
+    review already holds; any other body replaces nothing, and the step says why with the old
+    screenshot kept. Replace and read then reads the new image and no other. The next page says
+    what was replaced and what the change cleared."""
+    if not opaque(draft_id) or not opaque(image_id):
+        return said_page(request, marks_of(state), SAID["absent"], 404)
+    try:
+        student = await asyncio.to_thread(state.project_state.student_id)
+        snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+        if snapshot.closed_at is not None or snapshot.finished:
+            raise DraftClosed
+        if snapshot.frozen:
+            raise DraftFrozen
+    except STORE_REFUSALS as error:
+        return upload_refusal(request, state, error)
+    except sqlite3.Error as error:
+        noted(error)
+        return unread_page(request, state, error, upload=True)
+    place = place_of(snapshot, image_id)
+    if place is None:
+        return to_review(state, draft_id, [SAID["image_gone"]])
+    kept = kept_as_it_was(place)
+
+    def refused(status: int, why: str) -> Response:
+        return replace_page(request, state, snapshot, place, [kept, why], status)
+
+    try:
+        upload = await body_of(request, MORE_FIELDS)
+    except UploadRefused as refusal:
+        return refused(413 if refusal.kind in SIZE_REFUSALS else 400, UPLOAD_SAID[refusal.kind])
+    wanted = read_wanted(upload.fields)
+    if wanted is None:
+        return refused(400, UPLOAD_SAID["unreadable"])
+    if len(upload.files) != 1:
+        return refused(400, REPLACE_SAID["several" if upload.files else "none"])
+    prepared = await asyncio.to_thread(prepare_upload, upload.files)
+    if prepared.refused:
+        [(_, kind)] = prepared.refused
+        return refused(422, new_file_refusal(kind))
+    [(_, image)] = prepared.images
+    try:
+        before = await tables_of(state, draft_id)
+    except sqlite3.Error as error:
+        noted(error)
+        return unread_page(request, state, error, upload=True)
+    try:
+        added = await asyncio.to_thread(
+            state.import_drafts.replace_image, student, draft_id, image_id, image
+        )
+    except AlreadyHeld as held:
+        if held.image_id == image_id:
+            return refused(422, REPLACE_SAID["same"].format(n=place))
+        other = place_of(snapshot, held.image_id)
+        if other is None:
+            return refused(422, new_file_refusal("duplicate"))
+        return refused(422, REPLACE_SAID["held"].format(n=other))
+    except UnknownImage:
+        return to_review(state, draft_id, [SAID["image_gone"]])
+    except STORE_REFUSALS as error:
+        return upload_refusal(request, state, error)
+    except sqlite3.Error as error:
+        noted(error)
+        return unwritten_page(request, state, error, REPLACE_UNKNOWN, upload=True)
+    said = await change_lines(state, draft_id, before)
+    told: list[str] = []
+    if wanted:
+        found = await read_added(request, state, student, added)
+        if isinstance(found, Response):
+            return found
+        said, told = [*said, *found[0]], found[1]
+    return to_review(state, draft_id, said, [replaced_said(place), *told])
 
 
 @router.get("/{draft_id}/images/{image_id}")
