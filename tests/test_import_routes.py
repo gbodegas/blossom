@@ -2181,6 +2181,135 @@ def test_a_review_read_with_prompt_v1b_and_saved_for_later_reopens_with_its_choi
     assert called == []
 
 
+PRINTED_OCTOBER_DAY_LINES: Final = pytest.mark.parametrize(
+    "day_line",
+    ["10/5/2026 - Monday", "- 10/5/2026 - Monday"],
+    ids=["printed-day-line", "printed-day-line-with-a-bullet"],
+)
+"""A printed homework list's dated day line for Monday, October 5, 2026, without and with
+the bullet the print view can put before it."""
+POSTER_KEY: Final = "80911b05c6024bf9fff2108feaf9b8db1ea21408b23f48b833f72399544b6125"
+"""The row key of Art / Poster due 2026-10-08 with no assigned date: the key a reading stored
+under prompt v1b gives that card under a printed day line, which it doesn't read as a day."""
+WORKSHEET_KEY: Final = "12aaee64a9ff3ac48c732526f7edf0a0810e77109bbe3738151e7f42e84eaf86"
+"""The row key of Math / Worksheet due 2026-10-09 with no assigned date, as ``POSTER_KEY``."""
+
+
+def poster_and_worksheet(day_line: str) -> dict[str, object]:
+    """The reader's answer for two ASSIGNED cards under one heading, each with its due line
+    and no instruction: Art / Poster due 10/8/2026 and Math / Worksheet due 10/9/2026."""
+    return homework_answer(
+        headings=[{"text": day_line, "y": 150, "uncertain": None}],
+        cards=[
+            homework_card(
+                course="Art",
+                title="Poster",
+                instruction=None,
+                footer="Due (10/8/2026)",
+                y_top=210,
+                y_bottom=290,
+            ),
+            homework_card(
+                course="Math",
+                title="Worksheet",
+                instruction=None,
+                footer="Due (10/9/2026)",
+                y_top=320,
+                y_bottom=400,
+            ),
+        ],
+    )
+
+
+def written_with_assigned_dates(
+    browser: TestClient, before: set[str]
+) -> list[tuple[str, str, date | None, date | None]]:
+    """Every assignment on record that isn't among ``before`` as its class, title, due date
+    and assigned date, by class."""
+    rows = state_of(browser).project_state.all_assignments()
+    return sorted(
+        (a.course, a.title, a.due_date, a.assigned_on)
+        for a in rows
+        if a.assignment_id not in before
+    )
+
+
+@PRINTED_OCTOBER_DAY_LINES
+def test_a_v1b_review_under_a_printed_day_line_keeps_its_row_keys_and_its_one_tick(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, day_line: str
+) -> None:
+    """A reading stored under prompt v1b names a day by the portal's heading alone, so its
+    two assigned cards under a printed day line are dated by their due lines with no assigned
+    date, and their row keys are the pinned ones. Saved for later with Poster alone ticked by
+    that key, the review keeps that key as its progress and reopens with Poster ticked and
+    Worksheet not. Save selected homework from the reopened page writes Poster alone, and the
+    reader is never called."""
+    called: list[bytes] = []
+
+    def never(settings: Settings, png_bytes: bytes, *, timeout: float) -> ScreenshotAnswer:
+        called.append(png_bytes)
+        pytest.fail("the reader was called")
+
+    monkeypatch.setattr(screenshot_reading, "read_screenshot", never)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        read_under(browser, draft_id, poster_and_worksheet(day_line), "v1b")
+        page = her_name_answered(browser, draft_id, loaded(browser, draft_id))
+        student = state_of(browser).project_state.student_id()
+        drafts = state_of(browser).import_drafts
+        stored = drafts.snapshot(student, draft_id).readings
+        keys = screenshots.homework_rows(stored)
+        followed(browser, send(browser, draft_id, page_post(page, "later", tick=[POSTER_KEY])))
+        progress = drafts.snapshot(student, draft_id).progress
+        reopened = loaded(browser, draft_id)
+        before = ids_on_record(browser)
+        sent = page_post(reopened, "save", tick=units_ticked(reopened))
+        after = followed(browser, send(browser, draft_id, sent))
+        rows = written_with_assigned_dates(browser, before)
+
+    assert [reading.prompt_version for reading in stored] == ["v1b"]
+    assert [(row.key, row.readable) for row in keys] == [(WORKSHEET_KEY, True), (POSTER_KEY, True)]
+    assert units_on(page) == [POSTER_KEY, WORKSHEET_KEY]
+    assert progress is not None
+    assert json.loads(progress) == {"v": 4, "corrected": {}, "selected": [POSTER_KEY]}
+    assert units_on(reopened) == [POSTER_KEY, WORKSHEET_KEY]
+    assert units_ticked(reopened) == [POSTER_KEY]
+    assert says(after, imports.counted(1, 0, 0, 0))
+    assert rows == [("Art", "Poster", date(2026, 10, 8), None)]
+    assert called == []
+
+
+@PRINTED_OCTOBER_DAY_LINES
+def test_the_same_cards_read_with_the_prompt_in_use_are_assigned_on_the_printed_day(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, day_line: str
+) -> None:
+    """The same two cards read with the prompt in use, v1c, take the printed day line as
+    their day, with or without its bullet: each row carries 2026-10-05 as its assigned date
+    under a key of its own, and saving both writes that date."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, poster_and_worksheet(day_line)))
+        page = answered(browser, draft_id, read)
+        student = state_of(browser).project_state.student_id()
+        stored = state_of(browser).import_drafts.snapshot(student, draft_id).readings
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_with_assigned_dates(browser, before)
+
+    read_as = screenshots.homework_assembly(stored, now=screenshots.KEY_INSTANT).rows
+    assert [reading.prompt_version for reading in stored] == ["v1c"]
+    assert sorted((row.reading.title, row.reading.assigned_on) for row in read_as) == [
+        ("Poster", date(2026, 10, 5)),
+        ("Worksheet", date(2026, 10, 5)),
+    ]
+    assert {row.key for row in read_as}.isdisjoint({POSTER_KEY, WORKSHEET_KEY})
+    assert says(after, imports.counted(2, 0, 0, 0))
+    assert rows == [
+        ("Art", "Poster", date(2026, 10, 8), date(2026, 10, 5)),
+        ("Math", "Worksheet", date(2026, 10, 9), date(2026, 10, 5)),
+    ]
+
+
 def test_with_no_saved_progress_every_group_on_its_default_is_ticked_an_open_question_or_not(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1949,6 +1949,108 @@ def test_a_decoded_reading_s_item_keys_hold_the_prompt_version_it_was_made_with(
     assert first.key != second.key
 
 
+PORTAL_FORM = "Monday 10/5/2026"
+"""A day heading as the portal's homework list shows it."""
+PRINTED_FORM = "10/5/2026 - Monday"
+"""The same day as a printed homework list's dated day line."""
+BULLETED_FORM = "- 10/5/2026 - Monday"
+"""The printed day line with the bullet the print view can put before it."""
+THAT_MONDAY = date(2026, 10, 5)
+
+
+def stored_under(prompt_version: str, text: str) -> StoredReading:
+    """The default list, an assigned card with its due line and a due card with none, under
+    one heading with this text, stored under a prompt version."""
+    answer = an_answer(headings=[heading(text, 150)])
+    return stored_homework("m", answer)._replace(prompt_version=prompt_version)
+
+
+@pytest.mark.parametrize(
+    ("prompt_version", "text", "day"),
+    [
+        ("v1b", PORTAL_FORM, THAT_MONDAY),
+        ("v1b", PRINTED_FORM, None),
+        ("v1b", BULLETED_FORM, None),
+        ("v1c", PORTAL_FORM, THAT_MONDAY),
+        ("v1c", PRINTED_FORM, THAT_MONDAY),
+        ("v1c", BULLETED_FORM, THAT_MONDAY),
+    ],
+    ids=["v1b-portal", "v1b-printed", "v1b-bulleted", "v1c-portal", "v1c-printed", "v1c-bulleted"],
+)
+def test_a_stored_reading_s_heading_names_a_day_as_its_prompt_version_reads_it(
+    prompt_version: str, text: str, day: date | None
+) -> None:
+    """A reading stored under prompt v1b names a day by the portal's form alone. One stored
+    under v1c, the prompt in use, names it by a printed list's dated day line too, with or
+    without its bullet. The rows follow the heading as its reading's version reads it: the
+    assigned card is assigned on that day or on none, and the due card, dated by its heading
+    alone, is a row or a card with no day."""
+    stored = stored_under(prompt_version, text)
+
+    placed = screenshots.cards_placed([stored]).values()
+    assembly = homework_assembly([stored], now=NOW)
+
+    assert [None if found.heading is None else found.heading.day for found in placed] == [day] * 2
+    assert [row.reading.assigned_on for row in assembly.rows if row.reading.assigned_on] == (
+        [] if day is None else [day]
+    )
+    assert [item.reason for item in assembly.unread] == (["no_day"] if day is None else [])
+    assert len(assembly.rows) == (1 if day is None else 2)
+
+
+@pytest.mark.parametrize(
+    ("prompt_version", "day"), [("v1b", None), ("v1c", THAT_MONDAY)], ids=["v1b", "v1c"]
+)
+def test_a_copy_of_a_decoded_reading_reads_its_headings_as_the_reading_does(
+    prompt_version: str, day: date | None
+) -> None:
+    """A copy of a decoded reading, shallow or deep, and a copy of one of its headings, read
+    a printed day line as the decoded reading does: as no day under v1b, as its day under
+    v1c. The decoded reading and each copy write the text the reading was stored as."""
+    stored = stored_under(prompt_version, PRINTED_FORM)
+    reading = screenshots._decoded(stored)
+    assert reading is not None
+    [found] = reading.headings
+
+    readings = [
+        copy.copy(reading),
+        copy.deepcopy(reading),
+        reading.model_copy(),
+        reading.model_copy(deep=True),
+    ]
+    headings = [
+        copy.copy(found),
+        copy.deepcopy(found),
+        found.model_copy(),
+        found.model_copy(deep=True),
+        found.model_copy(update={"uncertain": "smudged"}),
+    ]
+
+    assert found.day == day
+    assert [made.headings[0].day for made in readings] == [day] * 4
+    assert [made.day for made in headings] == [day] * 5
+    assert reading.model_dump_json() == stored.body
+    assert [made.model_dump_json() for made in readings] == [stored.body] * 4
+
+
+@pytest.mark.parametrize("name", ["printed", *screenshots.Heading.__private_attributes__])
+def test_no_answer_and_no_stored_text_can_say_how_its_headings_are_read(name: str) -> None:
+    """How a heading's day is read is no property of an answer or of a stored reading: a
+    heading that carries any name but the schema's three, a private one of the model
+    included, makes a fresh answer not valid and a stored text one that can't be decoded."""
+    carried = {"text": PRINTED_FORM, "y": 150, "uncertain": None, name: False}
+    stored = stored_under("v1b", PRINTED_FORM)
+    body = json.loads(stored.body)
+    body["headings"] = [carried]
+
+    assembly = homework_assembly([stored._replace(body=json.dumps(body))], now=NOW)
+
+    assert homework_reading(an_answer(headings=[carried])) == (None, "not_valid")
+    assert [item.reason for item in assembly.unread] == ["reading_unreadable"]
+    assert assembly.rows == ()
+    assert set(screenshots.Heading.model_json_schema()["properties"]) == {"text", "y", "uncertain"}
+
+
 @pytest.mark.parametrize(
     "student",
     [

@@ -386,8 +386,16 @@ def test_an_error_the_service_did_not_raise_is_not_the_services() -> None:
 
 # ------------------------------------------------------------ the screenshot reader
 
-PROMPT_V1C_SHA256 = "a1f561389794b445326eb273395eff5ae1dcd6c03d0c4b1821491d2cee37697b"
+PROMPT_V1C_SHA256 = "1963750148b5c3874abdad017e6f20aff093ebd2349a2e5c3944d8a094d47bab"
 """The system prompt the reader is sent: prompt v1c, its schema as JSON text."""
+
+PRINTED_PAGES_SENTENCE = (
+    'A printed grade report with its grading categories and a "Term Grade" is a grade report '
+    "even with no homework day heading; a letter is unsupported, and so is a printed homework "
+    "list with no dated day line or with no subject label that has words beneath it."
+)
+"""The instructions' one sentence on a printed grade report, a letter and a printed homework
+list that lacks its day line or its subjects' words."""
 
 SCHEMA_SHA256 = "1ee0627a347e8c3b269428306c8558ab9a8487c49a46d0a4582e1e302675f2eb"
 """The answer schema as the JSON text the system prompt ends with, shared by the prompts v1b
@@ -563,10 +571,29 @@ def test_the_instructions_call_anything_else_unsupported() -> None:
         "Anything else, such as a message thread, is unsupported: return no headings, no cards "
         "and no report for it."
     ) in instructions
+    assert f"no report for it. {PRINTED_PAGES_SENTENCE}\n" in instructions
+
+
+def test_the_instructions_sort_a_printed_grade_report_a_letter_and_an_incomplete_list() -> None:
+    """One sentence sorts the printed pages that aren't a whole homework list: a printed grade
+    report with its grading categories and a term grade is a grade report with no homework
+    day heading, a letter is unsupported, and a printed homework list with no dated day line
+    or with no subject that has words beneath it is unsupported. Only a homework list is
+    called unsupported for a missing day line or subject, so the sentence can't apply to a
+    grade report."""
+    instructions = screenshot_prompt.PROMPT_V1
+
+    assert instructions.count(PRINTED_PAGES_SENTENCE) == 1
     assert (
-        "A letter is unsupported, and so is a printed page with no dated day line or with no "
-        "subject label that has words beneath it."
+        'A printed grade report with its grading categories and a "Term Grade" is a grade '
+        "report even with no homework day heading"
     ) in instructions
+    assert "a letter is unsupported" in instructions
+    assert (
+        "so is a printed homework list with no dated day line or with no subject label that "
+        "has words beneath it."
+    ) in instructions
+    assert "printed page" not in instructions
 
 
 @pytest.mark.parametrize("variable", ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL"])

@@ -303,8 +303,10 @@ PROMPT_V1: Final = (
     "report shows one class's "
     'grading categories with "Weight =", assignment rows, "Category Average" lines and a '
     '"Term Grade". Anything else, such as a message thread, is unsupported: return no '
-    "headings, no cards and no report for it. A letter is unsupported, and so is a printed "
-    "page with no dated day line or with no subject label that has words beneath it.\n"
+    "headings, no cards and no report for it. A printed grade report with its grading "
+    'categories and a "Term Grade" is a grade report even with no homework day heading; a '
+    "letter is unsupported, and so is a printed homework list with no dated day line or with "
+    "no subject label that has words beneath it.\n"
     "\n"
     "The student: give only the selected student, which is the highlighted tab of a homework "
     "list's student picker, or the name on a grade report's student line. Names on unselected "

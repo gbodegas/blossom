@@ -54,7 +54,15 @@ from collections.abc import Collection, Sequence
 from datetime import UTC, date, datetime
 from typing import Annotated, Final, Literal, NamedTuple, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
 
 from blossom.grades.draft import folded
 from blossom.intake import (
@@ -105,6 +113,12 @@ MOST_ROWS: Final = 200
 PROMPT_VERSIONS: Final = frozenset({"v1b", "v1c"})
 """Every prompt version whose answers have this schema's shape: the closed set a stored
 reading may carry and still decode. The prompt in use is one of them."""
+
+PRINTED_DAY_VERSIONS: Final = frozenset({"v1c"})
+"""The prompt versions that name a printed homework list, so a reading made under one names
+a day by a printed list's dated day line as well as by the portal's heading. A reading stored
+under any other version names a day by the portal's heading alone, so the rows of a review
+saved with it keep their keys."""
 
 ImageKind = Literal["homework_list", "grade_report", "unsupported"]
 Badge = Literal["DUE", "ASSIGNED"]
@@ -209,14 +223,23 @@ class Heading(_Closed):
     text: Line
     y: Position
     uncertain: Note | None
+    _portal_form_alone: bool = PrivateAttr(default=False)
+    """Whether only the portal's form names a day here. It is no field: no answer and no
+    stored text can carry it, and no dump holds it. The decoder sets it on the headings of a
+    reading stored under a prompt version outside ``PRINTED_DAY_VERSIONS``, and a copy of the
+    heading or of its reading keeps it."""
 
     @property
     def day(self) -> date | None:
         """The day the heading names, read here from its text, or ``None``: the portal's
         form, such as "Monday 11/16/2026", or a printed list's dated day line, such as
-        "11/16/2026 - Monday", with or without the bullet the print view can put before it."""
+        "11/16/2026 - Monday", with or without the bullet the print view can put before it.
+        In a reading stored under a prompt version outside ``PRINTED_DAY_VERSIONS``, only the
+        portal's form names a day."""
         text = self.text.strip()
-        found = DAY_LINE.match(text) or SUMMARY_DAY_LINE.match(text)
+        found = DAY_LINE.match(text)
+        if found is None and not self._portal_form_alone:
+            found = SUMMARY_DAY_LINE.match(text)
         return None if found is None else a_date(found["year"], found["month"], found["day"])
 
 
@@ -734,13 +757,20 @@ def _decoded(stored: StoredReading) -> HomeworkReading | None:
     """A stored reading as its model, or ``None`` when it can't be decoded as this schema's:
     its schema version is another, its prompt version is none of ``PROMPT_VERSIONS``, or its
     text doesn't fit the model. A reading made with any prompt of this schema decodes, and
-    keeps the prompt version it was made with in its digest."""
+    keeps the prompt version it was made with in its digest. Its headings name a day as that
+    version reads one: stored under a version outside ``PRINTED_DAY_VERSIONS``, by the
+    portal's form alone, which every reader of a heading's day then follows. That choice is
+    made here from the stored version and is in neither the stored text nor the digest."""
     if stored.schema_version != SCHEMA_VERSION or stored.prompt_version not in PROMPT_VERSIONS:
         return None
     try:
-        return HomeworkReading.model_validate_json(stored.body)
+        reading = HomeworkReading.model_validate_json(stored.body)
     except (ValueError, RecursionError):
         return None
+    if stored.prompt_version not in PRINTED_DAY_VERSIONS:
+        for heading in reading.headings:
+            heading._portal_form_alone = True
+    return reading
 
 
 def _placed(sha: str, stored: str, reading: HomeworkReading) -> list[_Seen]:
