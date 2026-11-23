@@ -105,8 +105,8 @@
     <p class="note">{{ counts }}</p>{% endif %}
     {% if read and not rows %}{{ read_fold(read, true, "screenshot-fold") }}{% endif %}
     {% if rest or not read %}
-      {#- Above the form, its presses here follow a copy of its hidden first submit button, so Enter in a box still shows the review again. #}
-      {% if rows and rows.offers_review and rest %}<button type="submit" class="visually-hidden" form="review-form" name="press" value="review" formnovalidate tabindex="-1" aria-hidden="true">Review changes</button>{% endif %}
+      {#- Above the form, its presses here follow a copy of its default press, so Enter in a box presses Review changes where the rows offer it and Keep these answers where they don't, never a screenshot's press. #}
+      {% if rows and rest %}{% if rows.offers_review %}<button type="submit" class="visually-hidden" form="review-form" name="press" value="review" formnovalidate tabindex="-1" aria-hidden="true">Review changes</button>{% else %}<button type="submit" class="visually-hidden" form="review-form" name="press" value="keep" formnovalidate tabindex="-1" aria-hidden="true">Keep these answers</button>{% endif %}{% endif %}
       <ul class="screenshot-list">
         {% for image in rest %}{{ shown(image) }}{% endfor %}
       </ul>

@@ -254,20 +254,37 @@ CHANGE_SAID: Final = {
     "chose for their cards.",
     "asked_more": "Your screenshots changed. {count} more rows now have cards you hadn't left "
     "unsaved, so they ask again. You can leave them unsaved again.",
+    "carried_more_one": "Your screenshots changed. 1 more row is still left unsaved, as you chose "
+    "for its cards.",
+    "asked_more_one": "Your screenshots changed. 1 more row now has cards you hadn't left "
+    "unsaved, so it asks again. You can leave it unsaved again.",
+    "cleared_count": "Your screenshots changed, so {count} rows' answers were cleared. Answer "
+    "them again.",
+    "cleared_count_one": "Your screenshots changed, so 1 row's answers were cleared. Answer them "
+    "again.",
+    "carried_count": "Your screenshots changed. {count} rows are still left unsaved, as you chose "
+    "for their cards.",
+    "carried_count_one": "Your screenshots changed. 1 row is still left unsaved, as you chose for "
+    "its cards.",
+    "asked_count": "Your screenshots changed. {count} rows now have cards you hadn't left "
+    "unsaved, so they ask again. You can leave them unsaved again.",
+    "asked_count_one": "Your screenshots changed. 1 row now has cards you hadn't left unsaved, so "
+    "it asks again. You can leave it unsaved again.",
 }
 """What the page after a change of screenshots says of the answers it cleared, the rows left
 unsaved it kept or asks about again, how many more of those it doesn't name, and a confirmation
-of her homework it cleared."""
+of her homework it cleared; and, where a list names no row, how many rows it holds."""
 NAMED_MOST: Final = 3
 """How many rows each line after a change of screenshots names when more than one more would
-follow, so the note that carries those lines stays within what a browser keeps for one
-cookie."""
-CHANGE_BYTES_MOST: Final = 1800
-"""The most bytes the lines after a change of screenshots take as the note encodes them
-(``note_encoded``). Past it, each list names fewer rows, down to one, and counts the rest, so
-long titles in a script that takes several bytes a character still leave the note small
-enough to keep. Lines naming three rows a list, with titles of up to 60 ASCII letters, digits
-and spaces, stay under it."""
+follow."""
+NAMED_STEPS: Final = (3, 2, 1, 0)
+"""How many rows each list of the lines after a change of screenshots names, tried in turn by
+the note that carries them until it is small enough for a browser to keep: at one, one row and
+the count of the rest; at none, the counts alone."""
+
+type NoteLine = str | ChangeTold
+"""A line of what a press says: a sentence, or a change of screenshots' report, said as its
+sentences once the note that carries it knows how many rows each list can name."""
 
 OPEN_NAMES: Final = {
     "due": "the due date",
@@ -343,7 +360,10 @@ def short_title(title: str) -> str:
 
 def named_few(count: int, most: int = NAMED_MOST) -> int:
     """How many of ``count`` rows a line after a change of screenshots names: all of them, or
-    ``most`` when two or more would be left over."""
+    ``most`` when two or more would be left over; at one or none, at most that many, whatever
+    is left over."""
+    if most <= 1:
+        return min(count, most)
     return count if count <= most + 1 else most
 
 
@@ -353,44 +373,64 @@ def note_encoded(lines: Sequence[object]) -> bytes:
     return json.dumps(lines, ensure_ascii=False).encode()
 
 
-def change_said(told: ChangeTold) -> list[str]:
+def told_anything(told: ChangeTold) -> bool:
+    """Whether a change of screenshots' report has anything to say."""
+    return bool(told.cleared or told.carried or told.asked or told.name_asked)
+
+
+def lines_said(lines: Iterable[NoteLine], most: int = NAMED_MOST) -> list[str]:
+    """Lines as a page says them: each sentence as it is, and each change's report as its
+    sentences, each list naming at most ``most`` rows (``change_said``)."""
+    out: list[str] = []
+    for line in lines:
+        out += [line] if isinstance(line, str) else change_said(line, most)
+    return out
+
+
+def change_said(told: ChangeTold, most: int = NAMED_MOST) -> list[str]:
     """The sentences the page after a change of screenshots opens with: the rows whose answers
     it cleared, by title and, for a piece split by assigned day, that day; that identical cards
     can't be told apart, when any of those rows is one of them; each row left unsaved it kept
     or asks about again; and that her homework must be confirmed again, when it cleared that
-    confirmation. Each list names its first rows (``named_few``), titles shortened
-    (``short_title``), and says how many more, so the note stays small: ``NAMED_MOST`` of them,
-    or fewer while the lines would pass ``CHANGE_BYTES_MOST``."""
-    most = NAMED_MOST
-    out = _change_lines(told, most)
-    while most > 1 and len(note_encoded(out)) > CHANGE_BYTES_MOST:
-        most -= 1
-        out = _change_lines(told, most)
-    return out
-
-
-def _change_lines(told: ChangeTold, most: int) -> list[str]:
-    """``change_said``'s sentences with each list naming at most ``most`` rows."""
+    confirmation. Each list names its first rows (``named_few`` of ``most``), titles shortened
+    (``short_title``), and says how many more; with ``most`` at none, each list says only how
+    many rows it holds."""
     out = []
     if told.cleared:
-        shown = named_few(len(told.cleared), most)
-        labels = "; ".join(
-            short_title(row.title) + (f", assigned {day_text(row.day)}" if row.day else "")
-            for row in told.cleared[:shown]
-        )
-        if len(told.cleared) > shown:
-            labels += f"; and {len(told.cleared) - shown} more"
-        out.append(CHANGE_SAID["cleared"].format(labels=labels))
+        count = len(told.cleared)
+        shown = named_few(count, most)
+        if not shown:
+            out.append(counted("cleared", count))
+        else:
+            labels = "; ".join(
+                short_title(row.title) + (f", assigned {day_text(row.day)}" if row.day else "")
+                for row in told.cleared[:shown]
+            )
+            if count > shown:
+                labels += f"; and {count - shown} more"
+            out.append(CHANGE_SAID["cleared"].format(labels=labels))
     if any(row.copies for row in told.cleared):
         out.append(CHANGE_SAID["copies"])
     for rows, said in ((told.carried, "carried"), (told.asked, "asked")):
         shown = named_few(len(rows), most)
+        if rows and not shown:
+            out.append(counted(said, len(rows)))
+            continue
         out += [CHANGE_SAID[said].format(label=short_title(title)) for title in rows[:shown]]
-        if len(rows) > shown:
+        if len(rows) - shown == 1:
+            out.append(CHANGE_SAID[f"{said}_more_one"])
+        elif len(rows) > shown:
             out.append(CHANGE_SAID[f"{said}_more"].format(count=len(rows) - shown))
     if told.name_asked:
         out.append(CHANGE_SAID["name"])
     return out
+
+
+def counted(said: str, count: int) -> str:
+    """A list of the lines after a change of screenshots that names no row: how many it holds."""
+    if count == 1:
+        return CHANGE_SAID[f"{said}_count_one"]
+    return CHANGE_SAID[f"{said}_count"].format(count=count)
 
 
 def words_line(first: str | None, more: int) -> str:

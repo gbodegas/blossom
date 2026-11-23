@@ -29,12 +29,21 @@ assignments. Where it holds no form, they are links.
 
 A screenshot whose read ended with no reading kept still says so, and offers Enter it by hand,
 after another screenshot is read. The note after a change of screenshots stays small enough for
-a browser to keep, whatever script its titles are in.
+a browser to keep, whatever script its titles are in: one budget on its whole Set-Cookie header,
+met by naming fewer rows in every list while every outcome and its count stays.
+
+A line about screenshots left unread says "Press Read" only when the page that shows it offers
+Read for those same screenshots, by their hashes, whatever another browser did in between. Enter
+in a box of the review form presses the form's own default, never a screenshot's press.
 """
 
+import base64
 import html
+import json
 import pathlib
 import re
+import sqlite3
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Final, get_args
 
@@ -48,7 +57,7 @@ from blossom.intake import CardsRead, PortalCard, Reading, read_cards
 from blossom.routes import imports
 from blossom.screenshot_review import ChangeTold, ClearedRow
 from blossom.screenshots import homework_assembly
-from blossom.stores.drafts import WriterBusy
+from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.import_drafts import ImageState, StoredReading
 from tests.support import (
     Answer,
@@ -65,6 +74,7 @@ from tests.test_import_routes import (
     ESSAY_NOTE,
     GREEN,
     JOINED_TICK,
+    LOOPBACK,
     PROBLEM,
     RED,
     TOLD,
@@ -98,6 +108,7 @@ from tests.test_import_routes import (
     says,
     says_each,
     send,
+    split_answers,
     stored_answers,
     token_of,
     uncertain_upload,
@@ -2180,12 +2191,20 @@ def wide_lists() -> ChangeTold:
 
 
 def test_lines_with_long_non_ascii_titles_name_fewer_rows_so_the_note_stays_small() -> None:
-    """Three lists of sixteen rows with 60-character CJK titles: each list names fewer rows than
-    with short titles, and at least one, and counts the rest; the note carrying them stays under
-    4,000 bytes and reads back whole and signed."""
+    """Three lists of sixteen rows with 60-character CJK titles, as the redirect's note carries
+    them: each list names its first rows, at least one and at most three, and counts the rest;
+    the note's whole Set-Cookie header stays within 4,096 bytes, its name and value under 4,000,
+    and it reads back whole and signed."""
+
+    class Keyed:
+        result_key = bytes(32)
+
+    keyed: Any = Keyed()
     told = wide_lists()
-    said = screenshot_page.change_said(told)
-    note = imports.note_for(bytes(32), "0" * 32, said, ["Screenshot 2 was replaced."])
+    answer = imports.to_review(keyed, "0" * 32, [told], ["Screenshot 2 was replaced."])
+    header = answer.headers["set-cookie"]
+    note = header.split(";", 1)[0].split("=", 1)[1].strip('"')
+    said = imports.note_read(bytes(32), "0" * 32, note).said
     named = {
         list_: [title for title in WIDE_TITLES if any(title in line for line in lines)]
         for list_, lines in (
@@ -2195,12 +2214,13 @@ def test_lines_with_long_non_ascii_titles_name_fewer_rows_so_the_note_stays_smal
         )
     }
 
+    assert len(header.encode()) <= NOTE_HEADER_MOST
     assert len(f"{imports.NOTE_COOKIE}={note}".encode()) < NOTE_MOST
     assert imports.note_read(bytes(32), "0" * 32, note) == imports.Note(
         said, ["Screenshot 2 was replaced."], []
     )
     for list_, titles in named.items():
-        assert 1 <= len(titles) < screenshot_page.NAMED_MOST, list_
+        assert 1 <= len(titles) <= screenshot_page.NAMED_MOST, list_
         assert titles == WIDE_TITLES[: len(titles)], list_
     shown = len(named["cleared"])
     assert said[0].endswith(f"; and {16 - shown} more. Answer them again.")
@@ -2434,3 +2454,371 @@ def test_with_no_key_an_unread_screenshot_s_enter_it_by_hand_keeps_the_edits(
     assert '<h2 class="entry-heading" id="enter-one">Enter one assignment</h2>' in family
     shows_the_edits(reopened, tick)
     assert reader.calls == calls
+
+
+def only_unreadable_cards() -> dict[str, Any]:
+    """A homework list whose one card's title couldn't be read."""
+    return homework_answer(headings=[], cards=[homework_card(title=None)])
+
+
+ENTER_PRESSES: Final = {
+    "split question": "keep",
+    "unreadable card": "keep",
+    "a card": "review",
+}
+"""Reviews whose rows ask only which assigned day applies, ask only about a card that couldn't
+be read, or show a card, each with the press Enter in one of the review form's boxes sends."""
+HIDDEN_COPY = re.compile(r'<button type="submit" class="visually-hidden" form="review-form"[^>]*>')
+"""The copy of the review form's default press above it."""
+
+
+@pytest.mark.parametrize("case", list(ENTER_PRESSES))
+def test_enter_in_the_review_form_presses_its_own_default_and_never_a_screenshot_s(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A review with rows and an unrelated screenshot uploaded without reading, which offers
+    Replace as a press of the review form above it. The form's first submit button in tree order,
+    the one Enter in a box presses, is the form's own default: Keep these answers where the rows
+    offer no Review changes, Review changes where they do; never a screenshot's press. The copy is
+    out of the tab order, hidden from assistive technology and sends no validation."""
+    monday, tuesday = split_answers()
+    answers = {
+        "split question": ((RED, monday), (BLUE, tuesday)),
+        "unreadable card": ((RED, only_unreadable_cards()),),
+        "a card": ((RED, homework_answer()),),
+    }[case]
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, _ = read_review(browser, monkeypatch, *answers)
+        added = upload(browser, GREEN, form={}, to=f"/parent/imports/{draft_id}/images")
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        green = images_of(browser, draft_id)[-1]
+
+    first = first_button_of(page, "review-form")
+    offered = 'name="press" value="review" formnovalidate aria-describedby' in review_form(page)
+    copy = HIDDEN_COPY.search(page)
+
+    assert added.status_code == 303
+    assert press_value(control_for(page, REPLACE, len(answers) + 1)) == f"replace:{green}"
+    assert offered == (ENTER_PRESSES[case] == "review")
+    assert (first.get("name"), first.get("value")) == ("press", ENTER_PRESSES[case])
+    assert copy is not None
+    assert copy.group(0) == (
+        '<button type="submit" class="visually-hidden" form="review-form" name="press" '
+        f'value="{ENTER_PRESSES[case]}" formnovalidate tabindex="-1" aria-hidden="true">'
+    )
+    assert page.index(copy.group(0)) < page.index(f"replace:{green}")
+
+
+NOTE_HEADER_MOST = 4096
+"""The most bytes the note's whole Set-Cookie header may take: its name, value and attributes."""
+TWO_WIDE = tuple(WIDE_TITLES[:2])
+
+
+def two_of_each() -> ChangeTold:
+    """Two rows with 60-character CJK titles in each list a change can name: cleared, as
+    identical cards, kept unsaved and asked about again, and the confirmation cleared."""
+    return ChangeTold(
+        tuple(ClearedRow(title, None, True) for title in TWO_WIDE),
+        TWO_WIDE,
+        TWO_WIDE,
+        name_asked=True,
+    )
+
+
+def note_header(answer: Answer) -> str:
+    """The whole Set-Cookie header a redirect sets for the note."""
+    headers: Any = answer.headers
+    found = [
+        str(value)
+        for value in headers.get_list("set-cookie")
+        if value.startswith(f"{imports.NOTE_COOKIE}=")
+    ]
+    assert len(found) == 1, answer.headers
+    return found[0]
+
+
+ONE_NAMED: Final = [
+    f"{CLEARED_INTRO} {TWO_WIDE[0]}; and 1 more. Answer them again.",
+    screenshot_page.CHANGE_SAID["copies"],
+    screenshot_page.CHANGE_SAID["carried"].format(label=TWO_WIDE[0]),
+    "Your screenshots changed. 1 more row is still left unsaved, as you chose for its cards.",
+    screenshot_page.CHANGE_SAID["asked"].format(label=TWO_WIDE[0]),
+    "Your screenshots changed. 1 more row now has cards you hadn't left unsaved, so it asks "
+    "again. You can leave it unsaved again.",
+    screenshot_page.CHANGE_SAID["name"],
+]
+"""The lines of ``two_of_each`` when each list names one row and counts the other."""
+NONE_NAMED: Final = [
+    "Your screenshots changed, so 2 rows' answers were cleared. Answer them again.",
+    screenshot_page.CHANGE_SAID["copies"],
+    "Your screenshots changed. 2 rows are still left unsaved, as you chose for their cards.",
+    "Your screenshots changed. 2 rows now have cards you hadn't left unsaved, so they ask again. "
+    "You can leave them unsaved again.",
+    screenshot_page.CHANGE_SAID["name"],
+]
+"""The lines of ``two_of_each`` when the lists name no row and keep their counts."""
+ONE_ROW_NONE_NAMED: Final = [
+    "Your screenshots changed, so 1 row's answers were cleared. Answer them again.",
+    "Your screenshots changed. 1 row is still left unsaved, as you chose for its cards.",
+    "Your screenshots changed. 1 row now has cards you hadn't left unsaved, so it asks again. "
+    "You can leave it unsaved again.",
+]
+"""The count-only lines of one row in each list, none of them identical cards."""
+
+
+def test_a_change_s_lists_name_three_two_one_then_no_rows_keeping_every_count() -> None:
+    """Each list of a change's lines names at most three, two or one row, or none: at one, one row
+    and the count of the rest even when one is left, in the singular; at none, only the counts.
+    Every outcome sentence stays at every step."""
+    two = two_of_each()
+    one_row = ChangeTold((ClearedRow(TWO_WIDE[0], None, False),), TWO_WIDE[:1], TWO_WIDE[:1])
+    full = screenshot_page.change_said(two)
+
+    assert screenshot_page.change_said(two, 3) == screenshot_page.change_said(two, 2) == full
+    assert all(title in "".join(full) for title in TWO_WIDE)
+    assert screenshot_page.change_said(two, 1) == ONE_NAMED
+    assert screenshot_page.change_said(two, 0) == NONE_NAMED
+    assert screenshot_page.change_said(one_row, 0) == ONE_ROW_NONE_NAMED
+    assert screenshot_page.change_said(one_row, 1) == screenshot_page.change_said(one_row)
+    assert not hasattr(screenshot_page, "CHANGE_BYTES_MOST")
+
+
+CHANGES: Final = ["replace and read", "replace", "remove", "add and read", "add with refusals"]
+"""Each press whose note carries a change's report: Replace and read carries two, the replace's
+and its read's; the others one, Add screenshots with refused files beside it."""
+
+
+@pytest.mark.parametrize("how", CHANGES)
+def test_one_budget_on_the_whole_note_keeps_every_outcome_and_the_replacement(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_property: Callable[[str, object], None],
+    how: str,
+) -> None:
+    """Each change of screenshots reports two rows with 60-character CJK titles in every list,
+    the identical cards' line and the confirmation cleared, as when three groups of long CJK
+    titles change. The note's whole Set-Cookie header stays within 4,096 bytes, and the page
+    after says every outcome sentence with its count, the replacement where there is one, and
+    each refused file: Replace and read's two reports name one row a list and count the other;
+    a single report names both."""
+    reader = Reader(monkeypatch)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED, BLUE)
+        review = f"/parent/imports/{draft_id}"
+        browser.post(f"{review}/read", data=read_form(browser.get(review).text))
+        [_, blue] = images_of(browser, draft_id)
+        monkeypatch.setattr(imports, "change_told", lambda *_: two_of_each())
+        if how == "replace and read":
+            sent = replace_with(browser, draft_id, blue, GREEN, form=READ_NOW)
+        elif how == "replace":
+            sent = replace_with(browser, draft_id, blue, GREEN)
+        elif how == "remove":
+            sent = browser.post(f"{review}/images/{blue}/remove")
+        elif how == "add and read":
+            sent = upload(browser, GREEN, form=READ_NOW, to=f"{review}/images")
+        else:
+            sent = upload(browser, GREEN, gif(), gif(), form=READ_NOW, to=f"{review}/images")
+        header = note_header(sent)
+        page = followed(browser, sent)
+
+    record_property("note_header_bytes", len(header.encode()))
+    reports = 2 if how == "replace and read" else 1
+    lines = ONE_NAMED if reports == 2 else screenshot_page.change_said(two_of_each())
+    shown = lines_in(PROBLEM.search(page))
+    assert sent.status_code == 303, sent.text[:400]
+    assert len(header.encode()) <= NOTE_HEADER_MOST, len(header.encode())
+    assert [line for line in shown if line in lines] == lines * reports
+    assert says(page, "Screenshot 2 was replaced.") == how.startswith("replace")
+    if how == "add with refusals":
+        assert says(page, "Screenshot 2 wasn't added: it isn't a PNG or JPEG.")
+        assert says(page, "Screenshot 3 wasn't added: it isn't a PNG or JPEG.")
+    assert len(reader.calls) == (2 if how in ("replace", "remove") else 3)
+
+
+def test_a_replace_and_read_note_of_two_wide_reports_names_one_row_a_list_and_fits(
+    record_property: Callable[[str, object], None],
+) -> None:
+    """The note of Replace and read, as the redirect sets it, with both reports of two rows a list
+    with 60-character CJK titles: three names a list would pass 4,096 bytes; one name a list and
+    the count of the other fits, and reads back whole with the replacement line."""
+    told = ["Screenshot 2 was replaced."]
+    key, draft_id = bytes(32), "0" * 32
+    full = imports.note_for(key, draft_id, screenshot_page.change_said(two_of_each()) * 2, told)
+
+    class Keyed:
+        result_key = key
+
+    keyed: Any = Keyed()
+    answer = imports.to_review(keyed, draft_id, [two_of_each(), two_of_each()], told)
+    header = answer.headers["set-cookie"]
+    value = header.split(";", 1)[0].split("=", 1)[1].strip('"')
+    record_property("names_all_bytes", len(f"{imports.NOTE_COOKIE}={full}".encode()))
+    record_property("note_header_bytes", len(header.encode()))
+
+    assert len(f"{imports.NOTE_COOKIE}={full}".encode()) > NOTE_HEADER_MOST
+    assert len(header.encode()) <= NOTE_HEADER_MOST
+    assert imports.note_read(key, draft_id, value) == imports.Note(ONE_NAMED * 2, told, [])
+
+
+def other_browser(browser: TestClient) -> TestClient:
+    """A second browser of the family on the same app: its own cookies, nothing else apart."""
+    return TestClient(
+        browser.app,
+        follow_redirects=False,
+        headers={"Host": LOOPBACK, "Origin": f"http://{LOOPBACK}"},
+        client=("127.0.0.1", 50001),
+    )
+
+
+RACED: Final = {
+    "nobody touches it": ((RED,), f"{RESENT_ONE} {PRESS_READ_ONE}"),
+    "the other browser reads it": ((RED,), RESENT_ONE),
+    "the other browser replaces it": ((RED,), RESENT_ONE),
+    "nobody touches them": ((RED, BLUE), f"{RESENT} {PRESS_READ}"),
+    "the other browser reads one": ((RED, BLUE), RESENT),
+}
+"""What another browser of the family does between the retry's redirect and its landing, with
+the screenshots the first upload stored, and the line the landing page says."""
+
+
+@pytest.mark.parametrize("between", list(RACED))
+def test_a_retry_s_landing_page_says_press_read_only_when_its_read_sends_those_screenshots(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, between: str
+) -> None:
+    """Browser A's first Upload and read committed though its page couldn't tell, and A sends it
+    again with Upload and read: zero reader calls. Before A follows the redirect, browser B reads
+    the screenshot, reads both with one failing, or replaces it without reading, or nobody does
+    anything. A's landing page says "Press Read" only when its own Read form sends every one of
+    the resent screenshots; otherwise the line stands alone, and no Read form is offered for them
+    as though it were."""
+    images, expected = RACED[between]
+    reader = Reader(monkeypatch)
+    reader.answers[BLUE] = ScreenshotAnswer(None, "not_json", 10, 5)
+    with here(open_settings(tmp_path)) as browser:
+        sent = {**first_form(browser), **READ_NOW}
+        answer, _ = uncertain_upload(browser, *images, committed=True, form=sent)
+        draft_id = the_open_review(browser)
+        review = f"/parent/imports/{draft_id}"
+        again = upload(browser, *images, form={**again_form(answer.text), **READ_NOW})
+        calls = list(reader.calls)
+        stored = images_of(browser, draft_id)
+        other = other_browser(browser)
+        if between.startswith("the other browser reads"):
+            other.post(f"{review}/read", data=read_form(other.get(review).text))
+        elif between == "the other browser replaces it":
+            replace_with(other, draft_id, stored[0], GREEN)
+        page = browser.get(again.headers["location"]).text
+        held = images_of(browser, draft_id)
+
+    assert again.status_code == 303, again.text[:400]
+    assert calls == []
+    assert lines_in(PROBLEM.search(page)) == [expected]
+    if "Press Read" in expected:
+        assert held == stored
+        assert read_form(page)["images"] == ",".join(held)
+    elif between == "the other browser replaces it":
+        assert held[0] != stored[0]
+        assert read_form(page)["images"] == held[0]
+    elif between == "the other browser reads one":
+        assert read_form(page)["images"] == stored[1]
+    else:
+        assert f'action="{review}/read"' not in page
+
+
+def test_a_note_s_screenshot_hashes_are_read_strictly_and_older_notes_still_read() -> None:
+    """A note's fifth part holds the hashes of the screenshots its "Press Read" waits on: kept
+    when every one is 64 lowercase hex characters, ignored whole otherwise. Notes of two and four
+    parts read as before."""
+    key, draft_id = bytes(32), "0" * 32
+    digest = "a" * 64
+
+    def signed(parts: list[object]) -> str:
+        body = base64.urlsafe_b64encode(json.dumps(parts).encode()).decode()
+        return f"{body}.{imports.note_check(key, body)}"
+
+    read = imports.note_read
+    assert read(key, draft_id, signed([draft_id, ["a"], ["b"], ["c"], [digest]])).reread == (
+        digest,
+    )
+    for bad in ([digest.upper()], [digest[:-1]], [1], "a" * 64, [digest, None]):
+        found = read(key, draft_id, signed([draft_id, ["a"], ["b"], ["c"], bad]))
+        assert found == imports.Note(["a"], ["b"], ["c"]), bad
+    assert read(key, draft_id, signed([draft_id, ["a"], ["b"], ["c"]])) == imports.Note(
+        ["a"], ["b"], ["c"]
+    )
+    assert read(key, draft_id, signed([draft_id, ["a"]])) == imports.Note(["a"], [], [])
+
+
+BUSY_LINE = "Blossom was busy, so nothing was read."
+NOT_STARTED_LINE = "Blossom couldn't start reading, so nothing was read."
+RACED_BUSY: Final = {
+    "nobody touches it": f"{BUSY_LINE} Press Read again.",
+    "the other browser reads it": BUSY_LINE,
+    "the other browser replaces it": BUSY_LINE,
+    "nobody touches it, not started": f"{NOT_STARTED_LINE} Press Read to try again.",
+    "the other browser reads it, not started": NOT_STARTED_LINE,
+    "replace and read, nobody touches it": f"{BUSY_LINE} Press Read again.",
+    "replace and read, the other browser reads it": BUSY_LINE,
+}
+"""What another browser does between an Upload and read, or a Replace and read, whose read
+couldn't begin and its landing, and the line the landing page says."""
+
+
+@pytest.mark.parametrize("between", list(RACED_BUSY))
+def test_an_upload_and_read_that_read_nothing_says_press_read_only_when_read_sends_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, between: str
+) -> None:
+    """Browser A adds a screenshot with Upload and read, or puts it in Screenshot 1's place with
+    Replace and read, and the household's file refuses the read before it begins: busy, or for
+    another reason. Before A follows the redirect, browser B reads the new screenshot, replaces it
+    without reading, or nobody does anything. A's landing page says "Press Read" only when its own
+    Read form sends that screenshot."""
+    reader = Reader(monkeypatch)
+    replaced = between.startswith("replace and read")
+    target = 0 if replaced else 1
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        review = f"/parent/imports/{draft_id}"
+        browser.post(f"{review}/read", data=read_form(browser.get(review).text))
+        with monkeypatch.context() as patch:
+            if between.endswith("not started"):
+                patch.setattr(imports, "tables_of", refusing_tables)
+            else:
+                patch.setattr(imports, "read_named", busy_read)
+            if replaced:
+                first = images_of(browser, draft_id)[0]
+                sent = replace_with(browser, draft_id, first, BLUE, form=READ_NOW)
+            else:
+                sent = upload(browser, BLUE, form=READ_NOW, to=f"{review}/images")
+        calls = list(reader.calls)
+        added = images_of(browser, draft_id)
+        other = other_browser(browser)
+        if "the other browser reads" in between:
+            other.post(f"{review}/read", data=read_form(other.get(review).text))
+        elif "the other browser replaces" in between:
+            replace_with(other, draft_id, added[target], GREEN)
+        page = browser.get(sent.headers["location"]).text
+        held = images_of(browser, draft_id)
+
+    expected = RACED_BUSY[between]
+    assert sent.status_code == 303, sent.text[:400]
+    assert calls == [RED]
+    assert len(held) == target + 1
+    assert expected in lines_in(PROBLEM.search(page))
+    if "Press Read" in expected or "the other browser replaces" in between:
+        assert read_form(page)["images"] == held[target]
+        assert (held[target] == added[target]) == ("Press Read" in expected)
+    else:
+        assert f'action="{review}/read"' not in page
+
+
+async def busy_read(*_: object) -> None:
+    """A read whose attempt the household's busy file refused before it began."""
+    raise StoreBusy
+
+
+async def refusing_tables(*_: object) -> None:
+    """The review's tables, refused by the household's file for a reason that isn't a busy
+    file."""
+    why = "disk I/O error"
+    raise sqlite3.OperationalError(why)
