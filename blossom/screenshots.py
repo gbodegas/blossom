@@ -389,16 +389,19 @@ def _long_first_line(value: object) -> object:
     label null and its due line null or a text with no words, as a note's due line is read
     (``_is_note``), whose title is a text longer than that is given back with no title and
     with the title's text as its instruction, followed, when the card has an instruction, by
-    one space and that instruction. This is done only when the card has its instruction as a
-    property, null or a text, when no line of the title or of the instruction, as given, is
-    shaped as a day, a card or another line the note rule refuses (``_structure_among``), and
-    when the whole text fits an instruction's limit (``INSTRUCTION_MOST``). Both texts are
-    kept exactly as given: nothing is cut, folded, trimmed or reworded. A mark of uncertainty
-    that names the title goes with its words and names the instruction, its reason as given.
+    one line break and that instruction, so the first line and its continuation stay lines of
+    their own for every later check of a note's lines. This is done only when the card has
+    its instruction as a property, null or a text, when no line of the title or of the
+    instruction, as given, is shaped as a day, a card or another line the note rule refuses
+    (``_structure_among``), and when the whole text fits an instruction's limit
+    (``INSTRUCTION_MOST``). Both texts are kept exactly as given: nothing is cut, folded,
+    trimmed or reworded. A mark of uncertainty that names the title goes with its words and
+    names the instruction, its reason as given.
 
     Any other value is given back as it is, a labeled card, a card whose due line has words
-    and a card that lacks a property among them. The value given is never changed, and the
-    card's own check decides what is kept.
+    and a card with no instruction property among them. A card that lacks another property
+    is not excused: moved or not, the card's own check refuses it. The value given is never
+    changed, and the card's own check decides what is kept.
     """
     if not isinstance(value, dict) or value.get("badge") is not None:
         return value
@@ -414,7 +417,7 @@ def _long_first_line(value: object) -> object:
         return value
     if _structure_among(title, more):
         return value
-    whole = title if more is None else f"{title} {more}"
+    whole = title if more is None else f"{title}\n{more}"
     if len(whole) > INSTRUCTION_MOST:
         return value
     moved = {**value, "title": None, "instruction": whole}

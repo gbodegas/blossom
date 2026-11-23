@@ -279,14 +279,15 @@ def test_a_first_line_past_the_title_limit_is_read_as_the_instruction() -> None:
     assert (given["title"], given["instruction"]) == (LONG_LINE, None)
 
 
-def test_a_long_first_line_is_followed_by_one_space_and_its_continuation() -> None:
-    """With an instruction, the long first line comes first, then one space, then the
-    instruction, each exactly as given."""
+def test_a_long_first_line_is_followed_by_a_line_break_and_its_continuation() -> None:
+    """With an instruction, the long first line comes first, then one line break, then the
+    instruction, each exactly as given, so the two stay lines of their own."""
     more = "Then write three sentences about it."
     card = one_card(unlabeled(LONG_LINE, more))
 
     assert card is not None
-    assert (card.title, card.instruction) == (None, f"{LONG_LINE} {more}")
+    assert (card.title, card.instruction) == (None, f"{LONG_LINE}\n{more}")
+    assert (card.instruction or "").splitlines() == [LONG_LINE, more]
 
 
 @pytest.mark.parametrize("more", [None, "  THEN  rest. "], ids=["alone", "with-an-instruction"])
@@ -298,7 +299,7 @@ def test_a_long_first_line_keeps_its_wording_character_for_character(more: str |
     assert len(ODD_LINE) > screenshots.TITLE_MOST
     assert card is not None
     assert card.title is None
-    assert card.instruction == (ODD_LINE if more is None else ODD_LINE + " " + more)
+    assert card.instruction == (ODD_LINE if more is None else ODD_LINE + "\n" + more)
 
 
 @pytest.mark.parametrize(
@@ -314,12 +315,12 @@ def test_a_long_first_line_keeps_its_wording_character_for_character(more: str |
 def test_a_long_first_line_is_moved_only_when_the_whole_text_fits_an_instruction(
     first: int, more: int | None, fits: bool
 ) -> None:
-    """The whole text, the first line or the first line, one space and the instruction, is
-    moved when it is 4,000 characters, an instruction's limit. At 4,001 nothing is moved and
-    nothing is cut: the card is one that couldn't be read."""
+    """The whole text, the first line or the first line, one line break and the instruction,
+    is moved when it is 4,000 characters, an instruction's limit. At 4,001 nothing is moved
+    and nothing is cut: the card is one that couldn't be read."""
     title = "T" * first
     instruction = None if more is None else "i" * more
-    whole = title if instruction is None else f"{title} {instruction}"
+    whole = title if instruction is None else f"{title}\n{instruction}"
     card = one_card(unlabeled(title, instruction))
 
     assert len(whole) == screenshots.INSTRUCTION_MOST + (0 if fits else 1)

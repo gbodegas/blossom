@@ -45766,8 +45766,9 @@ def test_a_printed_subject_with_a_long_first_line_is_offered_and_saved_with_its_
     """A printed list whose English subject has a first line of 301 characters, answered as
     its title, beside a Spanish subject whose first line is exactly 300: the review offers
     both subjects with their words, Save selected homework with both ticked writes both, and
-    the school instructions kept under each assignment are its words in full, the long first
-    line followed by one space and its continuation where it has one."""
+    the school instructions kept under each assignment are its words in full, single-spaced
+    as every note's words are: the long first line, one space and its continuation where it
+    has one."""
     words = LONG_FIRST_LINE if continuation is None else f"{LONG_FIRST_LINE} {continuation}"
     answer = printed_answer(
         PRINTED_DAY,
@@ -45817,6 +45818,74 @@ def test_a_long_first_line_followed_by_a_line_shaped_as_a_day_stays_a_card_that_
 
     assert 'id="unread-heading"' in page
     assert len(units_on(page)) == 1
+    assert courses_offered(page) == ["Spanish"]
+    assert says(after, imports.counted(1, 0, 0, 0))
+    assert [(course, due, kept) for course, _, due, kept in rows] == [
+        ("Spanish", None, FULL_FIRST_LINE)
+    ]
+
+
+BOTH_FIRST_LINES: Final = pytest.mark.parametrize(
+    "first", ["Read page 3", LONG_FIRST_LINE], ids=["a-short-first-line", "a-long-first-line"]
+)
+"""A printed subject's first line that fits a title, and one of 301 characters."""
+
+
+@BOTH_FIRST_LINES
+def test_a_continuation_that_is_no_card_line_by_itself_is_offered_and_saved_with_every_word(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str
+) -> None:
+    """A printed English subject whose first line is followed by the line "- Due: Essay",
+    which is no card line by itself, is offered in the review and saved, under a short first
+    line and under a long one: the long first line and its continuation stay lines of their
+    own, so no line is formed that the note rule refuses. The school instructions kept under
+    the assignment hold every word, single-spaced: the first line, one space and the
+    continuation."""
+    answer = printed_answer(
+        PRINTED_DAY,
+        printed_card("English", first, "- Due: Essay", 200),
+        printed_card("Spanish", FULL_FIRST_LINE, None, 320),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    assert 'id="unread-heading"' not in page
+    assert len(units_on(page)) == 2
+    assert sorted(courses_offered(page)) == ["English", "Spanish"]
+    assert says(after, imports.counted(2, 0, 0, 0))
+    assert [(course, due, kept) for course, _, due, kept in rows] == [
+        ("English", None, f"{first} - Due: Essay"),
+        ("Spanish", None, FULL_FIRST_LINE),
+    ]
+
+
+@BOTH_FIRST_LINES
+def test_a_continuation_that_is_a_card_line_as_written_stays_a_card_that_couldnt_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, first: str
+) -> None:
+    """A printed English subject whose first line is followed by the line "Due: Essay", a
+    card line as written, is a card that couldn't be read, under a short first line and under
+    a long one: the review names the unread card and offers the Spanish subject alone, and
+    Save selected homework writes Spanish alone."""
+    answer = printed_answer(
+        PRINTED_DAY,
+        printed_card("English", first, "Due: Essay", 200),
+        printed_card("Spanish", FULL_FIRST_LINE, None, 320),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, answer))
+        page = answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = followed(browser, saved)
+        rows = written_since(browser, before)
+
+    assert 'id="unread-heading"' in page
     assert courses_offered(page) == ["Spanish"]
     assert says(after, imports.counted(1, 0, 0, 0))
     assert [(course, due, kept) for course, _, due, kept in rows] == [
