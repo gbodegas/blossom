@@ -42,6 +42,7 @@ FIRST = "fractions-page.png"
 SECOND = "spelling-words.png"
 REPLACEMENT = "spelling-words-retake.png"
 NAMES = (FIRST, SECOND, REPLACEMENT)
+ADDED = "times-tables.png"
 READ_NOW = {"read": "now"}
 ITEM = re.compile(
     r'<li>\s*<a href="/parent/imports/[0-9a-f]{32}/images/([0-9a-f]{32})">'
@@ -154,6 +155,21 @@ def test_a_name_sent_with_its_folder_shows_and_is_kept_without_it(tmp_path: Path
     assert b"Sentinel-Folder" not in settings.database_path.read_bytes()
 
 
+def test_a_screenshot_added_to_an_open_review_keeps_its_own_name(tmp_path: Path) -> None:
+    settings = open_settings(tmp_path)
+    with here(settings) as browser:
+        draft_id = started(browser, (FIRST, RED))
+        added = send(browser, f"/parent/imports/{draft_id}/images", {}, (ADDED, BLUE))
+        page = browser.get(f"/parent/imports/{draft_id}").text
+        first_id, added_id = images_of(browser, draft_id)
+        previews = [preview(browser, draft_id, image_id) for image_id in (first_id, added_id)]
+
+    assert added.status_code == 303
+    assert shown(page) == [(1, first_id, FIRST), (2, added_id, ADDED)]
+    assert previews == [digest(RED), digest(BLUE)]
+    assert names_in_file(settings) == [FIRST, ADDED]
+
+
 def test_a_review_saved_before_names_opens_with_its_place_and_preview(tmp_path: Path) -> None:
     settings = open_settings(tmp_path)
     with here(settings) as browser:
@@ -224,8 +240,9 @@ def test_no_name_reaches_a_reader_request_a_log_an_address_or_a_note(
         for answer in answers
         for value in answer.headers.get_list("location") + answer.headers.get_list("set-cookie")
     )
-    cookie = re.compile(rf"{imports.NOTE_COOKIE}=([^;]+)")
-    notes = [repr(imports.note_read(key, draft_id, value)) for value in cookie.findall(headers)]
+    cookie = re.compile(rf"{imports.NOTE_COOKIE}=([^;]*)")
+    values = [value.strip('"') for value in cookie.findall(headers)]
+    notes = [imports.note_read(key, draft_id, value) for value in values if value]
     holders = sorted(
         path.name
         for path in tmp_path.rglob("*")
@@ -237,8 +254,10 @@ def test_no_name_reaches_a_reader_request_a_log_an_address_or_a_note(
     assert [name for name in NAMES for body in sent if name.encode() in body] == []
     assert caplog.records
     assert [name for name in NAMES if name in logged] == []
-    assert notes
-    assert [name for name in NAMES if name in headers + " ".join(notes)] == []
+    assert [
+        (note.facts.added, note.facts.first, note.facts.read, note.facts.replaced) for note in notes
+    ] == [(2, True, True, ""), (0, False, True, digest(GREEN))]
+    assert [name for name in NAMES if name in headers + repr(notes)] == []
     assert [name for name in NAMES for answer in answers if name in str(answer.url)] == []
     assert [name for _, _, name in shown(page)] == [FIRST, REPLACEMENT]
     assert holders == [settings.database_path.name]
