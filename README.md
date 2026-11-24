@@ -1,99 +1,155 @@
+# Blossom
+
+A homework tracker for the stretch between finding out what's due and actually
+turning it in.
+
+I'm building Blossom for my teenage daughter. She named it.
+Sometimes all she brings home is a title, a date, and a note to check the
+textbook. I want her to be able to write that down while she remembers it,
+see what else is coming, and ask us for help when she needs it.
+
+[Try the sample](#try-it-locally) · [Take a look](#a-look-inside) ·
+[Run it for a household](docs/development.md#running-for-the-household)
+
 <p align="center">
-  <img src="blossom/static/mark.svg" alt="Blossom" width="200">
+  <a href="docs/assets/student-week.png">
+    <img src="docs/assets/student-week.png"
+         alt="My week for September 7 to 13, with ways to write down homework, ask for help and see the week's work."
+         width="960">
+  </a>
 </p>
 
-<h1 align="center">Blossom</h1>
-
-<p align="center">
-  A planning assistant to help a student make sense of schoolwork and deadlines.
-</p>
-
-<p align="center">
-  <a href="https://github.com/gbodegas/blossom/actions/workflows/ci.yml"><img src="https://github.com/gbodegas/blossom/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/python-3.12%20%7C%203.13-blue" alt="Python 3.12 or 3.13">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="AGPL-3.0 license"></a>
-</p>
-
-[Try the sample](#try-it-locally) · [What works today](#what-works-today) ·
-[Technical details](docs/architecture.md)
-
-## Why this exists
-
-Blossom is a homework and deadline tracker I am building for my teenage
-daughter. She named it.
-
-I want it to help her see what is coming, make room for the work, and ask for
-help before an evening becomes a scramble. Her parents are collaborators.
-She should end up with her own way of planning, with support she can
-understand and choose to use.
-
-The information we have is often thin: a title, a date, and perhaps a note
-to check a textbook. Sometimes the dates disagree. Blossom keeps those
-differences visible and helps plan with the information available. Setting
-aside time for an assignment does not mean it knows how long finishing it
-will take.
-
-I intend to define what success looks like with her rather than on her behalf.
+*Her week starts here. She can write down what she remembers, even when
+she doesn't have a date yet.*
 
 ## What works today
 
-Blossom is still an early project, built around our household.
+**See what's ahead.** My week brings together work due this week and work
+assigned this week that's due later. She can open an assignment to read the
+teacher's instructions. When dates disagree, she can see where they came from.
 
-**My week.** She can see deadlines, school instructions, and work assigned
-this week but due later. Missing dates and disagreements stay visible.
+**Catch homework in her own words.** A homework note can wait until she knows
+the class or the deadline. Later she or a parent can turn it into an
+assignment or link it to one that's already there. Her original words stay
+with the note.
 
-**Homework notes.** She can **Write down homework** now and add the class
-and date later. It can stay a note, become an assignment, or link to
-homework already here. Her original words stay separate from the
-assignment details.
+**Make room for tonight.** With planning turned on, she can press
+**Plan today** to set aside time for the work.
+**Too much right now** asks for a shorter plan for today, including if she
+makes another plan later that day. She can start while a parent's review is
+still to come.
 
-**Finishing and turning it in.** She can say Done or Not yet and change
-her answer. Done means she finished her part. A separate **To turn in**
-list keeps her next step visible across weeks. Neither update confirms
-that the school received the work.
+**Bring in what the school said.** A parent can enter one assignment or
+paste **School text** in Family review. The review shows what Blossom read
+and gives the family a chance to correct it and choose what to save.
+If the teacher's note leaves Friday open as a possibility, a parent can
+leave the deadline open too.
 
-**Plan today.** She can ask for an evening plan with time set aside for
-work. **Too much right now** asks for a shorter plan when she next makes
-one. A parent's review does not stop her getting started.
+When screenshot import is on, you can choose screenshots of the school's
+homework list. Choosing files sends nothing. With JavaScript on, you can
+check each file's name and preview before uploading. After Blossom reads
+the screenshots, you can review what it found before saving.
 
-**Working together.** Parents can review plans, answer requests for help,
-and check differences between her account and the school's. They can
-enter assignments or paste school text for review before saving. The
-reader is built around our school's formats.
+**Check in together.** She can ask a parent for help from her week.
+A parent can reply from Family review. On **Grades**, the family can look
+at the results the school reported for a class and term. A parent brings
+those in by pasting one class's grade report and checking it before Save.
 
-Blossom doesn't connect to the school platform, read email, submit work,
-or send reminders. Planning needs an API key; the other features work
-without one.
+## A look inside
+
+### From a teacher's words to homework
 
 <p align="center">
-  <a href="docs/assets/student-week.png"><img src="docs/assets/student-week.png" alt="My week in the sample for September 7 to 13, 2026: no plan for today yet, the Too much right now, Write down homework, and Ask for help controls, links to To turn in and Homework notes, a note that planning is unavailable, and a See homework link" width="640"></a>
+  <a href="docs/assets/school-text-review.png">
+    <img src="docs/assets/school-text-review.png"
+         alt="School text review with Tile mosaic, its Thursday due date, and a choice to save it as homework."
+         width="960">
+  </a>
 </p>
 
-*My week in the made-up sample. No API key or saved plan.*
+*A teacher's note comes back with its words and a date to check.
+The family chooses what to save.*
+
+### Finished, with one thing left to do
 
 <p align="center">
-  <a href="docs/assets/to-turn-in.png"><img src="docs/assets/to-turn-in.png" alt="To turn in list with one finished Geometry assignment, its next step, Put it in the Geometry tray before first period, and an I turned it in button" width="640"></a>
+  <a href="docs/assets/to-turn-in.png">
+    <img src="docs/assets/to-turn-in.png"
+         alt="To turn in on a phone, with Tile mosaic, a reminder to put it in the class tray, and the I turned it in button."
+         width="340">
+  </a>
 </p>
 
-*Finished work with one step left before handing it in.*
+*The Geometry work is done. Putting it in the class tray is still on her list.*
+
+She can mark an assignment **Done** when she finishes her part.
+If it still needs handing in, she can leave herself a next step in
+**To turn in**. It stays there across weeks. **I turned it in** records her
+own account of what happened.
 
 ## Try it locally
 
-You can try the sample without a school account or an API key. You'll need
-Git and Python 3.12 or 3.13.
+The sample opens on Monday, September 7, 2026, with four made-up assignments.
+You can try it without a school login or an API key.
 
-These steps are for Windows PowerShell with Python and pip. For uv, macOS,
-or Linux, see [other ways to start the sample](docs/development.md#other-ways-to-start-the-sample).
-Choose a local folder that isn't synced by OneDrive or a similar service.
+You'll need Git and [uv](docs/development.md#installing-uv).
+Blossom runs on Python 3.12 or 3.13. uv can install a supported Python
+when it makes the environment.
 
-**Get the code once.** In PowerShell:
+From a local folder outside OneDrive or another sync service, get the code:
 
-```powershell
+```bash
 git clone https://github.com/gbodegas/blossom.git
 cd blossom
 ```
 
-**Install once.** From the Blossom folder:
+Install the versions in the lockfile:
+
+```bash
+uv sync --locked
+```
+
+Before starting the sample, check that your terminal has no `BLOSSOM_`
+settings already set. Some shell profiles set them even in a new terminal.
+These settings take precedence over the sample files, so Blossom could show
+"Sample week" while reading or changing your own records. This prints the
+names of any that are set, and nothing else:
+
+```bash
+uv run --no-env-file python -c "import os; [print(k) for k in sorted(os.environ) if k.startswith('BLOSSOM_')]"
+```
+
+If it prints any names, stop here and start the sample from a terminal
+without them. Otherwise, start the sample:
+
+```bash
+uv run --locked --env-file .env.example --env-file data/sample/sample.env uvicorn blossom.app:app --reload
+```
+
+To try planning or screenshot reading with the sample, follow
+[With uv](docs/development.md#with-uv) in the development guide.
+
+Open [My week](http://127.0.0.1:8000/student/due-this-week) or
+[Family review](http://127.0.0.1:8000/parent).
+Look for **Sample week**. The first run creates its SQLite files under
+`.local/sample/`. Changes you make will still be there when you restart.
+Leave the terminal open while you're using Blossom. Press **Ctrl+C** to stop.
+
+For a short tour, open the Geometry assignment in My week.
+Choose **Done** and **Save update**, then **Other turn-in options**.
+Choose **Still to turn in** and write where the paper needs to go.
+After **Save hand-in update**, open **To turn in** to see the step you left.
+The [sample guide](docs/development.md#the-sample-week) also walks through
+asking a parent for help.
+
+<details>
+<summary>Windows PowerShell with Python and pip</summary>
+
+Use the same clone above. Start in a fresh PowerShell window in the
+Blossom folder.
+
+**Install once.** Use Python 3.12, or use `py -3.13` on the first line
+if you have Python 3.13.
 
 ```powershell
 py -3.12 -m venv .venv
@@ -101,13 +157,12 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-Use `py -3.13` in the first line if that's the version you have. If there's
-no `py` launcher, use [the guide's fallback](docs/development.md#other-ways-to-start-the-sample)
-for that line. You don't need to activate the environment or change
-PowerShell's execution policy.
+If there's no `py` launcher, use the
+[guide's fallback](docs/development.md#other-ways-to-start-the-sample).
 
-**Start the sample.** From the Blossom folder, paste this whole block. Use
-it again whenever you want to start the app:
+**Start the sample.** Paste this block from the Blossom folder each time.
+It uses your settings file if you have one, then applies the sample's
+paths and clock.
 
 ```powershell
 $settingsFile = if (Test-Path .env) { ".env" } else { ".env.example" }
@@ -122,96 +177,72 @@ Get-Content $settingsFile, data\sample\sample.env |
 .\.venv\Scripts\python.exe -m uvicorn blossom.app:app --reload
 ```
 
-It reads your `.env` if you've made one, or `.env.example` if not, then
-the sample settings last. Blossom doesn't load `.env` on its own. If you edit either settings file, use `KEY=value` without
-quotes around the value. Your sample changes stay under `.local/sample/`
-until you [reset the sample](docs/development.md#the-sample-week).
+If you edit either settings file, use `KEY=value` without quotes around the
+value.
 
-Open [My week](http://127.0.0.1:8000/student/due-this-week) or
-[Family review](http://127.0.0.1:8000/parent). The sample uses made-up
-schoolwork and stays at September 7, 2026. There is no saved plan at first,
-and **Plan today** appears only after adding an API key.
+Open My week or Family review at the links above. Start a fresh window
+when switching from this sample to a household's settings.
 
-Without a key, you can still write down homework, record a Done update,
-add an item to **To turn in**, or ask for help. The
-[sample guide](docs/development.md#the-sample-week) walks through those steps.
+</details>
 
-Leave PowerShell open while using Blossom, and press **Ctrl+C** to stop it.
+## What leaves the computer
 
-For your own schoolwork, follow the
-[household setup guide](docs/development.md#running-for-the-household).
-It covers separate records, the real date, student and parent sign-in,
-and access on the home network. Open a fresh terminal when switching from
-the sample.
+The week, homework notes, hand-in updates and School text review work
+locally. Blossom doesn't contact the school, read email, submit homework
+or send reminders.
 
-## Using the planner
+Two optional features use a paid Anthropic API key:
 
-To try **Plan today**, add an Anthropic API key. This makes paid requests
-when you ask for a plan. Stop Blossom with **Ctrl+C**, then run this in
-PowerShell to create your settings file if needed and open it:
+- **Plan today** sends the work being planned, including applicable school
+  instructions, assignment notes, her Not yet updates and planning context.
+  Planning sends assignment titles to Anthropic. If she keeps a homework
+  note's suggested title, the words she keeps are sent too. The homework
+  note itself and its edit history stay in Blossom. Her requests for help
+  and hand-in reports stay out of planning calls. Planning prompts and
+  responses are also kept locally.
+- **Screenshot import** starts turned off. Choosing screenshots and
+  previewing them happen in the browser and send nothing.
+  **Upload without reading** stores them in Blossom and sends nothing to
+  Anthropic. **Upload and read** sends the screenshots that upload added,
+  **Replace and read** sends the one new screenshot, and **Read** on a
+  screenshot review sends the unread screenshots that page names. The
+  reader understands homework lists in the portal and print layouts it was
+  built for. A parent checks the reading before saving assignments.
 
-```powershell
-if (-not (Test-Path .env)) {
-    Copy-Item .env.example .env
-}
+The [sharing guide](docs/development.md#what-the-planner-shares) explains
+what goes into each call and what Blossom keeps afterward.
 
-notepad .env
-```
+## Learn more
 
-Set `ANTHROPIC_API_KEY` to your key, save the file, and repeat the **Start the
-sample** block above. "Plan today" will appear on her page.
-
-Planning sends Anthropic the assignments and school instructions in the
-planning window, assignment notes, her Not yet updates, household rules,
-and planning context. That can include her separate **Note about the work**;
-the original **Homework notes** text and history stay out of the requests.
-Her help requests and hand-in reports stay out too.
-
-One planning attempt can make up to six model calls, or none if there is
-nothing to schedule. Prompts and responses are also saved locally; model
-processing still happens at Anthropic. The
-[development guide](docs/development.md) explains exactly what is shared,
-what is stored, and how long it is kept.
-
-The app is written in Python. FastAPI serves the pages, SQLite keeps the
-local records, and LangGraph runs planning. Code checks the proposed plan
-before a separate model call reviews it. See the
-[architecture notes](docs/architecture.md) for the workflow and its limits.
+- The [development guide](docs/development.md) covers the sample, local setup
+  and the tools for working on Blossom.
+- [What the server serves](docs/development.md#what-the-server-serves)
+  walks through the student and parent pages.
+- [Running for the household](docs/development.md#running-for-the-household)
+  covers your own records, time zone and separate sign-ins on the home network.
+- [Upgrading and rolling back](docs/development.md#upgrading-and-rolling-back)
+  explains how to keep a recoverable copy when you change versions.
+- The [architecture notes](docs/architecture.md) explain how FastAPI serves
+  the pages, SQLite keeps the records and LangGraph helps make a plan.
 
 ## Contributing
 
-Bug fixes, tests, accessibility improvements, and small engineering changes
-are welcome. Blossom is built for one household. Please discuss larger
-features in an issue first.
-
-Use synthetic data only. Fixtures live in `data/sample/` and
-`data/synthetic/`; never include real student or family data. New third-party
-imports need a justification in the project's allowlist.
-
-Run the checks locally with the commands below. CI runs the test suite on
-four workers and also checks that every collected case has a reported
-outcome. If you installed with pip, the
-[development guide](docs/development.md#when-uv-cannot-download) gives the
-steps to install the tools and run those checks.
-
-```bash
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy blossom tests
-uv run pytest
-```
-
-If you are considering something similar for your own family, the part I
-would carry over is the habit of asking, for every capability, whether the
-person it is built for would consent to it existing.
+Bug fixes, tests and accessibility improvements are welcome.
+Please use made-up schoolwork in examples, issues and screenshots.
+Before opening a pull request, [run the local checks](docs/development.md#running-the-checks-with-uv).
+For a larger feature, open an issue first. Blossom is built for one
+household, and I want my daughter to have a say in what it becomes.
 
 ## License
 
-Blossom is free software under the GNU Affero General Public License v3.0 or
-later; see [LICENSE](LICENSE). The license asks anyone who runs a modified
-version for other people over a network to offer those people its source. The
-link in every page's footer is where Blossom does that, so a modified copy
-points `SOURCE_URL` in `blossom/templating.py` at its own source.
+The Blossom code is free software under the GNU Affero General Public
+License, version 3 or later (`AGPL-3.0-or-later`). Keep the copyright and
+license notices when sharing a copy. If you run a modified version for
+other people over a network, offer them its corresponding source.
+Blossom has a **Source code** link in the footer for this. Point
+`SOURCE_URL` in [templating.py](blossom/templating.py) to your modified
+source. The full terms are in [LICENSE](LICENSE).
 
-The Outfit and Quicksand fonts in `blossom/static/fonts/` stay under the SIL
-Open Font License 1.1, with their license texts beside them.
+The bundled fonts use the SIL Open Font License 1.1. Their notices travel
+with the fonts. See the licenses for [Outfit](blossom/static/fonts/outfit-OFL.txt)
+and [Quicksand](blossom/static/fonts/quicksand-OFL.txt).

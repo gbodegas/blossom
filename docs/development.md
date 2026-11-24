@@ -379,8 +379,10 @@ variable left in the shell still names whatever it named.
 ## Running the planner for real
 
 Copy `.env.example` to `.env` if there is no `.env` yet, put an Anthropic API
-key in `ANTHROPIC_API_KEY`, start the app with `.env` loaded, by the README's
-launch block or `--env-file .env` with uv, and use "Plan today" on her page
+key in `ANTHROPIC_API_KEY`, start the app with `.env` loaded (with uv,
+`--env-file .env` in place of `--env-file .env.example`, as "With uv" below
+shows; the README's PowerShell block loads `.env` when there is one), and
+use "Plan today" on her page
 or "Plan it" on the parent's page. The model is `claude-opus-5-5`, at high
 effort for the planner and medium for the critic, with each answer capped at
 16,000 tokens.
@@ -425,9 +427,12 @@ all of that is synthetic.
 Her homework notes are another matter. When she or a parent adds a note to
 homework, the assignment it becomes goes in like any other: its class,
 title, dates, kind, and the separate Note about the work typed on that form.
-The note's original text and its history never go, and neither does a note
-that is waiting, put away, or linked to homework already here; a date a
-linked note gives counts only as one more source for that due date. Her
+The note's original text and its history never go into a planning call as a
+separate note record. For a short note, the form can suggest the whole note
+as the assignment title. If the family keeps that title, those words go to
+Anthropic when the assignment is included in planning. A note that is
+waiting, put away, or linked to homework already here doesn't go either; a
+date a linked note gives counts only as one more source for that due date. Her
 requests for help and her reports about turning work in stay out of every
 call.
 
@@ -1030,7 +1035,20 @@ launch file, `data/sample/sample.env`, points the fixture path at it, pins
 the clock to Monday the seventh, puts the three state files under
 `.local/sample/`, and sets `BLOSSOM_SAMPLE=1`, which marks both pages
 "Sample week". Load it after `.env`, so the household's time zone and the
-model key come from there and nothing in it touches the family's own state:
+model key come from there and the sample's own paths and clock apply.
+
+Before starting the sample, check that your terminal has no `BLOSSOM_`
+settings already set. Some shell profiles set them even in a new terminal.
+These settings take precedence over the sample files, so Blossom could show
+"Sample week" while reading or changing your own records. This prints the
+names of any that are set, and nothing else:
+
+```bash
+uv run --no-env-file python -c "import os; [print(k) for k in sorted(os.environ) if k.startswith('BLOSSOM_')]"
+```
+
+If it prints any names, stop here and start the sample from a terminal
+without them. Otherwise:
 
 ```bash
 uv run --env-file .env --env-file data/sample/sample.env uvicorn blossom.app:app --reload
@@ -1094,8 +1112,9 @@ passed its checks; the app has no way to serve it as a plan, by design.
 
 ## Other ways to start the sample
 
-The README's path is Windows PowerShell with Python and pip. Use `py -3.13`
-in its first install line if Python 3.13 is installed instead. If there's no
+The README's quick start uses uv; its PowerShell disclosure covers Python and
+pip. Use `py -3.13` in that disclosure's first install line if Python 3.13 is
+installed instead. If there's no
 `py` launcher, check that `python --version` says 3.12 or 3.13 and use
 `python -m venv .venv` in its place.
 
@@ -1105,12 +1124,66 @@ in its first install line if Python 3.13 is installed instead. If there's no
 
 ```bash
 uv sync
+```
+
+Before starting the sample, check that your terminal has no `BLOSSOM_`
+settings already set. Some shell profiles set them even in a new terminal.
+These settings take precedence over the sample files, so Blossom could show
+"Sample week" while reading or changing your own records. This prints the
+names of any that are set, and nothing else:
+
+```bash
+uv run --no-env-file python -c "import os; [print(k) for k in sorted(os.environ) if k.startswith('BLOSSOM_')]"
+```
+
+If it prints any names, stop here and start the sample from a terminal
+without them. Otherwise:
+
+```bash
 uv run --env-file .env.example --env-file data/sample/sample.env uvicorn blossom.app:app --reload
 ```
 
-Use `--env-file .env` in place of `--env-file .env.example` once you have
-your own settings, such as an API key for the planner. Keep the sample file
-last, so its date and paths apply.
+To use your own settings, copy `.env.example` to `.env`, but only if there
+is no `.env` yet, so an existing one is never overwritten:
+
+```bash
+[ -f .env ] || cp .env.example .env
+```
+
+In PowerShell, `if (-not (Test-Path .env)) { Copy-Item .env.example .env }`
+does the same. Then set `ANTHROPIC_API_KEY` in `.env`, as a plain
+`KEY=value` line without quotes. It enables the paid calls: planning and
+screenshot reading.
+
+If `ANTHROPIC_API_KEY` is set in the terminal, uv uses that value even when
+it is empty. To use the key from `.env`, run `unset ANTHROPIC_API_KEY` in
+bash or zsh, or
+`Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue` in
+PowerShell, in the same terminal you'll use to start Blossom.
+
+To try planning with the sample, start it with your `.env` first and the
+sample file last, so the sample's date and paths apply:
+
+```bash
+uv run --env-file .env --env-file data/sample/sample.env uvicorn blossom.app:app --reload
+```
+
+To try screenshot import too, create `.env.sample-local` beside `.env` with
+this single line:
+
+```text
+BLOSSOM_SCREENSHOT_IMPORT=1
+```
+
+Then start the sample with all three files:
+
+```bash
+uv run --env-file .env --env-file .env.sample-local --env-file data/sample/sample.env uvicorn blossom.app:app --reload
+```
+
+With the terminal variable unset, `.env` supplies the key,
+`.env.sample-local` turns on screenshot import for this launch, and the
+bundled sample file supplies the sample's date and database paths.
 
 ### macOS and Linux
 
@@ -1160,6 +1233,23 @@ Uvicorn also has an `--env-file` option, but it needs an extra package,
 it. If an earlier uv attempt left an environment without pip, the `ensurepip`
 step puts it back. You don't need to activate the environment on either
 platform.
+
+## Running the checks with uv
+
+If you're contributing code, run the local checks from the repository root:
+
+```bash
+uv sync --dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy blossom tests
+uv run pytest
+```
+
+CI also runs pytest across four workers and verifies that every collected
+case reports an outcome. If uv can't download packages, the
+[pip instructions](#when-uv-cannot-download) run the same four checks with
+the environment's own Python.
 
 ## When uv cannot download
 
