@@ -1152,6 +1152,12 @@ does the same. Then set `ANTHROPIC_API_KEY` in `.env`, as a plain
 `KEY=value` line without quotes. It enables the paid calls: planning and
 screenshot reading.
 
+If `ANTHROPIC_API_KEY` is set in the terminal, uv uses that value even when
+it is empty. To use the key from `.env`, run `unset ANTHROPIC_API_KEY` in
+bash or zsh, or
+`Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue` in
+PowerShell, in the same terminal you'll use to start Blossom.
+
 To try planning with the sample, start it with your `.env` first and the
 sample file last, so the sample's date and paths apply:
 
@@ -1172,9 +1178,9 @@ Then start the sample with all three files:
 uv run --env-file .env --env-file .env.sample-local --env-file data/sample/sample.env uvicorn blossom.app:app --reload
 ```
 
-`.env` supplies the key, `.env.sample-local` turns on screenshot import for
-this launch, and the bundled sample file supplies the sample's date and
-database paths.
+With the terminal variable unset, `.env` supplies the key,
+`.env.sample-local` turns on screenshot import for this launch, and the
+bundled sample file supplies the sample's date and database paths.
 
 ### macOS and Linux
 
