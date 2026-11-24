@@ -89,7 +89,8 @@ class NewImage(NamedTuple):
     width: int
     height: int
     name: str | None = None
-    """The name of the file it came from, without any folder, or None when it had none."""
+    """The name of the file it came from, without any folder, or None when it had none or
+    nothing usable was left of it."""
 
 
 class UploadedReading(NamedTuple):
@@ -152,7 +153,7 @@ class ImageState(NamedTuple):
     to pass."""
     file_name: str | None = None
     """The name of the file it came from, kept and removed with it; None for one kept before
-    names were, or sent without one."""
+    names were, or sent without a usable one."""
 
 
 class RowView(NamedTuple):

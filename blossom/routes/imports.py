@@ -6608,7 +6608,8 @@ DISCLOSURE: Final = (
     "Blossom sends screenshots to Anthropic's API to be read only when you press Upload and "
     "read, which sends the ones it uploads; Replace and read, which sends the one screenshot it "
     "puts in another's place; or Read, which sends the ones its review names. Blossom keeps "
-    "each file name with its screenshot so you can recognize it when you reopen the review. "
+    "each usable file name with its screenshot so you can recognize it when you reopen the "
+    "review. "
     "The file name is never included in requests to Anthropic. A "
     "review's screenshots, what Blossom read from them, and any progress saved for later are "
     "removed from Blossom's database file when the review finishes, is discarded, or expires, "
@@ -6617,8 +6618,8 @@ DISCLOSURE: Final = (
     "the review was open may still hold copies."
 )
 """What Family review folds under How screenshots are kept: what is sent and when, that each
-file name is kept with its screenshot and never sent, what is removed and when, and the backup
-caveat."""
+usable file name is kept with its screenshot and never sent, what is removed and when, and the
+backup caveat."""
 
 
 def screenshot_entry(request: Request, state: ApplicationState) -> dict[str, object] | None:
