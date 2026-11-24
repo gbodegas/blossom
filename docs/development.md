@@ -379,8 +379,10 @@ variable left in the shell still names whatever it named.
 ## Running the planner for real
 
 Copy `.env.example` to `.env` if there is no `.env` yet, put an Anthropic API
-key in `ANTHROPIC_API_KEY`, start the app with `.env` loaded, by the README's
-launch block or `--env-file .env` with uv, and use "Plan today" on her page
+key in `ANTHROPIC_API_KEY`, start the app with `.env` loaded (with uv,
+`--env-file .env` in place of `--env-file .env.example`, as "With uv" below
+shows; the README's PowerShell block loads `.env` when there is one), and
+use "Plan today" on her page
 or "Plan it" on the parent's page. The model is `claude-opus-5-5`, at high
 effort for the planner and medium for the critic, with each answer capped at
 16,000 tokens.
@@ -1030,7 +1032,20 @@ launch file, `data/sample/sample.env`, points the fixture path at it, pins
 the clock to Monday the seventh, puts the three state files under
 `.local/sample/`, and sets `BLOSSOM_SAMPLE=1`, which marks both pages
 "Sample week". Load it after `.env`, so the household's time zone and the
-model key come from there and nothing in it touches the family's own state:
+model key come from there and the sample's own paths and clock apply.
+
+Before starting the sample, check that your terminal has no `BLOSSOM_`
+settings already set. Some shell profiles set them even in a new terminal.
+These settings take precedence over the sample files, so Blossom could show
+"Sample week" while reading or changing your own records. This prints the
+names of any that are set, and nothing else:
+
+```bash
+env | grep -o '^BLOSSOM_[A-Z_]*'
+```
+
+If it prints any names, stop here and start the sample from a terminal
+without them. Otherwise:
 
 ```bash
 uv run --env-file .env --env-file data/sample/sample.env uvicorn blossom.app:app --reload
@@ -1094,8 +1109,9 @@ passed its checks; the app has no way to serve it as a plan, by design.
 
 ## Other ways to start the sample
 
-The README's path is Windows PowerShell with Python and pip. Use `py -3.13`
-in its first install line if Python 3.13 is installed instead. If there's no
+The README's quick start uses uv; its PowerShell disclosure covers Python and
+pip. Use `py -3.13` in that disclosure's first install line if Python 3.13 is
+installed instead. If there's no
 `py` launcher, check that `python --version` says 3.12 or 3.13 and use
 `python -m venv .venv` in its place.
 
@@ -1105,6 +1121,22 @@ in its first install line if Python 3.13 is installed instead. If there's no
 
 ```bash
 uv sync
+```
+
+Before starting the sample, check that your terminal has no `BLOSSOM_`
+settings already set. Some shell profiles set them even in a new terminal.
+These settings take precedence over the sample files, so Blossom could show
+"Sample week" while reading or changing your own records. This prints the
+names of any that are set, and nothing else:
+
+```bash
+env | grep -o '^BLOSSOM_[A-Z_]*'
+```
+
+If it prints any names, stop here and start the sample from a terminal
+without them. Otherwise:
+
+```bash
 uv run --env-file .env.example --env-file data/sample/sample.env uvicorn blossom.app:app --reload
 ```
 

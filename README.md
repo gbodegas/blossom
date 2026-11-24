@@ -42,10 +42,12 @@ plan. She can start while a parent's review is still to come.
 paste **School text** in Family review. The review shows what Blossom read
 and gives the family a chance to correct it and choose what to save.
 If the teacher's note leaves Friday open as a possibility, a parent can
-leave the deadline open too. With screenshot import turned on, a parent
-can also choose screenshots of the school's homework list, check each
-file's name and preview before anything is sent, and review what Blossom
-read before saving.
+leave the deadline open too.
+
+When screenshot import is on, you can choose screenshots of the school's
+homework list. Choosing files sends nothing. With JavaScript on, you can
+check each file's name and preview before uploading. After Blossom reads
+the screenshots, you can review what it found before saving.
 
 **Check in together.** She can ask a parent for help from her week.
 A parent can reply from Family review. On **Grades**, the family can look
@@ -100,12 +102,31 @@ git clone https://github.com/gbodegas/blossom.git
 cd blossom
 ```
 
-Install the versions in the lockfile, then start the sample:
+Install the versions in the lockfile:
 
 ```bash
 uv sync --locked
+```
+
+Before starting the sample, check that your terminal has no `BLOSSOM_`
+settings already set. Some shell profiles set them even in a new terminal.
+These settings take precedence over the sample files, so Blossom could show
+"Sample week" while reading or changing your own records. This prints the
+names of any that are set, and nothing else:
+
+```bash
+env | grep -o '^BLOSSOM_[A-Z_]*'
+```
+
+If it prints any names, stop here and start the sample from a terminal
+without them. Otherwise, start the sample:
+
+```bash
 uv run --locked --env-file .env.example --env-file data/sample/sample.env uvicorn blossom.app:app --reload
 ```
+
+To use an API key or turn on screenshot import with your own `.env`,
+follow [With uv](docs/development.md#with-uv) in the development guide.
 
 Open [My week](http://127.0.0.1:8000/student/due-this-week) or
 [Family review](http://127.0.0.1:8000/parent).
