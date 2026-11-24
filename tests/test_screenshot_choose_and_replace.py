@@ -73,7 +73,7 @@ import re
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final, get_args
 
 import pytest
@@ -111,6 +111,7 @@ from tests.support import (
     Answer,
     FakeTime,
     Reader,
+    SetClock,
     again_form,
     box_subject,
     busy_store,
@@ -153,6 +154,7 @@ from tests.support import (
     units_on,
     unnamed,
     upload,
+    with_real_clock,
 )
 from tests.support import SCREENSHOT_NOW as NOW
 
@@ -2012,27 +2014,41 @@ def test_a_frozen_review_offers_enter_it_by_hand_and_no_replace(
 
 
 def masked(page: str) -> str:
-    """A family page with what each showing makes anew masked: the upload form's time and every
-    one-time id, its token among them."""
+    """A family page with what each showing makes anew masked: the upload form's time, the
+    value of the planning form's issue time, and every one-time id, its token among them."""
     page = re.sub(r'(name="issued" value=")[^"]*"', r'\1-"', page)
+    page = re.sub(r'(name="issued_at" value=")[^"]*"', r'\1-"', page)
     return re.sub(r'value="[0-9a-f]{32}"', 'value="-"', page)
+
+
+SHOWN_AT = datetime(2026, 11, 24, 17, 10, 25, tzinfo=UTC)
+"""When the plain family page is shown. The planning form writes its issue time to the second,
+so the pages with Add assignments open are shown one second later."""
 
 
 def test_family_review_with_add_open_differs_only_in_the_fold_s_state(
     tmp_path: pathlib.Path,
 ) -> None:
     """The query that Enter it by hand goes to opens Add assignments and changes nothing else,
-    and Enter one assignment carries the id it lands on."""
+    and Enter one assignment carries the id it lands on. The pages are shown a second apart,
+    and the planning form keeps its issue time field with each page's own value."""
     with here(open_settings(tmp_path)) as browser:
+        with_real_clock(browser, SetClock(SHOWN_AT.date(), SHOWN_AT))
         plain = browser.get("/parent")
+        later = SHOWN_AT + timedelta(seconds=1)
+        with_real_clock(browser, SetClock(later.date(), later))
         opened = browser.get("/parent?add=1")
         other = browser.get("/parent?add=yes")
 
     assert plain.status_code == opened.status_code == other.status_code == 200
+    assert 'name="issued_at" value="20261124T171025Z"' in plain.text
+    assert 'name="issued_at" value="20261124T171026Z"' in opened.text
+    assert 'name="issued_at" value="20261124T171026Z"' in other.text
     assert f"{ADD_FOLD}>" in plain.text
     assert f"{ADD_FOLD} open>" in opened.text
     assert masked(opened.text) == masked(plain.text).replace(f"{ADD_FOLD}>", f"{ADD_FOLD} open>")
     assert masked(other.text) == masked(plain.text)
+    assert 'name="issued_at" value="-"' in masked(plain.text)
     assert plain.text.count('id="enter-one"') == 1
     assert '<h2 class="entry-heading" id="enter-one">Enter one assignment</h2>' in plain.text
 
