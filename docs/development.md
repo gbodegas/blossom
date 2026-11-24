@@ -1234,6 +1234,23 @@ it. If an earlier uv attempt left an environment without pip, the `ensurepip`
 step puts it back. You don't need to activate the environment on either
 platform.
 
+## Running the checks with uv
+
+If you're contributing code, run the local checks from the repository root:
+
+```bash
+uv sync --dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy blossom tests
+uv run pytest
+```
+
+CI also runs pytest across four workers and verifies that every collected
+case reports an outcome. If uv can't download packages, the
+[pip instructions](#when-uv-cannot-download) run the same four checks with
+the environment's own Python.
+
 ## When uv cannot download
 
 Depending on your network and certificate settings, uv can have trouble

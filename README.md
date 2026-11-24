@@ -229,6 +229,7 @@ what goes into each call and what Blossom keeps afterward.
 
 Bug fixes, tests and accessibility improvements are welcome.
 Please use made-up schoolwork in examples, issues and screenshots.
+Before opening a pull request, [run the local checks](docs/development.md#running-the-checks-with-uv).
 For a larger feature, open an issue first. Blossom is built for one
 household, and I want my daughter to have a say in what it becomes.
 
