@@ -115,7 +115,7 @@ These settings take precedence over the sample files, so Blossom could show
 names of any that are set, and nothing else:
 
 ```bash
-env | grep -o '^BLOSSOM_[A-Z_]*'
+uv run --no-env-file python -c "import os; [print(k) for k in sorted(os.environ) if k.startswith('BLOSSOM_')]"
 ```
 
 If it prints any names, stop here and start the sample from a terminal
@@ -175,6 +175,9 @@ Get-Content $settingsFile, data\sample\sample.env |
 
 .\.venv\Scripts\python.exe -m uvicorn blossom.app:app --reload
 ```
+
+If you edit either settings file, use `KEY=value` without quotes around the
+value.
 
 Open My week or Family review at the links above. Start a fresh window
 when switching from this sample to a household's settings.

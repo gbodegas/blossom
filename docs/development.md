@@ -1041,7 +1041,7 @@ These settings take precedence over the sample files, so Blossom could show
 names of any that are set, and nothing else:
 
 ```bash
-env | grep -o '^BLOSSOM_[A-Z_]*'
+uv run --no-env-file python -c "import os; [print(k) for k in sorted(os.environ) if k.startswith('BLOSSOM_')]"
 ```
 
 If it prints any names, stop here and start the sample from a terminal
@@ -1130,7 +1130,7 @@ These settings take precedence over the sample files, so Blossom could show
 names of any that are set, and nothing else:
 
 ```bash
-env | grep -o '^BLOSSOM_[A-Z_]*'
+uv run --no-env-file python -c "import os; [print(k) for k in sorted(os.environ) if k.startswith('BLOSSOM_')]"
 ```
 
 If it prints any names, stop here and start the sample from a terminal
@@ -1140,9 +1140,27 @@ without them. Otherwise:
 uv run --env-file .env.example --env-file data/sample/sample.env uvicorn blossom.app:app --reload
 ```
 
-Use `--env-file .env` in place of `--env-file .env.example` once you have
-your own settings, such as an API key for the planner. Keep the sample file
-last, so its date and paths apply.
+To use your own settings, copy `.env.example` to `.env`, but only if there
+is no `.env` yet, so an existing one is never overwritten:
+
+```bash
+[ -f .env ] || cp .env.example .env
+```
+
+In PowerShell, `if (-not (Test-Path .env)) { Copy-Item .env.example .env }`
+does the same. Then set, as plain `KEY=value` lines without quotes, what you
+want to try with the sample:
+
+- `ANTHROPIC_API_KEY` enables the paid calls: planning and screenshot
+  reading.
+- `BLOSSOM_SCREENSHOT_IMPORT=1` turns on screenshot import for the sample.
+
+Start the sample with your `.env` first and the sample file last, so the
+sample's date and paths apply:
+
+```bash
+uv run --env-file .env --env-file data/sample/sample.env uvicorn blossom.app:app --reload
+```
 
 ### macOS and Linux
 
