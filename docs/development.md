@@ -1068,7 +1068,7 @@ A short tour works without a key. From her page, My week:
 
 1. Open the Geometry assignment's **Details**, choose **Done**, and press
    **Save update**.
-2. Beside the saved update, open **Update hand-in status**, choose
+2. Beside the saved update, open **Other turn-in options**, choose
    **Still to turn in**, type one next step, and press **Save hand-in update**. Go **Back to the week**
    and open **To turn in**, where the Geometry work waits with its next step
    and **I turned it in**. Done alone puts nothing on that list.
