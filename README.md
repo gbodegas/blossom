@@ -125,8 +125,8 @@ without them. Otherwise, start the sample:
 uv run --locked --env-file .env.example --env-file data/sample/sample.env uvicorn blossom.app:app --reload
 ```
 
-To use an API key or turn on screenshot import with your own `.env`,
-follow [With uv](docs/development.md#with-uv) in the development guide.
+To try planning or screenshot reading with the sample, follow
+[With uv](docs/development.md#with-uv) in the development guide.
 
 Open [My week](http://127.0.0.1:8000/student/due-this-week) or
 [Family review](http://127.0.0.1:8000/parent).

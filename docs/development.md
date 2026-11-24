@@ -1148,19 +1148,33 @@ is no `.env` yet, so an existing one is never overwritten:
 ```
 
 In PowerShell, `if (-not (Test-Path .env)) { Copy-Item .env.example .env }`
-does the same. Then set, as plain `KEY=value` lines without quotes, what you
-want to try with the sample:
+does the same. Then set `ANTHROPIC_API_KEY` in `.env`, as a plain
+`KEY=value` line without quotes. It enables the paid calls: planning and
+screenshot reading.
 
-- `ANTHROPIC_API_KEY` enables the paid calls: planning and screenshot
-  reading.
-- `BLOSSOM_SCREENSHOT_IMPORT=1` turns on screenshot import for the sample.
-
-Start the sample with your `.env` first and the sample file last, so the
-sample's date and paths apply:
+To try planning with the sample, start it with your `.env` first and the
+sample file last, so the sample's date and paths apply:
 
 ```bash
 uv run --env-file .env --env-file data/sample/sample.env uvicorn blossom.app:app --reload
 ```
+
+To try screenshot import too, create `.env.sample-local` beside `.env` with
+this single line:
+
+```text
+BLOSSOM_SCREENSHOT_IMPORT=1
+```
+
+Then start the sample with all three files:
+
+```bash
+uv run --env-file .env --env-file .env.sample-local --env-file data/sample/sample.env uvicorn blossom.app:app --reload
+```
+
+`.env` supplies the key, `.env.sample-local` turns on screenshot import for
+this launch, and the bundled sample file supplies the sample's date and
+database paths.
 
 ### macOS and Linux
 
