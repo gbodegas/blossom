@@ -88,6 +88,8 @@ class NewImage(NamedTuple):
     png: bytes
     width: int
     height: int
+    name: str | None = None
+    """The name of the file it came from, without any folder, or None when it had none."""
 
 
 class UploadedReading(NamedTuple):
@@ -148,6 +150,9 @@ class ImageState(NamedTuple):
     an attempt's id, not the current attempt's, and no reading. An attempt over other images
     leaves it so; a process's start clears it, since a stopped process's deadline is never seen
     to pass."""
+    file_name: str | None = None
+    """The name of the file it came from, kept and removed with it; None for one kept before
+    names were, or sent without one."""
 
 
 class RowView(NamedTuple):
@@ -424,6 +429,7 @@ TABLES: Final = (
         seconds REAL,
         input_tokens INTEGER,
         output_tokens INTEGER,
+        file_name TEXT,
         UNIQUE (draft_id, sha256),
         CHECK (reading IS NULL OR failure IS NULL),
         CHECK ((reading IS NULL) = (reading_kind IS NULL)),
@@ -476,7 +482,7 @@ OPEN_DRAFTS: Final = (
 acceptance record or a reading."""
 IMAGES_OF: Final = (
     "SELECT image_id, position, sha256, width, height, size, added_at, attempt_id, reading, "
-    "reading_kind, prompt_version, schema_version, failure FROM import_draft_images "
+    "reading_kind, prompt_version, schema_version, failure, file_name FROM import_draft_images "
     "WHERE draft_id = ? ORDER BY position"
 )
 """A draft's image rows without their PNGs, which only ``image_png`` reads."""
@@ -557,6 +563,16 @@ class ImportDraftsStore:
         try:
             for table in TABLES:
                 self._connection.execute(table)
+            columns = {
+                str(row["name"])
+                for row in self._connection.execute("PRAGMA table_info(import_draft_images)")
+            }
+            if "file_name" not in columns:
+                # A file from before screenshots kept their names: its screenshots have none,
+                # and a review shows them by their places alone.
+                self._connection.execute(
+                    "ALTER TABLE import_draft_images ADD COLUMN file_name TEXT"
+                )
             self._connection.commit()
         except BaseException:
             self._connection.rollback()
@@ -697,7 +713,7 @@ class ImportDraftsStore:
             image_id = secrets.token_hex(16)
             self._connection.execute(
                 "INSERT INTO import_draft_images (image_id, draft_id, position, sha256, png, "
-                "width, height, size, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "width, height, size, added_at, file_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     image_id,
                     draft_id,
@@ -708,6 +724,7 @@ class ImportDraftsStore:
                     item.height,
                     len(item.png),
                     instant(now),
+                    item.name,
                 ),
             )
             added.append(image_id)
@@ -779,7 +796,7 @@ class ImportDraftsStore:
             new_id = secrets.token_hex(16)
             self._connection.execute(
                 "INSERT INTO import_draft_images (image_id, draft_id, position, sha256, png, "
-                "width, height, size, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "width, height, size, added_at, file_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     draft_id,
@@ -790,6 +807,7 @@ class ImportDraftsStore:
                     item.height,
                     len(item.png),
                     instant(now),
+                    item.name,
                 ),
             )
             self._connection.execute(RAISE_VERSION, (draft_id,))
@@ -1587,6 +1605,7 @@ class ImportDraftsStore:
                     in_ended_attempt=row["attempt_id"] is not None
                     and row["reading"] is None
                     and not (ends is not None and in_attempt(row, draft)),
+                    file_name=None if row["file_name"] is None else str(row["file_name"]),
                 )
                 for row in worked.images
             ),

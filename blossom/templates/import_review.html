@@ -34,19 +34,21 @@
   {% if typed %}<section class="panel">{{ typed_back(typed, typed_said) }}</section>{% endif %}
   {#
     Each screenshot as one compact row: its thumbnail at a fixed width, its place and how it
-    stands and why, then View screenshot, Replace while the review is open to changes, Enter it
-    by hand while the screenshot needs attention or, with no key set, isn't read, and Remove
-    while the review is open to changes, on one line. Once the review asks its questions,
-    Replace and Enter it by hand are presses of its form, which keep the review as Save review
-    for later does and then go on, and they point to the line that says so; Remove points to the
-    note that says typing in the fold isn't kept. Before, they are links. Once some homework is saved, a screenshot that needs
-    attention says what can be done instead.
+    stands and why, the name of the file it came from when the review kept one, then View
+    screenshot, Replace while the review is open to changes, Enter it by hand while the
+    screenshot needs attention or, with no key set, isn't read, and Remove while the review is
+    open to changes, on one line. Once the review asks its questions, Replace and Enter it by
+    hand are presses of its form, which keep the review as Save review for later does and then
+    go on, and they point to the line that says so; Remove points to the note that says typing
+    in the fold isn't kept. Before, they are links. Once some homework is saved, a screenshot
+    that needs attention says what can be done instead.
   #}
   {% macro shown(image) %}
         <li>
           <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}"><img src="/parent/imports/{{ draft_id }}/images/{{ image.id }}" alt="Screenshot {{ image.place }}" width="72"></a>
           <div>
             <p>Screenshot {{ image.place }} · {{ image.label }}</p>
+            {% if image.name %}<p class="file-name"><bdi>{{ image.name }}</bdi></p>{% endif %}
             {% if image.after %}<p class="note">{{ image.after }}</p>{% endif %}
             <div class="actions">
               <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot<span class="visually-hidden"> {{ image.place }}</span></a>

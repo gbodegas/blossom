@@ -1752,7 +1752,7 @@ async def first_upload(request: Request, state: State) -> Response:
         return said_page(request, marks_of(state), UPLOAD_SAID["unreadable"], 400)
     if not in_time:
         return said_page(request, marks_of(state), SAID["too_old"], 400)
-    prepared = await asyncio.to_thread(prepare_upload, upload.files)
+    prepared = await asyncio.to_thread(prepare_upload, upload.files, upload.names)
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
     except sqlite3.Error as error:
@@ -1951,7 +1951,7 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
     wanted = read_wanted(upload.fields)
     if wanted is None:
         return said_page(request, marks_of(state), UPLOAD_SAID["unreadable"], 400)
-    prepared = await asyncio.to_thread(prepare_upload, upload.files)
+    prepared = await asyncio.to_thread(prepare_upload, upload.files, upload.names)
     try:
         added = await asyncio.to_thread(
             state.import_drafts.add_images,
@@ -2095,7 +2095,12 @@ def replace_page(
             "page": "parent",
             "draft_id": snapshot.draft_id,
             "until": until_text(state, snapshot.expires_at),
-            "image": {"id": image.image_id, "place": place, "label": label_of(outcomes[place - 1])},
+            "image": {
+                "id": image.image_id,
+                "place": place,
+                "label": label_of(outcomes[place - 1]),
+                "name": image.file_name,
+            },
             "said": list(said),
             "keyed": model_configured(state.settings),
             "limits": replace_limits(place),
@@ -2163,7 +2168,7 @@ async def replace_image(request: Request, draft_id: str, image_id: str, state: S
         return refused(400, UPLOAD_SAID["unreadable"])
     if len(upload.files) != 1:
         return refused(400, REPLACE_SAID["several" if upload.files else "none"])
-    prepared = await asyncio.to_thread(prepare_upload, upload.files)
+    prepared = await asyncio.to_thread(prepare_upload, upload.files, upload.names)
     if prepared.refused:
         [(_, kind)] = prepared.refused
         return refused(422, new_file_refusal(kind))
@@ -2659,6 +2664,7 @@ def review_page(
                     "id": image.image_id,
                     "place": index + 1,
                     "label": label_of(outcome),
+                    "name": image.file_name,
                     "read": outcome.folds,
                     "after": after if snapshot.frozen and outcome.attention else None,
                     "by_hand": outcome.attention or (not keyed and outcome.state == "unread"),

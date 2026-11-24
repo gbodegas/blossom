@@ -56,6 +56,7 @@ from blossom.uploads import (
     ImageRefused,
     UploadRefused,
     base64_length,
+    kept_file_name,
     prepare_image,
     prepare_upload,
     read_upload,
@@ -927,3 +928,75 @@ def test_no_sentinel_from_an_image_or_a_body_reaches_a_log_or_an_error(
         assert "Sentinel" not in str(error)
         assert error.__context__ is None
         assert error.__cause__ is None
+
+
+# ------------------------------------------------------------------ a file's name
+
+
+@pytest.mark.parametrize(
+    ("sent", "kept"),
+    [
+        (b"fractions-page.png", "fractions-page.png"),
+        (b"C:\\Users\\kid\\Pictures\\fractions-page.png", "fractions-page.png"),
+        (b"photos/2026/spelling words.png", "spelling words.png"),
+        (b"photos\\2026/mixed.png", "mixed.png"),
+        ("caf\u00e9 notes.png".encode(), "caf\u00e9 notes.png"),
+        ("report\u202egnp.exe".encode(), "reportgnp.exe"),
+        ("zero\u200bwidth.png".encode(), "zerowidth.png"),
+        (b"tab\there\x07.png", "tabhere.png"),
+        ("line\u2028break\u2029.png".encode(), "linebreak.png"),
+        (b"  padded.png  ", "padded.png"),
+        (b"\xff\xfe.png", None),
+        (b"folder/", None),
+        (b"\x01\x02", None),
+        (b"", None),
+    ],
+)
+def test_a_file_s_name_is_kept_without_its_folder_or_any_hidden_character(
+    sent: bytes, kept: str | None
+) -> None:
+    assert kept_file_name(sent) == kept
+
+
+def test_a_name_past_255_characters_keeps_its_first_255() -> None:
+    assert kept_file_name(("n" * 300 + ".png").encode()) == "n" * 255
+    assert kept_file_name(("\u00e9" * 255).encode()) == "\u00e9" * 255
+
+
+def test_an_upload_keeps_each_file_s_name_in_the_files_order() -> None:
+    first, second = png(color=(1, 2, 3)), png(color=(4, 5, 6))
+    upload = read(
+        body_of(
+            [
+                ("creation_token", None, b"t" * 32),
+                (FILE_FIELD, "C:\\fakepath\\first-page.png", first),
+                (FILE_FIELD, "", b""),
+                (FILE_FIELD, "school/second-page.png", second),
+            ]
+        )
+    )
+
+    assert upload.files == (first, second)
+    assert upload.names == ("first-page.png", "second-page.png")
+
+
+def test_a_name_that_isn_t_utf8_keeps_its_file_and_no_name() -> None:
+    data = png()
+    head = f'--{BOUNDARY}\r\nContent-Disposition: form-data; name="{FILE_FIELD}"; filename="'
+    tail = f"\r\n--{BOUNDARY}--\r\n"
+    raw = head.encode() + b'\xff\xfe.png"\r\nContent-Type: image/png\r\n\r\n' + data
+    upload = read(raw + tail.encode())
+
+    assert upload.files == (data,)
+    assert upload.names == (None,)
+
+
+def test_each_prepared_image_takes_the_name_at_its_place() -> None:
+    first, second = png(color=(1, 2, 3)), png(color=(4, 5, 6))
+
+    named = prepare_upload([first, b"not an image", second], ["a.png", "b.txt", "c.png"])
+    unnamed = prepare_upload([first])
+
+    assert [(place, item.name) for place, item in named.images] == [(0, "a.png"), (2, "c.png")]
+    assert named.refused == ((1, "not_png_or_jpeg"),)
+    assert [item.name for _, item in unnamed.images] == [None]

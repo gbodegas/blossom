@@ -131,8 +131,9 @@ ALLOWED_IMPORTS: dict[str, str] = {
     "time": "standard library; the forward-only clock behind the sign-in wait",
     "typing": "standard library",
     "unicodedata": (
-        "standard library; the category of a character, to refuse a control, and one way of "
-        "writing the accents in a grade report's student line"
+        "standard library; the category of a character, to refuse a control or drop one from "
+        "an uploaded file's name, and one way of writing the accents in a grade report's "
+        "student line"
     ),
     "uuid": "standard library",
     "zlib": "standard library; packs the list a review page signs, and reads it back in memory",
