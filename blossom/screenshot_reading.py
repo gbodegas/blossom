@@ -71,9 +71,10 @@ class ReadOutcome(NamedTuple):
     """What a press did, as image ids and failure kinds alone, never text from a reading.
 
     ``unfinished`` images had no result kept by the deadline; ``busy`` ones had a result the
-    file's writer couldn't take; ``dropped`` ones had a result the store refused, such as for
-    an image removed since. With no attempt started, ``under_way_until`` says when a current
-    one ends, or is ``None`` when the press named nothing to read.
+    file's writer couldn't take; ``unsent`` ones were never sent, since the store was busy as
+    their prepared PNG was loaded, before any call; ``dropped`` ones had a result the store
+    refused, such as for an image removed since. With no attempt started, ``under_way_until``
+    says when a current one ends, or is ``None`` when the press named nothing to read.
     """
 
     started: bool = False
@@ -83,6 +84,7 @@ class ReadOutcome(NamedTuple):
     dropped: tuple[str, ...] = ()
     busy: tuple[str, ...] = ()
     unfinished: tuple[str, ...] = ()
+    unsent: tuple[str, ...] = ()
 
 
 async def read_screenshots(
@@ -133,7 +135,13 @@ async def read_screenshots(
         # and another press may read at once.
         with suppress(StoreBusy, WriterBusy):
             await asyncio.to_thread(store.end_attempt, student_id, draft_id, attempt.attempt_id)
-    found: dict[str, list[Any]] = {"read": [], "failed": [], "dropped": [], "busy": []}
+    found: dict[str, list[Any]] = {
+        "read": [],
+        "failed": [],
+        "dropped": [],
+        "busy": [],
+        "unsent": [],
+    }
     unfinished: list[str] = []
     for task, image_id in tasks.items():
         status, failure = task.result() if task in done else ("unfinished", None)
@@ -150,6 +158,7 @@ async def read_screenshots(
         dropped=tuple(found["dropped"]),
         busy=tuple(found["busy"]),
         unfinished=tuple(unfinished),
+        unsent=tuple(found["unsent"]),
     )
 
 
@@ -188,7 +197,8 @@ def _read_and_store(
     except (UnknownImage, DraftNotFound, DraftExpired):
         return ("dropped", None)
     except (StoreBusy, WriterBusy):
-        return ("busy", None)
+        # Nothing was sent: the store was busy before any call.
+        return ("unsent", None)
     answer: ScreenshotAnswer | None = None
     tokens_in = tokens_out = 0
     for asked in (1, 2):

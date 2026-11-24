@@ -144,8 +144,10 @@ class ImageState(NamedTuple):
     covered: bool
     """Whether the draft's current attempt covers it."""
     in_ended_attempt: bool
-    """Whether the draft's last attempt covered it and has ended. Every start clears it, since
-    a stopped process's deadline is never seen to pass."""
+    """Whether an attempt that has ended covered it last and kept no reading of it: it holds
+    an attempt's id, not the current attempt's, and no reading. An attempt over other images
+    leaves it so; a process's start clears it, since a stopped process's deadline is never seen
+    to pass."""
 
 
 class RowView(NamedTuple):
@@ -206,6 +208,9 @@ class Added(NamedTuple):
     that the list repeated. A caller maps them back to places in its upload."""
     free: int
     """Places left for more images after this commit."""
+    place: int = 0
+    """For a replace, the new image's place in the draft as this commit left it, counted from
+    one; 0 for an upload."""
 
 
 class Attempt(NamedTuple):
@@ -251,6 +256,15 @@ class TooManyImages(RuntimeError):
 
 class UnknownImage(LookupError):
     """The image id is not an image of this draft."""
+
+
+class AlreadyHeld(RuntimeError):
+    """A new image is one the draft already holds: the image it would replace, or another,
+    named by its id. Nothing was written."""
+
+    def __init__(self, image_id: str) -> None:
+        super().__init__("the review already holds this image")
+        self.image_id = image_id
 
 
 class AttemptUnderWay(RuntimeError):
@@ -729,6 +743,66 @@ class ImportDraftsStore:
             self._close_if_finished(draft, now)
             return self._version(draft_id)
 
+    def replace_image(
+        self,
+        student_id: str,
+        draft_id: str,
+        image_id: str,
+        image: NewImage,
+        wait: float = STORE_WAIT_SECONDS,
+    ) -> Added:
+        """Put a new image in the place of one image of an open draft, with no version
+        comparison, in one write: the old image and its reading are deleted, the new one takes
+        its position unread, and the version is raised. What the change does to the review's
+        answers is applied in the same transaction, as a removal's is. A new image the draft
+        already holds, the one it would replace included, is refused (``AlreadyHeld``) and
+        nothing is written. The expiry is unchanged, and the draft can't finish by it, since
+        the new image is unread. What it returns names the new image alone, and its place as
+        this write left it, which an image removed since the caller looked can have moved."""
+        [(digest, item)] = digested([image])
+        with self._writing(wait) as now:
+            draft = self._open_draft(student_id, draft_id, now)
+            if self._frozen(draft):
+                raise DraftFrozen
+            held = self._connection.execute(IMAGES_OF, (draft_id,)).fetchall()
+            old = next((row for row in held if row["image_id"] == image_id), None)
+            if old is None:
+                raise UnknownImage
+            for row in held:
+                if row["sha256"] == digest:
+                    raise AlreadyHeld(str(row["image_id"]))
+            before = self._worked_out(draft).readings
+            self._connection.execute(
+                "DELETE FROM import_draft_images WHERE draft_id = ? AND image_id = ?",
+                (draft_id, image_id),
+            )
+            new_id = secrets.token_hex(16)
+            self._connection.execute(
+                "INSERT INTO import_draft_images (image_id, draft_id, position, sha256, png, "
+                "width, height, size, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    new_id,
+                    draft_id,
+                    int(old["position"]),
+                    digest,
+                    item.png,
+                    item.width,
+                    item.height,
+                    len(item.png),
+                    instant(now),
+                ),
+            )
+            self._connection.execute(RAISE_VERSION, (draft_id,))
+            self._carried(draft, before)
+            return Added(
+                draft_id,
+                self._version(draft_id),
+                (new_id,),
+                (),
+                MOST_IMAGES_PRESENT - len(held),
+                held.index(old) + 1,
+            )
+
     def image_png(
         self, student_id: str, draft_id: str, image_id: str, wait: float = STORE_WAIT_SECONDS
     ) -> bytes:
@@ -755,7 +829,8 @@ class ImportDraftsStore:
     ) -> Attempt | None:
         """Start a Read attempt over the unread images among ``image_ids``, failed ones
         included, with no version comparison. None when none of them is unread. An id that
-        isn't an image of the draft is passed over."""
+        isn't an image of the draft is passed over. Its id goes on the draft and on the images
+        it covers alone: another image keeps the id of the attempt that last covered it."""
         with self._writing(wait) as now:
             draft = self._open_draft(student_id, draft_id, now)
             if self._frozen(draft):
@@ -777,9 +852,6 @@ class ImportDraftsStore:
             self._connection.execute(
                 "UPDATE import_drafts SET attempt_id = ?, attempt_ends = ? WHERE draft_id = ?",
                 (attempt.attempt_id, attempt.ends, draft_id),
-            )
-            self._connection.execute(
-                "UPDATE import_draft_images SET attempt_id = NULL WHERE draft_id = ?", (draft_id,)
             )
             self._connection.executemany(
                 "UPDATE import_draft_images SET attempt_id = ? WHERE image_id = ?",
@@ -1512,7 +1584,9 @@ class ImportDraftsStore:
                     read=row["reading"] is not None,
                     failure=None if row["failure"] is None else str(row["failure"]),
                     covered=ends is not None and in_attempt(row, draft),
-                    in_ended_attempt=ends is None and in_attempt(row, draft),
+                    in_ended_attempt=row["attempt_id"] is not None
+                    and row["reading"] is None
+                    and not (ends is not None and in_attempt(row, draft)),
                 )
                 for row in worked.images
             ),

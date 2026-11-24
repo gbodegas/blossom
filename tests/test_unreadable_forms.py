@@ -998,6 +998,7 @@ READS_ITS_OWN_BODY: Final = frozenset(
     {
         "/parent/imports",
         "/parent/imports/{draft_id}/images",
+        "/parent/imports/{draft_id}/images/{image_id}/replace",
         "/parent/imports/{draft_id}/read",
         "/parent/imports/{draft_id}/review",
         "/parent/imports/{draft_id}/find",
@@ -1008,9 +1009,10 @@ READS_ITS_OWN_BODY: Final = frozenset(
     }
 )
 """The import routes that take no form parameter and read their body themselves once their
-parent-only check has passed: an upload's multipart body within its limits, a Read press's two
-fields, a review press's answers against the fields its page signed, a search's card and
-words, and the review's small signed forms that set rows aside or discard the review.
+parent-only check has passed: an upload's multipart body within its limits (a replace's one
+file among them), a Read press's two fields, a review press's answers against the fields its
+page signed, a search's card and words, and the review's small signed forms that set rows aside
+or discard the review.
 ``tests/test_import_routes.py`` presses them."""
 READS: Final = frozenset({"GET", "HEAD"})
 PARENT_MAY_PRESS: Final = frozenset({"/student/actions/plan", "/student/grades/view"})

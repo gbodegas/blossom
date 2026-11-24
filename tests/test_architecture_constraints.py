@@ -484,6 +484,7 @@ the screenshot review's, the grade check's or a run check's."""
 LANDS_SITES = {
     "grade_review.html": 1,
     "import_find.html": 2,
+    "import_replace.html": 1,
     "import_review.html": 3,
     "import_said.html": 4,
     "parent_review.html": 1,

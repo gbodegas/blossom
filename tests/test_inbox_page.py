@@ -152,7 +152,7 @@ def test_the_family_page_offers_the_paste_box_and_the_entry_form(tmp_path: pathl
     assert 'action="/parent/inbox/read"' in page
     assert '<textarea id="paste-text" name="text"' in page
     assert ">Preview assignments</button>" in page
-    assert '<h2 class="entry-heading">Enter one assignment</h2>' in page
+    assert '<h2 class="entry-heading" id="enter-one">Enter one assignment</h2>' in page
     assert 'action="/parent/inbox/enter"' in page
     assert 'id="entry-course" type="text" name="course"' in page
     assert '<label for="entry-due_date">Due date (optional)</label>' in page

@@ -1,0 +1,38 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{#
+  The presses of every screenshot upload form, each with its line directly after it, which its
+  button names as its description. "Upload and read" sends read=now: the upload is stored, then
+  the images it added are read. "Upload without reading" sends no read field: the upload is
+  stored and nothing is read. With no key only "Upload without reading" is offered, as the
+  form's one press. ``prefix`` keeps the lines' ids apart on a page; ``typing`` adds the note
+  that typing in the review's fold isn't kept by this form. Each press carries the words the
+  page script shows while it waits; the form's own words are true of either press. ``one`` is
+  the form of a screenshot's replace step, which takes one file: "Replace and read" and "Replace
+  without reading", each in the same way.
+#}
+{% macro upload_presses(prefix, keyed, typing=false, one=false) %}
+  {% set lost = " typing-lost" if typing else "" %}{% set verb = "Replace" if one else "Upload" %}{% set verbing = "Replacing" if one else "Uploading" %}{% set what = "screenshot" if one else "screenshots" %}
+  {% if keyed %}
+    <div class="actions">
+      <button type="submit" class="primary" name="read" value="now" data-pending="{{ verbing }} and reading the {{ what }}" aria-describedby="{{ prefix }}-and-read{{ lost }}">{{ verb }} and read</button>
+    </div>
+    <p class="note" id="{{ prefix }}-and-read">{{ verb }} and read sends {{ "this" if one else "these" }} {{ what }} to Blossom, then to Anthropic's API to be read.</p>
+  {% endif %}
+    <div class="actions">
+      <button type="submit" class="{{ 'secondary' if keyed else 'primary' }}" data-pending="{{ verbing }} the {{ what }}" aria-describedby="{{ prefix }}-without{{ lost }}">{{ verb }} without reading</button>
+    </div>
+    <p class="note" id="{{ prefix }}-without">{{ verb }} without reading keeps {{ "it" if one else "them" }} in Blossom; nothing is sent to Anthropic's API until you press Read.</p>
+{% endmacro %}
+
+{#
+  What sits under every screenshot picker: the line that says choosing sends nothing, true with
+  scripts off and on; the line the page script says what was chosen in; and the list it fills
+  with each screenshot chosen, by its name, size and preview, with Remove and Replace, hidden
+  and empty until then. ``one`` gives the line of a replace step's picker, for one file.
+#}
+{% macro chosen_files(one=false) %}
+  {% if one %}<p class="note">Choosing sends nothing. The chosen screenshot stays in this browser until you press a replace button below.</p>{% else %}<p class="note">Choosing sends nothing. The chosen screenshots stay in this browser until you press an upload button below.</p>{% endif %}
+  <p class="note" role="status" data-chosen></p>
+  <ul class="chosen-files" data-chosen-files hidden></ul>
+{% endmacro %}

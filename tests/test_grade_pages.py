@@ -5069,15 +5069,16 @@ selects that row's "Choose an existing assignment", before the inbox review's ow
 def test_only_an_entry_picked_by_hand_selects_choose_an_existing_assignment() -> None:
     """Nothing on load, on a page shown again or on a value restored moves a row's answer: the
     review form's one listener is pinned whole, no other line of the script names a row's
-    answer or list, and the only other change listener is the screenshot picker's, which says
-    how many screenshots are chosen."""
+    answer or list, and the only other change listeners are the screenshot picker's, which lists
+    the screenshots chosen, and its Replace picker's, which swaps one of them."""
     script = SCRIPT.read_text(encoding="utf-8")
 
     assert script.count(REVIEW_LISTENER) == 1
     rest = script.replace(REVIEW_LISTENER, "")
     assert [line for line in rest.splitlines() if "choose." in line or "match." in line] == []
-    assert script.count('addEventListener("change"') == 2
-    assert rest.count('    picker.addEventListener("change", count);\n') == 1
+    assert script.count('addEventListener("change"') == 3
+    assert rest.count('    picker.addEventListener("change", chose);\n') == 1
+    assert rest.count('        swap.addEventListener("change", swapped);\n') == 1
 
 
 def test_a_check_answered_without_saving_lands_on_what_it_says_and_a_review_takes_no_focus(

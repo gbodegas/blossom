@@ -14,7 +14,6 @@ import functools
 import html
 import http.client
 import inspect
-import io
 import json
 import logging
 import pathlib
@@ -45,7 +44,6 @@ import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 from markupsafe import escape
-from PIL import Image
 
 from blossom import (
     intake,
@@ -74,7 +72,7 @@ from blossom.screenshot_save import (
     save_homework,
 )
 from blossom.screenshots import TITLE_MOST
-from blossom.settings import ANTHROPIC_API_KEY_VARIABLE, SCREENSHOT_IMPORT_VARIABLE, Settings
+from blossom.settings import Settings
 from blossom.stores import homework_saves
 from blossom.stores.drafts import StoreBusy, WriterBusy
 from blossom.stores.import_drafts import (
@@ -110,59 +108,95 @@ from tests.import_review_cases import (
     written_as_the_older_form,
 )
 from tests.support import (
+    AGAIN_FORM,
+    ANSWERED,
     ARRIVAL_CUE,
+    ASK_NAME_AGAIN,
+    BLUE,
+    CLEARED_INTRO,
+    ESSAY_NOTE,
+    GREEN,
     HERS,
+    JOINED_TICK,
+    LOOPBACK,
     PAGE_HEADERS,
-    PLAN_DATE,
+    PROBLEM,
+    RED,
     THEIRS,
+    TOLD,
     Answer,
     Element,
     HangWatch,
     HeldByAnother,
+    Reader,
     Rule,
     UnreadCss,
     View,
+    again_form,
+    box_subject,
+    busy_store,
+    checked_names,
+    checked_values,
     control_names,
     database_of,
     declared_for,
+    drafts,
     elements_of,
+    essay_answer,
+    essay_row,
     field_names,
+    fields_named,
     first_button_of,
-    fixture_settings,
+    first_form,
+    followed,
+    frozen_after_a_partial_save,
+    gif,
+    her_name_answered,
+    here,
     homework_answer,
     homework_card,
     homework_from_a_note,
+    images_of,
+    joined_field,
+    keep,
+    lines_in,
+    made,
     main_of,
     names_not_led_by_their_words,
     names_without_their_words,
+    note_card,
+    now_of,
+    open_settings,
+    opened_for_typing,
+    outside,
+    png,
+    press_outside,
+    progress_on,
     quiet_client,
+    read_form,
+    read_review,
     refused_in_the_grade_write,
     refusing,
     refusing_coded,
+    review_form,
+    says,
+    says_each,
     selector,
     signed_in,
     signed_in_household,
+    split_answers,
     sqlite_failure,
     state_of,
+    stored_answers,
     style_rules,
+    token_of,
+    uncertain_upload,
+    units_on,
+    unnamed,
     unshielded,
+    upload,
     winner,
 )
-
-LOOPBACK = "127.0.0.1:8781"
-KEY = {ANTHROPIC_API_KEY_VARIABLE: "not-a-key-and-never-sent"}
-ANSWERED = ScreenshotAnswer(homework_answer(), None, 1500, 300)
-
-
-def says(page: str, text: str) -> bool:
-    """Whether a page shows these words, as its template escapes them."""
-    return str(escape(text)) in page
-
-
-def says_each(page: str, lines: Sequence[str]) -> bool:
-    """Whether a page shows each of these lines, as its template escapes them."""
-    return all(says(page, line) for line in lines)
-
 
 ONE_LEFT_THEN: Final = (
     "Saved: 1 new assignment. At the time of this save, 1 item still needed checking."
@@ -193,114 +227,9 @@ ANSWERS_LINE_WORDS: Final = (*KEPT_CLAIM_WORDS, NOT_KEPT_FOR_SAVED)
 saying it did not keep answers for homework already saved."""
 
 
-def png(width: int = 64, height: int = 48, color: tuple[int, int, int] = (200, 40, 40)) -> bytes:
-    buffer = io.BytesIO()
-    Image.new("RGB", (width, height), color).save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
-def gif() -> bytes:
-    buffer = io.BytesIO()
-    Image.new("RGB", (8, 8), (1, 2, 3)).save(buffer, format="GIF")
-    return buffer.getvalue()
-
-
-RED, BLUE, GREEN = png(color=(200, 40, 40)), png(color=(40, 40, 200)), png(color=(40, 200, 40))
-
-
-def open_settings(tmp_path: pathlib.Path, *, key: bool = True, turned_on: bool = True) -> Settings:
-    """Sign-in off, files under ``tmp_path``, and screenshot import on unless told otherwise."""
-    return fixture_settings(
-        BLOSSOM_TODAY=PLAN_DATE.isoformat(),
-        BLOSSOM_DATABASE_PATH=str(tmp_path / "blossom.sqlite3"),
-        BLOSSOM_CHECKPOINT_PATH=str(tmp_path / "checkpoints.sqlite3"),
-        BLOSSOM_TRACE_PATH=str(tmp_path / "traces.sqlite3"),
-        **({SCREENSHOT_IMPORT_VARIABLE: "1"} if turned_on else {}),
-        **(KEY if key else {}),
-    )
-
-
 def signed_in_with_import(tmp_path: pathlib.Path) -> Settings:
     """The household's sign-in on, and screenshot import on."""
     return dataclasses.replace(signed_in_household(tmp_path), screenshot_import=True)
-
-
-@contextmanager
-def here(settings: Settings, *, client: str = "127.0.0.1") -> Iterator[TestClient]:
-    """The app as this computer's browser reaches it with the sign-in off."""
-    with (
-        TestClient(
-            create_app(settings),
-            follow_redirects=False,
-            headers={"Host": LOOPBACK, "Origin": f"http://{LOOPBACK}"},
-            client=(client, 50000),
-        ) as browser,
-        import_review_cases.reached_by(browser),
-    ):
-        yield browser
-
-
-class Reader:
-    """A fake reader: each image's answer by its color, counted per call."""
-
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.answers: dict[bytes, ScreenshotAnswer] = {}
-        self.calls: list[bytes] = []
-        monkeypatch.setattr(screenshot_reading, "read_screenshot", self.read)
-
-    def read(self, settings: Settings, png_bytes: bytes, *, timeout: float) -> ScreenshotAnswer:
-        self.calls.append(png_bytes)
-        return self.answers.get(png_bytes, ANSWERED)
-
-
-def now_of(browser: TestClient) -> datetime:
-    return state_of(browser).real_clock.now()
-
-
-def first_form(browser: TestClient, issued: datetime | None = None) -> dict[str, str]:
-    return {
-        "token": new_creation_token(),
-        "issued": (issued or now_of(browser)).isoformat(),
-    }
-
-
-def upload(
-    browser: TestClient,
-    *images: bytes,
-    form: dict[str, str] | None = None,
-    to: str = "/parent/imports",
-) -> Answer:
-    files = [("screenshots", (f"shot-{n}.png", data, "image/png")) for n, data in enumerate(images)]
-    return browser.post(to, data=form if form is not None else first_form(browser), files=files)
-
-
-def made(browser: TestClient, *images: bytes) -> str:
-    """A first upload that commits: the draft its redirect names."""
-    sent = upload(browser, *images)
-    assert sent.status_code == 303, sent.text
-    found = re.fullmatch(r"/parent/imports/([0-9a-f]{32})", sent.headers["location"])
-    assert found is not None
-    return found.group(1)
-
-
-def drafts(browser: TestClient) -> int:
-    connection = state_of(browser).import_drafts._connection
-    return int(connection.execute("SELECT COUNT(*) FROM import_drafts").fetchone()[0])
-
-
-def images_of(browser: TestClient, draft_id: str) -> list[str]:
-    student = state_of(browser).project_state.student_id()
-    return [
-        item.image_id for item in state_of(browser).import_drafts.snapshot(student, draft_id).images
-    ]
-
-
-def read_form(page: str) -> dict[str, str]:
-    """The Read form's fields, as the review page signs them."""
-    found = re.search(r'<form method="post" action="([^"]+/read)".*?</form>', page, re.S)
-    assert found is not None, page
-    fields = dict(re.findall(r'name="([^"]+)" value="([^"]*)"', found.group(0)))
-    return fields
 
 
 # ------------------------------------------------------------------ uploads
@@ -536,48 +465,6 @@ def test_a_first_upload_form_is_used_only_within_48_hours_of_its_making(
 
 UPLOAD_UNKNOWN: Final = "Blossom couldn't tell whether the screenshots were uploaded."
 TRY_AGAIN: Final = "To try this upload again, choose the same screenshots below."
-AGAIN_FORM: Final = re.compile(
-    r'<form method="post" action="/parent/imports" enctype="multipart/form-data">(.*?)</form>',
-    re.S,
-)
-
-
-def again_form(page: str) -> dict[str, str]:
-    """The hidden fields of the upload form a page offers, as the page wrote them."""
-    found = AGAIN_FORM.search(page)
-    assert found is not None, page[:900]
-    fields = re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', found.group(1))
-    return {name: html.unescape(value) for name, value in fields}
-
-
-def uncertain_upload(
-    browser: TestClient, *images: bytes, committed: bool, form: dict[str, str] | None = None
-) -> tuple[Answer, dict[str, str]]:
-    """A first upload whose write fails for a reason that isn't a busy file, by a stand-in for
-    the store's failure: raised once the real write has committed, or before any write. The
-    answer, and the form the upload sent."""
-    store = state_of(browser).import_drafts
-    real = store.create
-    sent = form if form is not None else first_form(browser)
-
-    def create(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
-        if committed:
-            real(*args, **kwargs)
-        refusing_coded("SQLITE_IOERR")()
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(store, "create", create)
-        answer = upload(browser, *images, form=sent)
-    return answer, sent
-
-
-def token_of(browser: TestClient, draft_id: str) -> str:
-    """The creation token a review was made with."""
-    connection = state_of(browser).import_drafts._connection
-    row = connection.execute(
-        "SELECT creation_token FROM import_drafts WHERE draft_id = ?", (draft_id,)
-    ).fetchone()
-    return str(row[0])
 
 
 @pytest.mark.parametrize(
@@ -624,7 +511,15 @@ def test_the_form_of_an_uncertain_upload_waits_for_the_parent(tmp_path: pathlib.
     assert picker is not None
     assert 'name="screenshots"' in picker.group(0)
     assert " value=" not in picker.group(0)
-    assert '<button type="submit" class="primary">Upload chosen screenshots</button>' in form
+    assert (
+        '<button type="submit" class="primary" name="read" value="now" '
+        'data-pending="Uploading and reading the screenshots" '
+        'aria-describedby="again-and-read">Upload and read</button>'
+    ) in form
+    assert (
+        '<button type="submit" class="secondary" data-pending="Uploading the screenshots" '
+        'aria-describedby="again-without">Upload without reading</button>'
+    ) in form
     assert 'http-equiv="refresh"' not in answer.text.lower()
     assert "autofocus" not in form
     shown = html.unescape(answer.text)
@@ -998,76 +893,10 @@ def test_an_image_never_read_is_never_told_to_read_again(tmp_path: pathlib.Path)
 # ------------------------------------------------------------------ the review's rows
 
 
-def read_review(
-    browser: TestClient, monkeypatch: pytest.MonkeyPatch, *answers: tuple[bytes, object]
-) -> tuple[str, str]:
-    """A review made of the given images, each read as its answer: its id and the page after
-    the Read press."""
-    reader = Reader(monkeypatch)
-    for image, answer in answers:
-        reader.answers[image] = ScreenshotAnswer(answer, None, 10, 5)
-    draft_id = made(browser, *(image for image, _ in answers))
-    page = browser.get(f"/parent/imports/{draft_id}").text
-    pressed = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(page))
-    assert pressed.status_code == 200, pressed.text
-    return draft_id, pressed.text
-
-
-def review_form(page: str) -> str:
-    found = re.search(r'<form method="post" action="[^"]+/review".*?</form>', page, re.S)
-    assert found is not None, page
-    return found.group(0)
-
-
-def stored_answers(browser: TestClient, draft_id: str) -> dict[tuple[str, str], str]:
-    student = state_of(browser).project_state.student_id()
-    tables = state_of(browser).project_state.draft_for_save(student, draft_id)
-    assert tables is not None
-    return {key: value for key, (value, _) in tables.answers.items()}
-
-
-def checked_values(form: str) -> list[tuple[str, str]]:
-    return re.findall(r'name="([^"]+)" value="([^"]*)" checked', form)
-
-
 def acceptance_of(page: str) -> str:
     found = re.search(r'name="acceptance" value="([0-9a-f]{32})"', page)
     assert found is not None
     return found.group(1)
-
-
-def keep(browser: TestClient, draft_id: str, *answers: tuple[str, str, str]) -> None:
-    """Answers kept as a press keeps them, at the review's version: (kind, subject, value)."""
-    student = state_of(browser).project_state.student_id()
-    drafts = state_of(browser).import_drafts
-    version = drafts.snapshot(student, draft_id).version
-    drafts.keep_answers(
-        student,
-        draft_id,
-        version=version,
-        answers=[
-            AnswerToKeep(kind, subject, value, correction_digest(None), ())
-            for kind, subject, value in answers
-        ],
-    )
-
-
-def fields_named(form: str, prefix: str) -> list[str]:
-    found = re.findall(rf'name="{re.escape(prefix)}([^"]+)"', form)
-    return list(dict.fromkeys(html.unescape(name) for name in found))
-
-
-def box_subject(page: str, field: str, nth: int = 0) -> str:
-    """The subject of the nth box of "Correct what was read" for this field, in page order:
-    ``course``, ``title``, ``instruction:{i}``, ``due`` or ``assigned``."""
-    found = [s for s in fields_named(review_form(page), "correct:") if json.loads(s)[1] == field]
-    return found[nth]
-
-
-def her_name_answered(browser: TestClient, draft_id: str, page: str) -> str:
-    [form] = fields_named(review_form(page), "answer:name:")
-    keep(browser, draft_id, ("name", form, "hers"))
-    return browser.get(f"/parent/imports/{draft_id}").text
 
 
 def test_the_rows_appear_once_read_each_lone_card_preselected_and_nothing_stored(
@@ -1288,18 +1117,6 @@ def test_a_field_the_reader_wasnt_sure_of_asks_to_be_confirmed_or_corrected(
     assert "Still to answer: a field the reader wasn't sure of, the student name." in form
 
 
-def split_answers() -> tuple[object, object]:
-    """One assigned card read under two day headings: one row whose assigned days differ."""
-    card = homework_card(footer="Due (10/9/2026)")
-    monday = homework_answer(
-        headings=[{"text": "Monday 10/5/2026", "y": 150, "uncertain": None}], cards=[card]
-    )
-    tuesday = homework_answer(
-        headings=[{"text": "Tuesday 10/6/2026", "y": 150, "uncertain": None}], cards=[card]
-    )
-    return monday, tuesday
-
-
 def test_a_row_whose_assigned_days_differ_asks_first_and_names_both_days(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1393,17 +1210,6 @@ def as_a_browser_sends(fields: Sequence[tuple[str, str]]) -> bytes:
 def send(browser: TestClient, draft_id: str, fields: Sequence[tuple[str, str]]) -> Answer:
     """The post sent to the review as ``import_review_cases.send`` sends it."""
     return import_review_cases.send(browser, draft_id, fields)
-
-
-def followed(browser: TestClient, answer: Answer) -> str:
-    """The page a press answers with: the review it renders, or the one it redirects to."""
-    if answer.status_code != 303:
-        return answer.text
-    return browser.get(answer.headers["location"]).text
-
-
-def units_on(page: str) -> list[str]:
-    return [html.unescape(u) for u in re.findall(r'name="unit" value="([^"]+)"', page)]
 
 
 def digests_on(page: str) -> list[str]:
@@ -2345,26 +2151,6 @@ def units_ticked(page: str) -> list[str]:
 # ------------------------------------------------------------------ setting aside and discarding
 
 
-def outside(page: str, form_id: str) -> tuple[str, list[tuple[str, str]]]:
-    """A small form of the review page, by its id: its action and its fields."""
-    found = re.search(
-        rf'<form method="post" action="([^"]+)" id="{re.escape(form_id)}">(.*?)</form>',
-        page,
-        re.S,
-    )
-    assert found is not None, form_id
-    return found.group(1), import_review_cases.small_form_fields(found.group(2))
-
-
-def press_outside(browser: TestClient, page: str, form_id: str) -> Answer:
-    action, fields = outside(page, form_id)
-    return browser.post(
-        action,
-        content=as_a_browser_sends(fields),
-        headers={"content-type": "application/x-www-form-urlencoded"},
-    )
-
-
 def row_states(browser: TestClient, draft_id: str) -> dict[str, str]:
     student = state_of(browser).project_state.student_id()
     snapshot = state_of(browser).import_drafts.snapshot(student, draft_id)
@@ -2524,7 +2310,7 @@ def test_the_disclosure_stands_directly_above_read(tmp_path: pathlib.Path) -> No
         draft_id = made(browser, RED)
         page = browser.get(f"/parent/imports/{draft_id}").text
 
-    disclosed = page.index(str(escape(imports.DISCLOSED)))
+    disclosed = page.index(str(escape(imports.DISCLOSED_ONE)))
     read = page.index(f'action="/parent/imports/{draft_id}/read"')
     assert disclosed < read
     assert "<p" not in page[disclosed:read].split("</p>", 1)[1]
@@ -3177,8 +2963,9 @@ def test_screenshots_still_to_read_or_read_as_something_else_stay_in_view_with_r
     assert says(above, imports.FAILED["not_json"])
     assert says(above, imports.LABELS["wrong_kind"])
     assert f'action="/parent/imports/{draft_id}/read"' in above
-    assert says(above, imports.DISCLOSED)
-    assert above.index('id="saving-heading"') < above.index("</form>", above.index("review-form"))
+    assert says(above, imports.DISCLOSED_ONE)
+    form_start = above.index('id="review-form"')
+    assert above.index('id="saving-heading"') < above.index("</form>", form_start)
 
 
 def eight_read(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
@@ -3782,10 +3569,6 @@ def test_a_refused_destination_reads_the_same_in_the_refusal_its_control_and_the
 
 
 # ------------------------------------------------------------------ a box left unticked
-
-
-def checked_names(page: str) -> list[str]:
-    return [html.unescape(name) for name, _ in checked_values(review_form(page))]
 
 
 def test_an_unticked_confirmation_is_withdrawn_so_a_save_writes_nothing_and_asks_again(
@@ -4503,8 +4286,6 @@ def test_each_group_s_tick_sits_inline_with_its_label(
 
 # ------------------------------------------------------------------ changes that clear answers
 
-CLEARED_INTRO = "Your screenshots changed, so these rows' answers were cleared:"
-
 
 def test_removing_a_screenshot_that_clears_an_answer_says_which_rows_to_answer_again(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -4873,15 +4654,22 @@ IMPORT_REVIEW_RULES = (
     "  margin-bottom: 0.5rem;\n}\n\n"
     ".import-review fieldset.choice > legend + * {\n  clear: both;\n}\n\n"
     "/* Each screenshot is one compact row: its thumbnail at a fixed width, then its place, how"
-    " it\n   stands and its links, which go under the thumbnail where the line can't hold them."
-    " Each box\n   of a card's corrections stands apart from the one above. */\n"
-    ".import-review .screenshot-list li {\n  display: flex;\n  flex-wrap: wrap;\n"
+    " it\n   stands and its links, which go under the thumbnail where the line can't hold them. A"
+    "\n   screenshot chosen and not yet sent takes the same row, its preview in place of the\n"
+    "   thumbnail, then its full name, which wraps anywhere, its size, and Remove and Replace."
+    " Each\n   box of a card's corrections stands apart from the one above. */\n"
+    ".import-review .screenshot-list li,\n.import-review .chosen-files li {\n  display: flex;\n"
+    "  flex-wrap: wrap;\n"
     "  gap: 0.75rem;\n  align-items: flex-start;\n  margin-block: 0.75rem;\n}\n\n"
-    ".import-review .screenshot-list li > a {\n  flex: 0 0 4.5rem;\n}\n\n"
-    ".import-review .screenshot-list li > div {\n  flex: 1 1 12rem;\n  min-width: 0;\n}\n\n"
-    ".import-review .screenshot-list img {\n  display: block;\n  width: 100%;\n  height: auto;\n"
+    ".import-review .screenshot-list li > a,\n.import-review .chosen-files li > span {\n"
+    "  flex: 0 0 4.5rem;\n}\n\n"
+    ".import-review .screenshot-list li > div,\n.import-review .chosen-files li > div {\n"
+    "  flex: 1 1 12rem;\n  min-width: 0;\n}\n\n"
+    ".import-review .screenshot-list img,\n.import-review .chosen-files img {\n"
+    "  display: block;\n  width: 100%;\n  height: auto;\n"
     "  border: 1px solid var(--edge);\n  border-radius: var(--radius-small);\n}\n\n"
-    ".import-review .screenshot-list p {\n  margin: 0 0 0.35rem;\n}\n\n"
+    ".import-review .screenshot-list p,\n.import-review .chosen-files p {\n"
+    "  margin: 0 0 0.35rem;\n}\n\n"
     ".import-review .steps > label {\n  margin-top: 0.75rem;\n}\n\n"
     "@media (max-width: 30rem) {\n"
     "  .import-review .panel,\n  .import-review .panel article {\n"
@@ -4898,8 +4686,8 @@ outline button, with the browser's own button hidden and the picker set apart fr
 that sends it, school text breaks where its line can't hold it while a
 control's words never do, an instruction's correction box sits under its label, two lines
 tall to start, a question's words sit inside its box, each screenshot is one compact row
-with a fixed thumbnail, and each box of a card's corrections stands apart from the one
-above."""
+with a fixed thumbnail, a screenshot chosen and not yet sent takes the same row with its
+preview, and each box of a card's corrections stands apart from the one above."""
 STYLESHEET = pathlib.Path(imports.__file__).parents[1] / "static" / "blossom.css"
 
 
@@ -4913,7 +4701,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
 
     # Strict on purpose, beside the exact rules: any text that names the class changes this
     # count, a harmless comment included, and that upkeep is accepted.
-    assert css.count("import-review") == 38
+    assert css.count("import-review") == 43
     assert css.count(IMPORT_REVIEW_RULES) == 1
     assert declared_for('.import-review article[tabindex="-1"]:focus') == [ARRIVAL_CUE]
     for landing in ("#told:focus", "#done:focus", "#outcome-heading:focus"):
@@ -4927,6 +4715,7 @@ def test_the_screenshot_review_s_own_rules_are_pinned_and_only_its_pages_carry_i
     # The page of an uncertain upload carries it for the upload form it offers again.
     assert carriers == [
         "import_find.html",
+        "import_replace.html",
         "import_review.html",
         "import_said.html",
         "parent_review.html",
@@ -5102,6 +4891,8 @@ def every_route(draft_id: str, image_id: str) -> list[tuple[str, str]]:
         ("POST", f"/parent/imports/{draft_id}/images"),
         ("GET", f"/parent/imports/{draft_id}/images/{image_id}"),
         ("POST", f"/parent/imports/{draft_id}/images/{image_id}/remove"),
+        ("GET", f"/parent/imports/{draft_id}/images/{image_id}/replace"),
+        ("POST", f"/parent/imports/{draft_id}/images/{image_id}/replace"),
         ("POST", f"/parent/imports/{draft_id}/read"),
         ("POST", f"/parent/imports/{draft_id}/review"),
         ("POST", f"/parent/imports/{draft_id}/find"),
@@ -5124,6 +4915,8 @@ def test_every_import_route_is_one_this_module_names() -> None:
         ("POST", "/parent/imports/{draft_id}/images"),
         ("GET", "/parent/imports/{draft_id}/images/{image_id}"),
         ("POST", "/parent/imports/{draft_id}/images/{image_id}/remove"),
+        ("GET", "/parent/imports/{draft_id}/images/{image_id}/replace"),
+        ("POST", "/parent/imports/{draft_id}/images/{image_id}/replace"),
         ("POST", "/parent/imports/{draft_id}/read"),
         ("POST", "/parent/imports/{draft_id}/review"),
         ("POST", "/parent/imports/{draft_id}/find"),
@@ -5214,12 +5007,14 @@ def test_every_import_answer_is_no_store_with_the_sign_in_off(
 
 SCREENSHOT_SUMMARY: Final = (
     "Up to 10 screenshots per review, PNG or JPEG, 12 MB each. Screenshots are sent to "
-    "Anthropic's API only when you press Read."
+    "Anthropic's API only when you press Upload and read, Replace and read, or Read."
 )
 """The approved line above the picker, written out here rather than taken from the code, so a
 change to its words fails here."""
 SCREENSHOT_DISCLOSURE: Final = (
-    "When you press Read, Blossom sends the screenshots to Anthropic's API to be read. A "
+    "Blossom sends screenshots to Anthropic's API to be read only when you press Upload and "
+    "read, which sends the ones it uploads; Replace and read, which sends the one screenshot it "
+    "puts in another's place; or Read, which sends the ones its review names. A "
     "review's screenshots, what Blossom read from them, and any progress saved for later are "
     "removed from Blossom's database file when the review finishes, is discarded, or expires, "
     "48 hours after it starts. The removal can wait for Blossom's next hourly cleanup, or its "
@@ -5250,8 +5045,9 @@ def test_family_review_offers_screenshots_while_import_is_on(tmp_path: pathlib.P
     assert says(page.text, SCREENSHOT_SUMMARY)
     assert says(page.text, SCREENSHOT_DISCLOSURE)
     assert (
-        '<form method="post" action="/parent/imports" enctype="multipart/form-data">' in page.text
-    )
+        '<form method="post" action="/parent/imports" enctype="multipart/form-data" '
+        'data-pending="Uploading the screenshots">'
+    ) in page.text
     assert sent.status_code == 303
     draft_id = sent.headers["location"].rsplit("/", 1)[-1]
     assert f'href="/parent/imports/{draft_id}"' in listed
@@ -5370,7 +5166,7 @@ def test_turned_off_every_import_address_answers_as_a_missing_one_before_any_bod
         }
         count = drafts(browser)
 
-    assert len(answers) == 84
+    assert len(answers) == 91
     assert {method: answer[0] for method, answer in missing.items()} == dict.fromkeys(METHODS, 404)
     assert answers == {(method, path): missing[method] for method, path in answers}
     assert all("allow" not in dict(answer[2]) for answer in answers.values())
@@ -5396,7 +5192,7 @@ def test_turned_off_a_signed_in_parent_finds_no_import_address(tmp_path: pathlib
         }
         count = drafts(parent)
 
-    assert len(answers) == 84
+    assert len(answers) == 91
     assert answers == {(method, path): missing[method] for method, path in answers}
     assert all("allow" not in dict(answer[2]) for answer in answers.values())
     assert count == 0
@@ -5592,14 +5388,20 @@ def test_no_import_address_carries_anything_but_ids() -> None:
     assert "query_params" not in names
     assert sorted(pages) == [
         "import_find.html",
+        "import_replace.html",
         "import_review.html",
         "import_rows.html",
         "import_said.html",
         "import_typed_back.html",
+        "import_upload.html",
     ]
     assert [(n, f) for n, found in forms.items() for f in found if 'method="post"' not in f] == []
     assert [n for n, text in pages.items() if re.search(r'href="[^"]*\?', text)] == []
-    assert reads == ["/parent/imports/{draft_id}", "/parent/imports/{draft_id}/images/{image_id}"]
+    assert reads == [
+        "/parent/imports/{draft_id}",
+        "/parent/imports/{draft_id}/images/{image_id}",
+        "/parent/imports/{draft_id}/images/{image_id}/replace",
+    ]
 
 
 def find_button(page: str, piece: str) -> str:
@@ -5782,13 +5584,6 @@ def emptied(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
 
 def a_read_review(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
     return read_review(browser, monkeypatch, (RED, homework_answer()))[0]
-
-
-def frozen_after_a_partial_save(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
-    draft_id, page = read_review(browser, monkeypatch, (RED, homework_answer()))
-    page = her_name_answered(browser, draft_id, page)
-    send(browser, draft_id, page_post(page, "save", tick=units_on(page)[:1]))
-    return draft_id
 
 
 OPEN_REVIEWS: Final = {
@@ -6491,15 +6286,6 @@ def test_an_instruction_longer_than_a_paste_is_offered_and_kept_whole(
 
 # ----------------------------------------------- her homework confirmed, then more screenshots
 
-ASK_NAME_AGAIN = "Your screenshots changed, so confirm again that these are her homework."
-
-
-def unnamed(title: str) -> dict[str, Any]:
-    """A homework list showing no student name, with one card of this title."""
-    return homework_answer(
-        active_student={"name": None, "uncertain": None}, cards=[homework_card(title=title)]
-    )
-
 
 def confirmed_then_added(
     browser: TestClient, monkeypatch: pytest.MonkeyPatch
@@ -6708,13 +6494,6 @@ def box_of(page: str, name: str) -> tuple[str, str] | None:
         return found.group(1), text[1:] if text.startswith("\n") else text
     found = re.search(rf'<input [^>]*name="{named}" value="([^"]*)"[^>]*>', page)
     return None if found is None else (found.group(0), html.unescape(found.group(1)))
-
-
-def progress_on(browser: TestClient, draft_id: str) -> screenshot_posts.SavedProgress | None:
-    student = state_of(browser).project_state.student_id()
-    return screenshot_posts.progress_read(
-        state_of(browser).import_drafts.snapshot(student, draft_id).progress
-    )
 
 
 def test_no_correction_box_cuts_what_is_typed_or_pasted(
@@ -9261,13 +9040,6 @@ OUTCOME: Final = re.compile(
 TYPED_BACK: Final = re.compile(r"<textarea rows=\"2\" readonly>\n(.*?)</textarea>", re.S)
 
 
-def busy_store(error: type[Exception]) -> Callable[..., object]:
-    def refuse(*_: object, **__: object) -> object:
-        raise error
-
-    return refuse
-
-
 @pytest.mark.parametrize("busy", [StoreBusy, WriterBusy], ids=["store busy", "writer busy"])
 def test_a_resent_save_the_review_can_t_be_read_for_says_its_counts_and_gives_the_typing_back(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, busy: type[Exception]
@@ -9975,13 +9747,13 @@ def test_a_read_whose_readings_were_kept_goes_to_the_review_when_it_can_t_be_sho
     assert "<h3>Sentence Composing</h3>" in review_form(shown.text)
 
 
-def test_a_reading_the_busy_file_couldn_t_keep_is_left_to_its_label_when_a_read_goes_back(
+def test_a_reading_the_busy_file_couldn_t_keep_is_said_by_the_review_a_read_goes_back_to(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A Read whose reading the busy file couldn't keep, then the read for its page refused:
-    the way back to the review carries no line naming a screenshot by number, and the review's
-    own label says it needs reading once the review can be read. The screenshot was read once,
-    by one Read."""
+    the way back to the review carries that screenshot's hash, and the review says the reading
+    couldn't be kept by the place it shows and with "Read again.", as its Read press sends it,
+    beside its own label saying it needs reading. The screenshot was read once, by one Read."""
     with here(open_settings(tmp_path)) as browser:
         reader = Reader(monkeypatch)
         draft_id = made(browser, RED)
@@ -10004,9 +9776,9 @@ def test_a_reading_the_busy_file_couldn_t_keep_is_left_to_its_label_when_a_read_
         shown = browser.get(answer.headers["location"])
 
     assert answer.status_code == 303
-    assert imports.NOTE_COOKIE not in answer.headers.get("set-cookie", "")
-    assert not says(shown.text, imports.busy_reading(1))
-    assert "couldn&#39;t keep the reading" not in shown.text
+    assert imports.NOTE_COOKIE in answer.headers.get("set-cookie", "")
+    assert said_block(shown.text) == [imports.busy_reading(1)]
+    assert shown.text.count("couldn&#39;t keep the reading") == 1
     assert says(shown.text, imports.LABELS["ended"])
     assert reader.calls == [RED]
     assert runs == [1]
@@ -10141,9 +9913,11 @@ def test_a_read_whose_review_can_t_be_read_again_counts_the_readings_it_kept(
     """Five screenshots read by one press: a reading kept, a failure kept, a reading the busy
     writer couldn't keep, one that ended with an error nothing expects and one the store refused
     to keep. The review's read is then refused, busy or not. The way back counts the one reading
-    kept, and says nothing of the other four, nothing doubtful and no screenshot by its place;
-    the review's labels say how each one stands. Nothing is read twice, the review isn't read
-    again after the refusal, and no change lines are worked out."""
+    kept and carries the hash of the one the busy writer couldn't keep, which the review says by
+    the place it shows, with "Read again." as its Read press sends it; it says nothing of the
+    other three and nothing doubtful, and the review's labels say how each one stands. Nothing is
+    read twice, the review isn't read again after the refusal, and no change lines are worked
+    out."""
     with here(open_settings(tmp_path)) as browser:
         reader = Reader(monkeypatch)
         reader.answers[BLUE] = ScreenshotAnswer(None, "model_refused", 10, 5)
@@ -10168,14 +9942,14 @@ def test_a_read_whose_review_can_t_be_read_again_counts_the_readings_it_kept(
     assert sorted(reader.calls) == sorted([RED, BLUE, GREEN, YELLOW, VIOLET])
     assert shown.status_code == 200
     assert lines_in(TOLD.search(shown.text)) == [KEPT_ONE]
-    assert said_block(shown.text) == []
+    assert said_block(shown.text) == [imports.busy_reading(3)]
     assert says(shown.text, "Screenshot 1 · Read.")
     assert says(shown.text, f"Screenshot 2 · {imports.FAILED['model_refused']}")
     assert says(shown.text, f"Screenshot 3 · {imports.LABELS['ended']}")
     assert says(shown.text, f"Screenshot 4 · {imports.LABELS['ended']}")
     assert says(shown.text, f"Screenshot 5 · {imports.LABELS['ended']}")
     assert not says(shown.text, imports.READINGS_UNCONFIRMED)
-    assert "couldn&#39;t keep the reading" not in shown.text
+    assert shown.text.count("couldn&#39;t keep the reading") == 1
 
 
 def test_a_read_whose_review_can_t_be_read_again_counts_every_reading_it_kept(
@@ -10244,14 +10018,15 @@ ROWS_REFUSED: Final = {
 the store call refused."""
 
 
-def assert_only_changes_and_count(shown: Answer, told: list[str]) -> None:
+def assert_only_changes_and_count(shown: Answer, told: list[str], busy: Sequence[str] = ()) -> None:
     """The visit after a Read press whose rows couldn't be built: what the press changed in the
-    said block, ``told`` in the status block, and no line naming a screenshot by its place, no
-    review-wide total, and no line page-building added."""
+    said block, then ``busy``, the lines the review says of the readings the busy writer couldn't
+    keep, by the places it shows; ``told`` in the status block, and no other line naming a
+    screenshot by its place, no review-wide total, and no line page-building added."""
     assert shown.status_code == 200
-    assert said_block(shown.text) == [CHANGED]
+    assert said_block(shown.text) == [CHANGED, *busy]
     assert lines_in(TOLD.search(shown.text)) == told
-    assert "couldn&#39;t keep the reading" not in shown.text
+    assert shown.text.count("couldn&#39;t keep the reading") == len(busy)
     assert TOTALS.search(shown.text) is None
     assert not says(shown.text, imports.SAID["no_name_check"])
     assert not says(shown.text, imports.READINGS_UNCONFIRMED)
@@ -10264,9 +10039,10 @@ def test_a_read_whose_rows_can_t_be_built_keeps_what_it_changed_and_counts_its_k
     """Five screenshots read by one press: a reading kept, a failure kept, a reading the busy
     writer couldn't keep, one unfinished and one the store refused to keep. The review is read
     again, then building its rows is refused, busy or not, or after a line was added to the
-    press's own. The way back keeps what the press changed and counts the one reading kept,
-    with no numbered busy line, no review-wide total and no added line. Change lines are worked
-    out once, no store call follows the refused one, and nothing is read twice."""
+    press's own. The way back keeps what the press changed and counts the one reading kept, and
+    the review says the reading the busy writer couldn't keep by the place it shows, with no
+    review-wide total and no added line. Change lines are worked out once, no store call follows
+    the refused one, and nothing is read twice."""
     where, refusal, refused = ROWS_REFUSED[case]
     with here(open_settings(tmp_path)) as browser:
         reader = Reader(monkeypatch)
@@ -10292,7 +10068,7 @@ def test_a_read_whose_rows_can_t_be_built_keeps_what_it_changed_and_counts_its_k
     assert later == [refused]
     assert changes == [1]
     assert sorted(reader.calls) == sorted([RED, BLUE, GREEN, YELLOW, VIOLET])
-    assert_only_changes_and_count(shown, [KEPT_ONE])
+    assert_only_changes_and_count(shown, [KEPT_ONE], [imports.busy_reading(3)])
     assert says(shown.text, f"Screenshot 3 · {imports.LABELS['ended']}")
 
 
@@ -10301,9 +10077,10 @@ def test_a_read_whose_rows_can_t_be_built_names_no_screenshot_removed_before_the
 ) -> None:
     """Three screenshots read, the second's reading refused by a busy writer, then building the
     rows refused; before the way back is followed, the first screenshot is removed elsewhere.
-    The visit keeps what the press changed and counts the two readings kept, and says nothing
-    of a screenshot by the place it had: the one that was second is now screenshot 1, and its
-    own label says it needs reading."""
+    The visit keeps what the press changed and counts the two readings kept, and names no
+    screenshot by the place it had: the one that was second is now screenshot 1, the line about
+    the reading the busy writer couldn't keep names it so, and its own label says it needs
+    reading."""
     with here(open_settings(tmp_path)) as browser:
         reader = Reader(monkeypatch)
         draft_id = made(browser, RED, BLUE, GREEN)
@@ -10329,7 +10106,9 @@ def test_a_read_whose_rows_can_t_be_built_names_no_screenshot_removed_before_the
     assert left == [busy, third]
     assert sorted(reader.calls) == sorted([RED, BLUE, GREEN])
     assert_only_changes_and_count(
-        shown, ["Blossom confirmed that this attempt kept the readings of 2 screenshots."]
+        shown,
+        ["Blossom confirmed that this attempt kept the readings of 2 screenshots."],
+        [imports.busy_reading(1)],
     )
     assert says(shown.text, f"Screenshot 1 · {imports.LABELS['ended']}")
 
@@ -11343,19 +11122,9 @@ def test_each_assigned_date_preview_line(
 # ------------------------------------------------------- chosen, uploaded, read and saved, counted
 
 
-TOLD: Final = re.compile(r'<div role="status" id="told"[^>]*>(.*?)</div>', re.S)
 DONE: Final = re.compile(
     r'<div class="panel grade-outcome" role="status" id="done"[^>]*>(.*?)</div>', re.S
 )
-PROBLEM: Final = re.compile(r'<div class="problem" role="status" id="said"[^>]*>(.*?)</div>', re.S)
-
-
-def lines_in(found: re.Match[str] | None) -> list[str]:
-    return (
-        []
-        if found is None
-        else [html.unescape(t) for t in re.findall(r"<p[^>]*>([^<]*)</p>", found.group(1))]
-    )
 
 
 def test_the_pane_and_the_list_say_chosen_uploaded_and_read(
@@ -11371,7 +11140,8 @@ def test_the_pane_and_the_list_say_chosen_uploaded_and_read(
         page = browser.get(sent.headers["location"]).text
         again = browser.get(sent.headers["location"]).text
 
-    assert "Upload chosen screenshots</button>" in family
+    assert "Upload and read</button>" in family
+    assert "Upload without reading</button>" in family
     assert '<p class="note" role="status" data-chosen></p>' in family
     assert lines_in(TOLD.search(page)) == ["2 screenshots uploaded. None read yet."]
     assert focused(page) == [TOLD_LANDS]
@@ -11380,7 +11150,8 @@ def test_the_pane_and_the_list_say_chosen_uploaded_and_read(
     assert says(page, "Screenshot 1 · Not read yet.")
     assert ">Read 2 screenshots</button>" in page
     assert 'data-pending="Reading the screenshots"' in page
-    assert "Upload chosen screenshots</button>" in page
+    assert "Upload and read</button>" in page
+    assert "Upload without reading</button>" in page
     assert '<p class="note" role="status" data-chosen></p>' in page
 
 
@@ -11592,9 +11363,9 @@ def described(page: str, words: str) -> list[str]:
 def test_read_and_upload_point_to_the_typing_note_while_rows_show(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Read and Upload chosen screenshots are forms of their own, which carry none of the fold's
-    typing: with rows on the page, each points to the note that says so, Read beside its
-    disclosure; before any row shows, there is no such note, and they don't."""
+    """Read and the two upload presses are forms of their own, which carry none of the fold's
+    typing: with rows on the page, each points to the note that says so, each beside its own
+    line; before any row shows, there is no such note, and they don't."""
     reader = Reader(monkeypatch)
     reader.answers[RED] = ScreenshotAnswer(homework_answer(), None, 10, 5)
     with here(open_settings(tmp_path)) as browser:
@@ -11607,10 +11378,12 @@ def test_read_and_upload_point_to_the_typing_note_while_rows_show(
 
     assert 'id="typing-lost"' not in plain
     assert described(plain, "Read") == ["read-disclosed"]
-    assert described(plain, "Upload chosen screenshots") == []
+    assert described(plain, "Upload and read") == ["more-and-read"]
+    assert described(plain, "Upload without reading") == ["more-without"]
     assert rows.count('id="typing-lost"') == 1
     assert described(rows, "Read") == ["read-disclosed", "typing-lost"]
-    assert described(rows, "Upload chosen screenshots") == ["typing-lost"]
+    assert described(rows, "Upload and read") == ["more-and-read", "typing-lost"]
+    assert described(rows, "Upload without reading") == ["more-without", "typing-lost"]
 
 
 def test_each_separate_form_says_typing_isn_t_kept(
@@ -11619,8 +11392,8 @@ def test_each_separate_form_says_typing_isn_t_kept(
     """The note that typing in the fold isn't kept by a form of its own is said once, beside the
     status line, and every button of such a form, which reads saved progress, points to it:
     Find under another name, Leave this group unsaved, Use this change, Set aside, Finish
-    without the rest, Remove, Remove only this screenshot, Read and Upload chosen
-    screenshots."""
+    without the rest, Remove, Remove only this screenshot, Read, Upload and read and Upload
+    without reading."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, first = read_review(browser, monkeypatch, (RED, homework_answer()))
         sent = upload(browser, BLUE, form={}, to=f"/parent/imports/{draft_id}/images")
@@ -11666,7 +11439,8 @@ SEPARATE_FORMS: Final = (
     "Remove",
     "Remove only this screenshot",
     "Read 1 screenshot",
-    "Upload chosen screenshots",
+    "Upload and read",
+    "Upload without reading",
 )
 """The buttons whose forms read saved progress, not the review form's typing."""
 
@@ -11975,16 +11749,6 @@ def typed_post(
     name, title = name_and_title(page)
     ticked = digests_on(page) if tick is None else tick
     return page_post(page, press, choose={name: "hers"}, typed={title: title_typed}, tick=ticked)
-
-
-def opened_for_typing(
-    browser: TestClient, draft_id: str, page: str, typed: Mapping[str, str]
-) -> str:
-    """The review after the family presses "Correct what was read" on each closed card that
-    ``typed`` types into, in turn (``open_cards``): the page the typing is then made on. A box
-    the page already shows opens nothing."""
-    cards = import_review_cases.closed_cards(review_form(page), typed, ())
-    return import_review_cases.open_cards(browser, draft_id, page, cards)
 
 
 def opened_for_choosing(
@@ -12822,9 +12586,6 @@ CALL_SITES: Final = {
         imports.AFTER_SAID["busy"],
     ),
     # After a commit: what the press did, as its commit says it.
-    "upload, then her record": ("first upload", "upload_told", "student_id", 1, 303, None),
-    "upload, then the review": ("first upload", "upload_told", "snapshot", 1, 303, None),
-    "more, then her record": ("more images", "upload_told", "student_id", 1, 303, None),
     "remove, then the tables": ("remove", "tables_of", "student_id", 2, 303, None),
     "read, then the review": ("read", "read", "snapshot", 1, 303, None),
     "read, then the tables": ("read", "tables_of", "draft_for_save", 2, 200, None),
@@ -45177,18 +44938,6 @@ def with_notes(*notes: dict[str, object]) -> dict[str, object]:
     return {**answer, "cards": [*answer["cards"], *notes]}
 
 
-def note_card(course: str, words: str, y_top: int) -> dict[str, object]:
-    return homework_card(
-        badge=None,
-        course=course,
-        title=words,
-        instruction=None,
-        footer=None,
-        y_top=y_top,
-        y_bottom=y_top + 60,
-    )
-
-
 def section_of(page: str, heading_id: str) -> str:
     """The review's section under the heading with this id, up to the next section."""
     return page.split(f'<h2 id="{heading_id}">', 1)[1].split("</section>", 1)[0]
@@ -46091,41 +45840,6 @@ def test_a_save_with_no_group_ticked_writes_nothing_and_says_so(
 
 
 # ------------------------------------------------------------------ a note joined to its card
-
-ESSAY_NOTE: Final = "Short essay due Wednesday, 250 words."
-"""Religion 8's note under Monday 10/5/2026: due Wednesday 10/7, two days before its card."""
-JOINED_TICK: Final = re.compile(
-    r'<input type="checkbox" name="answer:joined:[^"]*" value="1"( checked)?>'
-)
-
-
-def essay_answer() -> dict[str, object]:
-    """Religion 8's "Short essay" card, assigned Monday 10/5/2026 and due Friday 10/9, with
-    the teacher's note for that day naming it."""
-    card = homework_card(
-        course="Religion 8",
-        title="Short essay",
-        instruction=None,
-        footer="Due (10/9/2026)",
-        y_top=200,
-        y_bottom=280,
-    )
-    return homework_answer(cards=[card, note_card("Religion 8", ESSAY_NOTE, 300)])
-
-
-def joined_field(page: str) -> str:
-    [subject] = fields_named(review_form(page), "answer:joined:")
-    return f"answer:joined:{subject}"
-
-
-def essay_row(browser: TestClient) -> tuple[Any, set[tuple[str, str | None]], list[str]]:
-    """The saved essay, its due-date claims and the words of its school instructions."""
-    record = state_of(browser).project_state
-    [row] = [a for a in record.all_assignments() if a.course == "Religion 8"]
-    claims = {(c.asserted_value, c.seen_in) for c in record.deadline_records(row.assignment_id)}
-    readable = record.school_instruction_readings([row.assignment_id]).readable
-    found = readable.get(row.assignment_id)
-    return row, claims, [] if found is None else [each.text for each in found.kept]
 
 
 def test_a_joined_note_has_a_tick_of_its_own_with_its_words_and_both_dates(

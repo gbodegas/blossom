@@ -1,0 +1,48 @@
+{# SPDX-License-Identifier: AGPL-3.0-or-later #}
+{#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
+{#
+  One screenshot's replace step: the screenshot by its place, with its preview linked to the
+  stored copy and how it stands, then a form for the one file that takes its place, with
+  "Replace and read" and "Replace without reading", each with its line, as every upload form has
+  them. What a press found wrong shows first, in the problem style, and takes the focus; the
+  screenshot it would have replaced stays as it was. Nothing is chosen or sent until a press.
+#}
+{% extends "base.html" %}
+{% from "import_upload.html" import upload_presses, chosen_files %}
+{% block title %}Blossom - Homework screenshots{% endblock %}
+{% block content %}
+  <h1>Home&shy;work screen&shy;shots</h1>
+  <p class="note">Available until {{ until }}</p>
+  <div class="import-review">
+  {% if said %}
+    <div class="problem" role="status" id="said" tabindex="-1"{{ lands(request, true) }}>
+      {% for line in said %}<p>{{ line }}</p>{% endfor %}
+    </div>
+  {% endif %}
+  <section class="panel" aria-labelledby="replace-heading">
+    <h2 id="replace-heading">Replace Screenshot {{ image.place }}</h2>
+    <ul class="screenshot-list">
+      <li>
+        <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}"><img src="/parent/imports/{{ draft_id }}/images/{{ image.id }}" alt="Screenshot {{ image.place }}" width="72"></a>
+        <div>
+          <p>Screenshot {{ image.place }} · {{ image.label }}</p>
+          <div class="actions">
+            <a class="step-link" href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot<span class="visually-hidden"> {{ image.place }}</span></a>
+          </div>
+        </div>
+      </li>
+    </ul>
+    <p class="note" id="replace-limits">{{ limits }}</p>
+    <form method="post" action="/parent/imports/{{ draft_id }}/images/{{ image.id }}/replace" enctype="multipart/form-data" data-pending="Replacing the screenshot">
+      <div class="file-pick">
+        <label class="file-choose" for="replace-file">Choose a screenshot</label>
+        <input type="file" id="replace-file" name="screenshots" accept="image/png,image/jpeg" aria-describedby="replace-limits">
+      </div>
+      {{ chosen_files(true) }}
+      {{ upload_presses("replace", keyed, false, true) }}
+    </form>
+  </section>
+  </div>
+  <p class="return"><a href="/parent/imports/{{ draft_id }}">Back to the review</a></p>
+  <p class="return"><a href="/parent">Back to Family review</a></p>
+{% endblock %}

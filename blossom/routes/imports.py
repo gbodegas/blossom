@@ -43,31 +43,45 @@ from blossom.routes.navigation import week_href
 from blossom.routes.store_refusals import busy_file as busy_file
 from blossom.screenshot_page import (
     CORRECT_PRESS,
+    NAMED_STEPS,
     NEEDED,
+    ONWARD_PRESSES,
     READY_ASKING,
     READY_WHOLE,
+    REPLACE_PRESS,
     SELECTION_CHECK,
     SELECTION_SHOWN,
     Box,
     ImageName,
     ListTooLarge,
+    NoteLine,
     PostRefused,
     RowsShown,
+    ShotOutcome,
     answer_field,
     cards_named,
-    change_said,
+    found_said,
     kept_ref,
     labels_for,
+    lines_said,
+    note_encoded,
     page_check,
     piece_text,
     rows_shown,
     same_signature,
+    save_fixes,
+    screenshots_named,
     selected_on_load,
     selection_read,
+    shot_outcomes,
     signed_action,
+    text_only_said,
+    told_anything,
 )
 from blossom.screenshot_page import SAID as PAGE_SAID
+from blossom.screenshot_page import SHOT_SAID as PAGE_SHOT_SAID
 from blossom.screenshot_posts import (
+    LATER,
     PROGRESS_SHAPE,
     ReviewPost,
     answer_pieces,
@@ -131,6 +145,7 @@ from blossom.stores.import_drafts import (
     MOST_IMAGES_PRESENT,
     TOKEN_SHAPE,
     Added,
+    AlreadyHeld,
     AnswersKept,
     AnswerToKeep,
     AttemptUnderWay,
@@ -153,12 +168,22 @@ from blossom.uploads import Upload, UploadRefused, prepare_upload, read_upload
 PREFIX: Final = "/parent/imports"
 HOMEWORK: Final = "homework_screenshot"
 FILE_FIELD: Final = "screenshots"
-FIRST_FIELDS: Final = {"token": 32, "issued": 40}
+FIRST_FIELDS: Final = {"token": 32, "issued": 40, "read": 3}
 """The text fields a first upload's form sends, each with its most bytes: the creation token
-and the instant its page was made, read once each."""
+and the instant its page was made, read once each, and "read" when Upload and read sent it."""
+MORE_FIELDS: Final = {"read": 3}
+"""The one text field an upload to an open review may send: "read", from Upload and read."""
+READ_NOW: Final = "now"
+"""The value Upload and read sends as its "read" field; any other value is an upload that can't
+be read."""
 NOTE_COOKIE: Final = "blossom_upload_note"
 NOTE_SECONDS: Final = 300
 """How long an upload's note waits for its review to show it."""
+NOTE_BYTES_MOST: Final = 4096
+"""The most bytes the note's whole Set-Cookie header takes, its name, value and attributes
+together, so a browser keeps it."""
+DIGEST_SHAPE: Final = re.compile(r"[0-9a-f]{64}")
+"""A screenshot's hash as a note carries it: 64 lowercase hex characters."""
 
 LABELS: Final = {
     "unread": "Not read yet.",
@@ -241,10 +266,53 @@ LIMITS: Final = (
 READING: Final = "Reading the screenshots"
 """What the Read press says while it waits; the script's pulsing dots after it are its
 ellipsis."""
-DISCLOSED: Final = (
-    "These screenshots will be sent to Anthropic's API to be read. Nothing is sent until you "
-    "press Read."
-)
+DISCLOSED: Final = "They aren't sent until you press Read."
+DISCLOSED_ONE: Final = "It isn't sent until you press Read."
+"""How the line directly above the Read press ends, after naming each screenshot it sends: of
+the screenshots it names alone, since Upload and read sends the screenshots it uploads."""
+NOT_READ: Final = {
+    "busy": "Blossom was busy, so nothing was read.",
+    "not_started": "Blossom couldn't start reading, so nothing was read.",
+}
+"""What Upload and read, or Replace and read, says when the household's file refused the read
+of its review before the reading began, busy or for another reason; the upload itself is
+stored."""
+RESENT_SAID: Final = {
+    "many": "These screenshots are already in this review. This retry didn't read them again.",
+    "one": "This screenshot is already in this review. This retry didn't read it again.",
+    "gone_many": "These screenshots were in this review when this retry ran. This retry didn't "
+    "read them again.",
+    "gone_one": "This screenshot was in this review when this retry ran. This retry didn't read "
+    "it again.",
+    "read_many": "Press Read to read them.",
+    "read_one": "Press Read to read it.",
+}
+"""What Upload and read sent again by its first upload's token says when every screenshot it
+stored was already in the review, in place of a line for each; what the review says in its place
+when it doesn't hold every one of them as it shows the line; and what it adds when the review
+offers Read for every one of them."""
+RESENT_GONE: Final = {
+    RESENT_SAID["many"]: RESENT_SAID["gone_many"],
+    RESENT_SAID["one"]: RESENT_SAID["gone_one"],
+}
+"""A retry's line as the review says it when one of the screenshots it names, by hash, isn't
+among the review's images (``still_held``)."""
+READ_AGAIN: Final = {
+    NOT_READ["busy"]: "Press Read again.",
+    NOT_READ["not_started"]: "Press Read to try again.",
+    RESENT_SAID["one"]: RESENT_SAID["read_one"],
+    RESENT_SAID["many"]: RESENT_SAID["read_many"],
+}
+"""What a note's line about screenshots left unread says after it when the review, as its page
+shows it, offers Read for every screenshot the note names by hash (``read_covers``)."""
+
+
+def read_disclosed(places: Sequence[int]) -> str:
+    """The line directly above the Read press: each screenshot it sends, by its place, and that
+    they aren't sent before the press."""
+    ends = DISCLOSED_ONE if len(places) == 1 else DISCLOSED
+    return f"Read sends {screenshots_named(places)} to Anthropic's API to be read. {ends}"
+
 
 templates = page_templates()
 logger = logging.getLogger(__name__)
@@ -265,14 +333,48 @@ def too_many(free: int) -> str:
     return f"Nothing was added. This review has room for {room}; remove one to make room."
 
 
-def busy_reading(place: int) -> str:
-    """A reading the busy file couldn't keep, by the image's place in its review."""
-    return f"Blossom was busy and couldn't keep the reading of screenshot {place}. Read again."
+def busy_reading(place: int, *, again: bool = True) -> str:
+    """A reading the busy file couldn't keep, by the image's place in its review, with "Read
+    again." after it unless ``again`` is false."""
+    said = f"Blossom was busy and couldn't keep the reading of screenshot {place}."
+    return f"{said} Read again." if again else said
+
+
+def busy_unplaced(count: int) -> list[str]:
+    """Readings the busy file couldn't keep of screenshots the review doesn't hold as it is
+    shown, by count alone: no place and nothing to do."""
+    if count == 0:
+        return []
+    if count == 1:
+        return ["Blossom was busy and couldn't keep the reading of a screenshot."]
+    return [f"Blossom was busy and couldn't keep the readings of {count} screenshots."]
+
+
+def unsent_reading(place: int, *, send: bool) -> str:
+    """A screenshot a busy store kept a read from sending, by its place in its review, with
+    "Press Read to send it." after it when ``send`` is true."""
+    said = f"Blossom was busy, so screenshot {place} wasn't sent to be read."
+    return f"{said} Press Read to send it." if send else said
+
+
+def unsent_unplaced(count: int) -> list[str]:
+    """Screenshots a busy store kept a read from sending that the review doesn't hold as it is
+    shown, by count alone: no place and nothing to do."""
+    if count == 0:
+        return []
+    if count == 1:
+        return ["Blossom was busy, so a screenshot wasn't sent to be read."]
+    return [f"Blossom was busy, so {count} screenshots weren't sent to be read."]
 
 
 def under_way(until: str) -> str:
     """What a press says while an attempt is current, with the time it ends."""
     return f"Reading is under way until {until}."
+
+
+UNDER_WAY_SAID: Final = "A read was already under way, so this press didn't start another."
+"""What Upload and read, or Replace and read, that read nothing because a read was under way
+says once the review it lands on doesn't show that same read as current (``under_way_said``)."""
 
 
 class ScreenshotsNotHere(Exception):
@@ -372,13 +474,99 @@ def note_check(key: bytes, body: str) -> str:
     return hmac.new(key, body.encode(), hashlib.sha256).hexdigest()[:32]
 
 
+class PressFacts(NamedTuple):
+    """What a press did that its review says against the list it shows, worked out when the
+    review renders from the same snapshot as its list and its Read form, never as the review
+    stood at the press: how many screenshots it added (``added``, none when 0) and whether the
+    review held none before it (``first``); whether it read, so the review says how its
+    screenshots read (``read``); the hashes of the screenshots whose readings the busy file
+    couldn't keep (``busy``); the hash of the screenshot a replace put in (``replaced``);
+    when a read already under way kept it from reading, that read's deadline on the clock
+    attempts are timed on, as the store holds it (``under_way``); and the hashes of the
+    screenshots a busy store kept it from sending to be read (``unsent``)."""
+
+    added: int = 0
+    first: bool = False
+    read: bool = False
+    busy: tuple[str, ...] = ()
+    replaced: str = ""
+    under_way: float | None = None
+    unsent: tuple[str, ...] = ()
+
+
+NO_FACTS: Final = PressFacts()
+"""The facts of a press that has none for the review to work out."""
+FACT_KINDS: Final = {
+    "added": int,
+    "first": bool,
+    "read": bool,
+    "busy": list,
+    "replaced": str,
+    "under_way": float,
+    "unsent": list,
+}
+"""Each key a note's facts may hold, with its one type."""
+
+
+def facts_encoded(facts: PressFacts) -> dict[str, object]:
+    """A press's facts as its note carries them: only what differs from a press that did
+    nothing."""
+    whole: dict[str, object] = {
+        **facts._asdict(),
+        "busy": list(facts.busy),
+        "unsent": list(facts.unsent),
+    }
+    plain: dict[str, object] = {**NO_FACTS._asdict(), "busy": [], "unsent": []}
+    return {name: value for name, value in whole.items() if value != plain[name]}
+
+
+def facts_read(found: object) -> PressFacts:
+    """A note's facts, kept only when they are an object of known keys, each of its one exact
+    type: a count of at least one, flags, hashes of ``DIGEST_SHAPE`` and a finite deadline;
+    anything else is ignored whole."""
+    nothing = NO_FACTS
+    if not isinstance(found, dict) or not set(found) <= set(FACT_KINDS):
+        return nothing
+    if any(type(value) is not FACT_KINDS[name] for name, value in found.items()):
+        return nothing
+    added = found.get("added", 0)
+    busy = found.get("busy", [])
+    unsent = found.get("unsent", [])
+    replaced = found.get("replaced", "")
+    ends = found.get("under_way")
+    if "added" in found and added < 1:
+        return nothing
+    if not all(
+        isinstance(digest, str) and DIGEST_SHAPE.fullmatch(digest) for digest in (*busy, *unsent)
+    ):
+        return nothing
+    if "replaced" in found and not DIGEST_SHAPE.fullmatch(replaced):
+        return nothing
+    if ends is not None and not float("-inf") < ends < float("inf"):
+        return nothing
+    return PressFacts(
+        added,
+        found.get("first", False),
+        found.get("read", False),
+        tuple(busy),
+        replaced,
+        ends,
+        tuple(unsent),
+    )
+
+
 class Note(NamedTuple):
     """What a press says on the review it redirects to: its problems, its status lines, and a
-    save's outcome lines, each shown in its own style."""
+    save's outcome lines, each shown in its own style; the hashes of the screenshots its line
+    about screenshots left unread names (``reread``), for the review to decide whether to say
+    "Press Read" after it; and what the review works out of the press's facts as it renders
+    (``facts``)."""
 
     said: list[str]
     told: list[str]
     done: list[str]
+    reread: tuple[str, ...] = ()
+    facts: PressFacts = NO_FACTS
 
 
 def note_for(
@@ -387,17 +575,29 @@ def note_for(
     said: Sequence[str],
     told: Sequence[str] = (),
     done: Sequence[str] = (),
+    reread: Sequence[str] = (),
+    *,
+    facts: PressFacts = NO_FACTS,
 ) -> str:
-    """A note for one review: what a press found wrong, what it did and what a save did,
+    """A note for one review: what a press found wrong, what it did and what a save did, the
+    hashes of the screenshots it left unread when it names any, and its facts when it has any,
+    after an empty list of hashes when it names none, encoded as ``note_encoded`` gives them and
     signed."""
-    payload = json.dumps([draft_id, list(said), list(told), list(done)])
-    body = base64.urlsafe_b64encode(payload.encode()).decode()
+    parts: list[object] = [draft_id, list(said), list(told), list(done)]
+    if reread or facts != NO_FACTS:
+        parts.append(list(reread))
+    if facts != NO_FACTS:
+        parts.append(facts_encoded(facts))
+    payload = note_encoded(parts)
+    body = base64.urlsafe_b64encode(payload).decode()
     return f"{body}.{note_check(key, body)}"
 
 
 def note_read(key: bytes, draft_id: str, value: str | None) -> Note:
     """The lines a note holds for this review, or none when it is another's or unsigned. A
-    note of two parts holds problems only."""
+    note of two parts holds problems only; a fifth part holds screenshots' hashes, kept only when
+    it is a list of them and nothing else (``DIGEST_SHAPE``); a sixth holds the press's facts
+    (``facts_read``)."""
     nothing = Note([], [], [])
     if not value or "." not in value:
         return nothing
@@ -408,42 +608,93 @@ def note_read(key: bytes, draft_id: str, value: str | None) -> Note:
         found = json.loads(base64.urlsafe_b64decode(body.encode()))
     except (ValueError, TypeError):
         return nothing
-    if not isinstance(found, list) or len(found) not in (2, 4) or found[0] != draft_id:
+    if not isinstance(found, list) or len(found) not in (2, 4, 5, 6) or found[0] != draft_id:
         return nothing
-    parts = [part if isinstance(part, list) else [] for part in found[1:]]
+    parts = [part if isinstance(part, list) else [] for part in found[1:4]]
     lines = [[str(line) for line in part if isinstance(line, str)] for part in parts]
-    return Note(*lines) if len(lines) == 3 else Note(lines[0], [], [])
+    if len(lines) == 1:
+        return Note(lines[0], [], [])
+    hashes = found[4] if len(found) >= 5 else []
+    shaped = isinstance(hashes, list) and all(
+        isinstance(digest, str) and DIGEST_SHAPE.fullmatch(digest) for digest in hashes
+    )
+    facts = facts_read(found[5]) if len(found) == 6 else NO_FACTS
+    said, told, done = lines
+    return Note(said, told, done, tuple(hashes) if shaped else (), facts)
 
 
 def to_review(
     state: ApplicationState,
     draft_id: str,
-    said: Sequence[str] = (),
+    said: Sequence[NoteLine] = (),
     told: Sequence[str] = (),
     done: Sequence[str] = (),
+    *,
+    onward: str | None = None,
+    reread: Sequence[str] = (),
+    facts: PressFacts = NO_FACTS,
 ) -> Response:
-    """The redirect every committed press answers with, carrying its note when it has one."""
-    answer = RedirectResponse(f"{PREFIX}/{draft_id}", status_code=303)
-    if said or told or done:
+    """The redirect every committed press answers with, carrying its note when it has one: to the
+    review, or to the address a screenshot's Replace or Enter it by hand goes on to (``onward``),
+    the note then waiting for the review's next showing. A change's report in ``said`` names as
+    many rows a list as the note's whole Set-Cookie header has room for within
+    ``NOTE_BYTES_MOST``: three, two, one, or none (``NAMED_STEPS``), every list of every report
+    alike, each step measured as the header is sent, the press's facts in it. ``reread``: the
+    hashes of the screenshots the note's line about screenshots left unread names. ``facts``:
+    what the review works out as it renders (``PressFacts``)."""
+    address = onward or f"{PREFIX}/{draft_id}"
+    answer = RedirectResponse(address, status_code=303)
+    if not (lines_said(said) or told or done or facts != NO_FACTS):
+        return answer
+    for most in NAMED_STEPS:
+        answer = RedirectResponse(address, status_code=303)
+        named = lines_said(said, most)
         answer.set_cookie(
             NOTE_COOKIE,
-            note_for(state.result_key, draft_id, said, told, done),
+            note_for(state.result_key, draft_id, named, told, done, reread, facts=facts),
             max_age=NOTE_SECONDS,
             path=f"{PREFIX}/{draft_id}",
             httponly=True,
             samesite="strict",
         )
+        sent = sum(len(value) for name, value in answer.raw_headers if name == b"set-cookie")
+        if sent <= NOTE_BYTES_MOST:
+            break
     return answer
 
 
-def uploaded_said(added: int, total: int, read: int) -> list[str]:
-    """What an upload says it added, from what the review holds after it: nothing when it added
-    none; the first upload's count; or the count it added beside the review's."""
+HAND_ENTRY: Final = "/parent?add=1#enter-one"
+"""Family review with Add assignments open at Enter one assignment: where a screenshot's Enter it
+by hand goes."""
+
+
+def onward_address(draft_id: str, onward: tuple[str, str] | None) -> str | None:
+    """Where a screenshot's Replace or Enter it by hand goes on to once it has kept the review:
+    that screenshot's replace step, or hand entry; None for every other press."""
+    if onward is None:
+        return None
+    kind, image_id = onward
+    if kind == REPLACE_PRESS:
+        return f"{PREFIX}/{draft_id}/images/{image_id}/replace"
+    return HAND_ENTRY
+
+
+def held_and_read(snapshot: DraftSnapshot) -> tuple[int, int]:
+    """How many screenshots the review's list shows, and how many of them are read: the counts
+    its page gives, and the totals beside an upload's count."""
+    return len(snapshot.images), sum(1 for image in snapshot.images if image.read)
+
+
+def uploaded_said(added: int, total: int, read: int, *, first: bool) -> list[str]:
+    """What an upload says it added: nothing when it added none; the count a first upload added
+    (``first``, the review held none before it), with "None read yet." when none of the review's
+    screenshots is read; or the count it added beside the review's ``total`` and ``read``, as the
+    review shows them."""
     if added == 0:
         return []
     noun = "screenshot" if added == 1 else "screenshots"
-    if added == total:
-        return [f"{added} {noun} uploaded. None read yet."]
+    if first:
+        return [f"{added} {noun} uploaded." + (" None read yet." if read == 0 else "")]
     return [f"{added} more {noun} uploaded. {total} in this review, {read} read."]
 
 
@@ -621,7 +872,12 @@ def unwritten_upload(
         "import_said.html",
         {
             "said": [UNKNOWN_SAID["upload"]],
-            "again": {"said": TRY_UPLOAD_AGAIN, "token": token, "issued": issued},
+            "again": {
+                "said": TRY_UPLOAD_AGAIN,
+                "token": token,
+                "issued": issued,
+                "keyed": model_configured(state.settings),
+            },
             "marks": marks_of(state),
             "page": "parent",
         },
@@ -1491,7 +1747,8 @@ async def first_upload(request: Request, state: State) -> Response:
     fields = upload.fields
     token = fields.get("token")
     in_time = issued_in_time(state, fields.get("issued"))
-    if token is None or not opaque(token) or in_time is None:
+    wanted = read_wanted(fields)
+    if token is None or not opaque(token) or in_time is None or wanted is None:
         return said_page(request, marks_of(state), UPLOAD_SAID["unreadable"], 400)
     if not in_time:
         return said_page(request, marks_of(state), SAID["too_old"], 400)
@@ -1519,29 +1776,160 @@ async def first_upload(request: Request, state: State) -> Response:
         lines = [image_refusal(place + 1, kind) for place, kind in prepared.refused]
         return said_page(request, marks_of(state), NOTHING_ADDED, 422, *lines)
     places = [place for place, _ in prepared.images]
-    told = await upload_told(state, added)
-    return to_review(state, added.draft_id, upload_said(added, places, prepared.refused), told)
+    digests = [hashlib.sha256(image.png).hexdigest() for _, image in prepared.images]
+    held = frozenset(digests[index] for index in added.duplicates)
+    return await uploaded(
+        request,
+        state,
+        student,
+        added,
+        places,
+        prepared.refused,
+        digests,
+        read=wanted,
+        resent=frozenset() if added.added else held,
+    )
 
 
-async def upload_told(state: ApplicationState, added: Added) -> list[str]:
-    """What an upload says it added, beside how many screenshots the review holds and how many
-    are read, as the review stands after its commit."""
+def read_wanted(fields: Mapping[str, str]) -> bool | None:
+    """Whether an upload asks for its images to be read once stored: no read field, no;
+    "now", yes; any other value None, an upload that can't be read. A read field sent twice
+    never gets here, since the body is refused whole as a repeated field."""
+    value = fields.get("read")
+    if value is None:
+        return False
+    return True if value == READ_NOW else None
+
+
+async def uploaded(
+    request: Request,
+    state: ApplicationState,
+    student: str,
+    added: Added,
+    places: Sequence[int],
+    refused: Sequence[tuple[int, str]],
+    digests: Sequence[str],
+    *,
+    read: bool,
+    resent: frozenset[str] = frozenset(),
+) -> Response:
+    """The way back to the review after an upload's commit, its note saying what the upload
+    stored and set aside, and, for Upload and read, what reading the images it added did. A
+    first upload's form sent again adds nothing when the review its token names already holds
+    every screenshot it stores, whose hashes are ``resent``: Upload and read then says so in one
+    line in place of a line for each, and reads nothing. ``digests``: the hash of each image the
+    store was given, in its order. Whether a line about screenshots left unread says "Press
+    Read" after it is decided when the review shows the note, by the hashes it carries. The
+    count it added, and whether the review held none before it, are its commit's; the review's
+    totals, how its screenshots read, the readings the busy file couldn't keep and the
+    screenshots a busy store kept it from sending are said when the review shows the note, by
+    its facts (``PressFacts``)."""
+    reread: Sequence[str] = ()
+    if read and resent:
+        said: list[NoteLine] = [*upload_said(added._replace(duplicates=()), places, refused)]
+        said.append(RESENT_SAID["one" if len(resent) == 1 else "many"])
+        reread = sorted(resent)
+    else:
+        said = [*upload_said(added, places, refused)]
+    first = MOST_IMAGES_PRESENT - added.free - len(added.added) == 0
+    facts = PressFacts(added=len(added.added), first=first and bool(added.added))
+    told: list[str] = []
+    if read:
+        fresh = [digest for index, digest in enumerate(digests) if index not in added.duplicates]
+        found = await read_added(request, state, student, added, fresh)
+        if isinstance(found, Response):
+            return found
+        said += found.said
+        told = found.told
+        reread = found.reread or reread
+        facts = facts._replace(
+            read=found.read, busy=found.busy, under_way=found.under_way, unsent=found.unsent
+        )
+    return to_review(state, added.draft_id, said, told, reread=reread, facts=facts)
+
+
+class ReadAdded(NamedTuple):
+    """What reading the images a press added says: its problems and status lines, the hashes of
+    those images when nothing was read for them (``reread``), whether it read, so the review
+    says how its screenshots read when it shows the note (``read``), the hashes of those
+    whose readings the busy file couldn't keep (``busy``), the deadline of the read already
+    under way that kept it from reading (``under_way``), and the hashes of those a busy store
+    kept it from sending to be read (``unsent``)."""
+
+    said: list[NoteLine]
+    told: list[str]
+    reread: tuple[str, ...] = ()
+    read: bool = False
+    busy: tuple[str, ...] = ()
+    under_way: float | None = None
+    unsent: tuple[str, ...] = ()
+
+
+async def read_added(
+    request: Request,
+    state: ApplicationState,
+    student: str,
+    added: Added,
+    digests: Sequence[str],
+) -> Response | ReadAdded:
+    """Upload and read, once its images are stored: the images this upload added are read, and
+    no other, through the helper the Read press reads with. A duplicate set aside and a refused
+    file were never added, and an earlier image of the review is never named. With no key,
+    nothing is read and the line says why. While an attempt is under way, nothing is read and
+    its deadline is kept, so the review says why when it shows the note (``under_way_said``),
+    by whether that same attempt is current then. When the household's
+    file refuses the read before it begins, the line carries the added images' hashes
+    (``digests``), so the review says "Press Read" after it only when its Read press sends them.
+    Once the read is done, the hashes of the images whose readings the busy file couldn't keep,
+    and of those a busy store kept it from sending, are taken from ``digests``, never from the
+    review after, and the review says them when it shows the note, whether or not the review
+    could be read again; read again, it also says how its screenshots read. Its note's
+    lines (problems, then status lines), or the page a store's refusal of the read answers with,
+    as the Read press's."""
     if not added.added:
-        return []
+        return ReadAdded([], [])
+    if not model_configured(state.settings):
+        return ReadAdded([SAID["no_key"]], [])
+    draft_id = added.draft_id
+    unread = tuple(digests)
     try:
-        student = await asyncio.to_thread(state.project_state.student_id)
-        after = await asyncio.to_thread(state.import_drafts.snapshot, student, added.draft_id)
-    except (*STORE_REFUSALS, sqlite3.Error) as error:
+        before = await tables_of(state, draft_id)
+    except sqlite3.Error as error:
         noted(error)
-        return []
-    read = sum(1 for image in after.images if image.read)
-    return uploaded_said(len(added.added), len(after.images), read)
+        return ReadAdded([NOT_READ["busy" if busy_file(error) else "not_started"]], [], unread)
+    try:
+        outcome = await read_named(state, student, draft_id, added.added)
+    except (StoreBusy, WriterBusy):
+        return ReadAdded([NOT_READ["busy"]], [], unread)
+    except (DraftClosed, DraftExpired, DraftFrozen, DraftNotFound) as error:
+        return store_refusal(request, state, error)
+    except sqlite3.Error as error:
+        noted(error)
+        return ReadAdded([READINGS_UNCONFIRMED], [])
+    if not outcome.started:
+        return ReadAdded([], [], under_way=outcome.under_way_until)
+    digest_of = dict(zip(added.added, digests, strict=True))
+    busy = tuple(digest_of[image_id] for image_id in outcome.busy if image_id in digest_of)
+    unsent = tuple(digest_of[image_id] for image_id in outcome.unsent if image_id in digest_of)
+    try:
+        # The review read again once the read is done: one the household's file can't read says
+        # the readings kept, beside the screenshots not sent and the readings not kept, and one
+        # the store refuses answers with that refusal's page.
+        await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+    except (StoreBusy, WriterBusy, sqlite3.Error) as error:
+        noted(error)
+        return ReadAdded([], kept_readings(outcome), busy=busy, unsent=unsent)
+    except STORE_REFUSALS as error:
+        return store_refusal(request, state, error)
+    changed = await change_lines(state, draft_id, before)
+    return ReadAdded(changed, [], read=True, busy=busy, unsent=unsent)
 
 
 @router.post("/{draft_id}/images")
 async def more_images(request: Request, draft_id: str, state: State) -> Response:
     """Add an upload's images to an open review, with no version comparison; the review is
-    checked before any byte of the body is read, and again when the images are stored."""
+    checked before any byte of the body is read, and again when the images are stored. Upload
+    and read then reads the images it added."""
     if not opaque(draft_id):
         return said_page(request, marks_of(state), SAID["absent"], 404)
     try:
@@ -1557,9 +1945,12 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
         noted(error)
         return unread_page(request, state, error, upload=True)
     try:
-        upload = await body_of(request, {})
+        upload = await body_of(request, MORE_FIELDS)
     except UploadRefused as refusal:
         return refused_upload(request, state, refusal)
+    wanted = read_wanted(upload.fields)
+    if wanted is None:
+        return said_page(request, marks_of(state), UPLOAD_SAID["unreadable"], 400)
     prepared = await asyncio.to_thread(prepare_upload, upload.files)
     try:
         added = await asyncio.to_thread(
@@ -1574,8 +1965,10 @@ async def more_images(request: Request, draft_id: str, state: State) -> Response
         noted(error)
         return unwritten_page(request, state, error, UNKNOWN_SAID["upload"], upload=True)
     places = [place for place, _ in prepared.images]
-    told = await upload_told(state, added)
-    return to_review(state, draft_id, upload_said(added, places, prepared.refused), told)
+    digests = [hashlib.sha256(image.png).hexdigest() for _, image in prepared.images]
+    return await uploaded(
+        request, state, student, added, places, prepared.refused, digests, read=wanted
+    )
 
 
 async def tables_of(state: ApplicationState, draft_id: str) -> DraftForSave | None:
@@ -1587,11 +1980,12 @@ async def tables_of(state: ApplicationState, draft_id: str) -> DraftForSave | No
 
 async def change_lines(
     state: ApplicationState, draft_id: str, before: DraftForSave | None
-) -> list[str]:
+) -> list[NoteLine]:
     """What the page after a change of screenshots says of the answers it cleared and the rows
     left unsaved it kept or asks about again, from the review's tables before the change and
-    its readings after; nothing when the review isn't open homework on both sides, or when the
-    household's file refuses the read after the change."""
+    its readings after, as the change's report, which the note or the page says as sentences
+    (``lines_said``); nothing when the review isn't open homework on both sides, when the
+    household's file refuses the read after the change, or when the report says nothing."""
     if before is None or before.closed_at is not None:
         return []
     try:
@@ -1602,7 +1996,8 @@ async def change_lines(
     if after is None or after.closed_at is not None:
         return []
     answers = {key: value for key, (value, _) in before.answers.items()}
-    return change_said(change_told(before.readings, after.readings, answers, before.discards))
+    told = change_told(before.readings, after.readings, answers, before.discards)
+    return [told] if told_anything(told) else []
 
 
 @router.post("/{draft_id}/images/{image_id}/remove")
@@ -1627,6 +2022,189 @@ async def remove_image(request: Request, draft_id: str, image_id: str, state: St
         noted(error)
         return unwritten_page(request, state, error, UNKNOWN_SAID["remove"])
     return to_review(state, draft_id, await change_lines(state, draft_id, before))
+
+
+REPLACE_SAID: Final = {
+    "none": "Choose one screenshot to put in its place.",
+    "several": "Choose one screenshot only; more than one was sent.",
+    "same": "The new file is the same as Screenshot {n}.",
+    "held": "The new file is already in this review as Screenshot {n}.",
+}
+"""Why a replace step's press replaced nothing, beside the upload's own words for a file it
+refuses: no file chosen, more than one, or a new file the review already holds, as the
+screenshot it would replace or as another."""
+REPLACE_UNKNOWN: Final = "Blossom couldn't tell whether the screenshot was replaced."
+"""What a replace says when the household's file refused its write for a reason that isn't a
+busy file."""
+
+
+def kept_as_it_was(place: int) -> str:
+    """The first line of a replace that replaced nothing."""
+    return f"Screenshot {place} wasn't replaced; it stays as it was."
+
+
+def replaced_said(place: int | None) -> str:
+    """What the review says first after a replace: the new screenshot by the place the review
+    shows it in, or that a screenshot was replaced when the review it is shown in doesn't hold
+    it (``place`` None)."""
+    if place is None:
+        return "A screenshot was replaced."
+    return f"Screenshot {place} was replaced."
+
+
+def new_file_refusal(kind: str) -> str:
+    """The upload's own words for a file it refuses, said of a replace step's new file."""
+    return IMAGE_SAID[kind].replace("Screenshot {n}", "The new file")
+
+
+def replace_limits(place: int) -> str:
+    """The line beside a replace step's picker: what it takes, and what it leaves."""
+    return (
+        f"One screenshot, PNG or JPEG, up to 12 MB, takes the place of Screenshot {place}. The "
+        "other screenshots stay as they are."
+    )
+
+
+def place_of(snapshot: DraftSnapshot, image_id: str) -> int | None:
+    """An image's place in its review, counted from one, or None when the review doesn't hold
+    it."""
+    for index, image in enumerate(snapshot.images):
+        if image.image_id == image_id:
+            return index + 1
+    return None
+
+
+def replace_page(
+    request: Request,
+    state: ApplicationState,
+    snapshot: DraftSnapshot,
+    place: int,
+    said: Sequence[str] = (),
+    status: int = 200,
+) -> Response:
+    """One screenshot's replace step: what a press found wrong, the screenshot by its place with
+    its preview and how it stands, and the form for the one file that takes its place, with
+    Replace and read offered only when a key is set."""
+    image = snapshot.images[place - 1]
+    outcomes = shot_outcomes(snapshot.images, snapshot.readings, now=state.real_clock.now())
+    return templates.TemplateResponse(
+        request,
+        "import_replace.html",
+        {
+            "marks": marks_of(state),
+            "page": "parent",
+            "draft_id": snapshot.draft_id,
+            "until": until_text(state, snapshot.expires_at),
+            "image": {"id": image.image_id, "place": place, "label": label_of(outcomes[place - 1])},
+            "said": list(said),
+            "keyed": model_configured(state.settings),
+            "limits": replace_limits(place),
+        },
+        status_code=status,
+    )
+
+
+@router.get("/{draft_id}/images/{image_id}/replace")
+async def replace_step(request: Request, draft_id: str, image_id: str, state: State) -> Response:
+    """One screenshot's replace step, while its review is open to changes; a review closed,
+    finished, frozen, expired or missing, and an image it doesn't hold, are refused as the
+    review's other pages refuse them. Nothing is read or written."""
+    if not opaque(image_id):
+        return said_page(request, marks_of(state), SAID["absent"], 404)
+    found = await snapshot_or_page(request, state, draft_id, address=True)
+    if isinstance(found, Response):
+        return found
+    if found.finished:
+        return store_refusal(request, state, DraftClosed())
+    if found.frozen:
+        return store_refusal(request, state, DraftFrozen())
+    place = place_of(found, image_id)
+    if place is None:
+        return said_page(request, marks_of(state), SAID["image_gone"], 404)
+    return replace_page(request, state, found, place)
+
+
+@router.post("/{draft_id}/images/{image_id}/replace")
+async def replace_image(request: Request, draft_id: str, image_id: str, state: State) -> Response:
+    """Put one new file in the place of one image, with no version comparison. The review and
+    the image are checked before any byte of the body is read, and the review again when the
+    new image is stored. Exactly one file, checked as an upload checks each file, and not one the
+    review already holds; any other body replaces nothing, and the step says why with the old
+    screenshot kept. Replace and read then reads the new image and no other. The next page says
+    what was replaced, by the new image's hash, and what the change cleared."""
+    if not opaque(draft_id) or not opaque(image_id):
+        return said_page(request, marks_of(state), SAID["absent"], 404)
+    try:
+        student = await asyncio.to_thread(state.project_state.student_id)
+        snapshot = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
+        if snapshot.closed_at is not None or snapshot.finished:
+            raise DraftClosed
+        if snapshot.frozen:
+            raise DraftFrozen
+    except STORE_REFUSALS as error:
+        return upload_refusal(request, state, error)
+    except sqlite3.Error as error:
+        noted(error)
+        return unread_page(request, state, error, upload=True)
+    place = place_of(snapshot, image_id)
+    if place is None:
+        return to_review(state, draft_id, [SAID["image_gone"]])
+    kept = kept_as_it_was(place)
+
+    def refused(status: int, why: str) -> Response:
+        return replace_page(request, state, snapshot, place, [kept, why], status)
+
+    try:
+        upload = await body_of(request, MORE_FIELDS)
+    except UploadRefused as refusal:
+        return refused(413 if refusal.kind in SIZE_REFUSALS else 400, UPLOAD_SAID[refusal.kind])
+    wanted = read_wanted(upload.fields)
+    if wanted is None:
+        return refused(400, UPLOAD_SAID["unreadable"])
+    if len(upload.files) != 1:
+        return refused(400, REPLACE_SAID["several" if upload.files else "none"])
+    prepared = await asyncio.to_thread(prepare_upload, upload.files)
+    if prepared.refused:
+        [(_, kind)] = prepared.refused
+        return refused(422, new_file_refusal(kind))
+    [(_, image)] = prepared.images
+    try:
+        before = await tables_of(state, draft_id)
+    except sqlite3.Error as error:
+        noted(error)
+        return unread_page(request, state, error, upload=True)
+    try:
+        added = await asyncio.to_thread(
+            state.import_drafts.replace_image, student, draft_id, image_id, image
+        )
+    except AlreadyHeld as held:
+        if held.image_id == image_id:
+            return refused(422, REPLACE_SAID["same"].format(n=place))
+        other = place_of(snapshot, held.image_id)
+        if other is None:
+            return refused(422, new_file_refusal("duplicate"))
+        return refused(422, REPLACE_SAID["held"].format(n=other))
+    except UnknownImage:
+        return to_review(state, draft_id, [SAID["image_gone"]])
+    except STORE_REFUSALS as error:
+        return upload_refusal(request, state, error)
+    except sqlite3.Error as error:
+        noted(error)
+        return unwritten_page(request, state, error, REPLACE_UNKNOWN, upload=True)
+    said = await change_lines(state, draft_id, before)
+    told: list[str] = []
+    reread: tuple[str, ...] = ()
+    digest = hashlib.sha256(image.png).hexdigest()
+    facts = PressFacts(replaced=digest)
+    if wanted:
+        found = await read_added(request, state, student, added, [digest])
+        if isinstance(found, Response):
+            return found
+        said, told, reread = [*said, *found.said], found.told, found.reread
+        facts = facts._replace(
+            read=found.read, busy=found.busy, under_way=found.under_way, unsent=found.unsent
+        )
+    return to_review(state, draft_id, said, told, reread=reread, facts=facts)
 
 
 @router.get("/{draft_id}/images/{image_id}")
@@ -1663,19 +2241,123 @@ def until_text(state: ApplicationState, moment: datetime) -> str:
     return f"{local:%A}, {local:%B} {local.day}, {hour}:{local:%M} {half}"
 
 
-def label_of(snapshot: DraftSnapshot, index: int) -> str:
-    """How one image of the review stands, in ``LABELS`` and ``FAILED``'s words."""
-    image = snapshot.images[index]
-    if image.read:
-        kinds = {reading.sha256: reading.kind for reading in snapshot.readings}
-        return (
-            LABELS["read"] if kinds.get(image.sha256) == "homework_list" else LABELS["wrong_kind"]
-        )
-    if image.failure is not None:
-        return FAILED[image.failure]
-    if image.in_ended_attempt:
-        return LABELS["ended"]
-    return LABELS["unread"]
+def ends_text(state: ApplicationState, ends: float) -> str:
+    """When an attempt whose deadline is ``ends`` on the monotonic clock ends, as the review
+    says an instant."""
+    left = max(0.0, ends - state.monotonic())
+    return until_text(state, state.real_clock.now() + timedelta(seconds=left))
+
+
+async def read_named(
+    state: ApplicationState, student: str, draft_id: str, image_ids: Sequence[str]
+) -> ReadOutcome:
+    """Read the unread images among ``image_ids`` and no other: the one way a press reads, for
+    the Read press over the images its page named and for Upload and read over the images it
+    added. An image with a stored reading is never read again; an attempt under way starts no
+    call, and the outcome says when it ends."""
+    return await read_screenshots(
+        state.import_drafts,
+        state.settings,
+        student,
+        draft_id,
+        image_ids,
+        monotonic=state.monotonic,
+        held=state.detached,
+    )
+
+
+def read_lines(
+    state: ApplicationState, before: DraftSnapshot, after: DraftSnapshot, outcome: ReadOutcome
+) -> tuple[list[str], list[str]]:
+    """What a Read press says on its own page, from the review as it stands after: each reading
+    the busy file couldn't keep (``busy_said``) and each screenshot a busy store kept it from
+    sending (``unsent_said``), their images found by id in the review before or after, and how
+    the review's screenshots read."""
+    digest_of = {image.image_id: image.sha256 for image in (*before.images, *after.images)}
+    busy = busy_said(state, after, [digest_of.get(image_id, "") for image_id in outcome.busy])
+    unsent = [digest_of.get(image_id, "") for image_id in outcome.unsent]
+    return [*busy, *unsent_said(state, after, unsent)], read_said(after, state.real_clock.now())
+
+
+def busy_said(state: ApplicationState, snapshot: DraftSnapshot, busy: Sequence[str]) -> list[str]:
+    """The readings the busy file couldn't keep, by their images' hashes (``busy``), as the
+    review shown from ``snapshot`` says them: each image it holds by its place, in order, with
+    "Read again." only when its Read press sends that image (``read_offered``); then the others
+    by count alone, with no place and nothing to do."""
+    images = enumerate(snapshot.images)
+    held = {image.sha256: (index + 1, image.image_id) for index, image in images}
+    offered = read_offered(state, snapshot) or []
+    said = [
+        busy_reading(held[digest][0], again=held[digest][1] in offered)
+        for digest in busy
+        if digest in held
+    ]
+    return [*said, *busy_unplaced(sum(1 for digest in busy if digest not in held))]
+
+
+def unsent_said(
+    state: ApplicationState, snapshot: DraftSnapshot, unsent: Sequence[str]
+) -> list[str]:
+    """The screenshots a busy store kept a read from sending, by their hashes (``unsent``), as
+    the review shown from ``snapshot`` says them: each one it holds by its place, in order, with
+    "Press Read to send it." only when its Read press sends that image (``read_offered``); then
+    the others by count alone, with no place and nothing to do."""
+    images = enumerate(snapshot.images)
+    held = {image.sha256: (index + 1, image.image_id) for index, image in images}
+    offered = read_offered(state, snapshot) or []
+    said = [
+        unsent_reading(held[digest][0], send=held[digest][1] in offered)
+        for digest in unsent
+        if digest in held
+    ]
+    return [*said, *unsent_unplaced(sum(1 for digest in unsent if digest not in held))]
+
+
+def under_way_said(
+    state: ApplicationState, snapshot: DraftSnapshot, ends: float | None
+) -> list[str]:
+    """Why a press read nothing when a read was already under way, by that read's deadline
+    (``ends``), as the review shown from ``snapshot`` says it: the time it ends while that same
+    read is the review's current one (its deadline equal to ``ends``, the snapshot holding it
+    only while it is ahead, as ``as_shown`` decides), with the time from ``snapshot``; that a read
+    was already under way, so the press didn't start another, once it isn't; nothing for a press
+    with no such deadline."""
+    if ends is None:
+        return []
+    current = snapshot.attempt_ends
+    if current is not None and current == ends:
+        return [under_way(ends_text(state, current))]
+    return [UNDER_WAY_SAID]
+
+
+def press_told(state: ApplicationState, snapshot: DraftSnapshot, note: Note) -> list[str]:
+    """A note's status lines as the review shown from ``snapshot`` says them: what its press
+    added, beside the review's totals, or the screenshot it replaced, by its shown place; then the
+    note's own lines; then, after a press that read, how the review's screenshots read."""
+    facts = note.facts
+    first: list[str] = []
+    if facts.replaced:
+        places = {image.sha256: index + 1 for index, image in enumerate(snapshot.images)}
+        first = [replaced_said(places.get(facts.replaced))]
+    elif facts.added:
+        total, read_total = held_and_read(snapshot)
+        first = uploaded_said(facts.added, total, read_total, first=facts.first)
+    last = read_said(snapshot, state.real_clock.now()) if facts.read else []
+    return [*first, *note.told, *last]
+
+
+def label_of(outcome: ShotOutcome) -> str:
+    """How one image of the review stands, in ``LABELS`` and ``FAILED``'s words, a homework
+    list read with homework followed by its own counts, and one read with none saying so."""
+    if outcome.state == "homework":
+        return f"{LABELS['read']} {found_said(outcome)}"
+    if outcome.state == "text_only":
+        return text_only_said(outcome)
+    if outcome.state == "nothing":
+        return PAGE_SHOT_SAID["nothing"]
+    if outcome.state == "failed" and outcome.failure is not None:
+        return FAILED[outcome.failure]
+    return LABELS[outcome.state]
 
 
 def picked(progress: str | None) -> frozenset[str] | None:
@@ -1944,20 +2626,26 @@ def review_page(
 ) -> Response:
     """The review: what a press did and found wrong, each in its own style, what it typed that has
     no box here and wasn't shown stored, to copy (``typed``, under ``typed_said``), its images with
-    their labels and how many are uploaded and read, those read as her homework list marked so
-    the page can fold them away, the Read press for the unread ones when a key is set and no
-    attempt is current, the form that adds more, "Discard the review" whatever is read, and
-    once anything is read, the rows with their cards, questions and what saving adds."""
+    their labels and how many are uploaded and read, those read with homework marked so the page
+    can fold them away and those needing attention marked so they stay in view, the Read press
+    for the unread ones when a key is set and no attempt is current, the form that adds more,
+    "Discard the review" whatever is read, and once anything is read, the rows with their cards,
+    questions and what saving adds. Once some homework is saved, each image needing attention
+    says what can be done; before, while one does, the line beside Save says saving fixes the
+    screenshots (``save_fixes``). Beneath the expiry, a line says the review stays until then and
+    where to find it. Each image needing attention offers Enter it by hand, and so, with no key
+    set, does each image not read. With the rows' form, each image's Replace and Enter it by hand
+    are presses of it, which the line saying they keep first describes."""
     keyed = model_configured(state.settings)
     unread = [image.image_id for image in snapshot.images if not image.read]
-    homework_lists = {
-        reading.sha256 for reading in snapshot.readings if reading.kind == "homework_list"
-    }
+    offered = read_offered(state, snapshot)
+    unread_places = [index + 1 for index, image in enumerate(snapshot.images) if not image.read]
+    outcomes = shot_outcomes(snapshot.images, snapshot.readings, now=state.real_clock.now())
+    attention = [index + 1 for index, outcome in enumerate(outcomes) if outcome.attention]
+    after = PAGE_SHOT_SAID["after_a_save"]
     ends = snapshot.attempt_ends
-    when = None
-    if ends is not None:
-        left = max(0.0, ends - state.monotonic())
-        when = until_text(state, state.real_clock.now() + timedelta(seconds=left))
+    when = None if ends is None else ends_text(state, ends)
+    total, read_total = held_and_read(snapshot)
     return templates.TemplateResponse(
         request,
         "import_review.html",
@@ -1970,39 +2658,89 @@ def review_page(
                 {
                     "id": image.image_id,
                     "place": index + 1,
-                    "label": label_of(snapshot, index),
-                    "read": image.read and image.sha256 in homework_lists,
+                    "label": label_of(outcome),
+                    "read": outcome.folds,
+                    "after": after if snapshot.frozen and outcome.attention else None,
+                    "by_hand": outcome.attention or (not keyed and outcome.state == "unread"),
                 }
-                for index, image in enumerate(snapshot.images)
+                for index, (image, outcome) in enumerate(
+                    zip(snapshot.images, outcomes, strict=True)
+                )
             ],
+            "save_fixes": (save_fixes(attention) if attention and not snapshot.frozen else None),
+            "kept_first": (
+                None
+                if snapshot.frozen and not attention
+                else PAGE_SHOT_SAID["kept_first_by_hand" if snapshot.frozen else "kept_first"]
+            ),
+            "stays_open": PAGE_SHOT_SAID["stays_open"],
+            "hand_entry": HAND_ENTRY,
             "said": list(said),
             "told": list(told),
             "done": list(done),
             "typed": list(typed),
             "typed_said": typed_said,
-            "counts": (
-                f"{len(snapshot.images)} uploaded \u00b7 "
-                f"{sum(1 for image in snapshot.images if image.read)} read"
-            ),
+            "counts": f"{total} uploaded \u00b7 {read_total} read",
             "read_label": f"Read {len(unread)} screenshot{'' if len(unread) == 1 else 's'}",
             "reading": READING,
             "under_way": None if when is None else under_way(when),
-            "read_ids": (
-                ",".join(unread)
-                if keyed and unread and when is None and not snapshot.frozen
-                else None
-            ),
+            "read_ids": None if offered is None else ",".join(offered),
             "frozen": SAID["frozen"] if snapshot.frozen else None,
             "discard": signed_action("discard", snapshot.page_key, snapshot.version),
             "read_check": read_check(snapshot.page_key, unread),
             "no_key": None if keyed else SAID["no_key"],
-            "disclosed": DISCLOSED,
+            "disclosed": read_disclosed(unread_places),
             "limits": LIMITS,
             "full": len(snapshot.images) >= MOST_IMAGES_PRESENT,
             "rows": rows,
         },
         status_code=status,
     )
+
+
+def read_offered(state: ApplicationState, snapshot: DraftSnapshot) -> list[str] | None:
+    """The images the review's Read press sends, by id, as its page offers it: every one not
+    read, when a key is set, no attempt is current and the screenshots aren't fixed; None when
+    the page offers no Read."""
+    unread = [image.image_id for image in snapshot.images if not image.read]
+    keyed = model_configured(state.settings)
+    if not keyed or not unread or snapshot.attempt_ends is not None or snapshot.frozen:
+        return None
+    return unread
+
+
+def read_covers(state: ApplicationState, snapshot: DraftSnapshot, reread: Sequence[str]) -> bool:
+    """Whether the review's Read press, as its page offers it (``read_offered``), sends every
+    screenshot a note names by hash (``reread``): at least one is named, and each is a screenshot
+    the review holds, not read, among those the press sends."""
+    offered = read_offered(state, snapshot)
+    if not reread or offered is None:
+        return False
+    held = {image.sha256: image for image in snapshot.images}
+    return all(
+        digest in held and not held[digest].read and held[digest].image_id in offered
+        for digest in reread
+    )
+
+
+def still_held(snapshot: DraftSnapshot, reread: Sequence[str]) -> bool:
+    """Whether the review holds every screenshot a note names by hash (``reread``), read or not;
+    a note that names none is taken as holding them, as its line was written."""
+    held = {image.sha256 for image in snapshot.images}
+    return all(digest in held for digest in reread)
+
+
+def read_again(said: Sequence[str], covered: bool, *, held: bool) -> list[str]:
+    """A note's problem lines as the review says them, two questions answered apart: a retry's
+    line says the screenshots it names are in the review only while the review holds every one
+    of them (``held``), and that they were there when the retry ran otherwise (``RESENT_GONE``);
+    each line about screenshots left unread is followed by what it says to do (``READ_AGAIN``)
+    when the review's Read press sends them (``covered``), and stands alone otherwise."""
+    out = []
+    for line in said:
+        words = line if held else RESENT_GONE.get(line, line)
+        out.append(f"{words} {READ_AGAIN[line]}" if covered and line in READ_AGAIN else words)
+    return out
 
 
 async def snapshot_or_page(
@@ -2029,6 +2767,20 @@ async def snapshot_or_page(
     return snapshot
 
 
+def as_shown(state: ApplicationState, snapshot: DraftSnapshot) -> DraftSnapshot:
+    """The review as a page shows it: whether its read is under way, decided once as the page
+    gets ``snapshot``. The read stays current only while its deadline is still ahead on the clock
+    attempts are timed on, as the store decides; once it isn't, the page holds no current read.
+    Every line and press that asks whether a read is under way reads this one answer: the line
+    about the read a press met (``under_way_said``), the line in place of Read (``review_page``),
+    and the Read press (``read_offered``) with each line that says "Read again." or "Press Read"
+    by it."""
+    ends = snapshot.attempt_ends
+    if ends is not None and ends <= state.monotonic():
+        return snapshot._replace(attempt_ends=None)
+    return snapshot
+
+
 @router.get("/{draft_id}")
 async def review(request: Request, draft_id: str, state: State) -> Response:
     """The review: its images, how each stands, and the Read press for those not read. A claim
@@ -2038,16 +2790,25 @@ async def review(request: Request, draft_id: str, state: State) -> Response:
     found = await snapshot_or_page(request, state, draft_id, address=True)
     if isinstance(found, Response):
         return found
+    found = as_shown(state, found)
     note = note_read(state.result_key, draft_id, request.cookies.get(NOTE_COOKIE))
-    said = note.said
-    if said or note.told or note.done:
+    said = read_again(
+        note.said,
+        read_covers(state, found, note.reread),
+        held=still_held(found, note.reread),
+    )
+    said += busy_said(state, found, note.facts.busy)
+    said += unsent_said(state, found, note.facts.unsent)
+    said += under_way_said(state, found, note.facts.under_way)
+    told = press_told(state, found, note)
+    if said or told or note.done:
         answering(request)
     try:
         rows = await rows_of(request, state, found, said)
     except (sqlite3.Error, UnreadableClaim) as error:
         noted(error)
         return said_page(request, marks_of(state), REVIEW_UNAVAILABLE, 503)
-    answer = review_page(request, state, found, said, rows=rows, told=note.told, done=note.done)
+    answer = review_page(request, state, found, said, rows=rows, told=told, done=note.done)
     if request.cookies.get(NOTE_COOKIE) is not None:
         answer.delete_cookie(NOTE_COOKIE, path=f"{PREFIX}/{draft_id}")
     return answer
@@ -2061,6 +2822,7 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
     found = await snapshot_or_page(request, state, draft_id)
     if isinstance(found, Response):
         return found
+    found = as_shown(state, found)
     fields, whole = await fields_of(request, frozenset({"images", "check"}))
     if not model_configured(state.settings):
         return review_page(request, state, found, [SAID["no_key"]], 409)
@@ -2081,15 +2843,7 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
             return review_page(request, state, found, [SAID["read_busy"]], 503)
         return said_page(request, marks_of(state), REVIEW_UNAVAILABLE, 503)
     try:
-        outcome = await read_screenshots(
-            state.import_drafts,
-            state.settings,
-            student,
-            draft_id,
-            named,
-            monotonic=state.monotonic,
-            held=state.detached,
-        )
+        outcome = await read_named(state, student, draft_id, named)
     except AttemptUnderWay:
         outcome = None
     except (StoreBusy, WriterBusy):
@@ -2104,31 +2858,50 @@ async def read(request: Request, draft_id: str, state: State) -> Response:
         after = await asyncio.to_thread(state.import_drafts.snapshot, student, draft_id)
     except (StoreBusy, WriterBusy, sqlite3.Error) as error:
         noted(error)
-        return to_review(state, draft_id, told=kept_readings(outcome))
+        return to_review(
+            state, draft_id, told=kept_readings(outcome), facts=read_facts(found, outcome)
+        )
     except STORE_REFUSALS as error:
         return store_refusal(request, state, error)
     if after.closed_at is not None:
         return said_page(request, marks_of(state), SAID["closed"], 200)
+    after = as_shown(state, after)
     changed = await change_lines(state, draft_id, before)
-    said = list(changed)
+    said = lines_said(changed)
     told: list[str] = []
     if outcome is not None:
-        places = {image.image_id: index + 1 for index, image in enumerate(after.images)}
-        read_now = {image.image_id for image in after.images if image.read}
-        said += [
-            busy_reading(places[image_id])
-            for image_id in outcome.busy
-            if image_id in places and image_id not in read_now
-        ]
-        told = read_said(after, state.real_clock.now())
+        busy, told = read_lines(state, found, after, outcome)
+        said += busy
     try:
         rows = await rows_of(request, state, after, said)
     except sqlite3.Error as error:
         noted(error)
         # The review may change before the way back is followed, so its note names no screenshot
-        # by its place and gives no total: what this press changed, and its confirmed readings.
-        return to_review(state, draft_id, changed, kept_readings(outcome))
+        # by its place and gives no total: what this press changed, its confirmed readings, and
+        # the hashes of the screenshots it didn't send or whose readings it couldn't keep.
+        facts = read_facts(found, outcome)
+        return to_review(state, draft_id, changed, kept_readings(outcome), facts=facts)
     return review_page(request, state, after, said, rows=rows, told=told)
+
+
+NO_IMAGE: Final = hashlib.sha256(b"").hexdigest()
+"""The hash a note carries for a screenshot whose image a press didn't find: no prepared PNG is
+empty, so no screenshot of a review has it, and the review counts it with no place."""
+
+
+def read_facts(snapshot: DraftSnapshot, outcome: ReadOutcome | None) -> PressFacts:
+    """What a Read press's way back carries of its read when the review can't be read again, or
+    its rows built, after it: the hashes of the screenshots whose readings the busy file couldn't
+    keep, and of those a busy store kept it from sending, by their images in the review as the
+    press found it (``snapshot``), one it didn't find there as ``NO_IMAGE``. The review says
+    them when it shows the note, as a Read press's own page does."""
+    if outcome is None:
+        return NO_FACTS
+    digest_of = {image.image_id: image.sha256 for image in snapshot.images}
+    return PressFacts(
+        busy=tuple(digest_of.get(image_id, NO_IMAGE) for image_id in outcome.busy),
+        unsent=tuple(digest_of.get(image_id, NO_IMAGE) for image_id in outcome.unsent),
+    )
 
 
 def kept_readings(outcome: ReadOutcome | None) -> list[str]:
@@ -2681,13 +3454,16 @@ async def review_post(
     request: Request, state: ApplicationState, found: DraftSnapshot
 ) -> tuple[ReviewPost | None, str]:
     """The post read against what its page signed, or None when it doesn't match or the review
-    has no homework to read it against, with the press it named. Kept rows are read only for a post
+    has no homework to read it against, with the press it named, a screenshot's Replace or Enter
+    it by hand named as Save review for later. Kept rows are read only for a post
     its page signed. Anything in it nested too deep to read doesn't match either. A signed list past
     its ceiling is left for the caller to answer (``ListTooLarge``). A post that matches leaves the
     cards its boxes are drawn for on the request alone, to label its copies (``copy_label``)."""
     form = await form_of(request)
     items = [(name, value) for name, value in form.multi_items() if isinstance(value, str)]
     named = next((value for name, value in items if name == "press"), "keep")
+    if named.startswith(ONWARD_PRESSES):
+        named = LATER
     saved = await saved_corrections(state, found)
     review = await state_of_review(state, found, saved)
     if review is None:
@@ -2785,7 +3561,9 @@ async def save_pressed(request: Request) -> bool:
 @router.post("/{draft_id}/review")
 async def review_press(request: Request, draft_id: str, state: State) -> Response:
     """The review form's three presses, and an offer or a found row posted whole: Keep these
-    answers, Save selected homework and Save review for later. A press with a correction
+    answers, Save selected homework and Save review for later, which each screenshot's Replace
+    and Enter it by hand also press once the review is found to hold that screenshot. A press
+    with a correction
     longer than its field takes keeps and saves nothing, and answers 422 with the review and
     its typing, that correction whole in its box. Whichever post this is, its form is read first,
     within this route's limits, and every later read of it gets that one, so a body past them
@@ -2869,6 +3647,10 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
         )
     if post.press == "review" or post.press.startswith(CORRECT_PRESS):
         return await nothing_written(request, state, found, post)
+    if post.onward is not None and place_of(found, post.onward[1]) is None:
+        # A screenshot's Replace or Enter it by hand naming one the review doesn't hold keeps
+        # nothing and goes nowhere, as Save review for later answers a review that changed.
+        return await with_typing(request, state, draft_id, post, [SAID["image_gone"]], 409)
     if post.press == "later":
         return await later_press(request, state, found, post)
     if post.press == "save":
@@ -3869,7 +4651,9 @@ async def later_press(
     the copies owed choose the page and never whether a box comes back (``unshown_page_for``): the
     one saying the review can't be shown, or the one saying this attempt saved it, each box under
     its card's name. A read saying the review ended says the answers were kept before it did only
-    when this write stored some."""
+    when this write stored some. A screenshot's Replace or Enter it by hand is this press: only its
+    redirect, with the same note, goes on instead, to that screenshot's replace step or to hand
+    entry (``onward_address``), and every other answer is this press's own and goes nowhere."""
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
         review = await state_of_review(state, found, post.corrections)
@@ -3952,7 +4736,8 @@ async def later_press(
                 request, state, found.draft_id, lines, [], kept_as=kept
             )
         lines = [*stored, PRESS_SAID["later"], saved_for_later_at(state)]
-        return to_review(state, found.draft_id, lines)
+        onward = onward_address(found.draft_id, post.onward)
+        return to_review(state, found.draft_id, lines, onward=onward)
     answered = done.answers.stored > 0
     said = [*answers_said(done.answers), PRESS_SAID["later_behind"]]
     return await with_typing(
@@ -5810,11 +6595,13 @@ ASIDE: Final = "Pasting the school's text stays the exact way on a computer."
 """What Family review says beside Paste school text while screenshots are offered."""
 SUMMARY: Final = (
     "Up to 10 screenshots per review, PNG or JPEG, 12 MB each. Screenshots are sent to "
-    "Anthropic's API only when you press Read."
+    "Anthropic's API only when you press Upload and read, Replace and read, or Read."
 )
 """What Family review shows above its screenshot picker: the limits, and what is sent and when."""
 DISCLOSURE: Final = (
-    "When you press Read, Blossom sends the screenshots to Anthropic's API to be read. A "
+    "Blossom sends screenshots to Anthropic's API to be read only when you press Upload and "
+    "read, which sends the ones it uploads; Replace and read, which sends the one screenshot it "
+    "puts in another's place; or Read, which sends the ones its review names. A "
     "review's screenshots, what Blossom read from them, and any progress saved for later are "
     "removed from Blossom's database file when the review finishes, is discarded, or expires, "
     "48 hours after it starts. The removal can wait for Blossom's next hourly cleanup, or its "
@@ -5852,6 +6639,7 @@ def screenshot_entry(request: Request, state: ApplicationState) -> dict[str, obj
         "only_here": None,
         "summary": SUMMARY,
         "disclosure": DISCLOSURE,
+        "keyed": model_configured(state.settings),
         "token": new_creation_token(),
         "issued": state.real_clock.now().isoformat(),
         "reviews": reviews,

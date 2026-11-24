@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from blossom.screenshots import homework_assembly, homework_rows
+from blossom.stores import import_drafts
 from blossom.stores.drafts import WriterBusy
 from blossom.stores.gradebook import ADD_ACCEPTANCE
 from blossom.stores.import_drafts import (
@@ -970,6 +971,83 @@ def test_an_attempt_covers_only_the_unread_images_it_names(world: World) -> None
     assert attempt is not None
     assert attempt.covered == (ids[sha("b")],)
     assert attempt.ends == world.ticks.at + READ_DEADLINE_SECONDS
+
+
+def draft_and_image_rows(world: World) -> dict[str, dict[str, dict[str, object]]]:
+    """Every row of the draft and image tables as the file holds them, PNGs left out, by id."""
+    connection = sqlite3.connect(world.path)
+    connection.row_factory = sqlite3.Row
+    try:
+        drafts = connection.execute("SELECT * FROM import_drafts").fetchall()
+        images = connection.execute("SELECT * FROM import_draft_images").fetchall()
+    finally:
+        connection.close()
+    return {
+        "drafts": {row["draft_id"]: dict(row) for row in drafts},
+        "images": {
+            row["image_id"]: {
+                key: value for key, value in zip(row.keys(), row, strict=True) if key != "png"
+            }
+            for row in images
+        },
+    }
+
+
+def test_an_attempt_writes_its_id_on_the_images_it_covers_and_on_no_other(world: World) -> None:
+    """Image a's attempt ended with no result kept, image b is read and image c was never
+    covered. An attempt over c writes its id and deadline on the draft and its id on c, and
+    changes nothing else: a keeps its ended attempt's id, so it reads as in an ended attempt
+    while c's attempt runs and after it ends, and b stays read. Only an attempt naming a covers
+    it again."""
+    draft_id = world.draft("a", "b", "c")
+    ids = world.image_ids(draft_id)
+    assert world.read(draft_id, "b", "r1")
+    world.ticks.at += READ_DEADLINE_SECONDS
+    first = attempt_over(world, draft_id, "a")
+    world.ticks.at += READ_DEADLINE_SECONDS
+    before = draft_and_image_rows(world)
+
+    second = world.store.start_attempt(world.student, draft_id, [ids[sha("c")]])
+
+    assert second is not None
+    drafts, images = dict(before["drafts"]), dict(before["images"])
+    drafts[draft_id] = {
+        **drafts[draft_id],
+        "attempt_id": second.attempt_id,
+        "attempt_ends": second.ends,
+    }
+    images[ids[sha("c")]] = {**images[ids[sha("c")]], "attempt_id": second.attempt_id}
+    assert draft_and_image_rows(world) == {"drafts": drafts, "images": images}
+    assert images[ids[sha("a")]]["attempt_id"] == first
+
+    def flags() -> dict[str, tuple[bool, bool, bool]]:
+        snapshot = world.store.snapshot(world.student, draft_id)
+        return {
+            label: (item.read, item.covered, item.in_ended_attempt)
+            for label in "abc"
+            for item in snapshot.images
+            if item.sha256 == sha(label)
+        }
+
+    assert flags() == {
+        "a": (False, False, True),
+        "b": (True, False, False),
+        "c": (False, True, False),
+    }
+    world.ticks.at = second.ends
+    assert flags() == {
+        "a": (False, False, True),
+        "b": (True, False, False),
+        "c": (False, False, True),
+    }
+    again = world.store.start_attempt(world.student, draft_id, [ids[sha("a")]])
+    assert again is not None
+    assert again.covered == (ids[sha("a")],)
+    assert flags() == {
+        "a": (False, True, False),
+        "b": (True, False, False),
+        "c": (False, False, True),
+    }
 
 
 def test_a_failure_leaves_the_image_open_and_it_can_be_read_again(world: World) -> None:
@@ -2344,3 +2422,199 @@ def test_every_closing_call_returns_what_its_transaction_saw(world: World) -> No
     assert closed_by_leave == Closing(version_of(raced), True, True)
     assert closed_by_finish == Closing(version_of(finishing), True, True)
     assert nothing_saved == Closing(version_of(discarding), True, False)
+
+
+# ------------------------------------------------------------------ replacing one image
+
+FILE_NAME = "blossom.sqlite3"
+
+
+def replace(world: World, draft_id: str, image_id: str, label: str) -> import_drafts.Added:
+    """One image of the draft replaced by the made-up image ``label``, as the route asks."""
+    return world.store.replace_image(world.student, draft_id, image_id, image(label))
+
+
+def test_replacing_an_image_puts_the_new_one_in_its_place_in_one_write(world: World) -> None:
+    """The new image takes the old one's position, unread; the old image and its reading are
+    gone; the version is raised once and the expiry is unchanged. One transaction writes it,
+    and the only rows it changes are the draft's version, its image rows and the answers its
+    carry clears."""
+
+    def carry(
+        before: Sequence[StoredReading],
+        after: Sequence[StoredReading],
+        answers: Mapping[tuple[str, str], str],
+        aside: frozenset[str],
+    ) -> Carry:
+        return Carry(delete=frozenset(key for key in answers if key[1] == "1:r2"))
+
+    world.carries = {HOMEWORK: carry}
+    world.store = world.reopen()
+    draft_id = world.draft("a", "b", "c")
+    world.read(draft_id, "a", "r1")
+    world.read(draft_id, "b", "r2")
+    version = world.store.snapshot(world.student, draft_id).version
+    world.store.keep_answers(
+        world.student, draft_id, version=version, answers=[answer("0:r1"), answer("1:r2")]
+    )
+    world.store.save_progress(world.student, draft_id, revision=0, progress='{"v": 4}')
+    before = world.store.snapshot(world.student, draft_id)
+    before_answers = world.store.review_answers(world.student, draft_id).answers
+    assert len(before_answers) == 2
+    old_id = world.image_ids(draft_id)[sha("b")]
+    file_before = closed_world([world.path], leaving_out=())
+    statements: list[str] = []
+    world.store._connection.set_trace_callback(statements.append)
+
+    added = replace(world, draft_id, old_id, "d")
+
+    world.store._connection.set_trace_callback(None)
+    after = world.store.snapshot(world.student, draft_id)
+    file_after = closed_world([world.path], leaving_out=())
+    new = after.images[1]
+    assert [item.sha256 for item in after.images] == [sha("a"), sha("d"), sha("c")]
+    assert [item.position for item in after.images] == [item.position for item in before.images]
+    assert new.image_id != old_id
+    assert added.added == (new.image_id,)
+    assert (new.read, new.failure) == (False, None)
+    assert [reading.sha256 for reading in after.readings] == [sha("a")]
+    assert after.readings[0] == next(r for r in before.readings if r.sha256 == sha("a"))
+    assert after.images[0] == before.images[0]
+    assert after.images[2] == before.images[2]
+    assert after.version == before.version + 1
+    assert (after.created_at, after.expires_at) == (before.created_at, before.expires_at)
+    assert (after.page_key, after.progress_revision) == (before.page_key, before.progress_revision)
+    assert world.store.image_png(world.student, draft_id, new.image_id) == image("d").png
+    with pytest.raises(UnknownImage):
+        world.store.image_png(world.student, draft_id, old_id)
+    assert [s for s in statements if s in ("BEGIN IMMEDIATE", "COMMIT")] == [
+        "BEGIN IMMEDIATE",
+        "COMMIT",
+    ]
+    assert sorted(key for key in file_after if file_after[key] != file_before.get(key)) == [
+        f"{FILE_NAME} rows of import_draft_answers",
+        f"{FILE_NAME} rows of import_draft_images",
+        f"{FILE_NAME} rows of import_drafts",
+    ]
+    assert world.store.review_answers(world.student, draft_id).answers == tuple(
+        a for a in before_answers if a.subject != "1:r2"
+    )
+    assert sorted(file_after) == sorted(file_before)
+
+
+def test_replacing_an_image_carries_as_a_removal_does_inside_its_own_transaction(
+    world: World,
+) -> None:
+    """The carry function sees the same readings before and after as a removal of the same
+    image, and its clears, marks and set-asides land the same; refused at the marks, the whole
+    replace is taken back and the old image stays."""
+    seen: list[tuple[int, int]] = []
+
+    def carry(
+        before: Sequence[StoredReading],
+        after: Sequence[StoredReading],
+        answers: Mapping[tuple[str, str], str],
+        aside: frozenset[str],
+    ) -> Carry:
+        seen.append((len(before), len(after)))
+        return Carry(
+            delete=frozenset(answers), marks=frozenset({"0:r1"}), aside_insert=frozenset({"0:r9"})
+        )
+
+    world.carries = {HOMEWORK: carry}
+    world.store = world.reopen()
+
+    def answered() -> str:
+        draft_id = world.draft("a", "b")
+        world.read(draft_id, "a", "r1")
+        world.read(draft_id, "b", "r9", "r8")
+        version = world.store.snapshot(world.student, draft_id).version
+        world.store.keep_answers(world.student, draft_id, version=version, answers=[answer("0:r1")])
+        return draft_id
+
+    removed = answered()
+    world.store.remove_image(world.student, removed, world.image_ids(removed)[sha("b")])
+    by_removal = seen[-1]
+    replaced = answered()
+    old_id = world.image_ids(replaced)[sha("b")]
+
+    def refuse_marks(action: int, table: str | None, *_: object) -> int:
+        refused = table == "import_draft_marks" and action == sqlite3.SQLITE_INSERT
+        return sqlite3.SQLITE_DENY if refused else sqlite3.SQLITE_OK
+
+    world.store._connection.set_authorizer(refuse_marks)
+    with pytest.raises(sqlite3.DatabaseError):
+        replace(world, replaced, old_id, "c")
+    world.store._connection.set_authorizer(None)
+    assert set(world.image_ids(replaced)) == {sha("a"), sha("b")}
+    assert kept_answers(world, replaced) != {}
+
+    replace(world, replaced, old_id, "c")
+
+    assert seen[-1] == by_removal == (2, 1)
+    assert world.store.review_answers(world.student, replaced) == world.store.review_answers(
+        world.student, removed
+    )
+    assert world.store.snapshot(world.student, replaced).discarded == frozenset({"0:r9"})
+    assert world.store.snapshot(world.student, removed).discarded == frozenset({"0:r9"})
+
+
+@pytest.mark.parametrize("label", ["a", "b"], ids=["another image", "the same image"])
+def test_a_new_image_the_review_already_holds_is_refused_and_nothing_is_written(
+    world: World, label: str
+) -> None:
+    """A new image equal to the one it would replace, or to another image of the review, is
+    refused naming the image it equals; the file is unchanged."""
+    draft_id = world.draft("a", "b")
+    world.read(draft_id, "a", "r1")
+    ids = world.image_ids(draft_id)
+    file_before = world.file_bytes()
+
+    with pytest.raises(import_drafts.AlreadyHeld) as refused:
+        replace(world, draft_id, ids[sha("b")], label)
+
+    assert refused.value.image_id == ids[sha(label)]
+    assert world.file_bytes() == file_before
+
+
+def test_a_frozen_review_refuses_a_replace_and_nothing_is_written(world: World) -> None:
+    draft_id = world.draft("a", "b")
+    world.read(draft_id, "a", "r1", "r2")
+    world.accept(draft_id, "0:r1")
+    image_id = world.image_ids(draft_id)[sha("b")]
+    before = world.store.snapshot(world.student, draft_id)
+
+    with pytest.raises(DraftFrozen):
+        replace(world, draft_id, image_id, "c")
+
+    assert world.store.snapshot(world.student, draft_id) == before
+
+
+def test_an_image_not_of_this_review_is_refused_and_nothing_is_written(world: World) -> None:
+    """An id no image has, and another review's image, are both unknown here."""
+    draft_id = world.draft("a")
+    other = world.draft("b")
+    before = world.store.snapshot(world.student, draft_id)
+    file_before = world.file_bytes()
+
+    for image_id in ("0" * 32, world.image_ids(other)[sha("b")]):
+        with pytest.raises(UnknownImage):
+            replace(world, draft_id, image_id, "c")
+
+    assert world.store.snapshot(world.student, draft_id) == before
+    assert world.file_bytes() == file_before
+
+
+def test_a_replace_is_refused_in_a_review_closed_or_expired(world: World) -> None:
+    finished = world.draft("a")
+    world.read(finished, "a", "r1")
+    world.accept(finished, "0:r1")
+    expired = world.draft("b")
+
+    with pytest.raises(DraftClosed):
+        replace(world, finished, world.image_ids(finished)[sha("a")], "c")
+    world.clock.at += DRAFT_LIFETIME
+    with pytest.raises(DraftExpired):
+        world.store.replace_image(world.student, expired, "0" * 32, image("d"))
+    with pytest.raises(DraftNotFound):
+        world.store.replace_image(world.student, "0" * 32, "0" * 32, image("d"))

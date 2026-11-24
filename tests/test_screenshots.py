@@ -35,9 +35,11 @@ from blossom.screenshots import (
     homework_rows,
 )
 from blossom.stores.import_drafts import FAILURES, DraftRow, StoredReading
+from tests.support import PS, RL, THU, card, heading, homework, shot, stored_homework
+from tests.support import SCREENSHOT_NOW as NOW
+from tests.support import due_card as due
 from tests.support import homework_answer as an_answer
 from tests.support import homework_card as a_card
-from tests.support import stored_homework
 
 
 def a_report(**fields: object) -> dict[str, Any]:
@@ -749,23 +751,6 @@ def test_a_blank_course_or_title_is_not_a_complete_card() -> None:
 
 
 # ------------------------------------------------------------------ from readings to rows
-
-NOW = datetime(2026, 10, 9, 18, 0, tzinfo=UTC)
-
-
-def heading(text: str, y: int, uncertain: str | None = None) -> dict[str, object]:
-    return {"text": text, "y": y, "uncertain": uncertain}
-
-
-def homework(*cards: dict[str, object], headings: list[dict[str, object]]) -> dict[str, object]:
-    return an_answer(headings=headings, cards=list(cards))
-
-
-def due(course: str, title: str, y_top: int, **fields: object) -> dict[str, object]:
-    """A DUE card with no instruction unless one is given."""
-    card = a_card(badge="DUE", course=course, title=title, instruction=None, footer=None)
-    card.update(y_top=y_top, y_bottom=y_top + 80, **fields)
-    return card
 
 
 def assigned(
@@ -1500,7 +1485,7 @@ def test_a_rounds_key_stays_when_an_earlier_round_of_its_name_arrives() -> None:
 # Each scenario lists its screenshots, then the rows it gives (title, due date) and the items
 # that stay visible (title, reason), the same in every order of its images.
 
-RL, PS, WS = ("English 8", "Reading log"), ("Math 8", "Practice set"), ("Math 8", "Worksheet 3")
+WS = ("Math 8", "Worksheet 3")
 SL, MW, U1 = (
     ("Science 8", "Spelling List 5"),
     ("Social Studies 8", "Map work"),
@@ -1509,28 +1494,15 @@ SL, MW, U1 = (
 LQ, V4 = ("Science 8", "Lab quiz"), ("English 8", "Vocab 4")
 
 
-def card(name: tuple[str, str], y_top: int, **fields: object) -> dict[str, object]:
-    return due(name[0], name[1], y_top, **fields)
-
-
-def shot(*parts: object) -> dict[str, object]:
-    """A screenshot from its parts top to bottom: a card, or a heading's text with its place
-    and, for a heading read with doubt, the reader's note."""
-    cards = [part for part in parts if isinstance(part, dict)]
-    headings = [heading(*part) for part in parts if isinstance(part, tuple)]
-    return homework(*cards, headings=headings)
-
-
 def undated(name: tuple[str, str], y_top: int) -> dict[str, object]:
     """An ASSIGNED card read whole with no due line, so it has no day of its own."""
     return dict(card(name, y_top), badge="ASSIGNED")
 
 
-MON, TUE, WED, THU = (
+MON, TUE, WED = (
     "Monday 10/5/2026",
     "Tuesday 10/6/2026",
     "Wednesday 10/7/2026",
-    "Thursday 10/8/2026",
 )
 FRI, NEXT_MON = "Friday 10/9/2026", "Monday 10/12/2026"
 UNREAD = a_card(title=42)

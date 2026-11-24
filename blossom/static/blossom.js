@@ -3,14 +3,18 @@
 /*
   Five enhancements, and every page works with this file absent.
 
-  The first is for the forms that make a plan: say that a plan is being made,
-  keep saying so as the minutes pass, and let one press be one request from
-  that form. The messages carry no closing punctuation; the pulsing dots after
-  them are it. Only forms marked data-pending take part, and their submit
-  buttons carry no name, so disabling one changes nothing about what is sent.
-  Forms whose buttons carry a decision or a step are left alone. The later
-  messages come from timers in this page, not from the server, so they say
-  only that the wait goes on.
+  The first is for the forms whose press takes a while, such as making a plan
+  or uploading screenshots: say what the press is doing, keep saying so as the
+  minutes pass, and let one press be one request from that form. The messages
+  carry no closing punctuation; the pulsing dots after them are it. Only forms
+  marked data-pending take part; a button marked so has its own words, said in
+  place of the form's when it is the one pressed. A disabled button sends
+  neither its name nor its value, so a named button's pair goes into a hidden
+  field before the form's buttons are disabled, and that field goes when the
+  page is shown again. Where the browser doesn't say which button was pressed,
+  the form's words show and no button is disabled. Forms whose buttons carry a
+  decision or a step are left alone. The later messages come from timers in
+  this page, not from the server, so they say only that the wait goes on.
 
   The second opens a folded disclosure when a link on the page points inside
   it, so "What is shared" shows what it names.
@@ -37,9 +41,15 @@
   gives it back, until the reader's first key or press, or two frames after
   the page loads.
 
-  The fifth says under a screenshot picker how many screenshots are chosen,
-  since a phone hides the browser's own line with its button. Without this
-  file the browser's line still shows.
+  The fifth lists under a screenshot picker each screenshot chosen, by its full
+  name, with its size and a preview this browser makes from the file, and says
+  how many are chosen, since a phone hides the browser's own line with its
+  button. Remove and Replace beside each change only what this browser holds
+  as chosen, and send nothing. Once an upload goes ahead and the browser has
+  taken the files it sends, the list and its pickers are held until the page
+  is shown again, so the page never says it removed or replaced a file once
+  the files are sent. Without this file the browser's line still shows, beside
+  the page's line that choosing sends nothing.
 */
 (function () {
   "use strict";
@@ -69,17 +79,31 @@
     note.appendChild(dots);
   }
 
+  /* The submit buttons a form owns, wherever they stand on the page. */
+  function pressesOf(form) {
+    return Array.prototype.filter.call(form.elements, function (element) {
+      return element.tagName === "BUTTON" && element.type === "submit";
+    });
+  }
+
   function reset(form) {
     delete form.dataset.busy;
     form.removeAttribute("aria-busy");
     (form.pendingTimers || []).forEach(clearTimeout);
     form.pendingTimers = [];
-    var button = form.querySelector("button[type=submit]");
-    if (button) {
-      button.disabled = false;
+    pressesOf(form).forEach(function (button) {
+      if (button.dataset.held) {
+        delete button.dataset.held;
+        button.disabled = false;
+      }
       if (button.dataset.label) {
         button.textContent = button.dataset.label;
+        delete button.dataset.label;
       }
+    });
+    var pressed = form.querySelector("input[data-pressed]");
+    if (pressed) {
+      pressed.remove();
     }
     var note = form.querySelector(".pending");
     if (note) {
@@ -94,16 +118,32 @@
         event.preventDefault();
         return;
       }
+      var pressed = event.submitter;
+      var words = pressed && pressed.dataset.pending
+        ? pressed.dataset.pending
+        : form.dataset.pending;
       form.dataset.busy = "1";
       form.setAttribute("aria-busy", "true");
-      var button = form.querySelector("button[type=submit]");
-      if (button) {
-        button.dataset.label = button.textContent;
-        button.disabled = true;
-        button.textContent = form.dataset.pending;
+      if (pressed) {
+        if (pressed.name) {
+          var kept = document.createElement("input");
+          kept.type = "hidden";
+          kept.name = pressed.name;
+          kept.value = pressed.value;
+          kept.setAttribute("data-pressed", "");
+          form.appendChild(kept);
+        }
+        pressesOf(form).forEach(function (button) {
+          if (!button.disabled) {
+            button.dataset.held = "1";
+            button.disabled = true;
+          }
+        });
+        pressed.dataset.label = pressed.textContent;
+        pressed.textContent = words;
       }
-      say(form, form.dataset.pending);
-      document.title = form.dataset.pending;
+      say(form, words);
+      document.title = words;
       form.pendingTimers = [];
       if (form.dataset.pendingLater) {
         form.pendingTimers.push(setTimeout(function () {
@@ -309,18 +349,217 @@
     }
   });
 
+  /* What a screenshot picker holds, listed beneath it: each file's full name, its size, where a
+     megabyte is a million bytes as in the upload limits, and a preview this browser makes from
+     the file itself. Remove and Replace change only what the picker holds. Replace opens a
+     picker for one file that carries no name, so no form sends it. Where the browser can't
+     change what a picker holds, the names and previews show and choosing again changes them. */
+  var editable = (function () {
+    try {
+      return typeof DataTransfer === "function" && Boolean(new DataTransfer().items);
+    } catch (error) {
+      return false;
+    }
+  })();
+  var previewing = Boolean(window.URL && URL.createObjectURL && URL.revokeObjectURL);
+
+  function sized(bytes) {
+    return bytes >= 1000000
+      ? (bytes / 1000000).toFixed(1) + " MB"
+      : Math.max(1, Math.round(bytes / 1000)) + " KB";
+  }
+
   Array.prototype.forEach.call(document.querySelectorAll("input[type='file']"), function (picker) {
-    var line = picker.form ? picker.form.querySelector("[data-chosen]") : null;
+    var form = picker.form;
+    var line = form ? form.querySelector("[data-chosen]") : null;
     if (!line) {
       return;
     }
-    function count() {
-      var chosen = picker.files ? picker.files.length : 0;
-      line.textContent = chosen === 0
-        ? ""
-        : chosen + (chosen === 1 ? " screenshot" : " screenshots") + " chosen.";
+    var list = form.querySelector("[data-chosen-files]");
+    var previews = [];
+    var swap = null;
+    var swapping = -1;
+    var locked = false;
+
+    function release() {
+      previews.forEach(function (url) {
+        URL.revokeObjectURL(url);
+      });
+      previews = [];
     }
-    picker.addEventListener("change", count);
-    window.addEventListener("pageshow", count);
+
+    function chosen() {
+      return picker.files ? Array.prototype.slice.call(picker.files) : [];
+    }
+
+    function hold(files) {
+      var transfer = new DataTransfer();
+      files.forEach(function (file) {
+        transfer.items.add(file);
+      });
+      picker.files = transfer.files;
+    }
+
+    function press(words, file, act) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary";
+      button.textContent = words;
+      var whose = document.createElement("span");
+      whose.className = "visually-hidden";
+      whose.textContent = " " + file.name;
+      button.appendChild(whose);
+      button.addEventListener("click", act);
+      return button;
+    }
+
+    function row(file, place) {
+      var item = document.createElement("li");
+      if (previewing) {
+        var frame = document.createElement("span");
+        var preview = document.createElement("img");
+        var url = URL.createObjectURL(file);
+        previews.push(url);
+        preview.alt = "";
+        preview.src = url;
+        frame.appendChild(preview);
+        item.appendChild(frame);
+      }
+      var about = document.createElement("div");
+      var name = document.createElement("p");
+      name.textContent = file.name;
+      var size = document.createElement("p");
+      size.className = "note";
+      size.textContent = sized(file.size);
+      about.appendChild(name);
+      about.appendChild(size);
+      if (editable) {
+        var actions = document.createElement("div");
+        actions.className = "actions";
+        actions.appendChild(press("Remove", file, function () {
+          remove(place);
+        }));
+        actions.appendChild(press("Replace", file, function () {
+          replace(place);
+        }));
+        about.appendChild(actions);
+      }
+      item.appendChild(about);
+      return item;
+    }
+
+    /* The status line says what changed, then how many are chosen. */
+    function show(said) {
+      release();
+      var files = chosen();
+      var words = said ? [said] : [];
+      if (files.length) {
+        var one = files.length === 1;
+        words.push(files.length + (one ? " screenshot chosen." : " screenshots chosen."));
+      } else if (said) {
+        words.push("No screenshots chosen.");
+      }
+      if (files.length && list && !editable) {
+        words.push("To change what you chose, choose again.");
+      }
+      line.textContent = words.join(" ");
+      if (!list) {
+        return;
+      }
+      list.textContent = "";
+      files.forEach(function (file, place) {
+        list.appendChild(row(file, place));
+      });
+      list.hidden = files.length === 0;
+    }
+
+    /* While an upload is under way, the picker, the Replace picker and each file's Remove and
+       Replace are held, and no step below changes what is chosen or what the line says of it. */
+    function lock(holding) {
+      locked = holding;
+      picker.disabled = holding;
+      if (swap) {
+        swap.disabled = holding;
+      }
+      Array.prototype.forEach.call(list ? list.querySelectorAll("button") : [], function (button) {
+        button.disabled = holding;
+      });
+    }
+
+    /* After a Remove the focus goes to the next file's Remove, or the one before it when the
+       last file went, or to the picker when none is left. */
+    function remove(place) {
+      if (locked) {
+        return;
+      }
+      var files = chosen();
+      var gone = files.splice(place, 1)[0];
+      hold(files);
+      show("Removed " + gone.name + ".");
+      var left = list.querySelectorAll(".actions button:first-child");
+      (left[place] || left[place - 1] || picker).focus();
+    }
+
+    function replace(place) {
+      if (locked) {
+        return;
+      }
+      if (!swap) {
+        swap = document.createElement("input");
+        swap.type = "file";
+        swap.accept = picker.accept;
+        swap.hidden = true;
+        swap.addEventListener("change", swapped);
+        list.parentNode.insertBefore(swap, list.nextSibling);
+      }
+      swapping = place;
+      swap.value = "";
+      swap.click();
+    }
+
+    /* The file chosen takes the place of the one replaced, and the focus stays on its Replace. */
+    function swapped() {
+      if (locked) {
+        return;
+      }
+      var files = chosen();
+      var into = swap.files ? swap.files[0] : null;
+      if (!into || swapping < 0 || swapping >= files.length) {
+        return;
+      }
+      var out = files[swapping];
+      files[swapping] = into;
+      hold(files);
+      show("Replaced " + out.name + " with " + into.name + ".");
+      var again = list.querySelectorAll(".actions button:last-child")[swapping];
+      if (again) {
+        again.focus();
+      }
+    }
+
+    function chose() {
+      if (locked) {
+        return;
+      }
+      show("");
+    }
+
+    function handBack() {
+      lock(false);
+      show("");
+    }
+
+    /* A browser fires formdata as it builds what a submission sends, once the submit went
+       ahead, with the picker's files already in it. A disabled field sends nothing, so the
+       list is held only from here, and only on a form the submit marked busy; every showing of
+       the page hands it back. */
+    form.addEventListener("formdata", function () {
+      if (form.dataset.busy) {
+        lock(true);
+      }
+    });
+    picker.addEventListener("change", chose);
+    window.addEventListener("pageshow", handBack);
+    window.addEventListener("pagehide", release);
   });
 })();
