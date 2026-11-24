@@ -35,8 +35,9 @@ with the note.
 
 **Make room for tonight.** With planning turned on, she can press
 **Plan today** to set aside time for the work.
-**Too much right now** asks for a shorter evening the next time she makes a
-plan. She can start while a parent's review is still to come.
+**Too much right now** asks for a shorter plan for today, including if she
+makes another plan later that day. She can start while a parent's review is
+still to come.
 
 **Bring in what the school said.** A parent can enter one assignment or
 paste **School text** in Family review. The review shows what Blossom read
@@ -194,8 +195,11 @@ Two optional features use a paid Anthropic API key:
 
 - **Plan today** sends the work being planned, including applicable school
   instructions, assignment notes, her Not yet updates and planning context.
-  Her original homework notes, requests for help and hand-in reports stay
-  out of those calls. Planning prompts and responses are also kept locally.
+  Planning sends assignment titles to Anthropic. If she keeps a homework
+  note's suggested title, the words she keeps are sent too. The homework
+  note itself and its edit history stay in Blossom. Her requests for help
+  and hand-in reports stay out of planning calls. Planning prompts and
+  responses are also kept locally.
 - **Screenshot import** starts turned off. Choosing screenshots and
   previewing them happen in the browser and send nothing.
   **Upload without reading** stores them in Blossom and sends nothing to

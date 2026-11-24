@@ -427,9 +427,12 @@ all of that is synthetic.
 Her homework notes are another matter. When she or a parent adds a note to
 homework, the assignment it becomes goes in like any other: its class,
 title, dates, kind, and the separate Note about the work typed on that form.
-The note's original text and its history never go, and neither does a note
-that is waiting, put away, or linked to homework already here; a date a
-linked note gives counts only as one more source for that due date. Her
+The note's original text and its history never go into a planning call as a
+separate note record. For a short note, the form can suggest the whole note
+as the assignment title. If the family keeps that title, those words go to
+Anthropic when the assignment is included in planning. A note that is
+waiting, put away, or linked to homework already here doesn't go either; a
+date a linked note gives counts only as one more source for that due date. Her
 requests for help and her reports about turning work in stay out of every
 call.
 
