@@ -1022,6 +1022,12 @@ def with_clock(client: TestClient, clock: Clock) -> None:
     setattr(client.app.state, STATE_ATTRIBUTE, dataclasses.replace(state, clock=clock))  # type: ignore[attr-defined]
 
 
+def with_real_clock(client: TestClient, clock: Clock) -> None:
+    """Give a running application another real clock, the one a form's issue time is read from."""
+    state = state_of(client)
+    setattr(client.app.state, STATE_ATTRIBUTE, dataclasses.replace(state, real_clock=clock))  # type: ignore[attr-defined]
+
+
 class SetClock:
     """A clock whose household day is whatever the test last set."""
 
