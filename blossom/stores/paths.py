@@ -253,9 +253,8 @@ def refuse_sample_state_elsewhere(
     it. Only names are read.
 
     Each refusal says what to correct: a link at the folder, a variable that names a place
-    outside it, or a link inside it that leads out. A relative setting
-    is resolved through links when it is read, so one that reaches outside through a link names
-    where it really lands and is refused as a variable naming that place."""
+    outside it, or a link inside it that leads out. A sample's relative setting is joined to
+    the checkout without following links, so a link in the folder is named as one."""
     home = Path(os.path.realpath(sample))
     if home != Path(os.path.realpath(sample.parent)) / sample.name:
         msg = (

@@ -395,9 +395,9 @@ def test_a_walk_through_dotdot_that_stays_inside_is_refused_too(
 def test_a_relative_path_through_dotdot_is_refused_as_typed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variable: str, name: str
 ) -> None:
-    """A relative setting is resolved when it is read, which would drop its ``..``, so it is
-    checked as typed: refused, even when the walk ends in ``.local/sample/``, before any state
-    file is opened or any folder is made."""
+    """Resolving a relative setting would drop its ``..``, so it is checked as typed: refused,
+    even when the walk ends in ``.local/sample/``, before any state file is opened or any
+    folder is made."""
     checkout = in_a_checkout(tmp_path, monkeypatch)
     household = a_household(tmp_path / "household")
     before = snapshot(household)
@@ -461,6 +461,47 @@ def test_the_household_launch_still_resolves_a_relative_path_through_dotdot(
     assert (household.database_path, household.checkpoint_path, household.trace_path) == tuple(
         checkout.resolve() / ".local" / name for name in NAMES
     )
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_a_link_out_of_the_sample_folder_in_the_launch_files_shape_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """The launch file names the sample's files by relative paths under ``.local/sample/``. A
+    link there into the household is refused by its own name, with the correction to remove
+    it, and once it is removed the same launch starts and keeps its edit."""
+    in_a_checkout(tmp_path, monkeypatch)
+    household = a_household(tmp_path / "household")
+    before = snapshot(household)
+    launch_file = {
+        variable: f".local/sample/{base}" for variable, base in zip(VARIABLES, NAMES, strict=True)
+    }
+    sample_folder().mkdir(parents=True)
+    linked = sample_folder() / name
+    link(household / name, linked)
+
+    with connections_recorded(monkeypatch) as opened:
+        refused, read = a_sample_launch(**launch_file)
+
+    assert HOUSEHOLD_NOTE not in read
+    assert [path for path in opened if path.is_relative_to(household.resolve())] == []
+    assert snapshot(household) == before, "the sample session changed the household's files"
+    assert refused is not None, "the sample session started on the household's file"
+    assert str(refused) == outside(
+        f"{linked} leads into {household.resolve()}, outside {sample_folder()}",
+        f"Remove the link at {linked}",
+    )
+
+    linked.unlink()
+    with connections_recorded(monkeypatch) as opened:
+        refused, _ = a_sample_launch(**launch_file)
+        with client_for(sample_launch(**launch_file)) as client:
+            after_restart = notes_of(client)
+
+    assert refused is None, "the sample did not start without the link"
+    assert after_restart == [SAMPLE_NOTE]
+    assert [path for path in opened if not path.is_relative_to(sample_folder().resolve())] == []
+    assert snapshot(household) == before
 
 
 def test_a_sample_folder_that_is_a_link_is_refused(

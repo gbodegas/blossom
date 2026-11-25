@@ -1040,6 +1040,13 @@ the clock to Monday the seventh, puts the three state files under
 "Sample week". Load it after `.env`, so the household's time zone and the
 model key come from there and the sample's own paths and clock apply.
 
+Run the sample from a checkout in an ordinary local folder, outside OneDrive,
+Dropbox, iCloud Drive, Google Drive, or any other synced storage. The sample
+keeps its state in the checkout's `.local/sample/`. Blossom refuses to keep
+state in a folder OneDrive, Dropbox, iCloud Drive, or Google Drive syncs, and
+the sample refuses state paths outside `.local/sample/`, so pointing the three
+paths elsewhere won't start the sample from such a checkout.
+
 Before starting the sample, check that your terminal has no `BLOSSOM_`
 settings already set. Some shell profiles set them even in a new terminal.
 These settings take precedence over the sample files. A database,
@@ -1348,12 +1355,14 @@ refused. Plan again and review the new plan.
 **The app refuses to start and says saved state may not live on a network
 share or in a synced folder.** The repository is inside a folder that
 OneDrive, Dropbox, iCloud Drive, or Google Drive syncs, or on a mapped drive,
-and the files the app writes would go there with it. Point
-`BLOSSOM_DATABASE_PATH`, `BLOSSOM_CHECKPOINT_PATH`, and `BLOSSOM_TRACE_PATH`
-at an ordinary local folder instead, in `.env` or in the shell, for example
-`C:\blossom-state\blossom.sqlite3` on Windows or
+and the files the app writes would go there with it. For the household's
+launch, point `BLOSSOM_DATABASE_PATH`, `BLOSSOM_CHECKPOINT_PATH`, and
+`BLOSSOM_TRACE_PATH` at an ordinary local folder instead, in `.env` or in the
+shell, for example `C:\blossom-state\blossom.sqlite3` on Windows or
 `~/blossom-state/blossom.sqlite3` elsewhere, and the same folder for the
-other two.
+other two. This doesn't apply to the sample week, which keeps its state in
+the checkout's `.local/sample/` and refuses paths elsewhere: start the sample
+from a checkout in an ordinary local folder outside synced storage.
 
 **The app refuses to start and says another Blossom process has this
 household's files open.** One process serves a household; the file it names,

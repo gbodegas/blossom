@@ -198,7 +198,8 @@ class Settings:
     nothing else; a pinned clock on its own says nothing about whose data this is.
     Its state files default to ``sample_state_path``, and a start refuses any that
     would land outside it. A database, checkpoint or trace path set beside it that walks
-    through ``..`` is refused as typed, when the settings are read."""
+    through ``..`` is refused as typed, when the settings are read, and a relative one is
+    joined to the checkout without following links, so the startup check can name a link."""
     test_copy: bool = False
     """From ``BLOSSOM_TEST_COPY``. True marks every page "Test copy": the state is a copy
     of the family's own data, made for a test pass. Set by a test-copy launch and nothing
@@ -366,9 +367,12 @@ class Settings:
         local = LOCAL_STATE_PATH / SAMPLE_STATE_FOLDER if sample else LOCAL_STATE_PATH
 
         def state(variable: str, name: str) -> Path:
-            # Checked as typed: resolving a relative value would drop its "..".
             value = source.get(variable)
-            if sample and value is not None and ".." in Path(value).expanduser().parts:
+            if not sample or value is None or not value.strip():
+                return read(variable, local / name)
+            # Checked as typed: resolving a relative value would drop its "..".
+            typed = Path(value).expanduser()
+            if ".." in typed.parts:
                 msg = (
                     f"{SAMPLE_VARIABLE} is on, but {variable} names {value}, which walks through "
                     "'..': a sample week's state paths may not walk through '..', even when the "
@@ -376,7 +380,9 @@ class Settings:
                     "start the sample again"
                 )
                 raise ValueError(msg)
-            return read(variable, local / name)
+            # Joined, not resolved, so the startup check finds a link in the sample's folder
+            # by its own name.
+            return typed if typed.is_absolute() else REPOSITORY_ROOT / typed
 
         return cls(
             fixture_path=optional_path(FIXTURE_PATH_VARIABLE),
