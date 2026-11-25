@@ -335,12 +335,14 @@ def create_lifespan(
         # it would then corrupt, and is released when this process stops.
         # First, a test copy is held to what it declares: it runs only where its folders are
         # marked and its files are its own, never links, and a marked folder runs only as a
-        # copy. Nothing is claimed or opened until this passes.
+        # copy; a sample week runs only on state files that land in the sample's own folder.
+        # Nothing is claimed or opened until this passes.
         refuse_mismarked_state(
             settings.database_path,
             settings.checkpoint_path,
             settings.trace_path,
             test_copy=settings.test_copy,
+            sample=settings.sample_state_path,
         )
         claim = claim_household(settings.database_path, settings.checkpoint_path)
         try:

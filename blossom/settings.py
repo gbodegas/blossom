@@ -42,6 +42,9 @@ TEMPLATE_PATH = PACKAGE_ROOT / "templates"
 # module constant rather than a literal inside the reader, so a test can point
 # the whole set of defaults somewhere temporary in one move.
 LOCAL_STATE_PATH = REPOSITORY_ROOT / ".local"
+SAMPLE_STATE_FOLDER = "sample"
+"""The folder under ``LOCAL_STATE_PATH`` that holds all of a sample week's state: its defaults
+sit there, and a start with the sample flag on refuses any state file that lands elsewhere."""
 
 FIXTURE_PATH_VARIABLE = "BLOSSOM_FIXTURE_PATH"
 DATABASE_PATH_VARIABLE = "BLOSSOM_DATABASE_PATH"
@@ -192,7 +195,11 @@ class Settings:
     sample: bool = False
     """From ``BLOSSOM_SAMPLE``. True marks every page "Sample week": what is shown
     is a synthetic scenario, not the family's own. Set by the sample launch and
-    nothing else; a pinned clock on its own says nothing about whose data this is."""
+    nothing else; a pinned clock on its own says nothing about whose data this is.
+    Its state files default to ``sample_state_path``, and a start refuses any that
+    would land outside it. A database, checkpoint or trace path set beside it that walks
+    through ``..`` is refused as typed, when the settings are read, and a relative one is
+    joined to the checkout without following links, so the startup check can name a link."""
     test_copy: bool = False
     """From ``BLOSSOM_TEST_COPY``. True marks every page "Test copy": the state is a copy
     of the family's own data, made for a test pass. Set by a test-copy launch and nothing
@@ -222,6 +229,11 @@ class Settings:
         if self.test_copy:
             return "Test copy"
         return None
+
+    @property
+    def sample_state_path(self) -> Path | None:
+        """The one folder a sample week's state may land in, or ``None`` when this isn't one."""
+        return LOCAL_STATE_PATH / SAMPLE_STATE_FOLDER if self.sample else None
 
     @property
     def page_marks(self) -> PageMarks:
@@ -351,18 +363,38 @@ class Settings:
             )
             raise ValueError(msg)
 
-        local = LOCAL_STATE_PATH
+        sample = flag(SAMPLE_VARIABLE)
+        local = LOCAL_STATE_PATH / SAMPLE_STATE_FOLDER if sample else LOCAL_STATE_PATH
+
+        def state(variable: str, name: str) -> Path:
+            value = source.get(variable)
+            if not sample or value is None or not value.strip():
+                return read(variable, local / name)
+            # Checked as typed: resolving a relative value would drop its "..".
+            typed = Path(value).expanduser()
+            if ".." in typed.parts:
+                msg = (
+                    f"{SAMPLE_VARIABLE} is on, but {variable} names {value}, which walks through "
+                    "'..': a sample week's state paths may not walk through '..', even when the "
+                    f"walk ends in the sample's folder. Unset {variable} in the terminal, then "
+                    "start the sample again"
+                )
+                raise ValueError(msg)
+            # Joined, not resolved, so the startup check finds a link in the sample's folder
+            # by its own name.
+            return typed if typed.is_absolute() else REPOSITORY_ROOT / typed
+
         return cls(
             fixture_path=optional_path(FIXTURE_PATH_VARIABLE),
-            database_path=read(DATABASE_PATH_VARIABLE, local / "blossom.sqlite3"),
-            checkpoint_path=read(CHECKPOINT_PATH_VARIABLE, local / "checkpoints.sqlite3"),
-            trace_path=read(TRACE_PATH_VARIABLE, local / "traces.sqlite3"),
+            database_path=state(DATABASE_PATH_VARIABLE, "blossom.sqlite3"),
+            checkpoint_path=state(CHECKPOINT_PATH_VARIABLE, "checkpoints.sqlite3"),
+            trace_path=state(TRACE_PATH_VARIABLE, "traces.sqlite3"),
             today=today,
             timezone_key=timezone_key,
             anthropic_api_key=anthropic_api_key,
             evening_minutes=minutes(EVENING_MINUTES_VARIABLE, DEFAULT_EVENING_MINUTES),
             too_much_minutes=minutes(TOO_MUCH_MINUTES_VARIABLE, DEFAULT_TOO_MUCH_MINUTES),
-            sample=flag(SAMPLE_VARIABLE),
+            sample=sample,
             test_copy=flag(TEST_COPY_VARIABLE),
             screenshot_import=flag(SCREENSHOT_IMPORT_VARIABLE),
             student_passphrase=secret(STUDENT_PASSPHRASE_VARIABLE),
