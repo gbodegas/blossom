@@ -440,13 +440,16 @@ Homework screenshots go to Anthropic's API only when a parent presses Upload
 and read, which sends only the screenshots that upload added; Replace and
 read, which sends only the one new screenshot that takes another's place; or
 Read on a screenshot review, which sends only the unread screenshots that page
-named. Upload without reading and Replace without reading send none. A review's
-screenshots, what Blossom read from them, and any progress saved for later are
-removed from Blossom's database file when the review finishes, is discarded,
-or expires. The removal can wait for Blossom's next hourly cleanup, or for its
-next start if it was stopped. This removes them from the file; it doesn't
-guarantee they are erased from the disk, and a backup or a disk snapshot taken
-while the review was open may still hold earlier copies.
+named. Upload without reading and Replace without reading send none. Each
+screenshot's usable file name, without its folder, is kept with it so the
+review can show it, and is removed with it; it is never sent to Anthropic or
+written to Blossom's logs. A review's screenshots, what Blossom read from
+them, and any progress saved for later are removed from Blossom's database
+file when the review finishes, is discarded, or expires. The removal can wait
+for Blossom's next hourly cleanup, or for its next start if it was stopped.
+This removes them from the file; it doesn't guarantee they are erased from the
+disk, and a backup or a disk snapshot taken while the review was open may
+still hold earlier copies.
 
 The full prompts and responses are also kept on this computer, in
 `traces.sqlite3` for two weeks, and each run's plan and record in

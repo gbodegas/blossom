@@ -2,10 +2,11 @@
 {#- Copyright (C) 2026 Gerardo Bodegas Martinez -#}
 {#
   One screenshot's replace step: the screenshot by its place, with its preview linked to the
-  stored copy and how it stands, then a form for the one file that takes its place, with
-  "Replace and read" and "Replace without reading", each with its line, as every upload form has
-  them. What a press found wrong shows first, in the problem style, and takes the focus; the
-  screenshot it would have replaced stays as it was. Nothing is chosen or sent until a press.
+  stored copy, how it stands and the name of its file when one was kept, then a form for the one
+  file that takes its place, with "Replace and read" and "Replace without reading", each with
+  its line, as every upload form has them. What a press found wrong shows first, in the problem
+  style, and takes the focus; the screenshot it would have replaced stays as it was. Nothing is
+  chosen or sent until a press.
 #}
 {% extends "base.html" %}
 {% from "import_upload.html" import upload_presses, chosen_files %}
@@ -26,6 +27,7 @@
         <a href="/parent/imports/{{ draft_id }}/images/{{ image.id }}"><img src="/parent/imports/{{ draft_id }}/images/{{ image.id }}" alt="Screenshot {{ image.place }}" width="72"></a>
         <div>
           <p>Screenshot {{ image.place }} · {{ image.label }}</p>
+          {% if image.name %}<p class="file-name"><bdi>{{ image.name }}</bdi></p>{% endif %}
           <div class="actions">
             <a class="step-link" href="/parent/imports/{{ draft_id }}/images/{{ image.id }}">View screenshot<span class="visually-hidden"> {{ image.place }}</span></a>
           </div>

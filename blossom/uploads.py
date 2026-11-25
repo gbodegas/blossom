@@ -20,6 +20,7 @@ a closed kind outside its ``except`` block, so nothing keeps a reference to it.
 import io
 import logging
 import threading
+import unicodedata
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Final, NamedTuple, NoReturn
 
@@ -66,6 +67,13 @@ MOST_PART_HEADER_BYTES: Final = 4_096
 MOST_DISPOSITION_BYTES: Final = 2_048
 """The most bytes a part's Content-Disposition value may hold: room for a file name of 255
 characters of four bytes each, with its field name."""
+
+MOST_NAME_CHARACTERS: Final = 255
+"""The most characters of a file's name kept: the longest name most file systems allow."""
+
+HIDDEN_CATEGORIES: Final = frozenset({"Cc", "Cf", "Zl", "Zp"})
+"""The character categories dropped from a file's name: controls, format characters (the bidi
+overrides among them) and line and paragraph separators, none of which a name shows."""
 
 PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
 JPEG_SIGNATURE: Final = b"\xff\xd8\xff"
@@ -127,6 +135,8 @@ class Upload(NamedTuple):
 
     fields: dict[str, str]
     files: tuple[bytes, ...]
+    names: tuple[str | None, ...] = ()
+    """Each file's name as ``kept_file_name`` keeps it, in the files' order."""
 
 
 class Prepared(NamedTuple):
@@ -222,7 +232,7 @@ async def read_upload(
     if not reader.ended:
         refusal = "unreadable"
         raise UploadRefused(refusal)
-    return Upload(dict(reader.fields), tuple(reader.files))
+    return Upload(dict(reader.fields), tuple(reader.files), tuple(reader.names))
 
 
 class _Reader:
@@ -234,6 +244,8 @@ class _Reader:
         self.most_parts = MOST_FILES + len(self.limits)
         self.fields: dict[str, str] = {}
         self.files: list[bytes] = []
+        self.names: list[str | None] = []
+        self.file_name = b""
         self.refusal: str | None = None
         self.ended = False
         self.parts = 0
@@ -324,6 +336,7 @@ class _Reader:
             if self.file_parts > MOST_FILES:
                 self.refuse("too_many_files")
             self.is_file = True
+            self.file_name = options[b"filename"]
         elif decoded not in self.limits:
             self.refuse("unknown_field")
         elif decoded in self.fields:
@@ -345,6 +358,7 @@ class _Reader:
             return
         if self.is_file:
             self.files.append(bytes(self.data))
+            self.names.append(kept_file_name(self.file_name))
             return
         text = text_of(bytes(self.data))
         if text is None:
@@ -353,6 +367,19 @@ class _Reader:
 
     def end(self) -> None:
         self.ended = True
+
+
+def kept_file_name(raw: bytes) -> str | None:
+    """A file part's name as a review keeps it: its UTF-8 text after the last slash or
+    backslash, so no folder is kept, with every character of ``HIDDEN_CATEGORIES`` dropped and
+    the edges trimmed, at most ``MOST_NAME_CHARACTERS`` long. None when the name isn't UTF-8 or
+    nothing is left."""
+    text = text_of(raw)
+    if text is None:
+        return None
+    base = text.replace("\\", "/").rpartition("/")[2]
+    shown = "".join(c for c in base if unicodedata.category(c) not in HIDDEN_CATEGORIES)
+    return shown.strip()[:MOST_NAME_CHARACTERS] or None
 
 
 def text_of(raw: bytes) -> str | None:
@@ -374,9 +401,9 @@ def base64_length(data: bytes) -> int:
     return 4 * ((len(data) + 2) // 3)
 
 
-def prepare_upload(files: Sequence[bytes]) -> PreparedUpload:
+def prepare_upload(files: Sequence[bytes], names: Sequence[str | None] = ()) -> PreparedUpload:
     """Prepare each file of an upload in turn; a refused one is named by its place, and the
-    others are kept."""
+    others are kept, each with the name at its place in ``names`` when there is one."""
     images: list[tuple[int, NewImage]] = []
     refused: list[tuple[int, str]] = []
     for place, data in enumerate(files):
@@ -388,13 +415,14 @@ def prepare_upload(files: Sequence[bytes]) -> PreparedUpload:
         if kind is not None:
             refused.append((place, kind))
         else:
-            images.append((place, as_new_image(prepared)))
+            name = names[place] if place < len(names) else None
+            images.append((place, as_new_image(prepared, name)))
     return PreparedUpload(tuple(images), tuple(refused))
 
 
-def as_new_image(prepared: Prepared) -> NewImage:
-    """A prepared image as the draft store takes it."""
-    return NewImage(png=prepared.png, width=prepared.width, height=prepared.height)
+def as_new_image(prepared: Prepared, name: str | None = None) -> NewImage:
+    """A prepared image as the draft store takes it, with the name of the file it came from."""
+    return NewImage(png=prepared.png, width=prepared.width, height=prepared.height, name=name)
 
 
 def prepare_image(data: bytes, *, limit: int = PROVIDER_IMAGE_LIMIT) -> Prepared:

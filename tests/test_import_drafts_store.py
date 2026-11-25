@@ -2618,3 +2618,114 @@ def test_a_replace_is_refused_in_a_review_closed_or_expired(world: World) -> Non
         world.store.replace_image(world.student, expired, "0" * 32, image("d"))
     with pytest.raises(DraftNotFound):
         world.store.replace_image(world.student, "0" * 32, "0" * 32, image("d"))
+
+
+# ------------------------------------------------------------------ file names
+
+
+def named(label: str, name: str | None) -> NewImage:
+    """A synthetic image carrying the name its file had."""
+    return image(label)._replace(name=name)
+
+
+def names_of(world: World, draft_id: str) -> list[tuple[str, str | None]]:
+    return [
+        (item.sha256, item.file_name)
+        for item in world.store.snapshot(world.student, draft_id).images
+    ]
+
+
+def first_upload(world: World, *images: NewImage) -> str:
+    added = world.store.create(
+        world.student,
+        kind=HOMEWORK,
+        made_by="parent",
+        creation_token=new_creation_token(),
+        images=list(images),
+    )
+    assert added is not None
+    return added.draft_id
+
+
+def test_each_image_keeps_its_name_and_a_replacement_brings_its_own(world: World) -> None:
+    draft_id = first_upload(
+        world, named("a", "Sentinel-Name-A1.png"), named("b", "Sentinel-Name-B2.png")
+    )
+    world.store.add_images(world.student, draft_id, [named("c", None), named("a", "Other.png")])
+    before = names_of(world, draft_id)
+    held = b"Sentinel-Name-B2.png" in world.file_bytes()
+
+    world.store.replace_image(
+        world.student,
+        draft_id,
+        world.image_ids(draft_id)[sha("b")],
+        named("d", "Sentinel-Name-D4.png"),
+    )
+
+    assert before == [
+        (sha("a"), "Sentinel-Name-A1.png"),
+        (sha("b"), "Sentinel-Name-B2.png"),
+        (sha("c"), None),
+    ]
+    assert held
+    assert names_of(world, draft_id) == [
+        (sha("a"), "Sentinel-Name-A1.png"),
+        (sha("d"), "Sentinel-Name-D4.png"),
+        (sha("c"), None),
+    ]
+    assert b"Sentinel-Name-B2.png" not in world.file_bytes()
+    assert b"Other.png" not in world.file_bytes()
+
+
+def test_a_name_leaves_the_file_with_its_image_however_the_image_goes(world: World) -> None:
+    removed = first_upload(world, named("a", "Sentinel-Name-R1.png"), named("b", "Kept-R.png"))
+    discarded = first_upload(world, named("c", "Sentinel-Name-X2.png"))
+    first_upload(world, named("d", "Sentinel-Name-E3.png"))
+    sentinels = (b"Sentinel-Name-R1.png", b"Sentinel-Name-X2.png", b"Sentinel-Name-E3.png")
+    held = [name in world.file_bytes() for name in sentinels]
+
+    world.store.remove_image(world.student, removed, world.image_ids(removed)[sha("a")])
+    after_remove = sentinels[0] in world.file_bytes()
+    version = world.store.snapshot(world.student, discarded).version
+    world.store.discard_review(world.student, discarded, version=version)
+    after_discard = sentinels[1] in world.file_bytes()
+    world.clock.at = OBSERVED_AT + DRAFT_LIFETIME
+    world.store.sweep()
+
+    assert held == [True, True, True]
+    assert not after_remove
+    assert not after_discard
+    assert [name in world.file_bytes() for name in sentinels] == [False, False, False]
+
+
+def columns_of(path: Path) -> list[str]:
+    connection = sqlite3.connect(path)
+    try:
+        return [row[1] for row in connection.execute("PRAGMA table_info(import_draft_images)")]
+    finally:
+        connection.close()
+
+
+def test_a_file_from_before_names_opens_with_its_images_unnamed(world: World) -> None:
+    draft_id = first_upload(world, named("a", "Sentinel-Name-O1.png"), named("b", None))
+    world.store.close()
+    connection = sqlite3.connect(world.path)
+    with connection:
+        connection.execute("ALTER TABLE import_draft_images DROP COLUMN file_name")
+    connection.close()
+    before = columns_of(world.path)
+
+    world.store = world.reopen()
+    world.store.add_images(world.student, draft_id, [named("c", "Added-Later.png")])
+
+    assert "file_name" not in before
+    assert columns_of(world.path) == [*before, "file_name"]
+    assert names_of(world, draft_id) == [
+        (sha("a"), None),
+        (sha("b"), None),
+        (sha("c"), "Added-Later.png"),
+    ]
+    assert (
+        world.store.image_png(world.student, draft_id, world.image_ids(draft_id)[sha("a")])
+        == image("a").png
+    )
