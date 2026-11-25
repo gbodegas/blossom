@@ -2,17 +2,19 @@
 # Copyright (C) 2026 Gerardo Bodegas Martinez
 """The screenshot reader's prompt and answer schema, exactly as the reader is sent them.
 
-The system prompt is prompt v1c: the reading instructions, then the answer schema as JSON
+The system prompt is prompt v1d: the reading instructions, then the answer schema as JSON
 text. The model is asked for JSON by instruction, with no tool or output format, and the
 answer is validated in code. Positions are thousandths of the image height.
 
 The instructions name a homework list in two layouts: the portal's list, with day headings
 and course cards marked DUE or ASSIGNED, and the printed list, with a "Homework for" heading
-that names the student, dated day lines, and subject labels each on a line of its own with
-the homework words beneath. Both are answered in the one schema: a printed subject is a
-card with its subject as the course, the closing hyphen of its label left out, and no label
-or due line. A grade report is named by its categories and term grade, and anything else is
-unsupported.
+that names the student, dated day lines, and beneath them subject labels each on a line of
+its own with the homework words beneath, card lines that give a course and a label on one
+line, or both. All are answered in the one schema: a printed subject is a card with its
+subject as the course, the closing hyphen of its label left out, and no label or due line;
+a printed card line is a card with its course, its label, its title without the closing
+colon, its printed due text as its due line, and the lines beneath it as its instruction. A
+grade report is named by its categories and term grade, and anything else is unsupported.
 """
 
 import json
@@ -21,9 +23,10 @@ from typing import Final
 SCHEMA_VERSION: Final = "screenshot-reading/1"
 """The answer schema's name, stored with every reading."""
 
-PROMPT_VERSION: Final = "v1c"
+PROMPT_VERSION: Final = "v1d"
 """The prompt's name, stored with every reading. Prompt v1b, which names the portal's
-homework list alone, has the same answer schema, so a reading stored under it decodes too."""
+homework list alone, and prompt v1c, which names a printed list's subject labels but not its
+card lines, have the same answer schema, so a reading stored under either decodes too."""
 
 CARD_FIELDS: Final = ["badge", "course", "title", "instruction", "footer"]
 HEADER_FIELDS: Final = ["school_year", "term", "class_code", "class_name", "teacher"]
@@ -299,14 +302,16 @@ PROMPT_V1: Final = (
     'homework list too: it has a heading that names the student, such as "Homework for Wren", '
     'a dated day line such as "11/16/2026 - Monday", subject labels each on a line of its own, '
     'such as "Humanities -", and the homework words beneath each subject. A subject on a '
-    "printed list can have homework with no drawn card and no DUE or ASSIGNED label. A grade "
-    "report shows one class's "
+    "printed list can have homework with no drawn card and no DUE or ASSIGNED label. A printed "
+    "homework list can also hold card lines, each a course and a label on one line, such as "
+    '"Art - Assigned: Poster: (Due:10/8/2026)" or "Math - Due: Worksheet 4:", with subject '
+    "labels or without them. A grade report shows one class's "
     'grading categories with "Weight =", assignment rows, "Category Average" lines and a '
     '"Term Grade". Anything else, such as a message thread, is unsupported: return no '
     "headings, no cards and no report for it. A printed grade report with its grading "
     'categories and a "Term Grade" is a grade report even with no homework day heading; a '
-    "letter is unsupported, and so is a printed homework list with no dated day line or with "
-    "no subject label that has words beneath it.\n"
+    "letter is unsupported, and so is a printed homework list with no dated day line, or with "
+    "neither a subject label that has words beneath it nor a card line.\n"
     "\n"
     "The student: give only the selected student, which is the highlighted tab of a homework "
     "list's student picker, or the name on a grade report's student line. Names on unselected "
@@ -324,7 +329,20 @@ PROMPT_V1: Final = (
     'gives the course "Humanities" and "Pre-Algebra -" gives "Pre-Algebra", so a hyphen inside '
     "a subject's name stays. The card's badge and footer are null, the first line of the words "
     "beneath the label is its title and any further lines are its instruction, copied as "
-    "shown.\n"
+    "shown. Each card line on a printed homework list is one card: its course is the text "
+    'before the " - " that comes before "Assigned:" or "Due:", its badge is ASSIGNED for '
+    '"Assigned:" and DUE for "Due:", its title is the text after that label up to its closing '
+    "colon, without the colon, and its footer is the printed due text exactly as shown, or null "
+    'when the line has none. "Art - Assigned: Poster: (Due:10/8/2026)" gives the course "Art", '
+    'the badge ASSIGNED, the title "Poster" and the footer "(Due:10/8/2026)"; "Math - Due: '
+    'Worksheet 4:" gives the course "Math", the badge DUE, the title "Worksheet 4" and a null '
+    "footer. A card line runs to its closing colon, or on an Assigned line to its printed due "
+    "text, even where it wraps onto the next printed line: join the wrapped part with a single "
+    "space. The lines beneath a card line, up to the next card line, subject label or dated day "
+    "line, are its instruction, copied as shown: keep a line break between its distinct printed "
+    "lines, though other instructions replace line breaks with single spaces, and join a "
+    "sentence that merely wraps at the page edge onto the next printed line with one space. "
+    "A card line ends the words of the subject above it.\n"
     "\n"
     'Grade reports: copy every cell as raw text, exactly as shown. Use "" for a cell that '
     "is visibly empty and null for anything outside the image. Category Average and Term Grade "
@@ -343,7 +361,7 @@ SYSTEM_PROMPT: Final = (
     + "allows it:\n"
     + json.dumps(SCHEMA, separators=(",", ":"))
 )
-"""Prompt v1c: the instructions, then the schema itself, since the answer is JSON by
+"""Prompt v1d: the instructions, then the schema itself, since the answer is JSON by
 instruction alone."""
 
 USER_TEXT: Final = "Read this screenshot."

@@ -70,6 +70,7 @@ from blossom.grades.draft import folded
 from blossom.intake import (
     ANOTHER_OCCURRENCE,
     DAY_LINE,
+    LOOKS_STRUCTURAL,
     PORTAL_CONFIDENCE,
     SUMMARY_DAY_LINE,
     TEACHER_NOTE,
@@ -112,15 +113,22 @@ MOST_MARKS: Final = 20
 MOST_CATEGORIES: Final = 30
 MOST_ROWS: Final = 200
 
-PROMPT_VERSIONS: Final = frozenset({"v1b", "v1c"})
+PROMPT_VERSIONS: Final = frozenset({"v1b", "v1c", "v1d"})
 """Every prompt version whose answers have this schema's shape: the closed set a stored
 reading may carry and still decode. The prompt in use is one of them."""
 
-PRINTED_DAY_VERSIONS: Final = frozenset({"v1c"})
+PRINTED_DAY_VERSIONS: Final = frozenset({"v1c", "v1d"})
 """The prompt versions that name a printed homework list, so a reading made under one names
 a day by a printed list's dated day line as well as by the portal's heading. A reading stored
 under any other version names a day by the portal's heading alone, so the rows of a review
 saved with it keep their keys."""
+
+PRINTED_CARD_VERSIONS: Final = frozenset({"v1d"})
+"""The prompt versions that name a printed list's card lines, so a card of a reading made
+under one reads its due line in the printed form too, and has an instruction line shaped like
+a day, a card or a due date set apart under a printed day line (``_set_apart``). A card of a
+reading stored under any other version reads the portal's due line alone and keeps its
+instruction whole, so the rows of a review saved with it keep their keys."""
 
 ImageKind = Literal["homework_list", "grade_report", "unsupported"]
 Badge = Literal["DUE", "ASSIGNED"]
@@ -148,6 +156,11 @@ FOOTER: Final = re.compile(
     r"^Due\s*\(\s*(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\s*\)$", re.IGNORECASE
 )
 """A card's due line as the portal shows it, such as "Due (10/8/2026)"."""
+PRINTED_FOOTER: Final = re.compile(
+    r"^\(Due:\s*(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\)$"
+)
+"""A printed card line's due text, such as "(Due:10/8/2026)", in the form School text reads
+it on the same line (``intake.ASSIGNED_LINE``): spaces after the colon and nowhere else."""
 
 
 class _Closed(BaseModel):
@@ -175,6 +188,12 @@ class Card(_Closed):
     y_bottom: Position
     clipped: StrictBool
     uncertain: Annotated[tuple[CardMark, ...], Field(max_length=MOST_MARKS)]
+    _portal_card_alone: bool = PrivateAttr(default=False)
+    """Whether only the portal's card is read here: the due line in the portal's form alone,
+    and the instruction whole. It is no field: no answer and no stored text can carry it, and
+    no dump holds it. The decoder sets it on the cards of a reading stored under a prompt
+    version outside ``PRINTED_CARD_VERSIONS``, and a copy of the card or of its reading keeps
+    it."""
 
     @model_validator(mode="before")
     @classmethod
@@ -204,8 +223,16 @@ class Card(_Closed):
 
     @property
     def due(self) -> date | None:
-        """The date the due line names, read here from its text, or ``None``."""
-        found = None if self.footer is None else FOOTER.match(self.footer.strip())
+        """The date the due line names, read here from its text, or ``None``: the portal's
+        form, such as "Due (10/8/2026)", or a printed card line's due text, such as
+        "(Due:10/8/2026)". On a card of a reading stored under a prompt version outside
+        ``PRINTED_CARD_VERSIONS``, only the portal's form names a date."""
+        if self.footer is None:
+            return None
+        text = self.footer.strip()
+        found = FOOTER.match(text)
+        if found is None and not self._portal_card_alone:
+            found = PRINTED_FOOTER.match(text)
         return None if found is None else a_date(found["year"], found["month"], found["day"])
 
     @property
@@ -491,7 +518,13 @@ class ScreenshotRow(NamedTuple):
 
 
 ItemReason = Literal[
-    "reading_unreadable", "card_unreadable", "incomplete", "clipped", "no_day", "repeated"
+    "reading_unreadable",
+    "card_unreadable",
+    "incomplete",
+    "clipped",
+    "no_day",
+    "repeated",
+    "instruction_set_aside",
 ]
 """Why an item couldn't be read as a row. The first three say text couldn't be read: a whole
 reading, a card, or a card's label, course or title. A teacher's note card with a line shaped
@@ -501,7 +534,10 @@ whether or not a whole copy is read elsewhere. ``no_day`` is a card read whole w
 can't be told: no due line of its own and no day heading above it in its screenshot, or a
 teacher's note card with no readable day heading above it.
 ``repeated`` is a later row of one layer that would write what another row of that layer
-does."""
+does. ``instruction_set_aside`` is the end of a printed card's instruction set apart from a
+card that is a row (``_set_apart``): its first line shaped like a day, a card or a due date,
+and every line after it, held as the instruction of the item's card, with the card's class and
+title."""
 
 
 class UnreadCard(NamedTuple):
@@ -590,9 +626,12 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
     read as is a row whose key holds its standing, unless it joins the one row read from cards
     that ``_named_card`` finds: that row keeps the task among its reading's joined notes, with
     the note's places and marks among its ``joined``, and keeps its reading, key, cards and
-    marks as read, so what the note adds waits until the family selects the note. Every other
-    card stays a visible item with its
-    reason, never merged into another. ``now`` stamps the claims and is in no key.
+    marks as read, so what the note adds waits until the family selects the note. A labeled
+    card of a reading made under a version in ``PRINTED_CARD_VERSIONS``, under a printed day
+    line, is read with its instruction ended at its first line shaped like a day, a card or a
+    due date, and the lines set apart are an item of their own beside its row (``_set_apart``).
+    Every other card stays a visible item with its reason, never merged into another. ``now``
+    stamps the claims and is in no key.
     """
     images: dict[str, tuple[str, HomeworkReading | None]] = {}
     for stored in readings:
@@ -633,11 +672,18 @@ def homework_assembly(readings: Sequence[StoredReading], *, now: datetime) -> As
                 _NoteSeen(block, _marks(card, item.heading), CardPlace(item.sha256, item.place))
             )
             continue
-        portal = None if card is None or card.clipped else _portal(card, item.heading)
-        if card is None or portal is None:
+        trimmed, aside = (
+            (None, None) if card is None or card.clipped else _set_apart(card, item.heading)
+        )
+        portal = None if trimmed is None else _portal(trimmed, item.heading)
+        if card is None or trimmed is None or portal is None:
             found = _unread(item, _reason(card))
             unread[found.key] = found
             continue
+        if aside is not None:
+            found = _set_aside(item, card, aside)
+            unread[found.key] = found
+        card = trimmed
         marks = _marks(card, item.heading)
         same = (item.sha256, _fold(portal.course), _fold(portal.title), portal.card, portal.when)
         layer = matching.get(same, 0)
@@ -785,8 +831,10 @@ def _in_round(
 
 
 class PlacedCard(NamedTuple):
-    """A card as the assembly places it: where it was read, the card as read, and the day
-    heading the assembly reads it under, if any."""
+    """A card as the assembly places it: where it was read, the card as the assembly reads it,
+    and the day heading the assembly reads it under, if any. The card is the one read, with
+    its instruction ended where the assembly ends it (``_set_apart``), so no line set apart from
+    it is read as its words."""
 
     place: CardPlace
     card: Card | None
@@ -796,7 +844,9 @@ class PlacedCard(NamedTuple):
 def cards_placed(readings: Sequence[StoredReading]) -> dict[CardPlace, PlacedCard]:
     """Every card of a draft's readings at its place, decoded and placed under its day heading
     exactly as ``homework_assembly`` places it, so a page can show what a row was read from.
-    A reading that can't be decoded, or isn't a homework list, places no card."""
+    An unclipped card is given with its instruction ended where the assembly ends it, so the
+    review reads a card's words as its row does. A reading that can't be decoded, or isn't a
+    homework list, places no card."""
     out: dict[CardPlace, PlacedCard] = {}
     for stored in readings:
         reading = _decoded(stored)
@@ -804,7 +854,10 @@ def cards_placed(readings: Sequence[StoredReading]) -> dict[CardPlace, PlacedCar
             continue
         for item in _placed(stored.sha256, _digest(stored, reading), reading):
             place = CardPlace(item.sha256, item.place)
-            out[place] = PlacedCard(place, item.card, item.heading)
+            card = item.card
+            if card is not None and not card.clipped:
+                card = _set_apart(card, item.heading)[0]
+            out[place] = PlacedCard(place, card, item.heading)
     return out
 
 
@@ -814,8 +867,11 @@ def _decoded(stored: StoredReading) -> HomeworkReading | None:
     text doesn't fit the model. A reading made with any prompt of this schema decodes, and
     keeps the prompt version it was made with in its digest. Its headings name a day as that
     version reads one: stored under a version outside ``PRINTED_DAY_VERSIONS``, by the
-    portal's form alone, which every reader of a heading's day then follows. That choice is
-    made here from the stored version and is in neither the stored text nor the digest."""
+    portal's form alone, which every reader of a heading's day then follows. Its cards are
+    read as that version reads them: stored under a version outside
+    ``PRINTED_CARD_VERSIONS``, as the portal's alone, a due line in the portal's form and the
+    instruction whole. Both choices are made here from the stored version and are in neither
+    the stored text nor the digest."""
     if stored.schema_version != SCHEMA_VERSION or stored.prompt_version not in PROMPT_VERSIONS:
         return None
     try:
@@ -825,6 +881,10 @@ def _decoded(stored: StoredReading) -> HomeworkReading | None:
     if stored.prompt_version not in PRINTED_DAY_VERSIONS:
         for heading in reading.headings:
             heading._portal_form_alone = True
+    if stored.prompt_version not in PRINTED_CARD_VERSIONS:
+        for card in reading.cards:
+            if card is not None:
+                card._portal_card_alone = True
     return reading
 
 
@@ -873,6 +933,52 @@ def _portal(card: Card, heading: Heading | None) -> PortalCard | None:
         day=day,
         instruction=card.instruction if instruction_words(card.instruction) else None,
     )
+
+
+def _set_apart(card: Card, heading: Heading | None) -> tuple[Card, str | None]:
+    """A card with its instruction ended at its first line shaped like a day, a card or a due
+    date, and the lines set apart from it, if any.
+
+    Only a labeled card read under a prompt version in ``PRINTED_CARD_VERSIONS``, under a
+    heading that names its day by a printed list's dated day line rather than the portal's
+    heading (``_printed_day``), is ended this way. Its first instruction line shaped like a day,
+    a card or a due date (``intake.LOOKS_STRUCTURAL``, matched once the line is stripped), the
+    shapes School text sets aside when a line doesn't read as one, and every line after it, as
+    given, are set apart; the card keeps the lines before that one as its instruction, or none
+    when they have no words. Any other card is given back as it is, with nothing set apart."""
+    if (
+        card._portal_card_alone
+        or card.badge is None
+        or card.instruction is None
+        or not _printed_day(heading)
+    ):
+        return card, None
+    lines = card.instruction.splitlines()
+    first = next(
+        (at for at, line in enumerate(lines) if LOOKS_STRUCTURAL.match(line.strip())), None
+    )
+    if first is None:
+        return card, None
+    before = "\n".join(lines[:first])
+    kept = card.model_copy(update={"instruction": before if instruction_words(before) else None})
+    return kept, "\n".join(lines[first:])
+
+
+def _printed_day(heading: Heading | None) -> bool:
+    """Whether a heading names its day by a printed list's dated day line, and not by the
+    portal's heading."""
+    if heading is None or heading.day is None:
+        return False
+    return DAY_LINE.match(heading.text.strip()) is None
+
+
+def _set_aside(item: _Seen, card: Card, lines: str) -> UnreadCard:
+    """The lines set apart from a card that is a row, as an item of their own: the card's class
+    and title with those lines as its instruction and no due line, keyed by the card's item key
+    (``_as_item``) and those lines."""
+    shown = card.model_copy(update={"instruction": lines, "footer": None})
+    key = _key({**_as_item(item), "set_aside": lines})
+    return UnreadCard(key, item.sha256, item.place, shown, "instruction_set_aside")
 
 
 def _marks(card: Card, heading: Heading | None) -> frozenset[str]:

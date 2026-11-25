@@ -955,6 +955,11 @@ UNREAD_SAID: Final = {
         "Read twice the same way in one screenshot",
         "Set it aside if it's the same card.",
     ),
+    "set_aside": (
+        "Lines kept apart from a card's instructions",
+        "The card is offered without these lines, because the first of them looks like another "
+        "card or a date. Look at the screenshot and enter them by hand if they're homework.",
+    ),
 }
 """Each kind of card that couldn't be read: its group's heading and what it means."""
 REASON_GROUP: Final = {
@@ -964,6 +969,7 @@ REASON_GROUP: Final = {
     "no_day": "no_day",
     "clipped": "clipped",
     "repeated": "repeated",
+    "instruction_set_aside": "set_aside",
 }
 
 

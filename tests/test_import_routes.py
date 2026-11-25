@@ -2089,7 +2089,7 @@ def test_a_v1b_review_under_a_printed_day_line_keeps_its_row_keys_and_its_one_ti
 def test_the_same_cards_read_with_the_prompt_in_use_are_assigned_on_the_printed_day(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, day_line: str
 ) -> None:
-    """The same two cards read with the prompt in use, v1c, take the printed day line as
+    """The same two cards read with the prompt in use, v1d, take the printed day line as
     their day, with or without its bullet: each row carries 2026-10-05 as its assigned date
     under a key of its own, and saving both writes that date."""
     with here(open_settings(tmp_path)) as browser:
@@ -2103,7 +2103,7 @@ def test_the_same_cards_read_with_the_prompt_in_use_are_assigned_on_the_printed_
         rows = written_with_assigned_dates(browser, before)
 
     read_as = screenshots.homework_assembly(stored, now=screenshots.KEY_INSTANT).rows
-    assert [reading.prompt_version for reading in stored] == ["v1c"]
+    assert [reading.prompt_version for reading in stored] == ["v1d"]
     assert sorted((row.reading.title, row.reading.assigned_on) for row in read_as) == [
         ("Poster", date(2026, 10, 5)),
         ("Worksheet", date(2026, 10, 5)),
@@ -58500,3 +58500,556 @@ def test_a_moved_card_open_with_new_typing_beside_a_ready_card_waits_for_one_rev
     else:
         assert says(last, imports.counted(1, 0, 0, 0)), last_said
         assert titles == sorted([*titles_before, "Beta"]), last_said
+
+
+# ------------------------------------------ printed card lines, as a School text paste reads them
+
+SUMMARY_HEAD: Final = "Homework for Wren\n"
+"""The weekly summary's heading, before its day lines."""
+
+
+def card_line(
+    badge: str | None,
+    course: str,
+    title: str,
+    instruction: str | None,
+    footer: str | None,
+    y_top: int,
+) -> dict[str, object]:
+    """A printed card line, or a printed subject when ``badge`` is ``None``, as the reader
+    answers it under the prompt in use."""
+    return homework_card(
+        badge=badge,
+        course=course,
+        title=title,
+        instruction=instruction,
+        footer=footer,
+        y_top=y_top,
+        y_bottom=y_top + 60,
+    )
+
+
+def printed_page(day_lines: list[tuple[str, int]], *cards: dict[str, object]) -> dict[str, object]:
+    """The reader's answer for a made-up printed summary: these dated day lines and cards."""
+    return homework_answer(
+        headings=[{"text": text, "y": y, "uncertain": None} for text, y in day_lines],
+        cards=list(cards),
+    )
+
+
+MONDAY_LINE: Final = ("10/5/2026 - Monday", 100)
+CARDS_ONLY_TEXT: Final = (
+    SUMMARY_HEAD + "10/5/2026 - Monday\n"
+    "Art - Assigned: Poster: (Due:10/8/2026)\n"
+    "Use the rubric on the class page.\n"
+    "Math - Due: Worksheet 4:\n"
+    "Show your work for problems 1 to 10.\n"
+)
+CARDS_ONLY: Final = printed_page(
+    [MONDAY_LINE],
+    card_line(
+        "ASSIGNED", "Art", "Poster", "Use the rubric on the class page.", "(Due:10/8/2026)", 200
+    ),
+    card_line("DUE", "Math", "Worksheet 4", "Show your work for problems 1 to 10.", None, 300),
+)
+MIXED_TEXT: Final = (
+    SUMMARY_HEAD + "10/5/2026 - Monday\n"
+    "Humanities -\n"
+    "Read chapter 3 of The Outsiders.\n"
+    "Write two sentences about Ponyboy.\n"
+    "Art - Assigned: Poster: (Due:10/8/2026)\n"
+    "Bring markers on Thursday.\n"
+    "Science -\n"
+    "Lab report due Friday.\n"
+    "Math - Due: Worksheet 4:\n"
+    "Due: check answers with a partner\n"
+    "Use a pencil.\n"
+)
+MIXED: Final = printed_page(
+    [MONDAY_LINE],
+    card_line(
+        None,
+        "Humanities",
+        "Read chapter 3 of The Outsiders.",
+        "Write two sentences about Ponyboy.",
+        None,
+        200,
+    ),
+    card_line("ASSIGNED", "Art", "Poster", "Bring markers on Thursday.", "(Due:10/8/2026)", 300),
+    card_line(None, "Science", "Lab report due Friday.", None, None, 400),
+    card_line(
+        "DUE", "Math", "Worksheet 4", "Due: check answers with a partner\nUse a pencil.", None, 500
+    ),
+)
+"""The mixed page: subjects with words, card lines with lines beneath, and under Math a line
+shaped like a card's label followed by a plain line."""
+
+ART_POSTER: Final = ("Art", "Poster", date(2026, 10, 8), date(2026, 10, 5))
+PAGES: Final = {
+    "cards-only": (
+        CARDS_ONLY_TEXT,
+        [(RED, CARDS_ONLY)],
+        [
+            (*ART_POSTER, "Use the rubric on the class page."),
+            (
+                "Math",
+                "Worksheet 4",
+                date(2026, 10, 5),
+                None,
+                "Show your work for problems 1 to 10.",
+            ),
+        ],
+    ),
+    "mixed": (
+        MIXED_TEXT,
+        [(RED, MIXED)],
+        [
+            (*ART_POSTER, "Bring markers on Thursday."),
+            (
+                "Humanities",
+                "Read chapter 3 of The Outsiders",
+                None,
+                None,
+                "Read chapter 3 of The Outsiders. Write two sentences about Ponyboy.",
+            ),
+            ("Math", "Worksheet 4", date(2026, 10, 5), None, ""),
+            ("Science", "Lab report", date(2026, 10, 9), None, "Lab report due Friday."),
+        ],
+    ),
+    "two-day-lines": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers on Thursday.\n"
+        "10/6/2026 - Tuesday\nMath - Due: Worksheet 4:\nShow your work.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE, ("10/6/2026 - Tuesday", 350)],
+                    card_line(
+                        "ASSIGNED",
+                        "Art",
+                        "Poster",
+                        "Bring markers on Thursday.",
+                        "(Due:10/8/2026)",
+                        200,
+                    ),
+                    card_line("DUE", "Math", "Worksheet 4", "Show your work.", None, 400),
+                ),
+            )
+        ],
+        [
+            (*ART_POSTER, "Bring markers on Thursday."),
+            ("Math", "Worksheet 4", date(2026, 10, 6), None, "Show your work."),
+        ],
+    ),
+    "due-before-its-day-line": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art - Assigned: Poster: (Due:10/2/2026)\nBring markers.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE],
+                    card_line(
+                        "ASSIGNED", "Art", "Poster", "Bring markers.", "(Due:10/2/2026)", 200
+                    ),
+                ),
+            )
+        ],
+        [("Art", "Poster", date(2026, 10, 2), date(2026, 10, 5), "Bring markers.")],
+    ),
+    "assigned-then-due-in-one-screenshot": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers.\n"
+        "10/8/2026 - Thursday\nArt - Due: Poster:\nBring markers.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE, ("10/8/2026 - Thursday", 350)],
+                    card_line(
+                        "ASSIGNED", "Art", "Poster", "Bring markers.", "(Due:10/8/2026)", 200
+                    ),
+                    card_line("DUE", "Art", "Poster", "Bring markers.", None, 400),
+                ),
+            )
+        ],
+        [(*ART_POSTER, "Bring markers.")],
+    ),
+    "assigned-then-due-in-two-screenshots": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers.\n"
+        "10/8/2026 - Thursday\nArt - Due: Poster:\nBring markers.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE],
+                    card_line(
+                        "ASSIGNED", "Art", "Poster", "Bring markers.", "(Due:10/8/2026)", 200
+                    ),
+                ),
+            ),
+            (
+                BLUE,
+                printed_page(
+                    [("10/8/2026 - Thursday", 100)],
+                    card_line("DUE", "Art", "Poster", "Bring markers.", None, 200),
+                ),
+            ),
+        ],
+        [(*ART_POSTER, "Bring markers.")],
+    ),
+    "a-subject-and-a-card-of-one-class": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art -\nPoster due Thursday.\n"
+        "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE],
+                    card_line(None, "Art", "Poster due Thursday.", None, None, 200),
+                    card_line(
+                        "ASSIGNED", "Art", "Poster", "Bring markers.", "(Due:10/8/2026)", 300
+                    ),
+                ),
+            )
+        ],
+        [(*ART_POSTER, "Bring markers.")],
+    ),
+    "due-text-with-a-space": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art - Assigned: Poster: (Due: 10/8/2026)\nBring markers.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE],
+                    card_line(
+                        "ASSIGNED", "Art", "Poster", "Bring markers.", "(Due: 10/8/2026)", 200
+                    ),
+                ),
+            )
+        ],
+        [(*ART_POSTER, "Bring markers.")],
+    ),
+    "a-due-text-inside-an-instruction-line": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Math - Due: Worksheet 4:\nFinish it at home (Due: Friday)\nUse a pencil.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE],
+                    card_line(
+                        "DUE",
+                        "Math",
+                        "Worksheet 4",
+                        "Finish it at home (Due: Friday)\nUse a pencil.",
+                        None,
+                        200,
+                    ),
+                ),
+            )
+        ],
+        [("Math", "Worksheet 4", date(2026, 10, 5), None, "")],
+    ),
+}
+"""Made-up printed summaries: each as pasted text, as the reader's answers for its screenshots
+under the prompt in use, and the assignments a Save of either writes, as ``written_by_save`` gives
+them."""
+
+
+Written = tuple[str, str, date | None, date | None, str]
+"""An assignment as ``written_by_save`` gives it."""
+
+
+def written_by_save(browser: TestClient, before: set[str]) -> list[Written]:
+    """Every assignment on record that isn't among ``before``: its class, title, due date,
+    assigned date, and the school instructions kept under it, their words single-spaced and
+    joined by single spaces, sorted."""
+    record = state_of(browser).project_state
+    made_now = [a for a in record.all_assignments() if a.assignment_id not in before]
+    readable = record.school_instruction_readings([a.assignment_id for a in made_now]).readable
+    return sorted(
+        (
+            a.course,
+            a.title,
+            a.due_date,
+            a.assigned_on,
+            " ".join(
+                " ".join(each.text for each in readable[a.assignment_id].kept).split()
+                if a.assignment_id in readable
+                else []
+            ),
+        )
+        for a in made_now
+    )
+
+
+def every_offer(page: str) -> dict[str, str]:
+    """The School text review form as a browser sends it with every offer ticked: hidden
+    fields, each select's chosen option, every box but a "none applies" one, and the text."""
+    fields = {
+        name: html.unescape(value)
+        for name, value in re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', page)
+    }
+    for name, body in re.findall(r'<select name="([^"]+)"[^>]*>(.*?)</select>', page, re.S):
+        chosen = re.search(r'<option value="([^"]+)" selected>', body)
+        assert chosen is not None, name
+        fields[name] = chosen.group(1)
+    for name in re.findall(r'<input type="checkbox" name="([^"]+)" value="1"', page):
+        if not name.startswith("none-"):
+            fields[name] = "1"
+    text = re.search(r'<textarea name="text" hidden>(.*?)</textarea>', page, re.S)
+    assert text is not None
+    fields["text"] = html.unescape(text.group(1))
+    return fields
+
+
+def pasted_and_saved(browser: TestClient, text: str) -> tuple[str, list[Written]]:
+    """The School text review of ``text``, and what its Save writes with every offer ticked."""
+    before = ids_on_record(browser)
+    page = browser.post("/parent/inbox/read", data={"text": text}).text
+    kept = browser.post("/parent/inbox/keep", data=every_offer(page))
+    assert kept.status_code == 303, kept.text[:600]
+    return page, written_by_save(browser, before)
+
+
+def read_and_saved(
+    browser: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    answers: Sequence[tuple[bytes, object]],
+) -> tuple[str, list[Written]]:
+    """The screenshot review of images read as these answers, and what its Save writes with
+    every group ticked."""
+    before = ids_on_record(browser)
+    draft_id, read = read_review(browser, monkeypatch, *answers)
+    page = answered(browser, draft_id, read)
+    saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+    followed(browser, saved)
+    return page, written_by_save(browser, before)
+
+
+@pytest.mark.parametrize("name", list(PAGES))
+def test_a_printed_summary_s_screenshot_saves_what_its_school_text_paste_saves(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """A printed summary read from its screenshots, every group ticked, writes the same
+    assignments as the same summary pasted as School text with every offer ticked: the same
+    class, title, due date, assigned date and instruction words, on records of their own."""
+    text, answers, written = PAGES[name]
+    with here(open_settings(tmp_path / "pasted")) as browser:
+        _, pasted = pasted_and_saved(browser, text)
+    with here(open_settings(tmp_path / "read")) as browser:
+        _, read = read_and_saved(browser, monkeypatch, answers)
+
+    assert pasted == written
+    assert read == written
+
+
+def test_the_mixed_page_offers_math_and_shows_its_two_set_aside_lines(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On the mixed page, Math is offered and saved without the line shaped like a card's
+    label and the line after it, and the review shows both lines apart for review, with the
+    card they came from."""
+    with here(open_settings(tmp_path)) as browser:
+        page, read = read_and_saved(browser, monkeypatch, [(RED, MIXED)])
+
+    shown = html.unescape(page)
+    unread = shown.split('id="unread-heading"', 1)[1]
+    assert "Math" in courses_offered(page)
+    assert ("Math", "Worksheet 4", date(2026, 10, 5), None, "") in read
+    assert "Due: check answers with a partner" in unread
+    assert "Use a pencil." in unread
+    assert "Due: check answers with a partner" not in shown.split('id="unread-heading"', 1)[0]
+
+
+LIVE_MIXED: Final = printed_page(
+    [MONDAY_LINE],
+    card_line(
+        None,
+        "Humanities",
+        "Read chapter 3 of The Outsiders.",
+        "Write two sentences about Ponyboy.",
+        None,
+        200,
+    ),
+    card_line("ASSIGNED", "Art", "Poster", "Bring markers on Thursday.", "(Due:10/8/2026)", 300),
+    card_line(None, "Science", "Lab report due Friday.", None, None, 400),
+    card_line(
+        "DUE",
+        "Math",
+        "Worksheet 4",
+        "Show your work.\nDue: check answers with a partner\nUse a pencil.",
+        None,
+        500,
+    ),
+)
+"""The live read's mixed image as the reader is asked to answer it: the mixed page with "Show
+your work." above Math's line shaped like a card's label. Its School text paste is no control:
+School text reads a plain line before a line shaped like a card's label as a card of its own
+(#265), so the mixed page is the paste-parity control."""
+
+
+def test_the_live_mixed_page_offers_math_with_its_kept_line_and_shows_two_lines_apart(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On the live read's mixed page, Math is offered and selectable with "Show your work." as
+    its only instruction, the line shaped like a card's label and the line after it are shown
+    apart, and Save writes Math once, with no assignment from those lines."""
+    with here(open_settings(tmp_path)) as browser:
+        page, read = read_and_saved(browser, monkeypatch, [(RED, LIVE_MIXED)])
+
+    offered, unread = html.unescape(page).split('id="unread-heading"', 1)
+    assert "Math" in courses_offered(page)
+    assert "Show your work." in offered
+    assert "Due: check answers with a partner" in unread
+    assert "Use a pencil." in unread
+    assert "Due: check answers with a partner" not in offered
+    assert "Use a pencil." not in offered
+    assert [row for row in read if row[0] == "Math"] == [
+        ("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work.")
+    ]
+    assert read == [
+        (*ART_POSTER, "Bring markers on Thursday."),
+        (
+            "Humanities",
+            "Read chapter 3 of The Outsiders",
+            None,
+            None,
+            "Read chapter 3 of The Outsiders. Write two sentences about Ponyboy.",
+        ),
+        ("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work."),
+        ("Science", "Lab report", date(2026, 10, 9), None, "Lab report due Friday."),
+    ]
+
+
+@pytest.mark.parametrize("first", ["screenshot", "paste"])
+@pytest.mark.parametrize("name", ["cards-only", "mixed"])
+def test_a_printed_summary_imported_both_ways_in_either_order_is_written_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, name: str, first: str
+) -> None:
+    """The same summary saved from its screenshot and from its School text paste, in either
+    order, every offer ticked each time, is written once: the second import writes nothing."""
+    text, answers, written = PAGES[name]
+    with here(open_settings(tmp_path)) as browser:
+        if first == "screenshot":
+            _, once = read_and_saved(browser, monkeypatch, answers)
+            _, again = pasted_and_saved(browser, text)
+        else:
+            _, once = pasted_and_saved(browser, text)
+            _, again = read_and_saved(browser, monkeypatch, answers)
+
+    assert once == written
+    assert again == []
+
+
+V1C_REVIEW: Final = printed_page(
+    [MONDAY_LINE],
+    card_line("ASSIGNED", "Art", "Poster", "Bring markers.", "(Due:10/8/2026)", 210),
+    card_line(
+        "DUE", "Math", "Worksheet 4", "Due: check answers with a partner\nUse a pencil.", None, 300
+    ),
+    card_line("ASSIGNED", "Music", "Song", None, "Due (10/9/2026)", 390),
+)
+"""A printed page read under prompt v1c: a printed Assigned card, a Due card whose
+instruction begins with a line shaped like a card's label, and a card with the portal's due
+line."""
+V1C_MATH_KEY: Final = "42a5f149c10aee7ca0374342f442ed43d927e9e71e68e89e809509f9880409fd"
+"""Math / Worksheet 4's row key under v1c, as main gives it, its two lines its instruction."""
+V1C_MUSIC_KEY: Final = "08ceda9d2335b568c639655b8aefbce2375ac72fe85aec033f1e51cbd6b641c8"
+"""Music / Song's row key under v1c, as main gives it."""
+
+
+def test_a_v1c_review_saved_for_later_reopens_with_its_rows_and_its_tick_as_main_read_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reading stored under prompt v1c reads its cards as v1c did: the printed Assigned card
+    has no date it can be saved under, and the Due card keeps both of its lines as its
+    instruction, so its rows have the keys main gives them. Saved for later with Math ticked,
+    the review reopens with the same rows, Math ticked and Music not, and the reader is never
+    called; Save from the reopened page writes Math with both lines."""
+    called: list[bytes] = []
+
+    def never(settings: Settings, png_bytes: bytes, *, timeout: float) -> ScreenshotAnswer:
+        called.append(png_bytes)
+        pytest.fail("the reader was called")
+
+    monkeypatch.setattr(screenshot_reading, "read_screenshot", never)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        read_under(browser, draft_id, V1C_REVIEW, "v1c")
+        page = her_name_answered(browser, draft_id, loaded(browser, draft_id))
+        student = state_of(browser).project_state.student_id()
+        drafts = state_of(browser).import_drafts
+        stored = drafts.snapshot(student, draft_id).readings
+        keys = screenshots.homework_rows(stored)
+        followed(browser, send(browser, draft_id, page_post(page, "later", tick=[V1C_MATH_KEY])))
+        reopened = loaded(browser, draft_id)
+        before = ids_on_record(browser)
+        sent = page_post(reopened, "save", tick=units_ticked(reopened))
+        followed(browser, send(browser, draft_id, sent))
+        rows = written_by_save(browser, before)
+
+    assembly = screenshots.homework_assembly(stored, now=screenshots.KEY_INSTANT)
+    assert [reading.prompt_version for reading in stored] == ["v1c"]
+    assert [row.key for row in keys if row.readable] == [V1C_MUSIC_KEY, V1C_MATH_KEY]
+    assert [item.reason for item in assembly.unread] == ["no_day"]
+    assert units_on(page) == units_on(reopened)
+    assert sorted(units_on(reopened)) == sorted([V1C_MATH_KEY, V1C_MUSIC_KEY])
+    assert units_ticked(reopened) == [V1C_MATH_KEY]
+    assert rows == [
+        (
+            "Math",
+            "Worksheet 4",
+            date(2026, 10, 5),
+            None,
+            "Due: check answers with a partner Use a pencil.",
+        )
+    ]
+    assert called == []
+
+
+def test_a_subject_whose_words_run_over_a_card_line_stays_a_card_that_couldnt_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the prompt in use, a printed subject whose words, as read, run over the card line
+    beneath it is still a card that couldn't be read, so nothing of it is offered."""
+    swallowed = printed_page(
+        [MONDAY_LINE],
+        card_line(
+            None,
+            "Humanities",
+            "Read chapter 3 of The Outsiders.",
+            "Write two sentences about Ponyboy.\n"
+            "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers on Thursday.",
+            None,
+            200,
+        ),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, swallowed))
+        before = ids_on_record(browser)
+
+        assert 'id="unread-heading"' in read
+        assert units_on(read) == []
+        assert written_by_save(browser, before) == []
+
+
+def test_a_portal_card_keeps_an_instruction_line_shaped_like_a_card_s_label(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card under the portal's day heading, read with the prompt in use, is offered and saved
+    with an instruction line that begins like a card's label, as on main."""
+    portal = homework_answer(
+        headings=[{"text": "Monday 10/5/2026", "y": 100, "uncertain": None}],
+        cards=[card_line("DUE", "Math", "Worksheet 4", "Due: Friday in class", None, 200)],
+    )
+    with here(open_settings(tmp_path)) as browser:
+        page, read = read_and_saved(browser, monkeypatch, [(RED, portal)])
+
+    assert 'id="unread-heading"' not in page
+    assert read == [("Math", "Worksheet 4", date(2026, 10, 5), None, "Due: Friday in class")]

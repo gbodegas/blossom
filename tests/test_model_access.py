@@ -386,20 +386,37 @@ def test_an_error_the_service_did_not_raise_is_not_the_services() -> None:
 
 # ------------------------------------------------------------ the screenshot reader
 
-PROMPT_V1C_SHA256 = "1963750148b5c3874abdad017e6f20aff093ebd2349a2e5c3944d8a094d47bab"
-"""The system prompt the reader is sent: prompt v1c, its schema as JSON text."""
+PROMPT_V1D_SHA256 = "a97c2232be818d66764f7b67605621abca69c05252d42e7c281223b7ae8ff608"
+"""The system prompt the reader is sent: prompt v1d, its schema as JSON text."""
 
 PRINTED_PAGES_SENTENCE = (
     'A printed grade report with its grading categories and a "Term Grade" is a grade report '
     "even with no homework day heading; a letter is unsupported, and so is a printed homework "
-    "list with no dated day line or with no subject label that has words beneath it."
+    "list with no dated day line, or with neither a subject label that has words beneath it "
+    "nor a card line."
 )
 """The instructions' one sentence on a printed grade report, a letter and a printed homework
-list that lacks its day line or its subjects' words."""
+list that lacks its day line, or has neither its subjects' words nor a card line."""
+
+PRINTED_CARD_LINES = (
+    '"Art - Assigned: Poster: (Due:10/8/2026)" gives the course "Art", the badge ASSIGNED, the '
+    'title "Poster" and the footer "(Due:10/8/2026)"',
+    '"Math - Due: Worksheet 4:" gives the course "Math", the badge DUE, the title "Worksheet 4" '
+    "and a null footer",
+    "A card line runs to its closing colon, or on an Assigned line to its printed due text, even "
+    "where it wraps onto the next printed line: join the wrapped part with a single space.",
+    "The lines beneath a card line, up to the next card line, subject label or dated day line, "
+    "are its instruction, copied as shown: keep a line break between its distinct printed lines, "
+    "though other instructions replace line breaks with single spaces, and join a sentence that "
+    "merely wraps at the page edge onto the next printed line with one space.",
+    "A card line ends the words of the subject above it.",
+)
+"""What the instructions say of a printed card line: its parts, by two examples, where it ends
+across a wrap, its instruction, and that it ends a subject's words."""
 
 SCHEMA_SHA256 = "1ee0627a347e8c3b269428306c8558ab9a8487c49a46d0a4582e1e302675f2eb"
-"""The answer schema as the JSON text the system prompt ends with, shared by the prompts v1b
-and v1c."""
+"""The answer schema as the JSON text the system prompt ends with, shared by the prompts v1b,
+v1c and v1d."""
 
 PRINTED_LIST_SIGNS = (
     'a heading that names the student, such as "Homework for Wren"',
@@ -494,7 +511,7 @@ def test_a_reading_sends_the_request_the_reader_was_measured_with() -> None:
     assert body["model"] == MODEL
     assert body["max_tokens"] == 6_000
     assert body["output_config"] == {"effort": "low"}
-    assert hashlib.sha256(body["system"].encode("utf-8")).hexdigest() == PROMPT_V1C_SHA256
+    assert hashlib.sha256(body["system"].encode("utf-8")).hexdigest() == PROMPT_V1D_SHA256
     assert body["messages"] == [
         {
             "role": "user",
@@ -516,13 +533,35 @@ def test_a_reading_sends_the_request_the_reader_was_measured_with() -> None:
 
 
 def test_the_prompt_has_its_own_version_and_the_schema_keeps_its_own() -> None:
-    assert screenshot_prompt.PROMPT_VERSION == "v1c"
+    assert screenshot_prompt.PROMPT_VERSION == "v1d"
     assert screenshot_prompt.SCHEMA_VERSION == "screenshot-reading/1"
+
+
+def test_the_instructions_read_a_printed_card_line_as_a_card() -> None:
+    """A printed homework list can hold card lines, a course and a label on one line, with or
+    without subject labels; each is one card, with its parts named by two examples, a wrapped
+    line joined, the lines beneath as its instruction with a line break between distinct
+    printed lines and a wrapped sentence joined, and the subject above it ended. The schema's
+    note on an instruction's line breaks is unchanged, so the card line's rule names itself as
+    the exception."""
+    instructions = screenshot_prompt.PROMPT_V1
+
+    assert [line for line in PRINTED_CARD_LINES if line not in instructions] == []
+    assert "one printed line to a line" not in instructions
+    assert (
+        "The teacher's instruction text exactly as shown, line breaks replaced by single spaces, "
+        "or null if the card shows none."
+    ) in screenshot_prompt.SYSTEM_PROMPT
+    assert (
+        "A printed homework list can also hold card lines, each a course and a label on one "
+        'line, such as "Art - Assigned: Poster: (Due:10/8/2026)" or "Math - Due: Worksheet 4:", '
+        "with subject labels or without them."
+    ) in instructions
 
 
 def test_the_answer_schema_is_the_text_the_system_prompt_ends_with() -> None:
     """The answer schema is pinned by the digest of its JSON text, so a reading stored under
-    either prompt of this schema has the shape the schema gives."""
+    any prompt of this schema has the shape the schema gives."""
     schema_text = json.dumps(screenshot_prompt.SCHEMA, separators=(",", ":"))
 
     assert hashlib.sha256(schema_text.encode("utf-8")).hexdigest() == SCHEMA_SHA256
@@ -590,8 +629,8 @@ def test_the_instructions_sort_a_printed_grade_report_a_letter_and_an_incomplete
     ) in instructions
     assert "a letter is unsupported" in instructions
     assert (
-        "so is a printed homework list with no dated day line or with no subject label that "
-        "has words beneath it."
+        "so is a printed homework list with no dated day line, or with neither a subject label "
+        "that has words beneath it nor a card line."
     ) in instructions
     assert "printed page" not in instructions
 
