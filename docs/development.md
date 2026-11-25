@@ -1090,12 +1090,11 @@ A short tour works without a key. From her page, My week:
    In **Family review**, under "Help she asked for", type a reply and press
    **I can help**. Back on My week, press **Refresh replies** to see it.
 
-To start the sample again from nothing, stop the app and delete the
-`.local/sample/` folder; the family's own state under `.local/` is untouched,
-and the next launch creates the folder again. The sample's assignments live in
-that folder's file too, read from `data/sample/` when the launch creates it,
-so a change to the set shows once the folder is deleted, and a sample folder
-from before the record lived in its file has no assignments until it is.
+To start over with a fresh sample, stop Blossom and follow the sample setup
+in a new local checkout. Your previous sample files stay where they are. The
+sample's assignments are read from `data/sample/` when a launch first creates
+the sample's folder, so a fresh sample shows the set in its own checkout's
+`data/sample/`.
 
 Her page shows two items due that week as active cards, each saying its
 date is from the school portal, the signed syllabus folded under "Reported
@@ -1108,9 +1107,9 @@ notes are in `data/sample/homework_notes.json`, planted the same way through
 the store's own paths: one waits with no class yet, and one was added to
 homework as "Quiz 1 review" in Geometry, due September 21, which the school's
 portal later confirmed with the same date and an instruction, answered as the
-same homework, so pasting the school's card for it asks nothing. Deleting the
-sample folder starts it again with that one update and nothing she has done
-since. A plan made for that evening lists no dates to clarify,
+same homework, so pasting the school's card for it asks nothing. A fresh
+sample starts with that one update and nothing she has done since. A plan
+made for that evening lists no dates to clarify,
 because nothing is missing or contested. "Previous week" shows an empty week,
 and the main fixtures under `data/synthetic/` keep the disagreement, the
 contradiction, and the undated form for when those are the point.
@@ -1352,17 +1351,37 @@ a type, a note, or what a source says about a date. The plan stays as
 history, but it does not cover the week as it stands, so approving it is
 refused. Plan again and review the new plan.
 
-**The app refuses to start and says saved state may not live on a network
-share or in a synced folder.** The repository is inside a folder that
-OneDrive, Dropbox, iCloud Drive, or Google Drive syncs, or on a mapped drive,
-and the files the app writes would go there with it. For the household's
-launch, point `BLOSSOM_DATABASE_PATH`, `BLOSSOM_CHECKPOINT_PATH`, and
+**The app refuses to start and says the household's state may not live on a
+network share, inside a synced folder, or under OneDrive.** The path the
+message names is in a folder that OneDrive, Dropbox, iCloud Drive, or Google
+Drive syncs, or on a network share, named as one or reached through a mapped
+drive, or a link anywhere along that path leads to one of those, and the
+files the app writes would go there with it. For the household's launch,
+point `BLOSSOM_DATABASE_PATH`, `BLOSSOM_CHECKPOINT_PATH`, and
 `BLOSSOM_TRACE_PATH` at an ordinary local folder instead, in `.env` or in the
 shell, for example `C:\blossom-state\blossom.sqlite3` on Windows or
 `~/blossom-state/blossom.sqlite3` elsewhere, and the same folder for the
-other two. This doesn't apply to the sample week, which keeps its state in
-the checkout's `.local/sample/` and refuses paths elsewhere: start the sample
-from a checkout in an ordinary local folder outside synced storage.
+other two.
+
+That doesn't apply to the sample week, which keeps its state in the
+checkout's `.local/sample/` and refuses paths elsewhere. Recover the sample
+without deleting anything, and retry at most once:
+
+1. If `BLOSSOM_DATABASE_PATH`, `BLOSSOM_CHECKPOINT_PATH`, or
+   `BLOSSOM_TRACE_PATH` is set in the terminal, unset each one that is set
+   and start the sample once more. The check in "The sample week" above lists
+   any `BLOSSOM_` settings that are set.
+2. If none of them was set, or the same refusal comes back after that one
+   retry, stop retrying. Make a fresh checkout in an ordinary local folder
+   and start the sample there with the standard sample settings, whether or
+   not you can find a link. That starts a fresh sample week, and the old
+   checkout and its files stay where they are. The README's PowerShell block
+   sets the three paths again each time it runs, so after one retry with it,
+   the same refusal means this step.
+
+Don't delete the path the message names or any folder above it: it may lead
+into synced storage or a network share, and deleting it can delete what it
+leads to.
 
 **The app refuses to start and says another Blossom process has this
 household's files open.** One process serves a household; the file it names,

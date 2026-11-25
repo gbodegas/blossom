@@ -26,6 +26,7 @@ from blossom.settings import (
     TRACE_PATH_VARIABLE,
     Settings,
 )
+from blossom.stores.paths import UnsafeCheckpointPath, refuse_mismarked_state
 from tests.support import (
     HERS,
     PAGE_HEADERS,
@@ -310,13 +311,14 @@ def test_an_auxiliary_file_of_the_real_database_that_leads_to_the_household_is_r
     )
 
 
+@pytest.mark.parametrize("suffix", SIDECARS)
 @pytest.mark.parametrize("name", NAMES)
 def test_an_auxiliary_file_of_a_linked_configured_name_that_leads_out_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, suffix: str
 ) -> None:
-    """Both sets count: with a sample database a link to another name, the auxiliary files of
-    its configured name are checked as well as those of the name it leads to."""
-    suffix = SIDECARS[NAMES.index(name)]
+    """Both sets count: with a sample database a link to another name, the journal, write-ahead
+    log and index of its configured name are checked as well as those of the name it leads to,
+    for each of the three databases."""
     household = a_household(tmp_path / "household")
     (household / f"{name}{suffix}").write_bytes(b"made-up household auxiliary bytes")
     before = snapshot(household)
@@ -502,6 +504,120 @@ def test_a_link_out_of_the_sample_folder_in_the_launch_files_shape_is_named(
     assert after_restart == [SAMPLE_NOTE]
     assert [path for path in opened if not path.is_relative_to(sample_folder().resolve())] == []
     assert snapshot(household) == before
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_a_link_into_synced_storage_is_refused_and_a_fresh_checkout_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """A checkout in an ordinary folder whose ``.local/sample/<name>`` links into synced storage
+    is refused by the synced-folder check, which names that sample path. Nothing is deleted to
+    recover: a fresh checkout in an ordinary folder starts the sample and keeps its edit, and
+    the old checkout, its link and the file it points to stay as they are."""
+    checkout = in_a_checkout(tmp_path, monkeypatch)
+    synced = tmp_path / "synced-storage"
+    synced.mkdir()
+    (synced / name).write_bytes(b"made-up synced bytes")
+    monkeypatch.setenv("OneDrive", str(synced))
+    before = snapshot(synced)
+    launch_file = {
+        variable: f".local/sample/{base}" for variable, base in zip(VARIABLES, NAMES, strict=True)
+    }
+    sample_folder().mkdir(parents=True)
+    linked = sample_folder() / name
+    link(synced / name, linked)
+
+    with connections_recorded(monkeypatch) as opened:
+        refused, _ = a_sample_launch(**launch_file)
+
+    assert opened == [], "the sample start opened a state file"
+    assert snapshot(synced) == before, "the sample start changed the synced folder"
+    assert linked.is_symlink()
+    assert refused is not None, "the sample session started on a file in synced storage"
+    assert str(refused) == f"the household's state may not live under OneDrive: {linked}"
+
+    old = snapshot(checkout)
+    in_a_checkout(tmp_path / "fresh", monkeypatch)
+    with connections_recorded(monkeypatch) as opened:
+        refused, _ = a_sample_launch(**launch_file)
+        with client_for(sample_launch(**launch_file)) as client:
+            after_restart = notes_of(client)
+
+    assert refused is None, "a fresh checkout did not start the sample"
+    assert after_restart == [SAMPLE_NOTE]
+    assert [path for path in opened if not path.is_relative_to(sample_folder().resolve())] == []
+    assert snapshot(checkout) == old, "the old checkout changed"
+    assert linked.is_symlink()
+    assert snapshot(synced) == before
+
+
+@pytest.mark.parametrize("linked", ["the database", "the sample folder"])
+def test_the_synced_folder_check_comes_before_the_sample_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked: str
+) -> None:
+    """A sample path that leads into synced storage gets the synced-folder refusal, which asks
+    for no removal, not the sample's own. Called directly, since in a test run the suite's guard
+    checks for synced folders before the application starts."""
+    synced = tmp_path / "synced-storage"
+    synced.mkdir()
+    monkeypatch.setenv("OneDrive", str(synced))
+    sample = sample_folder()
+    if linked == "the database":
+        sample.mkdir(parents=True)
+        (synced / NAMES[0]).write_bytes(b"made-up synced bytes")
+        link(synced / NAMES[0], sample / NAMES[0])
+    else:
+        (synced / "sample").mkdir()
+        if linked_to(synced / "sample", sample) is None:
+            pytest.skip("no link to a folder can be made here")
+    database, checkpoint, trace = (sample / name for name in NAMES)
+
+    with pytest.raises(UnsafeCheckpointPath) as refusal:
+        refuse_mismarked_state(database, checkpoint, trace, test_copy=False, sample=sample)
+
+    assert str(refusal.value) == f"the household's state may not live under OneDrive: {database}"
+
+
+@pytest.mark.parametrize("place", ["synced storage", "a network share"])
+def test_a_state_path_set_into_synced_storage_or_a_share_is_refused_until_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, place: str
+) -> None:
+    """A state path set in the terminal that lands in synced storage, or names a network
+    share, is refused before any state file opens; with it unset, the launch file's paths start
+    the sample. The share is refused on its text, before anything resolves it."""
+    checkout = in_a_checkout(tmp_path, monkeypatch)
+    synced = tmp_path / "synced-storage"
+    synced.mkdir()
+    monkeypatch.setenv("OneDrive", str(synced))
+    before = snapshot(synced)
+    if place == "synced storage":
+        typed = str(synced / NAMES[0])
+        expected = f"the household's state may not live under OneDrive: {Path(typed)}"
+    else:
+        typed = f"//server/share/{NAMES[0]}"
+        expected = f"the household's state may not live on a network share: {Path(typed)}"
+    launch_file = {
+        variable: f".local/sample/{base}" for variable, base in zip(VARIABLES, NAMES, strict=True)
+    }
+
+    with connections_recorded(monkeypatch) as opened:
+        refused, _ = a_sample_launch(**{**launch_file, DATABASE_PATH_VARIABLE: typed})
+
+    assert opened == [], "the sample start opened a state file"
+    assert snapshot(synced) == before
+    assert not (checkout / ".local").exists(), "the sample start made a folder"
+    assert refused is not None, "the sample session started"
+    assert str(refused) == expected
+
+    with connections_recorded(monkeypatch) as opened:
+        refused, _ = a_sample_launch(**launch_file)
+        with client_for(sample_launch(**launch_file)) as client:
+            after_restart = notes_of(client)
+
+    assert refused is None, "the sample did not start with the setting unset"
+    assert after_restart == [SAMPLE_NOTE]
+    assert [path for path in opened if not path.is_relative_to(sample_folder().resolve())] == []
+    assert snapshot(synced) == before
 
 
 def test_a_sample_folder_that_is_a_link_is_refused(
