@@ -1042,9 +1042,10 @@ model key come from there and the sample's own paths and clock apply.
 
 Before starting the sample, check that your terminal has no `BLOSSOM_`
 settings already set. Some shell profiles set them even in a new terminal.
-These settings take precedence over the sample files, so Blossom could show
-"Sample week" while reading or changing your own records. This prints the
-names of any that are set, and nothing else:
+These settings take precedence over the sample files. A database,
+checkpoint or trace path among them that points outside `.local/sample/`
+stops the sample from starting, and the others can change how it runs.
+This prints the names of any that are set, and nothing else:
 
 ```bash
 uv run --no-env-file python -c "import os; [print(k) for k in sorted(os.environ) if k.startswith('BLOSSOM_')]"
@@ -1131,9 +1132,10 @@ uv sync
 
 Before starting the sample, check that your terminal has no `BLOSSOM_`
 settings already set. Some shell profiles set them even in a new terminal.
-These settings take precedence over the sample files, so Blossom could show
-"Sample week" while reading or changing your own records. This prints the
-names of any that are set, and nothing else:
+These settings take precedence over the sample files. A database,
+checkpoint or trace path among them that points outside `.local/sample/`
+stops the sample from starting, and the others can change how it runs.
+This prints the names of any that are set, and nothing else:
 
 ```bash
 uv run --no-env-file python -c "import os; [print(k) for k in sorted(os.environ) if k.startswith('BLOSSOM_')]"

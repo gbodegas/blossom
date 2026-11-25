@@ -20,6 +20,13 @@ on local storage that no other process changes while Blossom checks or uses them
 put in the household's own folder, files swapped by another process, network mounts, and,
 with the flag off, a state file in an unmarked folder that is a hard link to a file
 elsewhere are outside it.
+
+A sample week keeps its state in the sample's own folder. With the sample flag on, before a
+start opens anything, that folder must not be a link, and every state file, and the folder
+each configured path names, must really land in it, so a household path set in the terminal,
+a link, or a walk through ``..`` can't put the sample on the household's files. A hard link
+placed in that folder, and a link put there by another process after the check, are outside
+it, as they are for a copy.
 """
 
 import ctypes
@@ -28,6 +35,8 @@ import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
+
+from blossom.settings import CHECKPOINT_PATH_VARIABLE, DATABASE_PATH_VARIABLE, TRACE_PATH_VARIABLE
 
 # Folder names a sync client uses, matched case-insensitively against a whole
 # path component, or against one that starts with the name and a separator,
@@ -162,6 +171,10 @@ class CopyMarkError(ValueError):
     """Raised at startup when the test-copy flag and the state folders disagree."""
 
 
+class SampleStateError(ValueError):
+    """Raised at startup when a sample week's state would land outside the sample's folder."""
+
+
 def lock_path_for(state_path: Path) -> Path:
     """The lock file beside a state file, named for the file as it really is.
 
@@ -224,10 +237,62 @@ def landing(path: Path) -> tuple[Path, str]:
     return real, f"{path} lands in {real}, which"
 
 
-def refuse_mismarked_state(
-    database: Path, checkpoint: Path, trace: Path, *, test_copy: bool
+def refuse_sample_state_elsewhere(
+    sample: Path, configured: tuple[Path, Path, Path], files: list[Path]
 ) -> None:
-    """Refuse a test copy its marks and files don't bear out, and a marked copy unlabeled.
+    """Refuse a sample week any of whose state would be read, made or changed outside
+    ``sample``. The folder must be one of its own, not a link, since a link would make every
+    file land "inside" it wherever it led. Then the folder each configured path names (folders
+    are made there, and beside the database the sign-in secret and its part) and each state
+    file must really land in it. Only names are read.
+
+    Each refusal says what to correct: a link at the folder, a variable that names a place
+    outside it, or a link inside it that leads out. A relative setting is resolved through
+    links when it is read, so one that reaches outside through a link names where it really
+    lands and is refused as a variable naming that place."""
+    home = Path(os.path.realpath(sample))
+    if home != Path(os.path.realpath(sample.parent)) / sample.name:
+        msg = (
+            f"BLOSSOM_SAMPLE is on, but {sample} is a link to {home}: a sample week keeps its "
+            "state in a folder of its own, never one that is itself a link. Remove the link at "
+            f"{sample}, then start the sample again"
+        )
+        raise SampleStateError(msg)
+    spelled = Path(os.path.abspath(sample))
+    variables = (DATABASE_PATH_VARIABLE, CHECKPOINT_PATH_VARIABLE, TRACE_PATH_VARIABLE)
+    for variable, path in zip(variables, configured, strict=True):
+        real = Path(os.path.realpath(path.parent))
+        if real.is_relative_to(home):
+            continue
+        if not Path(os.path.abspath(path.parent)).is_relative_to(spelled):
+            what = f"{variable} names {path}, outside {sample}"
+            refusal = outside_the_sample(what, f"Unset {variable} in the terminal")
+        else:
+            what = f"{path.parent} leads into {real}, outside {sample}"
+            refusal = outside_the_sample(what, f"Remove the link in {sample} that leads there")
+        raise refusal
+    for path in files:
+        real, _ = landing(path)
+        if not real.is_relative_to(home):
+            what = f"{path} leads into {real}, outside {sample}"
+            refusal = outside_the_sample(what, f"Remove the link at {path}")
+            raise refusal
+
+
+def outside_the_sample(what: str, correction: str) -> SampleStateError:
+    """The refusal for a sample week's state that would land outside its folder: what lands
+    where, and what to correct in that case."""
+    return SampleStateError(
+        f"BLOSSOM_SAMPLE is on, but {what}: a sample week keeps all its state there, so it "
+        f"never reads or changes other records. {correction}, then start the sample again"
+    )
+
+
+def refuse_mismarked_state(
+    database: Path, checkpoint: Path, trace: Path, *, test_copy: bool, sample: Path | None = None
+) -> None:
+    """Refuse a test copy its marks and files don't bear out, a marked copy unlabeled, and a
+    sample week whose state would land outside ``sample``, its folder, when one is given.
 
     The paths pass ``refuse_unsafe_path`` first. After that only names and file details are
     read, where each state file really lands: nothing is opened, created or claimed.
@@ -235,6 +300,8 @@ def refuse_mismarked_state(
     for path in (database, checkpoint, trace):
         refuse_unsafe_path(path)
     files = state_files(database, checkpoint, trace)
+    if sample is not None:
+        refuse_sample_state_elsewhere(sample, (database, checkpoint, trace), files)
     if test_copy:
         for path in files:
             real, named = landing(path)
