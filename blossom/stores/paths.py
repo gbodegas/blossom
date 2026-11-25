@@ -174,7 +174,8 @@ class CopyMarkError(ValueError):
 
 
 class SampleStateError(ValueError):
-    """Raised at startup when a sample week's state would land outside the sample's folder."""
+    """Raised at startup when a sample week's state would land outside the sample's folder, or
+    a state path walks through ``..``."""
 
 
 def lock_path_for(state_path: Path) -> Path:
@@ -277,12 +278,12 @@ def refuse_sample_state_elsewhere(
                 refusal = outside_the_sample(what, correction)
             raise refusal
         if ".." in path.parts:
-            what = (
-                f"{variable} names {path}, which walks through '..' and can make folders "
-                f"outside {sample}"
+            msg = (
+                f"BLOSSOM_SAMPLE is on, but {variable} names {path}, which walks through '..': "
+                "folders are made from a path as spelled, so a sample week's state paths may not "
+                f"walk through '..'. Unset {variable} in the terminal, then start the sample again"
             )
-            refusal = outside_the_sample(what, f"Unset {variable} in the terminal")
-            raise refusal
+            raise SampleStateError(msg)
     auxiliary = []
     for path in configured:
         real_file = Path(os.path.realpath(path))
@@ -308,7 +309,8 @@ def refuse_mismarked_state(
     database: Path, checkpoint: Path, trace: Path, *, test_copy: bool, sample: Path | None = None
 ) -> None:
     """Refuse a test copy its marks and files don't bear out, a marked copy unlabeled, and a
-    sample week whose state would land outside ``sample``, its folder, when one is given.
+    sample week whose state would land outside ``sample``, its folder, or whose state path
+    walks through ``..``, when one is given.
 
     The paths pass ``refuse_unsafe_path`` first. After that only names and file details are
     read, where each state file really lands: nothing is opened, created or claimed.

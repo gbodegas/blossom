@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Gerardo Bodegas Martinez
-"""A session labeled "Sample week" keeps all of its state in the sample's own folder.
+"""A session labeled "Sample week" starts only on state in the sample's own folder.
 
 The sample's launch file puts the three state files under ``.local/sample/``, but a
 ``BLOSSOM_`` path already set in the terminal takes precedence over a launch file. With the
-flag on, a start whose files would land anywhere else is refused, naming the folder, before
-anything is claimed, created or opened, so a sample can neither show the household's record
-nor change it. The flag alone puts the defaults in that folder too. The household's own launch
-is unchanged.
+flag on, a start whose files would land anywhere else, or whose state path walks through
+``..``, is refused, saying what to correct, before anything is claimed, created or opened.
+The flag alone puts the defaults in that folder too. The household's own launch is unchanged.
 """
 
 import hashlib
@@ -231,12 +230,22 @@ def test_a_sample_file_that_lands_in_the_household_is_refused(
     assert str(refused) == expected
 
 
-@pytest.mark.parametrize("name", ["checkpoints.sqlite3-wal", "blossom.lock", "household.secret"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "checkpoints.sqlite3",
+        "traces.sqlite3",
+        "checkpoints.sqlite3-wal",
+        "blossom.lock",
+        "checkpoints.lock",
+        "household.secret",
+    ],
+)
 def test_a_file_beside_the_sample_databases_that_leads_to_the_household_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """Every file a start opens or makes beside the databases counts: a write-ahead log, a
-    lock, the sign-in secret. Each is checked where it really lands."""
+    """Every file a start opens or makes beside the databases counts: the databases, a
+    write-ahead log, both locks, the sign-in secret. Each is checked where it really lands."""
     household = a_household(tmp_path / "household")
     before = snapshot(household)
     sample_folder().mkdir(parents=True)
@@ -256,19 +265,20 @@ def test_a_file_beside_the_sample_databases_that_leads_to_the_household_is_refus
 
 
 @pytest.mark.parametrize("suffix", SIDECARS)
+@pytest.mark.parametrize("name", NAMES)
 def test_an_auxiliary_file_of_the_real_database_that_leads_to_the_household_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, suffix: str
 ) -> None:
     """SQLite names a database's journal, write-ahead log and index after the file it really
-    opens. With the sample's database a link to another name in the sample folder, that
-    name's auxiliary files count too."""
+    opens. With a sample database a link to another name in the sample folder, that name's
+    auxiliary files count too, for each of the three databases."""
     household = a_household(tmp_path / "household")
-    (household / f"{NAMES[0]}{suffix}").write_bytes(b"made-up household auxiliary bytes")
+    (household / f"{name}{suffix}").write_bytes(b"made-up household auxiliary bytes")
     before = snapshot(household)
     sample_folder().mkdir(parents=True)
-    link(sample_folder() / "actual.sqlite3", sample_folder() / NAMES[0])
-    auxiliary = sample_folder() / f"actual.sqlite3{suffix}"
-    link(household / f"{NAMES[0]}{suffix}", auxiliary)
+    link(sample_folder() / f"actual-{name}", sample_folder() / name)
+    auxiliary = sample_folder() / f"actual-{name}{suffix}"
+    link(household / f"{name}{suffix}", auxiliary)
 
     with connections_recorded(monkeypatch) as opened:
         refused, read = a_sample_session(sample_launch())
@@ -284,8 +294,47 @@ def test_an_auxiliary_file_of_the_real_database_that_leads_to_the_household_is_r
     )
 
 
+@pytest.mark.parametrize("name", NAMES)
+def test_an_auxiliary_file_of_a_linked_configured_name_that_leads_out_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """Both sets count: with a sample database a link to another name, the auxiliary files of
+    its configured name are checked as well as those of the name it leads to."""
+    suffix = SIDECARS[NAMES.index(name)]
+    household = a_household(tmp_path / "household")
+    (household / f"{name}{suffix}").write_bytes(b"made-up household auxiliary bytes")
+    before = snapshot(household)
+    sample_folder().mkdir(parents=True)
+    link(sample_folder() / f"actual-{name}", sample_folder() / name)
+    auxiliary = sample_folder() / f"{name}{suffix}"
+    link(household / f"{name}{suffix}", auxiliary)
+
+    with connections_recorded(monkeypatch) as opened:
+        refused, read = a_sample_session(sample_launch())
+
+    assert HOUSEHOLD_NOTE not in read
+    assert [path for path in opened if path.is_relative_to(household.resolve())] == []
+    assert snapshot(household) == before, "the sample session changed the household's files"
+    assert auxiliary.is_symlink()
+    assert refused is not None, "the sample session started"
+    assert str(refused) == outside(
+        f"{auxiliary} leads into {household.resolve()}, outside {sample_folder()}",
+        f"Remove the link at {auxiliary}",
+    )
+
+
+def walks(variable: str, path: Path) -> str:
+    """The whole refusal for a state path that walks through ``..``, word for word."""
+    return (
+        f"BLOSSOM_SAMPLE is on, but {variable} names {path}, which walks through '..': folders "
+        "are made from a path as spelled, so a sample week's state paths may not walk through "
+        f"'..'. Unset {variable} in the terminal, then start the sample again"
+    )
+
+
+@pytest.mark.parametrize(("variable", "name"), list(zip(VARIABLES, NAMES, strict=True)))
 def test_a_path_that_walks_out_and_back_in_is_refused_before_any_folder_is_made(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variable: str, name: str
 ) -> None:
     """A store makes its folder from the path as spelled, so a walk through ``..`` and a
     missing folder elsewhere would make that folder, even when the walk ends in the sample's."""
@@ -293,20 +342,37 @@ def test_a_path_that_walks_out_and_back_in_is_refused_before_any_folder_is_made(
     before = snapshot(household)
     sample_folder().mkdir(parents=True)
     back = sample_folder() / ".." / household.name / "new" / ".." / ".." / sample_folder().name
-    database = back / NAMES[0]
+    path = back / name
 
     with connections_recorded(monkeypatch) as opened:
-        refused, read = a_sample_session(sample_launch(**{DATABASE_PATH_VARIABLE: str(database)}))
+        refused, read = a_sample_session(sample_launch(**{variable: str(path)}))
 
     assert HOUSEHOLD_NOTE not in read
     assert [path for path in opened if path.is_relative_to(household.resolve())] == []
     assert snapshot(household) == before, "the sample start made a folder in the household's"
     assert refused is not None, "the sample session started"
-    assert str(refused) == outside(
-        f"{DATABASE_PATH_VARIABLE} names {database}, which walks through '..' and can make "
-        f"folders outside {sample_folder()}",
-        f"Unset {DATABASE_PATH_VARIABLE} in the terminal",
-    )
+    assert str(refused) == walks(variable, path)
+
+
+def test_a_walk_through_dotdot_that_stays_inside_is_refused_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Any ``..`` part is refused, a walk that stays in the sample folder included, and nothing
+    is made anywhere."""
+    household = a_household(tmp_path / "household")
+    before = snapshot(household)
+    sample_folder().mkdir(parents=True)
+    inside = snapshot(sample_folder())
+    path = sample_folder() / "sub-new" / ".." / NAMES[0]
+
+    with connections_recorded(monkeypatch) as opened:
+        refused, _ = a_sample_session(sample_launch(**{DATABASE_PATH_VARIABLE: str(path)}))
+
+    assert opened == []
+    assert snapshot(household) == before
+    assert snapshot(sample_folder()) == inside
+    assert refused is not None
+    assert str(refused) == walks(DATABASE_PATH_VARIABLE, path)
 
 
 def test_a_sample_folder_that_is_a_link_is_refused(
