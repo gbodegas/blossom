@@ -101,16 +101,22 @@ def a_household(folder: Path) -> Path:
 
 
 def snapshot(folder: Path) -> dict[str, tuple[str, int, int]]:
-    """Every entry in ``folder`` by name: a link by where it points, a file by its contents'
-    digest, each with its size and modification time."""
+    """Everything under ``folder``, the folder itself included, by its path from it: a folder
+    as a folder, a link by where it points, a file by its contents' digest, each with its size
+    and modification time, so a file or folder made, changed or removed anywhere shows."""
+    entries = [folder]
+    for root, folders, files in os.walk(folder, followlinks=False):
+        entries += [Path(root) / name for name in (*folders, *files)]
     found = {}
-    for path in sorted(folder.iterdir()):
+    for path in sorted(entries):
         status = path.lstat()
         if path.is_symlink():
             content = f"a link to {os.readlink(path)}"
+        elif path.is_dir():
+            content = "a folder"
         else:
             content = hashlib.sha256(path.read_bytes()).hexdigest()
-        found[path.name] = (content, status.st_size, status.st_mtime_ns)
+        found[str(path.relative_to(folder))] = (content, status.st_size, status.st_mtime_ns)
     return found
 
 
@@ -144,8 +150,8 @@ def outside(what: str, correction: str) -> str:
     """The whole refusal for a sample file or folder outside the sample's folder, word for
     word: what lands where, and what to correct in that case."""
     return (
-        f"BLOSSOM_SAMPLE is on, but {what}: a sample week keeps all its state there, so it "
-        f"never reads or changes other records. {correction}, then start the sample again"
+        f"BLOSSOM_SAMPLE is on, but {what}: a sample week starts only on state files in that "
+        f"folder. {correction}, then start the sample again"
     )
 
 
@@ -249,6 +255,60 @@ def test_a_file_beside_the_sample_databases_that_leads_to_the_household_is_refus
     )
 
 
+@pytest.mark.parametrize("suffix", SIDECARS)
+def test_an_auxiliary_file_of_the_real_database_that_leads_to_the_household_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    """SQLite names a database's journal, write-ahead log and index after the file it really
+    opens. With the sample's database a link to another name in the sample folder, that
+    name's auxiliary files count too."""
+    household = a_household(tmp_path / "household")
+    (household / f"{NAMES[0]}{suffix}").write_bytes(b"made-up household auxiliary bytes")
+    before = snapshot(household)
+    sample_folder().mkdir(parents=True)
+    link(sample_folder() / "actual.sqlite3", sample_folder() / NAMES[0])
+    auxiliary = sample_folder() / f"actual.sqlite3{suffix}"
+    link(household / f"{NAMES[0]}{suffix}", auxiliary)
+
+    with connections_recorded(monkeypatch) as opened:
+        refused, read = a_sample_session(sample_launch())
+
+    assert HOUSEHOLD_NOTE not in read
+    assert [path for path in opened if path.is_relative_to(household.resolve())] == []
+    assert snapshot(household) == before, "the sample session changed the household's files"
+    assert auxiliary.is_symlink(), "the sample session used the link to the household's file"
+    assert refused is not None, "the sample session started"
+    assert str(refused) == outside(
+        f"{auxiliary} leads into {household.resolve()}, outside {sample_folder()}",
+        f"Remove the link at {auxiliary}",
+    )
+
+
+def test_a_path_that_walks_out_and_back_in_is_refused_before_any_folder_is_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store makes its folder from the path as spelled, so a walk through ``..`` and a
+    missing folder elsewhere would make that folder, even when the walk ends in the sample's."""
+    household = a_household(tmp_path / "household")
+    before = snapshot(household)
+    sample_folder().mkdir(parents=True)
+    back = sample_folder() / ".." / household.name / "new" / ".." / ".." / sample_folder().name
+    database = back / NAMES[0]
+
+    with connections_recorded(monkeypatch) as opened:
+        refused, read = a_sample_session(sample_launch(**{DATABASE_PATH_VARIABLE: str(database)}))
+
+    assert HOUSEHOLD_NOTE not in read
+    assert [path for path in opened if path.is_relative_to(household.resolve())] == []
+    assert snapshot(household) == before, "the sample start made a folder in the household's"
+    assert refused is not None, "the sample session started"
+    assert str(refused) == outside(
+        f"{DATABASE_PATH_VARIABLE} names {database}, which walks through '..' and can make "
+        f"folders outside {sample_folder()}",
+        f"Unset {DATABASE_PATH_VARIABLE} in the terminal",
+    )
+
+
 def test_a_sample_folder_that_is_a_link_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -268,7 +328,7 @@ def test_a_sample_folder_that_is_a_link_is_refused(
     assert refused is not None, "the sample session started on the household's files"
     assert str(refused) == (
         f"BLOSSOM_SAMPLE is on, but {sample_folder()} is a link to {household.resolve()}: a "
-        "sample week keeps its state in a folder of its own, never one that is itself a link. "
+        "sample week starts only in a folder of its own, not one that is itself a link. "
         f"Remove the link at {sample_folder()}, then start the sample again"
     )
 

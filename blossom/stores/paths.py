@@ -22,11 +22,13 @@ with the flag off, a state file in an unmarked folder that is a hard link to a f
 elsewhere are outside it.
 
 A sample week keeps its state in the sample's own folder. With the sample flag on, before a
-start opens anything, that folder must not be a link, and every state file, and the folder
-each configured path names, must really land in it, so a household path set in the terminal,
-a link, or a walk through ``..`` can't put the sample on the household's files. A hard link
-placed in that folder, and a link put there by another process after the check, are outside
-it, as they are for a copy.
+start opens anything, that folder must not be a link; every state file, every SQLite file
+named after a database's real file, and the folder each configured path names must really
+land in it; and no configured path may walk through ``..``. So a household path set in the
+terminal, a link, or a walk through ``..`` in place at the start can't put the sample on the
+household's files. Outside that check: a hard link placed in the folder, a folder mounted at
+or below it, a link changed after the startup check, and a link that leads back to itself,
+which this check doesn't refuse by name.
 """
 
 import ctypes
@@ -243,18 +245,21 @@ def refuse_sample_state_elsewhere(
     """Refuse a sample week any of whose state would be read, made or changed outside
     ``sample``. The folder must be one of its own, not a link, since a link would make every
     file land "inside" it wherever it led. Then the folder each configured path names (folders
-    are made there, and beside the database the sign-in secret and its part) and each state
-    file must really land in it. Only names are read.
+    are made there, and beside the database the sign-in secret and its part) must really land
+    in it, and the path must not walk through ``..``, since folders are made from it as spelled.
+    Then each state file, and each journal, write-ahead log and index named after a database's
+    real file (the names SQLite uses when the configured name is a link), must really land in
+    it. Only names are read.
 
     Each refusal says what to correct: a link at the folder, a variable that names a place
-    outside it, or a link inside it that leads out. A relative setting is resolved through
-    links when it is read, so one that reaches outside through a link names where it really
-    lands and is refused as a variable naming that place."""
+    outside it or walks through ``..``, or a link inside it that leads out. A relative setting
+    is resolved through links when it is read, so one that reaches outside through a link names
+    where it really lands and is refused as a variable naming that place."""
     home = Path(os.path.realpath(sample))
     if home != Path(os.path.realpath(sample.parent)) / sample.name:
         msg = (
-            f"BLOSSOM_SAMPLE is on, but {sample} is a link to {home}: a sample week keeps its "
-            "state in a folder of its own, never one that is itself a link. Remove the link at "
+            f"BLOSSOM_SAMPLE is on, but {sample} is a link to {home}: a sample week starts "
+            "only in a folder of its own, not one that is itself a link. Remove the link at "
             f"{sample}, then start the sample again"
         )
         raise SampleStateError(msg)
@@ -262,16 +267,27 @@ def refuse_sample_state_elsewhere(
     variables = (DATABASE_PATH_VARIABLE, CHECKPOINT_PATH_VARIABLE, TRACE_PATH_VARIABLE)
     for variable, path in zip(variables, configured, strict=True):
         real = Path(os.path.realpath(path.parent))
-        if real.is_relative_to(home):
-            continue
-        if not Path(os.path.abspath(path.parent)).is_relative_to(spelled):
-            what = f"{variable} names {path}, outside {sample}"
+        if not real.is_relative_to(home):
+            if not Path(os.path.abspath(path.parent)).is_relative_to(spelled):
+                what = f"{variable} names {path}, outside {sample}"
+                refusal = outside_the_sample(what, f"Unset {variable} in the terminal")
+            else:
+                what = f"{path.parent} leads into {real}, outside {sample}"
+                correction = f"Remove the link in {sample} that leads there"
+                refusal = outside_the_sample(what, correction)
+            raise refusal
+        if ".." in path.parts:
+            what = (
+                f"{variable} names {path}, which walks through '..' and can make folders "
+                f"outside {sample}"
+            )
             refusal = outside_the_sample(what, f"Unset {variable} in the terminal")
-        else:
-            what = f"{path.parent} leads into {real}, outside {sample}"
-            refusal = outside_the_sample(what, f"Remove the link in {sample} that leads there")
-        raise refusal
-    for path in files:
+            raise refusal
+    auxiliary = []
+    for path in configured:
+        real_file = Path(os.path.realpath(path))
+        auxiliary += [real_file.with_name(real_file.name + suffix) for suffix in SQLITE_SIDECARS]
+    for path in [*files, *auxiliary]:
         real, _ = landing(path)
         if not real.is_relative_to(home):
             what = f"{path} leads into {real}, outside {sample}"
@@ -283,8 +299,8 @@ def outside_the_sample(what: str, correction: str) -> SampleStateError:
     """The refusal for a sample week's state that would land outside its folder: what lands
     where, and what to correct in that case."""
     return SampleStateError(
-        f"BLOSSOM_SAMPLE is on, but {what}: a sample week keeps all its state there, so it "
-        f"never reads or changes other records. {correction}, then start the sample again"
+        f"BLOSSOM_SAMPLE is on, but {what}: a sample week starts only on state files in that "
+        f"folder. {correction}, then start the sample again"
     )
 
 
