@@ -21,14 +21,15 @@ put in the household's own folder, files swapped by another process, network mou
 with the flag off, a state file in an unmarked folder that is a hard link to a file
 elsewhere are outside it.
 
-A sample week keeps its state in the sample's own folder. With the sample flag on, before a
-start opens anything, that folder must not be a link; every state file, every SQLite file
-named after a database's real file, and the folder each configured path names must really
-land in it; and no configured path may walk through ``..``. So a household path set in the
-terminal, a link, or a walk through ``..`` in place at the start can't put the sample on the
-household's files. Outside that check: a hard link placed in the folder, a folder mounted at
-or below it, a link changed after the startup check, and a link that leads back to itself,
-which this check doesn't refuse by name.
+A sample week keeps its state in the sample's own folder. With the sample flag on, a
+configured state path that walks through ``..`` is refused as typed, when the settings are
+read. Then, before a start opens anything, the folder must not be a link, and every state
+file, every SQLite file named after a database's real file, and the folder each configured
+path names must really land in it. So a household path set in the terminal, a link, or a
+walk through ``..`` in place at the start can't put the sample on the household's files.
+Outside that check: a hard link placed in the folder, a folder mounted at or below it, a
+link changed after the startup check, and a link that leads back to itself, which this
+check doesn't refuse by name.
 """
 
 import ctypes
@@ -174,8 +175,7 @@ class CopyMarkError(ValueError):
 
 
 class SampleStateError(ValueError):
-    """Raised at startup when a sample week's state would land outside the sample's folder, or
-    a state path walks through ``..``."""
+    """Raised at startup when a sample week's state would land outside the sample's folder."""
 
 
 def lock_path_for(state_path: Path) -> Path:
@@ -247,13 +247,13 @@ def refuse_sample_state_elsewhere(
     ``sample``. The folder must be one of its own, not a link, since a link would make every
     file land "inside" it wherever it led. Then the folder each configured path names (folders
     are made there, and beside the database the sign-in secret and its part) must really land
-    in it, and the path must not walk through ``..``, since folders are made from it as spelled.
+    in it. A path that walks through ``..`` is refused before this, when the settings are read.
     Then each state file, and each journal, write-ahead log and index named after a database's
     real file (the names SQLite uses when the configured name is a link), must really land in
     it. Only names are read.
 
     Each refusal says what to correct: a link at the folder, a variable that names a place
-    outside it or walks through ``..``, or a link inside it that leads out. A relative setting
+    outside it, or a link inside it that leads out. A relative setting
     is resolved through links when it is read, so one that reaches outside through a link names
     where it really lands and is refused as a variable naming that place."""
     home = Path(os.path.realpath(sample))
@@ -277,13 +277,6 @@ def refuse_sample_state_elsewhere(
                 correction = f"Remove the link in {sample} that leads there"
                 refusal = outside_the_sample(what, correction)
             raise refusal
-        if ".." in path.parts:
-            msg = (
-                f"BLOSSOM_SAMPLE is on, but {variable} names {path}, which walks through '..': "
-                "folders are made from a path as spelled, so a sample week's state paths may not "
-                f"walk through '..'. Unset {variable} in the terminal, then start the sample again"
-            )
-            raise SampleStateError(msg)
     auxiliary = []
     for path in configured:
         real_file = Path(os.path.realpath(path))
@@ -309,8 +302,7 @@ def refuse_mismarked_state(
     database: Path, checkpoint: Path, trace: Path, *, test_copy: bool, sample: Path | None = None
 ) -> None:
     """Refuse a test copy its marks and files don't bear out, a marked copy unlabeled, and a
-    sample week whose state would land outside ``sample``, its folder, or whose state path
-    walks through ``..``, when one is given.
+    sample week whose state would land outside ``sample``, its folder, when one is given.
 
     The paths pass ``refuse_unsafe_path`` first. After that only names and file details are
     read, where each state file really lands: nothing is opened, created or claimed.

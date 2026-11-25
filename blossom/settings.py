@@ -197,7 +197,8 @@ class Settings:
     is a synthetic scenario, not the family's own. Set by the sample launch and
     nothing else; a pinned clock on its own says nothing about whose data this is.
     Its state files default to ``sample_state_path``, and a start refuses any that
-    would land outside it."""
+    would land outside it. A database, checkpoint or trace path set beside it that walks
+    through ``..`` is refused as typed, when the settings are read."""
     test_copy: bool = False
     """From ``BLOSSOM_TEST_COPY``. True marks every page "Test copy": the state is a copy
     of the family's own data, made for a test pass. Set by a test-copy launch and nothing
@@ -363,11 +364,25 @@ class Settings:
 
         sample = flag(SAMPLE_VARIABLE)
         local = LOCAL_STATE_PATH / SAMPLE_STATE_FOLDER if sample else LOCAL_STATE_PATH
+
+        def state(variable: str, name: str) -> Path:
+            # Checked as typed: resolving a relative value would drop its "..".
+            value = source.get(variable)
+            if sample and value is not None and ".." in Path(value).expanduser().parts:
+                msg = (
+                    f"{SAMPLE_VARIABLE} is on, but {variable} names {value}, which walks through "
+                    "'..': a sample week's state paths may not walk through '..', even when the "
+                    f"walk ends in the sample's folder. Unset {variable} in the terminal, then "
+                    "start the sample again"
+                )
+                raise ValueError(msg)
+            return read(variable, local / name)
+
         return cls(
             fixture_path=optional_path(FIXTURE_PATH_VARIABLE),
-            database_path=read(DATABASE_PATH_VARIABLE, local / "blossom.sqlite3"),
-            checkpoint_path=read(CHECKPOINT_PATH_VARIABLE, local / "checkpoints.sqlite3"),
-            trace_path=read(TRACE_PATH_VARIABLE, local / "traces.sqlite3"),
+            database_path=state(DATABASE_PATH_VARIABLE, "blossom.sqlite3"),
+            checkpoint_path=state(CHECKPOINT_PATH_VARIABLE, "checkpoints.sqlite3"),
+            trace_path=state(TRACE_PATH_VARIABLE, "traces.sqlite3"),
             today=today,
             timezone_key=timezone_key,
             anthropic_api_key=anthropic_api_key,

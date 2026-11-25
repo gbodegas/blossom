@@ -70,6 +70,15 @@ def sample_launch(**terminal: str) -> Settings:
     return fixture_settings(**{**launch, **terminal})
 
 
+def in_a_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A made-up checkout in ``tmp_path``: a relative setting is read against it, the way the
+    launch file's ``.local/sample/`` paths are, and the sample folder sits in its ``.local``."""
+    checkout = tmp_path / "checkout"
+    monkeypatch.setattr(settings_module, "REPOSITORY_ROOT", checkout)
+    monkeypatch.setattr(settings_module, "LOCAL_STATE_PATH", checkout / ".local")
+    return checkout
+
+
 def save_a_note(client: TestClient, text: str) -> None:
     """Write down homework from her page, the way the sample tour's third step does."""
     page = client.get("/student/homework-notes/new", headers=PAGE_HEADERS).text
@@ -166,6 +175,16 @@ def a_sample_session(settings: Settings) -> tuple[ValueError | None, list[str]]:
     return None, read
 
 
+def a_sample_launch(**terminal: str) -> tuple[ValueError | None, list[str]]:
+    """Read a sample launch's settings with ``terminal`` on top, then start a session as
+    ``a_sample_session`` does, so a refusal is caught wherever it is raised."""
+    try:
+        settings = sample_launch(**terminal)
+    except ValueError as refusal:
+        return refusal, []
+    return a_sample_session(settings)
+
+
 @pytest.mark.parametrize("supplied", OVERRIDES.values(), ids=OVERRIDES.keys())
 def test_a_household_path_from_the_terminal_is_refused_before_anything_is_opened(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, supplied: tuple[str, ...]
@@ -175,7 +194,7 @@ def test_a_household_path_from_the_terminal_is_refused_before_anything_is_opened
     terminal = {variable: the_three_in(household)[variable] for variable in supplied}
 
     with connections_recorded(monkeypatch) as opened:
-        refused, read = a_sample_session(sample_launch(**terminal))
+        refused, read = a_sample_launch(**terminal)
 
     assert HOUSEHOLD_NOTE not in read, "the sample session read the household's record"
     assert [path for path in opened if path.is_relative_to(household.resolve())] == []
@@ -206,10 +225,7 @@ def test_a_sample_file_that_lands_in_the_household_is_refused(
         )
     elif reach == "a walk through ..":
         database = sample_folder() / ".." / household.name / NAMES[0]
-        expected = outside(
-            f"{DATABASE_PATH_VARIABLE} names {database}, outside {sample_folder()}",
-            f"Unset {DATABASE_PATH_VARIABLE} in the terminal",
-        )
+        expected = walks(DATABASE_PATH_VARIABLE, str(database))
     else:
         inner = sample_folder() / "inner"
         if linked_to(household, inner) is None:
@@ -221,7 +237,7 @@ def test_a_sample_file_that_lands_in_the_household_is_refused(
         )
 
     with connections_recorded(monkeypatch) as opened:
-        refused, read = a_sample_session(sample_launch(**{DATABASE_PATH_VARIABLE: str(database)}))
+        refused, read = a_sample_launch(**{DATABASE_PATH_VARIABLE: str(database)})
 
     assert HOUSEHOLD_NOTE not in read
     assert [path for path in opened if path.is_relative_to(household.resolve())] == []
@@ -252,7 +268,7 @@ def test_a_file_beside_the_sample_databases_that_leads_to_the_household_is_refus
     link(household / name, sample_folder() / name)
 
     with connections_recorded(monkeypatch) as opened:
-        refused, read = a_sample_session(sample_launch())
+        refused, read = a_sample_launch()
 
     assert HOUSEHOLD_NOTE not in read
     assert [path for path in opened if path.is_relative_to(household.resolve())] == []
@@ -281,7 +297,7 @@ def test_an_auxiliary_file_of_the_real_database_that_leads_to_the_household_is_r
     link(household / f"{name}{suffix}", auxiliary)
 
     with connections_recorded(monkeypatch) as opened:
-        refused, read = a_sample_session(sample_launch())
+        refused, read = a_sample_launch()
 
     assert HOUSEHOLD_NOTE not in read
     assert [path for path in opened if path.is_relative_to(household.resolve())] == []
@@ -310,7 +326,7 @@ def test_an_auxiliary_file_of_a_linked_configured_name_that_leads_out_is_refused
     link(household / f"{name}{suffix}", auxiliary)
 
     with connections_recorded(monkeypatch) as opened:
-        refused, read = a_sample_session(sample_launch())
+        refused, read = a_sample_launch()
 
     assert HOUSEHOLD_NOTE not in read
     assert [path for path in opened if path.is_relative_to(household.resolve())] == []
@@ -323,12 +339,12 @@ def test_an_auxiliary_file_of_a_linked_configured_name_that_leads_out_is_refused
     )
 
 
-def walks(variable: str, path: Path) -> str:
-    """The whole refusal for a state path that walks through ``..``, word for word."""
+def walks(variable: str, typed: str) -> str:
+    """The whole refusal for a state path typed with a ``..`` part, word for word."""
     return (
-        f"BLOSSOM_SAMPLE is on, but {variable} names {path}, which walks through '..': folders "
-        "are made from a path as spelled, so a sample week's state paths may not walk through "
-        f"'..'. Unset {variable} in the terminal, then start the sample again"
+        f"BLOSSOM_SAMPLE is on, but {variable} names {typed}, which walks through '..': a sample "
+        "week's state paths may not walk through '..', even when the walk ends in the sample's "
+        f"folder. Unset {variable} in the terminal, then start the sample again"
     )
 
 
@@ -345,13 +361,13 @@ def test_a_path_that_walks_out_and_back_in_is_refused_before_any_folder_is_made(
     path = back / name
 
     with connections_recorded(monkeypatch) as opened:
-        refused, read = a_sample_session(sample_launch(**{variable: str(path)}))
+        refused, read = a_sample_launch(**{variable: str(path)})
 
     assert HOUSEHOLD_NOTE not in read
     assert [path for path in opened if path.is_relative_to(household.resolve())] == []
     assert snapshot(household) == before, "the sample start made a folder in the household's"
     assert refused is not None, "the sample session started"
-    assert str(refused) == walks(variable, path)
+    assert str(refused) == walks(variable, str(path))
 
 
 def test_a_walk_through_dotdot_that_stays_inside_is_refused_too(
@@ -366,13 +382,85 @@ def test_a_walk_through_dotdot_that_stays_inside_is_refused_too(
     path = sample_folder() / "sub-new" / ".." / NAMES[0]
 
     with connections_recorded(monkeypatch) as opened:
-        refused, _ = a_sample_session(sample_launch(**{DATABASE_PATH_VARIABLE: str(path)}))
+        refused, _ = a_sample_launch(**{DATABASE_PATH_VARIABLE: str(path)})
 
     assert opened == []
     assert snapshot(household) == before
     assert snapshot(sample_folder()) == inside
     assert refused is not None
-    assert str(refused) == walks(DATABASE_PATH_VARIABLE, path)
+    assert str(refused) == walks(DATABASE_PATH_VARIABLE, str(path))
+
+
+@pytest.mark.parametrize(("variable", "name"), list(zip(VARIABLES, NAMES, strict=True)))
+def test_a_relative_path_through_dotdot_is_refused_as_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variable: str, name: str
+) -> None:
+    """A relative setting is resolved when it is read, which would drop its ``..``, so it is
+    checked as typed: refused, even when the walk ends in ``.local/sample/``, before any state
+    file is opened or any folder is made."""
+    checkout = in_a_checkout(tmp_path, monkeypatch)
+    household = a_household(tmp_path / "household")
+    before = snapshot(household)
+    sample_folder().mkdir(parents=True)
+    untouched = snapshot(checkout)
+    typed = f".local/sample/sub-new/../{name}"
+
+    with connections_recorded(monkeypatch) as opened:
+        refused, _ = a_sample_launch(**{variable: typed})
+
+    assert opened == [], "the sample start opened a state file"
+    assert snapshot(checkout) == untouched, "the sample start made or changed something"
+    assert snapshot(household) == before
+    assert refused is not None, "the sample session started"
+    assert str(refused) == walks(variable, typed)
+
+
+@pytest.mark.parametrize(
+    ("spelled", "names"),
+    [
+        ("relative", NAMES),
+        ("relative", tuple(f"two..dots-{name}" for name in NAMES)),
+        ("absolute", tuple(f"two..dots-{name}" for name in NAMES)),
+    ],
+    ids=["relative", "relative, two dots in a name", "absolute, two dots in a name"],
+)
+def test_a_sample_path_with_no_dotdot_part_starts_and_keeps_an_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelled: str, names: tuple[str, ...]
+) -> None:
+    """Only a whole ``..`` part is refused: the launch file's relative paths, and a file name
+    that merely holds two dots, start the sample and keep its edit across a restart."""
+    in_a_checkout(tmp_path, monkeypatch)
+    folder = ".local/sample" if spelled == "relative" else str(sample_folder())
+    terminal = {
+        variable: f"{folder}/{name}" for variable, name in zip(VARIABLES, names, strict=True)
+    }
+
+    with connections_recorded(monkeypatch) as opened:
+        refused, _ = a_sample_launch(**terminal)
+        with client_for(sample_launch(**terminal)) as client:
+            after_restart = notes_of(client)
+
+    assert refused is None
+    assert after_restart == [SAMPLE_NOTE]
+    assert {path.name for path in opened} >= set(names)
+    assert [path for path in opened if not path.is_relative_to(sample_folder().resolve())] == []
+
+
+def test_the_household_launch_still_resolves_a_relative_path_through_dotdot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the flag off nothing new is checked: a relative ``..`` resolves as it always has."""
+    checkout = in_a_checkout(tmp_path, monkeypatch)
+    typed = {
+        variable: f".local/sub-new/../{name}"
+        for variable, name in zip(VARIABLES, NAMES, strict=True)
+    }
+
+    household = fixture_settings(**typed)
+
+    assert (household.database_path, household.checkpoint_path, household.trace_path) == tuple(
+        checkout.resolve() / ".local" / name for name in NAMES
+    )
 
 
 def test_a_sample_folder_that_is_a_link_is_refused(
@@ -386,7 +474,7 @@ def test_a_sample_folder_that_is_a_link_is_refused(
         pytest.skip("no link to a folder can be made here")
 
     with connections_recorded(monkeypatch) as opened:
-        refused, read = a_sample_session(sample_launch())
+        refused, read = a_sample_launch()
 
     assert HOUSEHOLD_NOTE not in read, "the sample session read the household's record"
     assert [path for path in opened if path.is_relative_to(household.resolve())] == []
@@ -432,7 +520,7 @@ def test_a_sample_edit_stays_in_the_sample_folder_across_a_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with connections_recorded(monkeypatch) as opened:
-        refused, _ = a_sample_session(sample_launch())
+        refused, _ = a_sample_launch()
         with client_for(sample_launch()) as client:
             after_restart = notes_of(client)
 
