@@ -58935,15 +58935,47 @@ def unread_items(page: str) -> list[str]:
 def test_the_lines_kept_apart_are_one_item_shown_line_by_line(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The lines kept apart from a card's instructions are one item, its paragraph showing each
-    line on a line of its own, so a parent can tell where one ends and the next begins; a long
-    line wraps as any paragraph does."""
+    """The lines kept apart from a card's instructions are one item, its paragraph naming the
+    card they came from and then each line in its order, with a line break before each, so a
+    parent can tell where one ends and the next begins."""
     with here(open_settings(tmp_path)) as browser:
         _, page = read_review(browser, monkeypatch, (RED, LIVE_MIXED))
 
     assert unread_items(page) == [
-        "Card 4: Math · Worksheet 4 · Due: check answers with a partner<br>Use a pencil."
+        "From card 4: Math · Worksheet 4<br>Due: check answers with a partner<br>Use a pencil."
     ]
+
+
+KEPT_APART_NOTE: Final = (
+    "Blossom leaves these lines out of the card's instructions because the first line looks like"
+    " another card or a date. Check them against the screenshot."
+)
+"""The note over the lines kept apart from a card's instructions."""
+
+
+def test_the_note_over_lines_kept_apart_holds_before_and_after_save_and_after_leaving_the_card(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The note over the lines kept apart says what Blossom did with them and nothing about
+    whether their card is offered, so it holds before Save, after Save, and after the card's
+    group is left unsaved; the item stays each time."""
+    with here(open_settings(tmp_path / "saved")) as browser:
+        draft_id, before = read_review(browser, monkeypatch, (RED, LIVE_MIXED))
+        page = answered(browser, draft_id, before)
+        save = page_post(page, "save", tick=units_on(page))
+        saved = followed(browser, send(browser, draft_id, save))
+    with here(open_settings(tmp_path / "left")) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, LIVE_MIXED))
+        page = her_name_answered(browser, draft_id, read)
+        named = buttons_named(page)
+        leave = named["Leave this group unsaved for Worksheet 4 (screenshot 1, card 4)"]
+        left = followed(browser, press_outside(browser, page, leave))
+
+    assert "Math" not in courses_offered(left)
+    for shown in (before, saved, left):
+        assert KEPT_APART_NOTE in html.unescape(shown)
+        assert "The card is offered" not in html.unescape(shown)
+        assert len(unread_items(shown)) == 1
 
 
 def test_an_item_of_another_group_shows_its_text_as_before(
@@ -58960,6 +58992,59 @@ def test_an_item_of_another_group_shows_its_text_as_before(
         _, page = read_review(browser, monkeypatch, (RED, answer))
 
     assert unread_items(page) == ["Card 1: Art · Poster · Due: Thursday\nBring markers."]
+
+
+def buttons_named(page: str) -> dict[str, str]:
+    """Each button by its accessible name, its text with tags dropped and spaces joined, with the
+    id of the form it submits ("" for none)."""
+    out: dict[str, str] = {}
+    for attributes, inner in re.findall(r"<button([^>]*)>(.*?)</button>", page, re.S):
+        name = " ".join(html.unescape(re.sub(r"<[^>]+>", "", inner)).split())
+        form = re.search(r'\bform="([^"]+)"', attributes)
+        out.setdefault(name, form.group(1) if form else "")
+    return out
+
+
+def test_the_lines_kept_apart_have_a_set_aside_button_named_for_those_lines(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Set aside button of the lines kept apart from a card's instructions is named, for a
+    screen reader, for those lines and the card they came from, its visible text "Set aside".
+    Pressed, it sets the lines aside alone: the card stays offered, its ticks as they were, with
+    the line it keeps."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, LIVE_MIXED))
+        page = her_name_answered(browser, draft_id, page)
+        named = buttons_named(page)
+        form_id = named["Set aside the lines kept apart from card 4 of screenshot 1"]
+        left = followed(browser, press_outside(browser, page, form_id))
+
+    shown = html.unescape(left)
+    assert "Set aside for card 4 of screenshot 1" not in named
+    assert '>Set aside<span class="visually-hidden">' in page
+    assert "Due: check answers with a partner" not in shown
+    assert "Use a pencil." not in shown
+    assert courses_offered(left) == courses_offered(page)
+    assert checked_values(review_form(left)) == checked_values(review_form(page))
+    assert units_on(left) == units_on(page)
+    assert "Show your work." in shown
+
+
+def test_a_whole_card_s_set_aside_button_keeps_its_name(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the lines kept apart get the new name: a card that couldn't be read, here a printed
+    Assigned card with no due line, keeps its button named for the card."""
+    answer = printed_page(
+        [MONDAY_LINE],
+        card_line("ASSIGNED", "Art", "Poster", "Due: Thursday\nBring markers.", None, 200),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, answer))
+
+    named = buttons_named(page)
+    assert "Set aside for card 1 of screenshot 1" in named
+    assert [name for name in named if name.startswith("Set aside the lines")] == []
 
 
 @pytest.mark.parametrize("first", ["screenshot", "paste"])

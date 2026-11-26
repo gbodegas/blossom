@@ -957,8 +957,8 @@ UNREAD_SAID: Final = {
     ),
     "set_aside": (
         "Lines kept apart from a card's instructions",
-        "The card is offered without these lines, because the first of them looks like another "
-        "card or a date. Look at the screenshot and enter them by hand if they're homework.",
+        "Blossom leaves these lines out of the card's instructions because the first line looks "
+        "like another card or a date. Check them against the screenshot.",
     ),
 }
 """Each kind of card that couldn't be read: its group's heading and what it means."""
@@ -1006,9 +1006,15 @@ def unread_shown(
         forms.append(OutsideForm(form_id, "set-aside", tuple(signed)))
         shot = places.get(item.sha256, 0)
         about = f"card {item.place + 1}" if item.place is not None else read
-        grouped.setdefault((shot, group), []).append(
-            (where + read, form_id, f"{about} of screenshot {shot}")
-        )
+        named = f"{about} of screenshot {shot}"
+        shown, hidden = where + read, f"for {named}"
+        if group == "set_aside" and card is not None and item.place is not None:
+            # The lines alone, under the card they came from: the button sets aside the lines,
+            # and the card stays where it is.
+            name = " · ".join(str(x) for x in (card.course, card.title) if x)
+            shown = f"From card {item.place + 1}: {name}\n{card.instruction or ''}"
+            hidden = f"the lines kept apart from {named}"
+        grouped.setdefault((shot, group), []).append((shown, form_id, hidden))
     out = []
     for (place, group), cards in sorted(grouped.items()):
         heading, said = UNREAD_SAID[group]
@@ -1557,8 +1563,10 @@ class UnreadGroup:
     heading: str
     said: str
     cards: tuple[tuple[str, str, str], ...]
-    """(the card's place and what was read of it, the id of its "Set aside" form, the card and
-    screenshot its "Set aside" names)."""
+    """(the card's place and what was read of it, or, for the lines kept apart from a card's
+    instructions, the card they came from and then those lines; the id of its "Set aside" form;
+    the words its "Set aside" button adds for a screen reader: "for" the card and screenshot it
+    names, or "the lines kept apart from" them)."""
     lines: bool = False
     """Whether each card's text is shown line by line, each of its lines on a line of its own in
     the same item: only for the lines kept apart from a card's instructions."""

@@ -193,7 +193,7 @@
         <p class="note">{{ group.said }}</p>
         <ul>
           {% for text, form_id, about in group.cards %}
-            <li><p>{% if group.lines %}{% for line in text.split("\n") %}{% if not loop.first %}<br>{% endif %}{{ line }}{% endfor %}{% else %}{{ text }}{% endif %}</p><div class="actions"><button type="submit" class="secondary" form="{{ form_id }}" aria-describedby="typing-lost">Set aside<span class="visually-hidden"> for {{ about }}</span></button></div></li>
+            <li><p>{% if group.lines %}{% for line in text.split("\n") %}{% if not loop.first %}<br>{% endif %}{{ line }}{% endfor %}{% else %}{{ text }}{% endif %}</p><div class="actions"><button type="submit" class="secondary" form="{{ form_id }}" aria-describedby="typing-lost">Set aside<span class="visually-hidden"> {{ about }}</span></button></div></li>
           {% endfor %}
         </ul>
       {% endfor %}
