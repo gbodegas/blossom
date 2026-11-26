@@ -832,9 +832,9 @@ def _in_round(
 
 class PlacedCard(NamedTuple):
     """A card as the assembly places it: where it was read, the card as the assembly reads it,
-    and the day heading the assembly reads it under, if any. The card is the one read, with
-    its instruction ended where the assembly ends it (``_set_apart``), so no line set apart from
-    it is read as its words."""
+    and the day heading the assembly reads it under, if any. The card is the one read; for a card
+    that becomes a row, with its instruction ended where the assembly ends it (``_set_apart``),
+    so no line set apart from it is read as its words."""
 
     place: CardPlace
     card: Card | None
@@ -844,9 +844,10 @@ class PlacedCard(NamedTuple):
 def cards_placed(readings: Sequence[StoredReading]) -> dict[CardPlace, PlacedCard]:
     """Every card of a draft's readings at its place, decoded and placed under its day heading
     exactly as ``homework_assembly`` places it, so a page can show what a row was read from.
-    An unclipped card is given with its instruction ended where the assembly ends it, so the
-    review reads a card's words as its row does. A reading that can't be decoded, or isn't a
-    homework list, places no card."""
+    An unclipped card that becomes a row is given with its instruction ended where the assembly
+    ends it, and a card that can't be a row is given whole, as the assembly keeps it, so the
+    review reads a card's words as the assembly does. A reading that can't be decoded, or isn't
+    a homework list, places no card."""
     out: dict[CardPlace, PlacedCard] = {}
     for stored in readings:
         reading = _decoded(stored)
@@ -856,7 +857,9 @@ def cards_placed(readings: Sequence[StoredReading]) -> dict[CardPlace, PlacedCar
             place = CardPlace(item.sha256, item.place)
             card = item.card
             if card is not None and not card.clipped:
-                card = _set_apart(card, item.heading)[0]
+                trimmed = _set_apart(card, item.heading)[0]
+                if _portal(trimmed, item.heading) is not None:
+                    card = trimmed
             out[place] = PlacedCard(place, card, item.heading)
     return out
 

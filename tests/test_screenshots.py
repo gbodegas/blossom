@@ -3205,6 +3205,24 @@ def test_a_set_apart_card_with_no_line_kept_is_read_as_a_card_with_no_words() ->
     assert given == [(None, True, ()), (None, True, ())]
 
 
+def test_a_printed_card_that_cant_be_a_row_is_placed_whole_as_the_assembly_reads_it() -> None:
+    """A printed Assigned card with no due line can't be an offered row, so the assembly keeps it
+    whole as a card that couldn't be read; the review places it the same way, its full
+    instruction, a line shaped like a card's label included, with nothing set apart."""
+    answer = printed_list(
+        printed_card("ASSIGNED", "Art", "Poster", instruction="Due: Thursday\nBring markers.")
+    )
+    stored = stored_homework("m", answer)
+
+    [found] = screenshots.cards_placed([stored]).values()
+    [item] = homework_assembly([stored], now=NOW).unread
+
+    assert found.card is not None
+    assert item.card is not None
+    assert found.card.instruction == "Due: Thursday\nBring markers."
+    assert found.card.instruction == item.card.instruction
+
+
 @pytest.mark.parametrize(
     ("prompt_version", "text"),
     [("v1d", PORTAL_FORM), ("v1c", PRINTED_FORM), ("v1b", PORTAL_FORM)],
