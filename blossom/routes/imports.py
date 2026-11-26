@@ -6545,12 +6545,20 @@ async def set_aside_press(
     request: Request, state: ApplicationState, found: DraftSnapshot, post: ReviewPost
 ) -> Response:
     """A "Couldn't read" item's Set aside, pressed on the review form so the groups the page has
-    ticked come with it: the item set aside at the page's version and those groups kept as the
-    review's selection, none of them included, in one transaction at the page's progress
-    revision. Nothing else of the post is kept, its typing included. A key that isn't one of the
-    items the review shows, a page behind the review, or saved progress moved on since the page,
-    sets nothing aside."""
+    ticked come with it: the item set aside at the page's version, in one transaction at the
+    page's progress revision, checked whether or not ticks are written. Where the ticks differ
+    from those a fresh load of the review shows, those groups are kept as the review's
+    selection, none of them included; ticks a fresh load already shows leave the saved progress
+    and its revision as they were, so the review's defaults keep applying. Nothing else of the
+    post is kept, its typing included. A page behind the review, or saved progress moved on
+    since the page, sets nothing aside, keeps no ticks and says the page is out of date, even
+    where another page has already set its item aside; a key that isn't one of the items the
+    review shows sets nothing aside either."""
     draft_id = found.draft_id
+    if (post.version, post.progress_revision) != (found.version, found.progress_revision):
+        # Before the item is looked for: a page behind the review is told so, even where another
+        # page has already set its item aside. The store checks both again as it writes.
+        return to_review(state, draft_id, [OUT_OF_DATE, AFTER_SAID["nothing_set_aside"]])
     key = aside_of(post.press)
     open_keys = {row.key for row in found.rows if row.state == "open"}
     unread = homework_assembly(found.readings, now=state.real_clock.now()).unread
@@ -6558,6 +6566,10 @@ async def set_aside_press(
     if key is None or key not in open_keys & shown:
         return to_review(state, draft_id, [AFTER_SAID["unchecked"]])
     selected = rows_of_units(post.units)
+    # The press stores no answers and withdraws nothing, so ticks a fresh load already shows
+    # write nothing, as Keep these answers writes nothing where it selects what a load shows.
+    # The selection is still passed so the store checks the progress revision either way.
+    settled = post.load_ticks is not None and selected == post.load_ticks
     try:
         student = await asyncio.to_thread(state.project_state.student_id)
     except sqlite3.Error as error:
@@ -6571,7 +6583,7 @@ async def set_aside_press(
             version=post.version,
             keys=[key],
             progress_revision=post.progress_revision,
-            selection=lambda progress: selection_text(progress, selected),
+            selection=lambda progress: None if settled else selection_text(progress, selected),
         )
     except ReviewChanged:
         return to_review(state, draft_id, [OUT_OF_DATE, AFTER_SAID["nothing_set_aside"]])

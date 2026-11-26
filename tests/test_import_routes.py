@@ -59037,9 +59037,15 @@ def test_an_item_of_another_group_shows_its_text_as_before(
 def buttons_named(page: str) -> dict[str, str]:
     """Each button by its accessible name as the accessible-name rules give it for these buttons
     (its aria-label when it has one, else its text with tags dropped and spaces joined, a visually
-    hidden part included), with its opening tag."""
+    hidden part included), with its opening tag. A button whose role attribute names another role
+    isn't one, and a button named by aria-labelledby is refused: the names those give aren't read
+    here."""
     out: dict[str, str] = {}
     for attributes, inner in re.findall(r"<button([^>]*)>(.*?)</button>", page, re.S):
+        role = re.search(r'\brole="([^"]*)"', attributes)
+        if role is not None and role.group(1).strip().lower() != "button":
+            continue
+        assert "aria-labelledby" not in attributes, f"aria-labelledby: <button{attributes}>"
         label = re.search(r'\baria-label="([^"]*)"', attributes)
         text = label.group(1) if label is not None else re.sub(r"<[^>]+>", "", inner)
         out.setdefault(" ".join(html.unescape(text).split()), f"<button{attributes}>")
@@ -59184,11 +59190,62 @@ def test_set_aside_keeps_the_ticks_just_changed_and_sets_aside_its_item_alone(
     assert "Math" not in [row[0] for row in written]
 
 
+A_DATED_MUSIC_CARD: Final = printed_page(
+    [MONDAY_LINE],
+    card_line("DUE", "Music", "Song", "Bring the sheet music.", "(Due:10/9/2026)", 200),
+)
+"""A printed page with one dated card of a class the mixed page doesn't hold: the screenshot
+added to a review after it is read."""
+
+
+def test_set_aside_with_the_ticks_as_drawn_leaves_a_later_screenshot_s_defaults_as_without_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With nothing saved and the ticks left as the page drew them, Set aside sets its item
+    aside and writes no ticks: saved progress and its revision stay as they were, and a dated
+    Music screenshot added afterwards gets the same ticks as in a run that skipped Set aside,
+    Music ticked by default."""
+    reader = Reader(monkeypatch)
+    reader.answers[RED] = ScreenshotAnswer(WITH_AN_UNDATED_CARD, None, 10, 5)
+    reader.answers[GREEN] = ScreenshotAnswer(A_DATED_MUSIC_CARD, None, 10, 5)
+    card = "Set aside for card 5 of screenshot 1"
+    ticks: dict[str, dict[str, bool]] = {}
+    progress: dict[str, tuple[str | None, int]] = {}
+    for run in ("skipped", "set-aside"):
+        folder = tmp_path / run
+        folder.mkdir()
+        with here(open_settings(folder)) as browser:
+            draft_id = made(browser, RED)
+            shown = browser.get(f"/parent/imports/{draft_id}").text
+            read = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(shown)).text
+            page = her_name_answered(browser, draft_id, read)
+            student = state_of(browser).project_state.student_id()
+            store = state_of(browser).import_drafts
+            drawn = store.snapshot(student, draft_id)
+            if run == "set-aside":
+                page = press_button_named(browser, draft_id, page, card)
+            left = store.snapshot(student, draft_id)
+            progress[run] = (left.progress, left.progress_revision)
+            upload(browser, GREEN, form={}, to=f"/parent/imports/{draft_id}/images")
+            shown = browser.get(f"/parent/imports/{draft_id}").text
+            added = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(shown)).text
+            on = ticked_units(added)
+            ticks[run] = {course: unit in on for course, unit in units_by_course(added).items()}
+
+        assert (drawn.progress, drawn.progress_revision) == (None, 0)
+        assert (card in buttons_named(page)) == (run == "skipped")
+
+    assert ticks["skipped"]["Music"]
+    assert ticks["set-aside"] == ticks["skipped"]
+    assert progress["set-aside"] == progress["skipped"] == (None, 0)
+
+
 def test_set_aside_keeps_every_group_unticked(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With every group unticked on the page and nothing kept, a "Couldn't read" item's Set
-    aside keeps that choice too: the page comes back with nothing ticked and nothing written."""
+    aside keeps that choice too: the page comes back with nothing ticked and nothing written,
+    and the next Save writes nothing."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
         page = her_name_answered(browser, draft_id, read)
@@ -59196,24 +59253,60 @@ def test_set_aside_keeps_every_group_unticked(
         after = press_button_named(
             browser, draft_id, page, "Set aside for card 5 of screenshot 1", tick=[]
         )
+        written_by_the_press = written_by_save(browser, before)
+        followed(browser, send(browser, draft_id, page_post(after, "save", tick=[])))
 
         assert ticked_units(page) != []
         assert ticked_units(after) == []
+        assert written_by_the_press == []
         assert written_by_save(browser, before) == []
 
 
+@pytest.mark.parametrize("saved", ["kept-with-math-unticked", "left-by-save-with-math-unticked"])
+def test_set_aside_with_the_ticks_as_drawn_leaves_a_saved_selection_as_it_is(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, saved: str
+) -> None:
+    """With ticks already saved, by Keep these answers or left by Save, Set aside with the ticks
+    as the page drew them sets its item aside and leaves the saved progress and its revision as
+    they were, so the review reopens with the same ticks."""
+    card = "Set aside for card 5 of screenshot 1"
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        math = units_by_course(page)["Math"]
+        ticks = [unit for unit in ticked_units(page) if unit != math]
+        press = "keep" if saved.startswith("kept") else "save"
+        page = followed(browser, send(browser, draft_id, page_post(page, press, tick=ticks)))
+        student = state_of(browser).project_state.student_id()
+        store = state_of(browser).import_drafts
+        drawn = store.snapshot(student, draft_id)
+        after = press_button_named(browser, draft_id, page, card)
+        pressed = store.snapshot(student, draft_id)
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert drawn.progress is not None
+    assert math not in ticked_units(page)
+    assert says(after, imports.AFTER_SAID["set_aside"])
+    assert card not in buttons_named(after)
+    assert pressed.progress == drawn.progress
+    assert pressed.progress_revision == drawn.progress_revision
+    assert ticked_units(reloaded) == ticked_units(page)
+
+
+@pytest.mark.parametrize("kept", ["other-ticks", "this-page-s-own-ticks"])
 def test_set_aside_from_a_page_whose_ticks_moved_on_sets_nothing_aside(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, kept: str
 ) -> None:
     """A page whose saved ticks another page has since kept, the review's version where it was (a
-    keep of ticks alone moves the progress revision alone): that page's Set aside sets nothing
-    aside and says it is out of date, so it never sets an item aside while dropping the ticks it
-    carried, and the ticks the other page kept stand."""
+    keep of ticks alone moves the progress revision alone), other ticks or the very ticks this
+    page shows: that page's Set aside sets nothing aside and says it is out of date, so it never
+    sets an item aside while dropping the ticks it carried, and the ticks the other page kept
+    stand."""
     with here(open_settings(tmp_path)) as browser:
         draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
         first = her_name_answered(browser, draft_id, read)
         math = units_by_course(first)["Math"]
-        kept = [unit for unit in ticked_units(first) if unit != math]
+        kept_ticks = [u for u in ticked_units(first) if kept != "other-ticks" or u != math]
         student = state_of(browser).project_state.student_id()
         store = state_of(browser).import_drafts
         drawn = store.snapshot(student, draft_id)
@@ -59221,11 +59314,12 @@ def test_set_aside_from_a_page_whose_ticks_moved_on_sets_nothing_aside(
             student,
             draft_id,
             progress_revision=drawn.progress_revision,
-            selection=lambda progress: selection_text(progress, rows_of_units(kept)),
+            selection=lambda progress: selection_text(progress, rows_of_units(kept_ticks)),
         )
         moved = store.snapshot(student, draft_id)
         after = press_button_named(browser, draft_id, first, "Set aside for card 5 of screenshot 1")
         states = row_states(browser, draft_id)
+        left = store.snapshot(student, draft_id)
         reloaded = browser.get(f"/parent/imports/{draft_id}").text
 
     assert (moved.version, moved.progress_revision) == (drawn.version, drawn.progress_revision + 1)
@@ -59233,7 +59327,89 @@ def test_set_aside_from_a_page_whose_ticks_moved_on_sets_nothing_aside(
     assert says(after, imports.OUT_OF_DATE)
     assert says(after, imports.AFTER_SAID["nothing_set_aside"])
     assert "discarded" not in states.values()
-    assert set(ticked_units(reloaded)) == set(kept)
+    assert (left.progress, left.progress_revision) == (moved.progress, moved.progress_revision)
+    assert set(ticked_units(reloaded)) == set(kept_ticks)
+
+
+@pytest.mark.parametrize(
+    "pressed",
+    [
+        "Set aside the lines kept apart from card 4 of screenshot 1",
+        "Set aside for card 5 of screenshot 1",
+    ],
+    ids=["the-same-item", "another-item"],
+)
+@pytest.mark.parametrize("first_ticks", ["math-unticked-science-ticked", "as-a-load-shows"])
+def test_set_aside_from_a_second_tab_behind_the_first_says_the_page_is_out_of_date(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, pressed: str, first_ticks: str
+) -> None:
+    """The review open in two tabs: the first sets aside the lines kept apart, with Math
+    unticked and Science ticked, or with the ticks a fresh load shows, which writes no ticks and
+    moves the review's version alone. A Set aside from the second tab, on that same item or on
+    another, says the page is out of date and sets nothing aside, never that its button couldn't
+    be checked, and the first tab's choices stand: the next Save writes Art and Science, or Art
+    and Math."""
+    first = "Set aside the lines kept apart from card 4 of screenshot 1"
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        second_tab = page
+        before = ids_on_record(browser)
+        units = units_by_course(page)
+        chosen = ticked_units(page)
+        if first_ticks != "as-a-load-shows":
+            chosen = [unit for unit in chosen if unit != units["Math"]] + [units["Science"]]
+        press_button_named(browser, draft_id, page, first, tick=chosen)
+        states = row_states(browser, draft_id)
+        refused = press_button_named(browser, draft_id, second_tab, pressed)
+        after = row_states(browser, draft_id)
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+        save = page_post(reloaded, "save", tick=ticked_units(reloaded))
+        followed(browser, send(browser, draft_id, save))
+        written = sorted(row[0] for row in written_by_save(browser, before))
+
+    assert says(refused, imports.OUT_OF_DATE)
+    assert says(refused, imports.AFTER_SAID["nothing_set_aside"])
+    assert not says(refused, imports.AFTER_SAID["unchecked"])
+    assert after == states
+    assert set(ticked_units(reloaded)) == set(chosen)
+    assert written == (["Art", "Math"] if first_ticks == "as-a-load-shows" else ["Art", "Science"])
+
+
+def test_a_keep_landing_after_set_aside_checks_the_page_still_stops_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another page keeps this page's very ticks after Set aside has checked the page against
+    the review and before the item is set aside: the store checks the progress revision as it
+    writes, even with no ticks to write, so nothing is set aside, the page is told it is out of
+    date, and the ticks the other page kept stand."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        ticks = rows_of_units(ticked_units(page))
+        student = state_of(browser).project_state.student_id()
+        store = state_of(browser).import_drafts
+        set_aside: Callable[..., Any] = store.set_aside
+
+        def kept_first(*args: object, **kwargs: object) -> object:
+            store.keep_selection(
+                student,
+                draft_id,
+                progress_revision=store.snapshot(student, draft_id).progress_revision,
+                selection=lambda progress: selection_text(progress, ticks),
+            )
+            return set_aside(*args, **kwargs)
+
+        monkeypatch.setattr(store, "set_aside", kept_first)
+        after = press_button_named(browser, draft_id, page, "Set aside for card 5 of screenshot 1")
+        states = row_states(browser, draft_id)
+        kept = store.snapshot(student, draft_id)
+
+    assert says(after, imports.OUT_OF_DATE)
+    assert says(after, imports.AFTER_SAID["nothing_set_aside"])
+    assert "discarded" not in states.values()
+    assert kept.progress_revision == 1
+    assert kept.progress is not None
 
 
 def test_set_aside_keeps_the_ticks_whatever_is_typed_and_typing_goes_as_before(
