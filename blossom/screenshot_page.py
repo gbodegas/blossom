@@ -1013,7 +1013,12 @@ def unread_shown(
     for (place, group), cards in sorted(grouped.items()):
         heading, said = UNREAD_SAID[group]
         out.append(
-            UnreadGroup(f"Screenshot {place}: {heading}" if place else heading, said, tuple(cards))
+            UnreadGroup(
+                f"Screenshot {place}: {heading}" if place else heading,
+                said,
+                tuple(cards),
+                lines=group == "set_aside",
+            )
         )
     return tuple(out), forms
 
@@ -1554,6 +1559,9 @@ class UnreadGroup:
     cards: tuple[tuple[str, str, str], ...]
     """(the card's place and what was read of it, the id of its "Set aside" form, the card and
     screenshot its "Set aside" names)."""
+    lines: bool = False
+    """Whether each card's text is shown line by line, each of its lines on a line of its own in
+    the same item: only for the lines kept apart from a card's instructions."""
 
 
 @dataclasses.dataclass(frozen=True)

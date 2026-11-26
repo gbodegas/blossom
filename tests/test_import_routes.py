@@ -58927,6 +58927,41 @@ def test_the_live_mixed_page_offers_math_with_its_kept_line_and_shows_two_lines_
     ]
 
 
+def unread_items(page: str) -> list[str]:
+    """The paragraph of each item under "Couldn't read", as the page writes it, in page order."""
+    return re.findall(r"<li><p>(.*?)</p>", page.split('id="unread-heading"', 1)[1], re.S)
+
+
+def test_the_lines_kept_apart_are_one_item_shown_line_by_line(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lines kept apart from a card's instructions are one item, its paragraph showing each
+    line on a line of its own, so a parent can tell where one ends and the next begins; a long
+    line wraps as any paragraph does."""
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, LIVE_MIXED))
+
+    assert unread_items(page) == [
+        "Card 4: Math · Worksheet 4 · Due: check answers with a partner<br>Use a pencil."
+    ]
+
+
+def test_an_item_of_another_group_shows_its_text_as_before(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the lines kept apart are shown line by line: an item of another group whose text has
+    a line break, a printed Assigned card with no due line, is shown as before, its text in one
+    paragraph with no line break added."""
+    answer = printed_page(
+        [MONDAY_LINE],
+        card_line("ASSIGNED", "Art", "Poster", "Due: Thursday\nBring markers.", None, 200),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, answer))
+
+    assert unread_items(page) == ["Card 1: Art · Poster · Due: Thursday\nBring markers."]
+
+
 @pytest.mark.parametrize("first", ["screenshot", "paste"])
 @pytest.mark.parametrize("name", ["cards-only", "mixed"])
 def test_a_printed_summary_imported_both_ways_in_either_order_is_written_once(
