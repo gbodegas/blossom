@@ -60,6 +60,7 @@ from blossom.app import create_app
 from blossom.household import UnreadableHouseholdSecret
 from blossom.routes import imports, navigation, store_refusals
 from blossom.screenshot_page import ListTooLarge
+from blossom.screenshot_posts import rows_of_units, selection_text
 from blossom.screenshot_save import (
     CONFIRMABLE,
     AlreadySaved,
@@ -2464,7 +2465,20 @@ def test_cards_that_couldn_t_be_read_are_listed_with_their_reason_text_and_place
     assert "Screenshot 1: Read, but its date couldn't be told" in shown
     assert "No date was on the card or in a heading above it in this screenshot." in shown
     assert "Card 3: Science 8 · Vocab 4" in shown
-    assert shown.count('form="leave-item-') == 2
+    assert len(aside_presses(page)) == 2
+
+
+def aside_presses(page: str) -> list[str]:
+    """The value of each "Couldn't read" item's Set aside press on the review form, in page
+    order."""
+    return re.findall(r'name="press" value="(set-aside:[0-9a-f]{64})"', page)
+
+
+def set_aside_post(page: str, press: str) -> list[tuple[str, str]]:
+    """The review form as a browser sends it with scripts off when that Set aside is pressed,
+    the groups the page shows ticked included."""
+    ticked = [v for n, v in checked_values(review_form(page)) if n == "unit"]
+    return page_post(page, press, tick=ticked)
 
 
 def test_a_card_that_couldn_t_be_read_can_be_set_aside_and_the_review_then_finishes(
@@ -2474,11 +2488,12 @@ def test_a_card_that_couldn_t_be_read_can_be_set_aside_and_the_review_then_finis
         draft_id, page = read_review(browser, monkeypatch, (RED, unreadable_answer()))
         page = her_name_answered(browser, draft_id, page)
         stale = page
-        left = followed(browser, press_outside(browser, page, "leave-item-1"))
-        refused = followed(browser, press_outside(browser, stale, "leave-item-2"))
+        first, second = aside_presses(page)
+        left = followed(browser, send(browser, draft_id, set_aside_post(page, first)))
+        refused = followed(browser, send(browser, draft_id, set_aside_post(stale, second)))
         states = row_states(browser, draft_id)
-        [remaining] = re.findall(r'form="(leave-item-\d+)"', left)
-        left_again = press_outside(browser, left, remaining)
+        [remaining] = aside_presses(left)
+        left_again = send(browser, draft_id, set_aside_post(left, remaining))
         saved = send(
             browser,
             draft_id,
@@ -2520,8 +2535,34 @@ def test_a_review_left_with_only_cards_that_couldn_t_be_read_still_shows_them(
 
     assert still_open
     assert "Couldn't read" in html.unescape(after)
-    assert after.count('form="leave-item-') == 2
+    assert len(aside_presses(after)) == 2
     assert 'form="finish"' in after
+
+
+def test_setting_aside_the_last_card_left_after_save_finishes_the_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After Save, with only cards that couldn't be read left, the first Set aside leaves the
+    review open, and the Set aside of the last one closes it and answers with a page that says
+    the card is set aside and the review is finished."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unreadable_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = browser.get(f"/parent/imports/{draft_id}").text
+        first, _ = aside_presses(after)
+        left = followed(browser, send(browser, draft_id, set_aside_post(after, first)))
+        open_after_one = not closed(browser, draft_id)
+        [remaining] = aside_presses(left)
+        last = send(browser, draft_id, set_aside_post(left, remaining))
+        done = closed(browser, draft_id)
+
+    assert says(left, imports.AFTER_SAID["set_aside"])
+    assert open_after_one
+    assert last.status_code == 200
+    assert says(last.text, imports.AFTER_SAID["set_aside"])
+    assert says(last.text, imports.AFTER_SAID["finished"])
+    assert done
 
 
 # ------------------------------------------------------------------ typing kept in the form
@@ -49976,11 +50017,11 @@ def shape_older(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 def shape_unread(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
-    """A review with a Couldn't read group, each card's Set aside a button of its own form."""
+    """A review with a Couldn't read group, each card's Set aside a press of the review form."""
     draft_id, page = read_review(browser, monkeypatch, (RED, unreadable_answer()))
     page = her_name_answered(browser, draft_id, page)
     assert "Couldn't read" in html.unescape(page)
-    assert page.count('form="leave-item-') == 2
+    assert len(aside_presses(page)) == 2
     return page
 
 
@@ -58967,9 +59008,8 @@ def test_the_note_over_lines_kept_apart_holds_before_and_after_save_and_after_le
     with here(open_settings(tmp_path / "left")) as browser:
         draft_id, read = read_review(browser, monkeypatch, (RED, LIVE_MIXED))
         page = her_name_answered(browser, draft_id, read)
-        named = buttons_named(page)
-        leave = named["Leave this group unsaved for Worksheet 4 (screenshot 1, card 4)"]
-        left = followed(browser, press_outside(browser, page, leave))
+        leave = "Leave this group unsaved for Worksheet 4 (screenshot 1, card 4)"
+        left = press_button_named(browser, draft_id, page, leave)
 
     assert "Math" not in courses_offered(left)
     for shown in (before, saved, left):
@@ -58995,31 +59035,72 @@ def test_an_item_of_another_group_shows_its_text_as_before(
 
 
 def buttons_named(page: str) -> dict[str, str]:
-    """Each button by its accessible name, its text with tags dropped and spaces joined, with the
-    id of the form it submits ("" for none)."""
+    """Each button by its accessible name as the accessible-name rules give it for these buttons
+    (its aria-label when it has one, else its text with tags dropped and spaces joined, a visually
+    hidden part included), with its opening tag."""
     out: dict[str, str] = {}
     for attributes, inner in re.findall(r"<button([^>]*)>(.*?)</button>", page, re.S):
-        name = " ".join(html.unescape(re.sub(r"<[^>]+>", "", inner)).split())
-        form = re.search(r'\bform="([^"]+)"', attributes)
-        out.setdefault(name, form.group(1) if form else "")
+        label = re.search(r'\baria-label="([^"]*)"', attributes)
+        text = label.group(1) if label is not None else re.sub(r"<[^>]+>", "", inner)
+        out.setdefault(" ".join(html.unescape(text).split()), f"<button{attributes}>")
     return out
+
+
+def ticked_units(page: str) -> list[str]:
+    """The groups the review form shows ticked."""
+    return [value for name, value in checked_values(review_form(page)) if name == "unit"]
+
+
+def units_by_course(page: str) -> dict[str, str]:
+    """Each offered group of one card by the class its course box holds."""
+    form = review_form(page)
+    out: dict[str, str] = {}
+    for subject in fields_named(form, "correct:"):
+        piece, field = json.loads(subject)[:2]
+        box = box_of(form, f"correct:{subject}")
+        if field == "course" and box is not None and piece in units_on(page):
+            out[box[1]] = piece
+    return out
+
+
+def press_button_named(
+    browser: TestClient,
+    draft_id: str,
+    page: str,
+    name: str,
+    *,
+    tick: Sequence[str] | None = None,
+) -> str:
+    """The page after the button of this accessible name is pressed as a browser with scripts
+    off presses it: a button that names another form sends that form's fields alone; a button of
+    the review form sends the review form, with the groups in ``tick`` ticked (else those the
+    page shows ticked), and its own name and value."""
+    tag = buttons_named(page)[name]
+    form = import_review_cases.attribute(tag, "form")
+    if form is not None and form != "review-form":
+        return followed(browser, press_outside(browser, page, form))
+    press = import_review_cases.attribute(tag, "value") or ""
+    ticked = ticked_units(page) if tick is None else list(tick)
+    return followed(browser, send(browser, draft_id, page_post(page, press, tick=ticked)))
 
 
 def test_the_lines_kept_apart_have_a_set_aside_button_named_for_those_lines(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The Set aside button of the lines kept apart from a card's instructions is named, for a
-    screen reader, for those lines and the card they came from, its visible text "Set aside".
-    Pressed, it sets the lines aside alone: the card stays offered, its ticks as they were, with
-    the line it keeps."""
+    screen reader, for those lines and the card they came from, its visible text "Set aside":
+    found by its role and that full name, as the accessible-name rules give it (an aria-label
+    would override it). Pressed, it sets the lines aside alone: the card stays offered, its ticks
+    as they were, with the line it keeps."""
+    full = "Set aside the lines kept apart from card 4 of screenshot 1"
     with here(open_settings(tmp_path)) as browser:
         draft_id, page = read_review(browser, monkeypatch, (RED, LIVE_MIXED))
         page = her_name_answered(browser, draft_id, page)
         named = buttons_named(page)
-        form_id = named["Set aside the lines kept apart from card 4 of screenshot 1"]
-        left = followed(browser, press_outside(browser, page, form_id))
+        left = press_button_named(browser, draft_id, page, full)
 
     shown = html.unescape(left)
+    assert full in named
     assert "Set aside for card 4 of screenshot 1" not in named
     assert '>Set aside<span class="visually-hidden">' in page
     assert "Due: check answers with a partner" not in shown
@@ -59045,6 +59126,259 @@ def test_a_whole_card_s_set_aside_button_keeps_its_name(
     named = buttons_named(page)
     assert "Set aside for card 1 of screenshot 1" in named
     assert [name for name in named if name.startswith("Set aside the lines")] == []
+
+
+WITH_AN_UNDATED_CARD: Final = {
+    **LIVE_MIXED,
+    "cards": [
+        *LIVE_MIXED["cards"],  # type: ignore[misc]
+        card_line("ASSIGNED", "Music", "Song", "Bring the sheet music.", None, 600),
+    ],
+}
+"""The live mixed page with a printed Assigned card with no due line beneath it, so the review
+holds an item of the lines kept apart and an item of a card whose date couldn't be told."""
+
+
+@pytest.mark.parametrize(
+    ("button", "other"),
+    [
+        (
+            "Set aside the lines kept apart from card 4 of screenshot 1",
+            "Set aside for card 5 of screenshot 1",
+        ),
+        (
+            "Set aside for card 5 of screenshot 1",
+            "Set aside the lines kept apart from card 4 of screenshot 1",
+        ),
+    ],
+    ids=["lines-kept-apart", "date-couldn-t-be-told"],
+)
+def test_set_aside_keeps_the_ticks_just_changed_and_sets_aside_its_item_alone(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, button: str, other: str
+) -> None:
+    """With Math unticked and Science ticked on the page and neither kept, a "Couldn't read"
+    item's Set aside sets that item aside alone and keeps both choices: the page comes back with
+    the other item still there, Math unticked and Science ticked, and nothing written; the next
+    Save writes Science and not Math."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        units = units_by_course(page)
+        shown = ticked_units(page)
+        changed = [unit for unit in shown if unit != units["Math"]] + [units["Science"]]
+        after = press_button_named(browser, draft_id, page, button, tick=changed)
+        written_by_the_press = written_by_save(browser, before)
+        ticked_after = ticked_units(after)
+        followed(browser, send(browser, draft_id, page_post(after, "save", tick=ticked_after)))
+        written = written_by_save(browser, before)
+
+    assert units["Math"] in shown
+    assert units["Science"] not in shown
+    assert button not in buttons_named(after)
+    assert other in buttons_named(after)
+    assert units["Math"] not in ticked_after
+    assert units["Science"] in ticked_after
+    assert written_by_the_press == []
+    assert "Science" in [row[0] for row in written]
+    assert "Math" not in [row[0] for row in written]
+
+
+def test_set_aside_keeps_every_group_unticked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With every group unticked on the page and nothing kept, a "Couldn't read" item's Set
+    aside keeps that choice too: the page comes back with nothing ticked and nothing written."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        after = press_button_named(
+            browser, draft_id, page, "Set aside for card 5 of screenshot 1", tick=[]
+        )
+
+        assert ticked_units(page) != []
+        assert ticked_units(after) == []
+        assert written_by_save(browser, before) == []
+
+
+def test_set_aside_from_a_page_whose_ticks_moved_on_sets_nothing_aside(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page whose saved ticks another page has since kept, the review's version where it was (a
+    keep of ticks alone moves the progress revision alone): that page's Set aside sets nothing
+    aside and says it is out of date, so it never sets an item aside while dropping the ticks it
+    carried, and the ticks the other page kept stand."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        first = her_name_answered(browser, draft_id, read)
+        math = units_by_course(first)["Math"]
+        kept = [unit for unit in ticked_units(first) if unit != math]
+        student = state_of(browser).project_state.student_id()
+        store = state_of(browser).import_drafts
+        drawn = store.snapshot(student, draft_id)
+        store.keep_selection(
+            student,
+            draft_id,
+            progress_revision=drawn.progress_revision,
+            selection=lambda progress: selection_text(progress, rows_of_units(kept)),
+        )
+        moved = store.snapshot(student, draft_id)
+        after = press_button_named(browser, draft_id, first, "Set aside for card 5 of screenshot 1")
+        states = row_states(browser, draft_id)
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert (moved.version, moved.progress_revision) == (drawn.version, drawn.progress_revision + 1)
+    assert math in ticked_units(first)
+    assert says(after, imports.OUT_OF_DATE)
+    assert says(after, imports.AFTER_SAID["nothing_set_aside"])
+    assert "discarded" not in states.values()
+    assert set(ticked_units(reloaded)) == set(kept)
+
+
+def test_set_aside_keeps_the_ticks_whatever_is_typed_and_typing_goes_as_before(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Typing in an open card, even a correction longer than its box takes, neither holds a
+    Set aside nor is kept by it: the item is set aside, the ticks the page carried are kept,
+    and the typing is gone, as Set aside has always left it."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        art = units_by_course(page)["Art"]
+        opened = import_review_cases.open_cards(browser, draft_id, page, [f"correct:{art}"])
+        box = next(
+            f"correct:{subject}"
+            for subject in fields_named(review_form(opened), "correct:")
+            if json.loads(subject)[:2] == [art, "course"]
+        )
+        ticked = ticked_units(opened)
+        press = buttons_named(opened)["Set aside for card 5 of screenshot 1"]
+        post = page_post(
+            opened,
+            import_review_cases.attribute(press, "value") or "",
+            tick=ticked,
+            typed={box: "Art " + "x" * 5000},
+        )
+        after = followed(browser, send(browser, draft_id, post))
+        states = row_states(browser, draft_id)
+
+    assert says(after, imports.AFTER_SAID["set_aside"])
+    assert sorted(states.values()).count("discarded") == 1
+    assert set(ticked_units(after)) == set(ticked)
+    assert "x" * 50 not in after
+
+
+@pytest.mark.parametrize(
+    "named", ["an-offered-row", "no-key-of-this-review", "an-item-already-set-aside"]
+)
+def test_a_set_aside_press_naming_no_item_the_page_shows_sets_nothing_aside(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, named: str
+) -> None:
+    """A Set aside press whose key isn't one of the review's open "Couldn't read" items, an
+    offered homework row, a key the review doesn't hold, or an item already set aside named from
+    the page drawn after it, sets nothing aside and says the page's button couldn't be checked."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        row = units_by_course(page)["Math"].split("+")[0].split("|")[0]
+        key = row if named == "an-offered-row" else "0" * 64
+        if named == "an-item-already-set-aside":
+            card = "Set aside for card 5 of screenshot 1"
+            press = import_review_cases.attribute(buttons_named(page)[card], "value") or ""
+            key = press.removeprefix("set-aside:")
+            page = press_button_named(browser, draft_id, page, card)
+        before = row_states(browser, draft_id)
+        after = followed(browser, send(browser, draft_id, set_aside_post(page, f"set-aside:{key}")))
+        states = row_states(browser, draft_id)
+
+    assert says(after, imports.AFTER_SAID["unchecked"])
+    assert states == before
+    assert list(states.values()).count("discarded") == int(named == "an-item-already-set-aside")
+
+
+@pytest.mark.parametrize("alteration", ["the signature changed", "a tick the page didn't sign"])
+def test_a_set_aside_post_that_fails_its_checks_says_its_button_couldn_t_be_checked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, alteration: str
+) -> None:
+    """A Set aside post the review can't check sets nothing aside, keeps none of its ticks, and
+    says the page's button couldn't be checked, as a press naming no item does."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        card = buttons_named(page)["Set aside for card 5 of screenshot 1"]
+        press = import_review_cases.attribute(card, "value") or ""
+        before = row_states(browser, draft_id)
+        forged = ALTERATIONS[alteration](set_aside_post(page, press))
+        after = followed(browser, send(browser, draft_id, forged))
+        states = row_states(browser, draft_id)
+
+    assert says(after, imports.AFTER_SAID["unchecked"])
+    assert states == before
+    assert set(ticked_units(after)) == set(ticked_units(page))
+
+
+def test_every_set_aside_is_pressed_past_a_question_the_form_requires(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A question whose answer came back twice with different values is asked again with no
+    choice made and an answer required. Each Set aside skips the browser's own check of the
+    review form's required answers, so with scripts off it can still be pressed there, as the
+    separate form it replaced, which asked nothing, could."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        named = re.search(r'name="(answer:name:[0-9a-f]{64})"', review_form(read))
+        assert named is not None
+        twice = import_review_cases.raw_post(
+            page_post(read, "keep"), added=[(named.group(1), "hers"), (named.group(1), "misread")]
+        )
+        page = followed(browser, send(browser, draft_id, twice))
+
+    asks = [
+        tag
+        for tag in re.findall(r"<input[^>]*>", review_form(page))
+        if f'name="{named.group(1)}"' in tag
+    ]
+    buttons = re.findall(r'<button[^>]*name="press" value="set-aside:[0-9a-f]{64}"[^>]*>', page)
+    assert len(asks) == 2
+    assert all(re.search(r"\srequired[\s>]", tag) for tag in asks)
+    assert len(buttons) == 2
+    assert all(re.search(r"\sformnovalidate[\s>]", tag) for tag in buttons)
+
+
+def first_review_press(page: str) -> str:
+    """The value of the review form's first submit button, the one Enter in its boxes and
+    choices presses: the first button in the page the form owns, inside it with no form of its
+    own or outside it naming it."""
+    start = page.index('id="review-form"')
+    end = page.index("</form>", start)
+    for found in re.finditer(r"<button([^>]*)>", page):
+        tag = found.group(0)
+        if import_review_cases.attribute(tag, "type") != "submit":
+            continue
+        form = import_review_cases.attribute(tag, "form")
+        if form == "review-form" or (form is None and start < found.start() < end):
+            return import_review_cases.attribute(tag, "value") or ""
+    return ""
+
+
+@pytest.mark.parametrize("shown", ["with cards", "after Save"])
+def test_no_set_aside_is_the_review_form_s_first_press(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, shown: str
+) -> None:
+    """Enter in a box or a choice presses the review form's first submit button, so no Set aside
+    is ever it: Review changes on a page with a card shown, and Keep these answers on the page
+    after Save, where no card is shown, every screenshot is read, and nothing above the form
+    copies its default press."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        if shown == "after Save":
+            page = answered(browser, draft_id, page)
+            save = page_post(page, "save", tick=units_on(page))
+            page = followed(browser, send(browser, draft_id, save))
+
+    assert aside_presses(page) != []
+    assert first_review_press(page) == ("review" if shown == "with cards" else "keep")
 
 
 @pytest.mark.parametrize("first", ["screenshot", "paste"])
@@ -59137,7 +59471,9 @@ def test_a_subject_whose_words_run_over_a_card_line_stays_a_card_that_couldnt_be
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Under the prompt in use, a printed subject whose words, as read, run over the card line
-    beneath it is still a card that couldn't be read, so nothing of it is offered."""
+    beneath it is still a card that couldn't be read, so nothing of it is offered, and the Read
+    writes no assignment: the assignments on record before the Read are compared with those
+    right after it, before any Save."""
     swallowed = printed_page(
         [MONDAY_LINE],
         card_line(
@@ -59151,12 +59487,13 @@ def test_a_subject_whose_words_run_over_a_card_line_stays_a_card_that_couldnt_be
         ),
     )
     with here(open_settings(tmp_path)) as browser:
-        draft_id, read = read_review(browser, monkeypatch, (RED, swallowed))
         before = ids_on_record(browser)
+        _, read = read_review(browser, monkeypatch, (RED, swallowed))
+        written_by_the_read = written_by_save(browser, before)
 
-        assert 'id="unread-heading"' in read
-        assert units_on(read) == []
-        assert written_by_save(browser, before) == []
+    assert 'id="unread-heading"' in read
+    assert units_on(read) == []
+    assert written_by_the_read == []
 
 
 def test_a_portal_card_keeps_an_instruction_line_shaped_like_a_card_s_label(

@@ -977,17 +977,13 @@ def unread_shown(
     unread: Sequence[UnreadCard],
     places: Mapping[str, int],
     open_keys: Sequence[str],
-    page_key: bytes,
-    version: int,
-) -> tuple[tuple["UnreadGroup", ...], list["OutsideForm"]]:
+) -> tuple["UnreadGroup", ...]:
     """The cards still open that couldn't be read, grouped by screenshot and reason, each with
-    what was read of it and a "Set aside" form signed at the page's version."""
+    what was read of it and the value of its "Set aside" press on the review form
+    (``ASIDE_PRESS``), so the press carries the groups the page has ticked."""
     still = set(open_keys)
     grouped: dict[tuple[int, str], list[tuple[str, str, str]]] = {}
-    forms: list[OutsideForm] = []
-    for index, item in enumerate(
-        sorted(unread, key=lambda u: (places.get(u.sha256, 0), u.place or 0, u.key)), 1
-    ):
+    for item in sorted(unread, key=lambda u: (places.get(u.sha256, 0), u.place or 0, u.key)):
         if item.key not in still:
             continue
         group = REASON_GROUP[item.reason]
@@ -999,11 +995,6 @@ def unread_shown(
         )
         read = " \u00b7 ".join(parts) if parts else "Nothing on it could be read."
         where = f"Card {item.place + 1}: " if item.place is not None else ""
-        form_id = f"leave-item-{index}"
-        keys = json.dumps([item.key], separators=(",", ":"))
-        signed = [("version", str(version)), ("keys", keys)]
-        signed.append(("check", page_check(page_key, signed)))
-        forms.append(OutsideForm(form_id, "set-aside", tuple(signed)))
         shot = places.get(item.sha256, 0)
         about = f"card {item.place + 1}" if item.place is not None else read
         named = f"{about} of screenshot {shot}"
@@ -1014,7 +1005,7 @@ def unread_shown(
             name = " · ".join(str(x) for x in (card.course, card.title) if x)
             shown = f"From card {item.place + 1}: {name}\n{card.instruction or ''}"
             hidden = f"the lines kept apart from {named}"
-        grouped.setdefault((shot, group), []).append((shown, form_id, hidden))
+        grouped.setdefault((shot, group), []).append((shown, ASIDE_PRESS + item.key, hidden))
     out = []
     for (place, group), cards in sorted(grouped.items()):
         heading, said = UNREAD_SAID[group]
@@ -1026,7 +1017,7 @@ def unread_shown(
                 lines=group == "set_aside",
             )
         )
-    return tuple(out), forms
+    return tuple(out)
 
 
 def screenshots_named(places: Sequence[int]) -> str:
@@ -1301,6 +1292,20 @@ BY_HAND_PRESS: Final = "by-hand:"
 """What starts the value of a screenshot's Enter it by hand press on the review form, before its
 image id: it keeps the review as Save review for later does, then goes to hand entry."""
 ONWARD_PRESSES: Final = (REPLACE_PRESS, BY_HAND_PRESS)
+ASIDE_PRESS: Final = "set-aside:"
+"""What starts the value of a "Couldn't read" item's Set aside press on the review form, before
+the item's key: it sets that item aside and keeps the groups the page has ticked, nothing else
+of the page."""
+
+
+def aside_of(value: str) -> str | None:
+    """The item key a Set aside press on the review form names, by the shape row and item keys
+    take (a SHA-256 in hexadecimal); None for any other value. The route checks the review shows
+    that item."""
+    key = value.removeprefix(ASIDE_PRESS)
+    if not value.startswith(ASIDE_PRESS) or len(key) != 64:
+        return None
+    return key if all(c in "0123456789abcdef" for c in key) else None
 
 
 def onward_of(value: str) -> tuple[str, str] | None:
@@ -1558,15 +1563,15 @@ class RowsShown:
 @dataclasses.dataclass(frozen=True)
 class UnreadGroup:
     """Cards of one screenshot that couldn't be read for one reason: the group's heading, what
-    it means, and each card with what was read of it and its "Set aside" form."""
+    it means, and each card with what was read of it and its "Set aside" press."""
 
     heading: str
     said: str
     cards: tuple[tuple[str, str, str], ...]
     """(the card's place and what was read of it, or, for the lines kept apart from a card's
-    instructions, the card they came from and then those lines; the id of its "Set aside" form;
-    the words its "Set aside" button adds for a screen reader: "for" the card and screenshot it
-    names, or "the lines kept apart from" them)."""
+    instructions, the card they came from and then those lines; the value of its "Set aside"
+    press on the review form; the words its "Set aside" button adds for a screen reader: "for"
+    the card and screenshot it names, or "the lines kept apart from" them)."""
     lines: bool = False
     """Whether each card's text is shown line by line, each of its lines on a line of its own in
     the same item: only for the lines kept apart from a card's instructions."""
@@ -2698,7 +2703,7 @@ def rows_shown(
         for u in sorted({*digests, *kept_ticks})
     ]
     hidden.append(("check", page_check(page_key, hidden)))
-    unread_groups, unread_forms = unread_shown(unread, places, open_keys, page_key, version)
+    unread_groups = unread_shown(unread, places, open_keys)
     for index, row in enumerate(state.asking, 1):
         keys = json.dumps([row.key], separators=(",", ":"))
         signed = [("version", str(version)), ("keys", keys)]
@@ -2733,7 +2738,7 @@ def rows_shown(
         tuple(shown_units),
         tuple(hidden),
         SAID["status"],
-        (*forms, *unread_forms),
+        tuple(forms),
         bool(names) and not state.saved,
         unread_groups,
         tuple(piece_text(places, p) for p in state.pieces if p.name in state.saved),

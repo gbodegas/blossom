@@ -101,7 +101,9 @@
 <form method="post" action="/parent/imports/{{ draft_id }}/review" class="review-form" id="review-form">
   {% for name, value in rows.hidden %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
   {#- On every page that shows a card, the form's first submit button, so Enter shows the review again with what was typed and chosen: Review changes, out of the tab order and hidden from assistive technology, which reach the visible one. #}
-  {% if rows.offers_review %}<button type="submit" class="visually-hidden" name="press" value="review" formnovalidate tabindex="-1" aria-hidden="true">Review changes</button>{% endif %}
+  {% if rows.offers_review %}<button type="submit" class="visually-hidden" name="press" value="review" formnovalidate tabindex="-1" aria-hidden="true">Review changes</button>{% elif rows.unread %}
+  {#- With no card shown and Set aside presses below, the form's first submit button stays Keep these answers, so Enter in a box or a choice never sets an item aside. #}
+  <button type="submit" class="visually-hidden" name="press" value="keep" formnovalidate tabindex="-1" aria-hidden="true">Keep these answers</button>{% endif %}
   {% if rows.names %}
     <section class="panel" aria-labelledby="name-heading">
       <h2 id="name-heading">Student name</h2>
@@ -192,8 +194,8 @@
         <h3>{{ group.heading }}</h3>
         <p class="note">{{ group.said }}</p>
         <ul>
-          {% for text, form_id, about in group.cards %}
-            <li><p>{% if group.lines %}{% for line in text.split("\n") %}{% if not loop.first %}<br>{% endif %}{{ line }}{% endfor %}{% else %}{{ text }}{% endif %}</p><div class="actions"><button type="submit" class="secondary" form="{{ form_id }}" aria-describedby="typing-lost">Set aside<span class="visually-hidden"> {{ about }}</span></button></div></li>
+          {% for text, press, about in group.cards %}
+            <li><p>{% if group.lines %}{% for line in text.split("\n") %}{% if not loop.first %}<br>{% endif %}{{ line }}{% endfor %}{% else %}{{ text }}{% endif %}</p><div class="actions"><button type="submit" class="secondary" name="press" value="{{ press }}" formnovalidate aria-describedby="typing-lost">Set aside<span class="visually-hidden"> {{ about }}</span></button></div></li>
           {% endfor %}
         </ul>
       {% endfor %}
