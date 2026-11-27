@@ -591,7 +591,10 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     """Read pasted text in the portal's shapes or the email's, in one pass over its lines.
 
     A plain line just before a card's line is the card's course, on the
-    homework page; the summary names the course on the card's own line.
+    homework page; the summary names the course on the card's own line, so in
+    the instruction of a card written that way, on one line, under either
+    shape, such a line is the card's instruction, and the card's line after it
+    is read as one right after a card.
     Plain lines just after a card are the teacher's instruction, until the
     next card, day, course line, or subject heading, or a blank; the same
     instruction under both of an item's days is kept once. Only a day
@@ -648,6 +651,8 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     day: date | None = None
     course: str | None = None
     last: _Draft | None = None
+    # Whether ``last`` was read from a card the summary writes on one line, course and card.
+    last_on_one_line = False
     in_note = False
     to_blank = False
     headings_read = False
@@ -790,7 +795,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 draft.assigned_on = day
                 draft.field_origins["assigned_on"] = SourceChannel.LMS
             draft.notes.append(("assigned", day, []))
-            last = draft
+            last, last_on_one_line = draft, combined is not None
             continue
         if due := DUE_LINE.match(body):
             title = due.group("title").strip()
@@ -805,7 +810,7 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 draft.due_date = day
                 draft.field_origins["due_date"] = SourceChannel.LMS
             draft.notes.append(("due", day, []))
-            last = draft
+            last, last_on_one_line = draft, combined is not None
             continue
         if LOOKS_STRUCTURAL.match(line):
             # Shaped like a day, a card, or a due date, and not read as one:
@@ -829,7 +834,11 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             to_blank = False
             headings_read = True
             continue
-        if _is_course_line(line, following[index]):
+        if not (last is not None and last_on_one_line) and _is_course_line(line, following[index]):
+            # The homework page's rule: a plain line before a card's line is its course. In
+            # the instruction of a card written on one line, as the summary writes it, under
+            # either shape, the line is the teacher's, and a card's label after it is read as
+            # it is right after the card.
             course = line
             last = None
             continue

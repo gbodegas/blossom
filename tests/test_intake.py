@@ -210,6 +210,78 @@ def test_the_homework_page_is_read_with_the_course_on_its_own_line() -> None:
     assert words(items["Humanities", "Reading check"]) == ()
 
 
+@pytest.mark.parametrize(
+    ("card", "pair", "due", "said"),
+    [
+        ("Math - Due: Worksheet 4:", ("Math", "Worksheet 4"), date(2026, 10, 5), "Show your work."),
+        (
+            "Art - Assigned: Poster: (Due:10/8/2026)",
+            ("Art", "Poster"),
+            date(2026, 10, 8),
+            "Bring markers on Thursday.",
+        ),
+    ],
+    ids=["due-card", "assigned-card"],
+)
+def test_a_plain_line_before_a_label_line_in_a_summary_card_is_the_cards_words(
+    card: str, pair: tuple[str, str], due: date, said: str
+) -> None:
+    """In the instruction of a card the summary writes on one line, a plain line before a line
+    shaped like a card's label is the card's instruction, never a course: the label-shaped line
+    and the line after it are text for review, as they are right after the card's line."""
+    text = (
+        f"Homework for Wren\n10/5/2026 - Monday\n{card}\n{said}\n"
+        "Due: check answers with a partner\nUse a pencil.\n"
+    )
+    read = read_text(text, now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert set(items) == {pair}
+    assert items[pair].due_date == due
+    assert words(items[pair]) == (said,)
+    assert [(u.line, u.text) for u in read.unread] == [
+        (5, "Due: check answers with a partner"),
+        (6, "Use a pencil."),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "Monday 10/5/2026\nMath\nDue: Worksheet 4\nShow your work.\n"
+            "Science\nDue: Lab report\nBring goggles.\n",
+            {
+                ("Math", "Worksheet 4"): ("Show your work.",),
+                ("Science", "Lab report"): ("Bring goggles.",),
+            },
+        ),
+        (
+            "Homework for Wren\n10/5/2026 - Monday\nMath\nDue: Worksheet 4:\nShow your work.\n",
+            {("Math", "Worksheet 4"): ("Show your work.",)},
+        ),
+        (
+            "Homework for Wren\n10/5/2026 - Monday\nMath\nDue: Worksheet 4:\nShow your work.\n"
+            "Science\nDue: Lab report:\n",
+            {("Math", "Worksheet 4"): ("Show your work.",), ("Science", "Lab report"): ()},
+        ),
+    ],
+    ids=["homework-page-after-a-card", "summary-with-no-card-open", "summary-after-a-card"],
+)
+def test_a_course_line_before_a_cards_label_still_names_its_course(
+    text: str, expected: dict[tuple[str, str], tuple[str, ...]]
+) -> None:
+    """A plain line before a card's label line names that card's course where no card is open
+    and after a card written with its course on its own line, on the homework page and in the
+    summary alike."""
+    read = read_text(text, now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert read.unread == ()
+    assert {pair: words(item) for pair, item in items.items()} == expected
+    assert {item.due_date for item in items.values()} == {date(2026, 10, 5)}
+
+
 def test_a_line_shaped_like_a_card_that_does_not_read_as_one_is_never_a_note() -> None:
     """A due date the reader cannot read, an assigned card with no course, a day that is no
     date: each is text for review, and each ends the card before it."""

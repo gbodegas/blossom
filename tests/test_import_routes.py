@@ -58890,6 +58890,122 @@ def test_a_printed_summary_s_screenshot_saves_what_its_school_text_paste_saves(
     assert read == written
 
 
+LABEL_LINE_IN_A_CARD: Final = {
+    "math-example": SUMMARY_HEAD + "10/5/2026 - Monday\n"
+    "Math - Due: Worksheet 4:\n"
+    "Show your work.\n"
+    "Due: check answers with a partner\n"
+    "Use a pencil.\n",
+    "full-mixed-page": SUMMARY_HEAD + "10/5/2026 - Monday\n"
+    "Humanities -\n"
+    "Read chapter 3 of The Outsiders.\n"
+    "Write two sentences about Ponyboy.\n"
+    "Art - Assigned: Poster: (Due:10/8/2026)\n"
+    "Bring markers on Thursday.\n"
+    "Science -\n"
+    "Lab report due Friday.\n"
+    "Math - Due: Worksheet 4:\n"
+    "Show your work.\n"
+    "Due: check answers with a partner\n"
+    "Use a pencil.\n",
+}
+"""#265's two made-up pastes: "Show your work.", then a line shaped like a card's label, under
+Math's card; the short example and the mixed page of #266's live screenshot check."""
+
+
+def needs_review(page: str) -> list[str]:
+    """Each line the School text review lists under "Text that needs review", in page order."""
+    if '<ul class="unread">' not in page:
+        return []
+    listed = page.split('<ul class="unread">', 1)[1].split("</ul>", 1)[0]
+    return [html.unescape(line) for line in re.findall(r"<code>(.*?)</code>", listed, re.S)]
+
+
+def text_review_offers(page: str) -> str:
+    """The School text review's words outside its list of lines that need review and outside the
+    hidden copy of the pasted text: what it offers to save."""
+    page = re.sub(r'<ul class="unread">.*?</ul>', "", page, flags=re.S)
+    page = re.sub(r'<textarea name="text" hidden>.*?</textarea>', "", page, flags=re.S)
+    page = re.sub(r'<input type="hidden"[^>]*>', "", page)
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", page)).split())
+
+
+@pytest.mark.parametrize("name", list(LABEL_LINE_IN_A_CARD))
+def test_a_plain_line_before_a_label_line_in_a_summary_card_is_the_cards_instruction(
+    tmp_path: pathlib.Path, name: str
+) -> None:
+    """Pasted as School text, read, reviewed and saved with every offer ticked: Math / Worksheet
+    4 is offered once, due 10/5/2026, with "Show your work." as its instruction; "Due: check
+    answers with a partner" and "Use a pencil." are listed for review and nothing is saved from
+    them; the mixed page saves exactly its four assignments, Humanities, Art and Science as they
+    were."""
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, LABEL_LINE_IN_A_CARD[name])
+    others: list[Written] = (
+        [
+            (*ART_POSTER, "Bring markers on Thursday."),
+            (
+                "Humanities",
+                "Read chapter 3 of The Outsiders",
+                None,
+                None,
+                "Read chapter 3 of The Outsiders. Write two sentences about Ponyboy.",
+            ),
+            ("Science", "Lab report", date(2026, 10, 9), None, "Lab report due Friday."),
+        ]
+        if name == "full-mixed-page"
+        else []
+    )
+    math: Written = ("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work.")
+
+    assert needs_review(page) == ["Due: check answers with a partner", "Use a pencil."]
+    assert "check answers with a partner" not in text_review_offers(page)
+    assert "Use a pencil." not in text_review_offers(page)
+    assert text_review_offers(page).count("Worksheet 4") == 1
+    assert written == sorted([*others, math])
+    assert len(written) == (4 if name == "full-mixed-page" else 1)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "Monday 10/5/2026\nMath\nDue: Worksheet 4\nShow your work.\n"
+            "Science\nDue: Lab report\nBring goggles.\n",
+            [
+                ("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work."),
+                ("Science", "Lab report", date(2026, 10, 5), None, "Bring goggles."),
+            ],
+        ),
+        (
+            SUMMARY_HEAD + "10/5/2026 - Monday\nMath\nDue: Worksheet 4:\nShow your work.\n",
+            [("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work.")],
+        ),
+        (
+            SUMMARY_HEAD + "10/5/2026 - Monday\nMath\nDue: Worksheet 4:\nShow your work.\n"
+            "Science\nDue: Lab report:\n",
+            [
+                ("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work."),
+                ("Science", "Lab report", date(2026, 10, 5), None, ""),
+            ],
+        ),
+    ],
+    ids=["homework-page-after-a-card", "summary-with-no-card-open", "summary-after-a-card"],
+)
+def test_a_genuine_course_line_before_a_card_still_imports(
+    tmp_path: pathlib.Path, text: str, expected: list[Written]
+) -> None:
+    """A course on its own line before a card's label line still names that card's course,
+    pasted, reviewed and saved: where no card is open and right after a card written with its
+    course on its own line, on the homework page and in the summary; nothing is left for
+    review."""
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, text)
+
+    assert needs_review(page) == []
+    assert written == expected
+
+
 def test_the_mixed_page_offers_math_and_shows_its_two_set_aside_lines(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
