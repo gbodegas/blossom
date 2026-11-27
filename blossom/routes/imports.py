@@ -42,6 +42,7 @@ from blossom.routes.grades import from_this_computer, grade_name_key
 from blossom.routes.navigation import week_href
 from blossom.routes.store_refusals import busy_file as busy_file
 from blossom.screenshot_page import (
+    ASIDE_PRESS,
     CORRECT_PRESS,
     NAMED_STEPS,
     NEEDED,
@@ -59,6 +60,7 @@ from blossom.screenshot_page import (
     RowsShown,
     ShotOutcome,
     answer_field,
+    aside_of,
     cards_named,
     found_said,
     kept_ref,
@@ -3629,8 +3631,14 @@ async def review_press(request: Request, draft_id: str, state: State) -> Respons
             return ended
         if too_large:
             return to_review(state, draft_id, [PRESS_SAID["too_large"]])
+        if named.startswith(ASIDE_PRESS):
+            return to_review(state, draft_id, [AFTER_SAID["unchecked"]])
         refused = {"save": "save_invalid", "later": "later_invalid"}.get(named, "keep_invalid")
         return to_review(state, draft_id, [PRESS_SAID[refused]])
+    if aside_of(post.press) is not None:
+        # Before the refusals below: this press keeps the ticks alone, so nothing typed or left
+        # open on the page can hold it, and its typing goes as it always has.
+        return await set_aside_press(request, state, found, post)
     if post.refused:
         recorded = await replayed(request, state, draft_id) if post.press == "save" else None
         moved = post.chosen_here if post.version == found.version else frozenset()
@@ -6531,6 +6539,65 @@ async def closing_press(
 async def set_aside(request: Request, draft_id: str, state: State) -> Response:
     """Leave this group unsaved: the group's rows set aside at the page's version."""
     return await closing_press(request, state, draft_id, "set-aside")
+
+
+async def set_aside_press(
+    request: Request, state: ApplicationState, found: DraftSnapshot, post: ReviewPost
+) -> Response:
+    """A "Couldn't read" item's Set aside, pressed on the review form so the groups the page has
+    ticked come with it: the item set aside at the page's version, in one transaction at the
+    page's progress revision, checked whether or not ticks are written. Where the ticks differ
+    from those a fresh load of the review shows, those groups are kept as the review's
+    selection, none of them included; ticks a fresh load already shows leave the saved progress
+    and its revision as they were, so the review's defaults keep applying. Nothing else of the
+    post is kept, its typing included. A page behind the review, or saved progress moved on
+    since the page, sets nothing aside, keeps no ticks and says the page is out of date, even
+    where another page has already set its item aside; a key that isn't one of the items the
+    review shows sets nothing aside either."""
+    draft_id = found.draft_id
+    if (post.version, post.progress_revision) != (found.version, found.progress_revision):
+        # Before the item is looked for: a page behind the review is told so, even where another
+        # page has already set its item aside. The store checks both again as it writes.
+        return to_review(state, draft_id, [OUT_OF_DATE, AFTER_SAID["nothing_set_aside"]])
+    key = aside_of(post.press)
+    open_keys = {row.key for row in found.rows if row.state == "open"}
+    unread = homework_assembly(found.readings, now=state.real_clock.now()).unread
+    shown = {item.key for item in unread}
+    if key is None or key not in open_keys & shown:
+        return to_review(state, draft_id, [AFTER_SAID["unchecked"]])
+    selected = rows_of_units(post.units)
+    # The press stores no answers and withdraws nothing, so ticks a fresh load already shows
+    # write nothing, as Keep these answers writes nothing where it selects what a load shows.
+    # The selection is still passed so the store checks the progress revision either way.
+    settled = post.load_ticks is not None and selected == post.load_ticks
+    try:
+        student = await asyncio.to_thread(state.project_state.student_id)
+    except sqlite3.Error as error:
+        noted(error)
+        return unchanged(request, state, draft_id, error)
+    try:
+        done = await asyncio.to_thread(
+            state.import_drafts.set_aside,
+            student,
+            draft_id,
+            version=post.version,
+            keys=[key],
+            progress_revision=post.progress_revision,
+            selection=lambda progress: None if settled else selection_text(progress, selected),
+        )
+    except ReviewChanged:
+        return to_review(state, draft_id, [OUT_OF_DATE, AFTER_SAID["nothing_set_aside"]])
+    except (StoreBusy, WriterBusy):
+        return to_review(state, draft_id, [AFTER_SAID["busy"]])
+    except (DraftClosed, DraftExpired, DraftNotFound) as error:
+        return store_refusal(request, state, error)
+    except sqlite3.Error as error:
+        noted(error)
+        return unchanged(request, state, draft_id, error, UNKNOWN_SAID["set-aside"])
+    if done.closed:
+        lines = finished_said(done, AFTER_SAID["set_aside"])
+        return said_page(request, marks_of(state), lines[0], 200, *lines[1:])
+    return to_review(state, draft_id, [AFTER_SAID["set_aside"]])
 
 
 @router.post("/{draft_id}/finish")

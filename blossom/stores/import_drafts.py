@@ -1252,14 +1252,21 @@ class ImportDraftsStore:
         *,
         version: int,
         keys: Collection[str],
+        progress_revision: int | None = None,
+        selection: Callable[[str | None], str | None] | None = None,
         wait: float = STORE_WAIT_SECONDS,
     ) -> Closing:
         """Set a group's rows or items aside at the page's version, all or none: each key is
-        discarded, a key already saved is skipped, and the version is raised once. When nothing
+        discarded, a key already saved is skipped, and the version is raised once. With a
+        ``selection``, the saved progress is turned by it in the same transaction, at the page's
+        ``progress_revision``: saved progress moved on since that page refuses the whole press
+        (``ReviewChanged``), so nothing is set aside without the ticks it carried. When nothing
         is left open, the draft closes in the same transaction. What the transaction
         committed."""
         with self._writing(wait) as now:
             draft = self._at_version(student_id, draft_id, version, now)
+            if selection is not None and int(draft["progress_revision"]) != progress_revision:
+                raise ReviewChanged
             worked = self._worked_out(draft)
             present = {row.key for row in worked.rows}
             if not keys or not set(keys) <= present:
@@ -1274,6 +1281,8 @@ class ImportDraftsStore:
                 ],
             )
             self._connection.execute(RAISE_VERSION, (draft_id,))
+            if selection is not None and progress_revision is not None:
+                self._selection_locked(draft_id, progress_revision, selection, now)
             closed = self._close_if_finished(draft, now)
             return Closing(self._version(draft_id), closed, self._accepted(draft))
 

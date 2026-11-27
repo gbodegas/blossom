@@ -27,6 +27,7 @@ from blossom.intake import (
     read_cards,
 )
 from blossom.screenshot_prompt import PROMPT_VERSION, SCHEMA, SCHEMA_VERSION
+from blossom.screenshot_review import dates_seen, unsure_texts_of, wordless_of
 from blossom.screenshots import (
     Card,
     HomeworkReading,
@@ -2129,10 +2130,10 @@ def test_the_same_body_under_other_versions_gives_a_new_item_key() -> None:
     assert len({found[0].key for found in items}) == 3
 
 
-@pytest.mark.parametrize("prompt_version", ["v1b", "v1c"])
+@pytest.mark.parametrize("prompt_version", ["v1b", "v1c", "v1d"])
 def test_a_reading_stored_under_either_prompt_of_this_schema_decodes(prompt_version: str) -> None:
-    """The prompts v1b and v1c share the answer schema, so a reading stored under either one
-    reads as its rows and places its cards."""
+    """The prompts v1b, v1c and v1d share the answer schema, so a reading stored under any of
+    them reads as its rows and places its cards."""
     stored = stored_homework("m", an_answer())._replace(prompt_version=prompt_version)
 
     assembly = homework_assembly([stored], now=NOW)
@@ -2146,7 +2147,7 @@ def test_a_reading_stored_under_either_prompt_of_this_schema_decodes(prompt_vers
 def test_the_prompt_in_use_is_one_a_stored_reading_decodes_under() -> None:
     stored = stored_homework("m", an_answer())
 
-    assert stored.prompt_version == PROMPT_VERSION == "v1c"
+    assert stored.prompt_version == PROMPT_VERSION == "v1d"
     assert len(homework_assembly([stored], now=NOW).rows) == 2
 
 
@@ -2155,7 +2156,7 @@ def test_the_prompt_in_use_is_one_a_stored_reading_decodes_under() -> None:
     [
         ("v1", "screenshot-reading/1"),
         ("v1a", "screenshot-reading/1"),
-        ("v1d", "screenshot-reading/1"),
+        ("v1e", "screenshot-reading/1"),
         ("V1B", "screenshot-reading/1"),
         ("v1b ", "screenshot-reading/1"),
         ("", "screenshot-reading/1"),
@@ -2224,15 +2225,28 @@ def stored_under(prompt_version: str, text: str) -> StoredReading:
         ("v1c", PORTAL_FORM, THAT_MONDAY),
         ("v1c", PRINTED_FORM, THAT_MONDAY),
         ("v1c", BULLETED_FORM, THAT_MONDAY),
+        ("v1d", PORTAL_FORM, THAT_MONDAY),
+        ("v1d", PRINTED_FORM, THAT_MONDAY),
+        ("v1d", BULLETED_FORM, THAT_MONDAY),
     ],
-    ids=["v1b-portal", "v1b-printed", "v1b-bulleted", "v1c-portal", "v1c-printed", "v1c-bulleted"],
+    ids=[
+        "v1b-portal",
+        "v1b-printed",
+        "v1b-bulleted",
+        "v1c-portal",
+        "v1c-printed",
+        "v1c-bulleted",
+        "v1d-portal",
+        "v1d-printed",
+        "v1d-bulleted",
+    ],
 )
 def test_a_stored_reading_s_heading_names_a_day_as_its_prompt_version_reads_it(
     prompt_version: str, text: str, day: date | None
 ) -> None:
     """A reading stored under prompt v1b names a day by the portal's form alone. One stored
-    under v1c, the prompt in use, names it by a printed list's dated day line too, with or
-    without its bullet. The rows follow the heading as its reading's version reads it: the
+    under v1c, or under v1d, the prompt in use, names it by a printed list's dated day line too,
+    with or without its bullet. The rows follow the heading as its reading's version reads it: the
     assigned card is assigned on that day or on none, and the due card, dated by its heading
     alone, is a row or a card with no day."""
     stored = stored_under(prompt_version, text)
@@ -2249,7 +2263,9 @@ def test_a_stored_reading_s_heading_names_a_day_as_its_prompt_version_reads_it(
 
 
 @pytest.mark.parametrize(
-    ("prompt_version", "day"), [("v1b", None), ("v1c", THAT_MONDAY)], ids=["v1b", "v1c"]
+    ("prompt_version", "day"),
+    [("v1b", None), ("v1c", THAT_MONDAY), ("v1d", THAT_MONDAY)],
+    ids=["v1b", "v1c", "v1d"],
 )
 def test_a_copy_of_a_decoded_reading_reads_its_headings_as_the_reading_does(
     prompt_version: str, day: date | None
@@ -2946,3 +2962,304 @@ def test_a_rows_layer_and_cards_are_in_no_key() -> None:
 
     assert tuple(row.key for row in given) == PINNED_ROW_KEYS
     assert {row.key for row in homework_assembly(images, now=NOW).rows} <= set(PINNED_ROW_KEYS)
+
+
+# --------------------------------------------------------------- printed card lines (#258)
+
+THAT_THURSDAY = date(2026, 10, 8)
+
+
+def printed_card(badge: str | None, course: str, title: str, **fields: object) -> dict[str, Any]:
+    """A printed card line as the prompt in use answers it, no instruction or due line unless
+    one is given."""
+    found = a_card(badge=badge, course=course, title=title, instruction=None, footer=None)
+    found.update({"y_top": 210, "y_bottom": 270, **fields})
+    return found
+
+
+def printed_list(*cards: dict[str, Any], text: str = PRINTED_FORM) -> dict[str, Any]:
+    """A printed list's answer: one day line with this text, and these cards beneath it."""
+    return an_answer(headings=[heading(text, 150)], cards=list(cards))
+
+
+@pytest.mark.parametrize(
+    ("footer", "due"),
+    [
+        ("(Due:10/8/2026)", THAT_THURSDAY),
+        ("(Due: 10/8/2026)", THAT_THURSDAY),
+        ("Due (10/8/2026)", THAT_THURSDAY),
+        ("( Due:10/8/2026 )", None),
+        ("(due:10/8/2026)", None),
+        ("(Due:10/8/26)", None),
+        ("(Due:10/32/2026)", None),
+    ],
+    ids=[
+        "printed",
+        "printed-spaced",
+        "portal",
+        "spaced-parens",
+        "lowercase",
+        "short-year",
+        "no-date",
+    ],
+)
+def test_a_due_line_read_under_the_prompt_in_use_takes_the_printed_form_as_school_text_does(
+    footer: str, due: date | None
+) -> None:
+    """Under v1d, the prompt in use, a card's due line names its date in the portal's form or
+    in a printed card line's, "(Due:M/D/YYYY)" with spaces after the colon, as School text
+    reads it; no looser form, and no digits that name no date. A fresh card, a stored one and
+    the review's dates all read it alike."""
+    answer = printed_list(printed_card("ASSIGNED", "Art", "Poster", footer=footer))
+    stored = stored_homework("m", answer)
+    fresh = homework_reading(answer).reading
+    assert fresh is not None
+    [placed] = screenshots.cards_placed([stored]).values()
+    [seen] = dates_seen([stored], [placed.place])
+
+    assert fresh.cards[0] is not None
+    assert fresh.cards[0].due == due
+    assert placed.card is not None
+    assert placed.card.due == due
+    assert seen.line_day == due
+    assert [row.reading.due_date for row in homework_assembly([stored], now=NOW).rows] == (
+        [] if due is None else [due]
+    )
+
+
+@pytest.mark.parametrize("prompt_version", ["v1b", "v1c"])
+def test_a_reading_stored_under_an_earlier_prompt_reads_the_portal_due_line_alone(
+    prompt_version: str,
+) -> None:
+    """A reading stored under v1b or v1c reads a due line in the portal's form alone: a printed
+    Assigned card stays a card read whole with no date, for the review's dates too, and a card
+    with the portal's due line is a row, as on main."""
+    answer = printed_list(
+        printed_card("ASSIGNED", "Art", "Poster", footer="(Due:10/8/2026)"),
+        printed_card(
+            "ASSIGNED", "Music", "Song", footer="Due (10/9/2026)", y_top=300, y_bottom=360
+        ),
+    )
+    stored = stored_homework("m", answer)._replace(prompt_version=prompt_version)
+    placed = list(screenshots.cards_placed([stored]).values())
+    seen = dates_seen([stored], [found.place for found in placed])
+    assembly = homework_assembly([stored], now=NOW)
+
+    assert [found.card.due for found in placed if found.card is not None] == [
+        None,
+        date(2026, 10, 9),
+    ]
+    assert [each.line_day for each in seen] == [None, date(2026, 10, 9)]
+    assert [item.reason for item in assembly.unread] == ["no_day"]
+    assert [row.reading.course for row in assembly.rows] == ["Music"]
+
+
+@pytest.mark.parametrize("name", list(screenshots.Card.__private_attributes__))
+def test_no_answer_and_no_stored_text_can_say_how_a_card_s_due_line_is_read(name: str) -> None:
+    """How a card's due line is read is no property of an answer or of a stored reading: a card
+    that carries a private name of the model is a card that couldn't be read in a fresh answer,
+    and makes a stored text one that can't be decoded."""
+    carried = {**printed_card("ASSIGNED", "Art", "Poster", footer="(Due:10/8/2026)"), name: False}
+    stored = stored_homework("m", printed_list())._replace(prompt_version="v1c")
+    body = json.loads(stored.body)
+    body["cards"] = [carried]
+
+    fresh = homework_reading(printed_list(carried)).reading
+    assembly = homework_assembly([stored._replace(body=json.dumps(body))], now=NOW)
+
+    assert screenshots.Card.__private_attributes__
+    assert fresh is not None
+    assert fresh.cards == (None,)
+    assert [item.reason for item in assembly.unread] == ["reading_unreadable"]
+
+
+@pytest.mark.parametrize(
+    ("instruction", "kept", "aside"),
+    [
+        ("Due: check answers with a partner", [], "Due: check answers with a partner"),
+        (
+            "Due: check answers with a partner\nUse a pencil.",
+            [],
+            "Due: check answers with a partner\nUse a pencil.",
+        ),
+        (
+            "Show your work.\nDue: check answers with a partner\nUse a pencil.",
+            ["Show your work."],
+            "Due: check answers with a partner\nUse a pencil.",
+        ),
+        (
+            "Finish it at home (Due: Friday)\nUse a pencil.",
+            [],
+            "Finish it at home (Due: Friday)\nUse a pencil.",
+        ),
+        (
+            "Show your work.\n10/9/2026 bring the folder",
+            ["Show your work."],
+            "10/9/2026 bring the folder",
+        ),
+        (
+            "Show your work.\nScience - Due: Lab report:",
+            ["Show your work."],
+            "Science - Due: Lab report:",
+        ),
+    ],
+    ids=[
+        "label-line",
+        "label-line-then-plain",
+        "plain-first",
+        "due-text-inside",
+        "a-date",
+        "a-card-line",
+    ],
+)
+def test_a_printed_card_s_instruction_is_set_apart_from_its_first_line_shaped_as_structure(
+    instruction: str, kept: list[str], aside: str
+) -> None:
+    """On a card under a printed day line, read under the prompt in use, the first instruction
+    line shaped like a day, a card or a due date, the shapes School text sets aside when a line
+    doesn't read as one, and every line after it, are one item shown apart, with the card's
+    class and title; the card is a row with the lines before it as its instruction. The item
+    and the row have keys of their own, steady for the same reading."""
+    answer = printed_list(printed_card("DUE", "Math", "Worksheet 4", instruction=instruction))
+    stored = stored_homework("m", answer)
+
+    assembly = homework_assembly([stored], now=NOW)
+    again = homework_assembly([stored], now=NOW)
+    [row] = assembly.rows
+    [item] = assembly.unread
+
+    assert (row.reading.course, row.reading.title, row.reading.due_date) == (
+        "Math",
+        "Worksheet 4",
+        THAT_MONDAY,
+    )
+    assert [seen.text for seen in row.reading.instructions] == kept
+    assert item.reason == "instruction_set_aside"
+    assert item.place == 0
+    assert item.card is not None
+    assert (item.card.course, item.card.title, item.card.instruction) == (
+        "Math",
+        "Worksheet 4",
+        aside,
+    )
+    assert item.key != row.key
+    assert [row.key for row in again.rows] == [row.key]
+    assert [found.key for found in again.unread] == [item.key]
+    assert sorted(found.key for found in homework_rows([stored])) == sorted([row.key, item.key])
+
+
+def test_the_review_reads_a_set_apart_card_with_the_lines_it_keeps() -> None:
+    """The review reads a set-apart card as its row does, with the lines it keeps and never the
+    lines set apart: its placed instruction is its row's text, and an instruction the reader
+    wasn't sure of is tied to that text."""
+    unsure = [{"field": "instruction", "reason": "faint"}]
+    answer = printed_list(
+        printed_card(
+            "DUE",
+            "Math",
+            "Worksheet 4",
+            instruction="Show your work.\nDue: check answers with a partner\nUse a pencil.",
+            uncertain=unsure,
+        )
+    )
+    stored = stored_homework("m", answer)
+    placed = screenshots.cards_placed([stored])
+    [row] = homework_assembly([stored], now=NOW).rows
+    texts = [seen.text for seen in row.reading.instructions]
+    [found] = placed.values()
+
+    assert found.card is not None
+    assert texts == ["Show your work."]
+    assert found.card.instruction == "Show your work."
+    assert unsure_texts_of(placed, row.sources, texts) == ((found.place, 0),)
+    assert wordless_of(placed, row.sources) == ()
+
+
+def test_a_set_apart_card_with_no_line_kept_is_read_as_a_card_with_no_words() -> None:
+    """A card whose every instruction line is set apart is read by the review as a card read
+    with no words: when the reader wasn't sure of its instruction, it is a wordless card whose
+    instruction the family can type, as a card read with none is."""
+    unsure = [{"field": "instruction", "reason": "faint"}]
+    set_apart = printed_card(
+        "DUE",
+        "Math",
+        "Worksheet 4",
+        instruction="Due: check answers with a partner\nUse a pencil.",
+        uncertain=unsure,
+    )
+    no_words = printed_card("DUE", "Math", "Worksheet 4", uncertain=unsure)
+    given = []
+    for card_read in (set_apart, no_words):
+        stored = stored_homework("m", printed_list(card_read))
+        placed = screenshots.cards_placed([stored])
+        [row] = homework_assembly([stored], now=NOW).rows
+        [found] = placed.values()
+        given.append(
+            (
+                found.card.instruction if found.card is not None else "no card",
+                wordless_of(placed, row.sources) == (found.place,),
+                wordless_of(placed, row.sources, unsure=False),
+            )
+        )
+
+    assert given == [(None, True, ()), (None, True, ())]
+
+
+def test_a_printed_card_that_cant_be_a_row_is_placed_whole_as_the_assembly_reads_it() -> None:
+    """A printed Assigned card with no due line can't be an offered row, so the assembly keeps it
+    whole as a card that couldn't be read; the review places it the same way, its full
+    instruction, a line shaped like a card's label included, with nothing set apart."""
+    answer = printed_list(
+        printed_card("ASSIGNED", "Art", "Poster", instruction="Due: Thursday\nBring markers.")
+    )
+    stored = stored_homework("m", answer)
+
+    [found] = screenshots.cards_placed([stored]).values()
+    [item] = homework_assembly([stored], now=NOW).unread
+
+    assert found.card is not None
+    assert item.card is not None
+    assert found.card.instruction == "Due: Thursday\nBring markers."
+    assert found.card.instruction == item.card.instruction
+
+
+@pytest.mark.parametrize(
+    ("prompt_version", "text"),
+    [("v1d", PORTAL_FORM), ("v1c", PRINTED_FORM), ("v1b", PORTAL_FORM)],
+    ids=["portal-heading", "v1c", "v1b"],
+)
+def test_an_instruction_line_shaped_like_a_label_stays_on_a_portal_card_or_an_earlier_reading(
+    prompt_version: str, text: str
+) -> None:
+    """A card under the portal's day heading, or any card of a reading stored under v1b or v1c,
+    keeps every line of its instruction, a line shaped like a card's label included, as on
+    main."""
+    answer = printed_list(
+        printed_card("DUE", "Math", "Worksheet 4", instruction="Due: Friday in class\nBring it."),
+        text=text,
+    )
+    stored = stored_homework("m", answer)._replace(prompt_version=prompt_version)
+
+    assembly = homework_assembly([stored], now=NOW)
+    [row] = assembly.rows
+    [found] = screenshots.cards_placed([stored]).values()
+
+    assert assembly.unread == ()
+    assert [seen.text for seen in row.reading.instructions] == ["Due: Friday in class\nBring it."]
+    assert found.card is not None
+    assert found.card.instruction == "Due: Friday in class\nBring it."
+
+
+def test_a_printed_card_that_cant_be_dated_stays_one_card_whatever_its_instruction() -> None:
+    """A printed Assigned card with no due line can't be dated, so it stays one card read whole
+    with no date, its instruction whole, and no line of it is shown apart."""
+    answer = printed_list(
+        printed_card("ASSIGNED", "Art", "Poster", instruction="Due: Thursday\nBring markers.")
+    )
+
+    assembly = homework_assembly([stored_homework("m", answer)], now=NOW)
+
+    assert assembly.rows == ()
+    assert [(item.reason, item.card.instruction) for item in assembly.unread if item.card] == [
+        ("no_day", "Due: Thursday\nBring markers.")
+    ]

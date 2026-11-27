@@ -60,6 +60,7 @@ from blossom.app import create_app
 from blossom.household import UnreadableHouseholdSecret
 from blossom.routes import imports, navigation, store_refusals
 from blossom.screenshot_page import ListTooLarge
+from blossom.screenshot_posts import rows_of_units, selection_text
 from blossom.screenshot_save import (
     CONFIRMABLE,
     AlreadySaved,
@@ -2089,7 +2090,7 @@ def test_a_v1b_review_under_a_printed_day_line_keeps_its_row_keys_and_its_one_ti
 def test_the_same_cards_read_with_the_prompt_in_use_are_assigned_on_the_printed_day(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, day_line: str
 ) -> None:
-    """The same two cards read with the prompt in use, v1c, take the printed day line as
+    """The same two cards read with the prompt in use, v1d, take the printed day line as
     their day, with or without its bullet: each row carries 2026-10-05 as its assigned date
     under a key of its own, and saving both writes that date."""
     with here(open_settings(tmp_path)) as browser:
@@ -2103,7 +2104,7 @@ def test_the_same_cards_read_with_the_prompt_in_use_are_assigned_on_the_printed_
         rows = written_with_assigned_dates(browser, before)
 
     read_as = screenshots.homework_assembly(stored, now=screenshots.KEY_INSTANT).rows
-    assert [reading.prompt_version for reading in stored] == ["v1c"]
+    assert [reading.prompt_version for reading in stored] == ["v1d"]
     assert sorted((row.reading.title, row.reading.assigned_on) for row in read_as) == [
         ("Poster", date(2026, 10, 5)),
         ("Worksheet", date(2026, 10, 5)),
@@ -2464,7 +2465,20 @@ def test_cards_that_couldn_t_be_read_are_listed_with_their_reason_text_and_place
     assert "Screenshot 1: Read, but its date couldn't be told" in shown
     assert "No date was on the card or in a heading above it in this screenshot." in shown
     assert "Card 3: Science 8 · Vocab 4" in shown
-    assert shown.count('form="leave-item-') == 2
+    assert len(aside_presses(page)) == 2
+
+
+def aside_presses(page: str) -> list[str]:
+    """The value of each "Couldn't read" item's Set aside press on the review form, in page
+    order."""
+    return re.findall(r'name="press" value="(set-aside:[0-9a-f]{64})"', page)
+
+
+def set_aside_post(page: str, press: str) -> list[tuple[str, str]]:
+    """The review form as a browser sends it with scripts off when that Set aside is pressed,
+    the groups the page shows ticked included."""
+    ticked = [v for n, v in checked_values(review_form(page)) if n == "unit"]
+    return page_post(page, press, tick=ticked)
 
 
 def test_a_card_that_couldn_t_be_read_can_be_set_aside_and_the_review_then_finishes(
@@ -2474,11 +2488,12 @@ def test_a_card_that_couldn_t_be_read_can_be_set_aside_and_the_review_then_finis
         draft_id, page = read_review(browser, monkeypatch, (RED, unreadable_answer()))
         page = her_name_answered(browser, draft_id, page)
         stale = page
-        left = followed(browser, press_outside(browser, page, "leave-item-1"))
-        refused = followed(browser, press_outside(browser, stale, "leave-item-2"))
+        first, second = aside_presses(page)
+        left = followed(browser, send(browser, draft_id, set_aside_post(page, first)))
+        refused = followed(browser, send(browser, draft_id, set_aside_post(stale, second)))
         states = row_states(browser, draft_id)
-        [remaining] = re.findall(r'form="(leave-item-\d+)"', left)
-        left_again = press_outside(browser, left, remaining)
+        [remaining] = aside_presses(left)
+        left_again = send(browser, draft_id, set_aside_post(left, remaining))
         saved = send(
             browser,
             draft_id,
@@ -2520,8 +2535,34 @@ def test_a_review_left_with_only_cards_that_couldn_t_be_read_still_shows_them(
 
     assert still_open
     assert "Couldn't read" in html.unescape(after)
-    assert after.count('form="leave-item-') == 2
+    assert len(aside_presses(after)) == 2
     assert 'form="finish"' in after
+
+
+def test_setting_aside_the_last_card_left_after_save_finishes_the_review(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After Save, with only cards that couldn't be read left, the first Set aside leaves the
+    review open, and the Set aside of the last one closes it and answers with a page that says
+    the card is set aside and the review is finished."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, unreadable_answer()))
+        page = her_name_answered(browser, draft_id, page)
+        send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+        after = browser.get(f"/parent/imports/{draft_id}").text
+        first, _ = aside_presses(after)
+        left = followed(browser, send(browser, draft_id, set_aside_post(after, first)))
+        open_after_one = not closed(browser, draft_id)
+        [remaining] = aside_presses(left)
+        last = send(browser, draft_id, set_aside_post(left, remaining))
+        done = closed(browser, draft_id)
+
+    assert says(left, imports.AFTER_SAID["set_aside"])
+    assert open_after_one
+    assert last.status_code == 200
+    assert says(last.text, imports.AFTER_SAID["set_aside"])
+    assert says(last.text, imports.AFTER_SAID["finished"])
+    assert done
 
 
 # ------------------------------------------------------------------ typing kept in the form
@@ -49976,11 +50017,11 @@ def shape_older(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 def shape_unread(browser: TestClient, monkeypatch: pytest.MonkeyPatch) -> str:
-    """A review with a Couldn't read group, each card's Set aside a button of its own form."""
+    """A review with a Couldn't read group, each card's Set aside a press of the review form."""
     draft_id, page = read_review(browser, monkeypatch, (RED, unreadable_answer()))
     page = her_name_answered(browser, draft_id, page)
     assert "Couldn't read" in html.unescape(page)
-    assert page.count('form="leave-item-') == 2
+    assert len(aside_presses(page)) == 2
     return page
 
 
@@ -58500,3 +58541,1165 @@ def test_a_moved_card_open_with_new_typing_beside_a_ready_card_waits_for_one_rev
     else:
         assert says(last, imports.counted(1, 0, 0, 0)), last_said
         assert titles == sorted([*titles_before, "Beta"]), last_said
+
+
+# ------------------------------------------ printed card lines, as a School text paste reads them
+
+SUMMARY_HEAD: Final = "Homework for Wren\n"
+"""The weekly summary's heading, before its day lines."""
+
+
+def card_line(
+    badge: str | None,
+    course: str,
+    title: str,
+    instruction: str | None,
+    footer: str | None,
+    y_top: int,
+) -> dict[str, object]:
+    """A printed card line, or a printed subject when ``badge`` is ``None``, as the reader
+    answers it under the prompt in use."""
+    return homework_card(
+        badge=badge,
+        course=course,
+        title=title,
+        instruction=instruction,
+        footer=footer,
+        y_top=y_top,
+        y_bottom=y_top + 60,
+    )
+
+
+def printed_page(day_lines: list[tuple[str, int]], *cards: dict[str, object]) -> dict[str, object]:
+    """The reader's answer for a made-up printed summary: these dated day lines and cards."""
+    return homework_answer(
+        headings=[{"text": text, "y": y, "uncertain": None} for text, y in day_lines],
+        cards=list(cards),
+    )
+
+
+MONDAY_LINE: Final = ("10/5/2026 - Monday", 100)
+CARDS_ONLY_TEXT: Final = (
+    SUMMARY_HEAD + "10/5/2026 - Monday\n"
+    "Art - Assigned: Poster: (Due:10/8/2026)\n"
+    "Use the rubric on the class page.\n"
+    "Math - Due: Worksheet 4:\n"
+    "Show your work for problems 1 to 10.\n"
+)
+CARDS_ONLY: Final = printed_page(
+    [MONDAY_LINE],
+    card_line(
+        "ASSIGNED", "Art", "Poster", "Use the rubric on the class page.", "(Due:10/8/2026)", 200
+    ),
+    card_line("DUE", "Math", "Worksheet 4", "Show your work for problems 1 to 10.", None, 300),
+)
+MIXED_TEXT: Final = (
+    SUMMARY_HEAD + "10/5/2026 - Monday\n"
+    "Humanities -\n"
+    "Read chapter 3 of The Outsiders.\n"
+    "Write two sentences about Ponyboy.\n"
+    "Art - Assigned: Poster: (Due:10/8/2026)\n"
+    "Bring markers on Thursday.\n"
+    "Science -\n"
+    "Lab report due Friday.\n"
+    "Math - Due: Worksheet 4:\n"
+    "Due: check answers with a partner\n"
+    "Use a pencil.\n"
+)
+MIXED: Final = printed_page(
+    [MONDAY_LINE],
+    card_line(
+        None,
+        "Humanities",
+        "Read chapter 3 of The Outsiders.",
+        "Write two sentences about Ponyboy.",
+        None,
+        200,
+    ),
+    card_line("ASSIGNED", "Art", "Poster", "Bring markers on Thursday.", "(Due:10/8/2026)", 300),
+    card_line(None, "Science", "Lab report due Friday.", None, None, 400),
+    card_line(
+        "DUE", "Math", "Worksheet 4", "Due: check answers with a partner\nUse a pencil.", None, 500
+    ),
+)
+"""The mixed page: subjects with words, card lines with lines beneath, and under Math a line
+shaped like a card's label followed by a plain line."""
+
+ART_POSTER: Final = ("Art", "Poster", date(2026, 10, 8), date(2026, 10, 5))
+PAGES: Final = {
+    "cards-only": (
+        CARDS_ONLY_TEXT,
+        [(RED, CARDS_ONLY)],
+        [
+            (*ART_POSTER, "Use the rubric on the class page."),
+            (
+                "Math",
+                "Worksheet 4",
+                date(2026, 10, 5),
+                None,
+                "Show your work for problems 1 to 10.",
+            ),
+        ],
+    ),
+    "mixed": (
+        MIXED_TEXT,
+        [(RED, MIXED)],
+        [
+            (*ART_POSTER, "Bring markers on Thursday."),
+            (
+                "Humanities",
+                "Read chapter 3 of The Outsiders",
+                None,
+                None,
+                "Read chapter 3 of The Outsiders. Write two sentences about Ponyboy.",
+            ),
+            ("Math", "Worksheet 4", date(2026, 10, 5), None, ""),
+            ("Science", "Lab report", date(2026, 10, 9), None, "Lab report due Friday."),
+        ],
+    ),
+    "two-day-lines": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers on Thursday.\n"
+        "10/6/2026 - Tuesday\nMath - Due: Worksheet 4:\nShow your work.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE, ("10/6/2026 - Tuesday", 350)],
+                    card_line(
+                        "ASSIGNED",
+                        "Art",
+                        "Poster",
+                        "Bring markers on Thursday.",
+                        "(Due:10/8/2026)",
+                        200,
+                    ),
+                    card_line("DUE", "Math", "Worksheet 4", "Show your work.", None, 400),
+                ),
+            )
+        ],
+        [
+            (*ART_POSTER, "Bring markers on Thursday."),
+            ("Math", "Worksheet 4", date(2026, 10, 6), None, "Show your work."),
+        ],
+    ),
+    "due-before-its-day-line": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art - Assigned: Poster: (Due:10/2/2026)\nBring markers.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE],
+                    card_line(
+                        "ASSIGNED", "Art", "Poster", "Bring markers.", "(Due:10/2/2026)", 200
+                    ),
+                ),
+            )
+        ],
+        [("Art", "Poster", date(2026, 10, 2), date(2026, 10, 5), "Bring markers.")],
+    ),
+    "assigned-then-due-in-one-screenshot": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers.\n"
+        "10/8/2026 - Thursday\nArt - Due: Poster:\nBring markers.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE, ("10/8/2026 - Thursday", 350)],
+                    card_line(
+                        "ASSIGNED", "Art", "Poster", "Bring markers.", "(Due:10/8/2026)", 200
+                    ),
+                    card_line("DUE", "Art", "Poster", "Bring markers.", None, 400),
+                ),
+            )
+        ],
+        [(*ART_POSTER, "Bring markers.")],
+    ),
+    "assigned-then-due-in-two-screenshots": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers.\n"
+        "10/8/2026 - Thursday\nArt - Due: Poster:\nBring markers.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE],
+                    card_line(
+                        "ASSIGNED", "Art", "Poster", "Bring markers.", "(Due:10/8/2026)", 200
+                    ),
+                ),
+            ),
+            (
+                BLUE,
+                printed_page(
+                    [("10/8/2026 - Thursday", 100)],
+                    card_line("DUE", "Art", "Poster", "Bring markers.", None, 200),
+                ),
+            ),
+        ],
+        [(*ART_POSTER, "Bring markers.")],
+    ),
+    "a-subject-and-a-card-of-one-class": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art -\nPoster due Thursday.\n"
+        "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE],
+                    card_line(None, "Art", "Poster due Thursday.", None, None, 200),
+                    card_line(
+                        "ASSIGNED", "Art", "Poster", "Bring markers.", "(Due:10/8/2026)", 300
+                    ),
+                ),
+            )
+        ],
+        [(*ART_POSTER, "Bring markers.")],
+    ),
+    "due-text-with-a-space": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Art - Assigned: Poster: (Due: 10/8/2026)\nBring markers.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE],
+                    card_line(
+                        "ASSIGNED", "Art", "Poster", "Bring markers.", "(Due: 10/8/2026)", 200
+                    ),
+                ),
+            )
+        ],
+        [(*ART_POSTER, "Bring markers.")],
+    ),
+    "a-due-text-inside-an-instruction-line": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\n"
+        "Math - Due: Worksheet 4:\nFinish it at home (Due: Friday)\nUse a pencil.\n",
+        [
+            (
+                RED,
+                printed_page(
+                    [MONDAY_LINE],
+                    card_line(
+                        "DUE",
+                        "Math",
+                        "Worksheet 4",
+                        "Finish it at home (Due: Friday)\nUse a pencil.",
+                        None,
+                        200,
+                    ),
+                ),
+            )
+        ],
+        [("Math", "Worksheet 4", date(2026, 10, 5), None, "")],
+    ),
+}
+"""Made-up printed summaries: each as pasted text, as the reader's answers for its screenshots
+under the prompt in use, and the assignments a Save of either writes, as ``written_by_save`` gives
+them."""
+
+
+Written = tuple[str, str, date | None, date | None, str]
+"""An assignment as ``written_by_save`` gives it."""
+
+
+def written_by_save(browser: TestClient, before: set[str]) -> list[Written]:
+    """Every assignment on record that isn't among ``before``: its class, title, due date,
+    assigned date, and the school instructions kept under it, their words single-spaced and
+    joined by single spaces, sorted."""
+    record = state_of(browser).project_state
+    made_now = [a for a in record.all_assignments() if a.assignment_id not in before]
+    readable = record.school_instruction_readings([a.assignment_id for a in made_now]).readable
+    return sorted(
+        (
+            a.course,
+            a.title,
+            a.due_date,
+            a.assigned_on,
+            " ".join(
+                " ".join(each.text for each in readable[a.assignment_id].kept).split()
+                if a.assignment_id in readable
+                else []
+            ),
+        )
+        for a in made_now
+    )
+
+
+def every_offer(page: str) -> dict[str, str]:
+    """The School text review form as a browser sends it with every offer ticked: hidden
+    fields, each select's chosen option, every box but a "none applies" one, and the text."""
+    fields = {
+        name: html.unescape(value)
+        for name, value in re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', page)
+    }
+    for name, body in re.findall(r'<select name="([^"]+)"[^>]*>(.*?)</select>', page, re.S):
+        chosen = re.search(r'<option value="([^"]+)" selected>', body)
+        assert chosen is not None, name
+        fields[name] = chosen.group(1)
+    for name in re.findall(r'<input type="checkbox" name="([^"]+)" value="1"', page):
+        if not name.startswith("none-"):
+            fields[name] = "1"
+    text = re.search(r'<textarea name="text" hidden>(.*?)</textarea>', page, re.S)
+    assert text is not None
+    fields["text"] = html.unescape(text.group(1))
+    return fields
+
+
+def pasted_and_saved(browser: TestClient, text: str) -> tuple[str, list[Written]]:
+    """The School text review of ``text``, and what its Save writes with every offer ticked."""
+    before = ids_on_record(browser)
+    page = browser.post("/parent/inbox/read", data={"text": text}).text
+    kept = browser.post("/parent/inbox/keep", data=every_offer(page))
+    assert kept.status_code == 303, kept.text[:600]
+    return page, written_by_save(browser, before)
+
+
+def read_and_saved(
+    browser: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    answers: Sequence[tuple[bytes, object]],
+) -> tuple[str, list[Written]]:
+    """The screenshot review of images read as these answers, and what its Save writes with
+    every group ticked."""
+    before = ids_on_record(browser)
+    draft_id, read = read_review(browser, monkeypatch, *answers)
+    page = answered(browser, draft_id, read)
+    saved = send(browser, draft_id, page_post(page, "save", tick=units_on(page)))
+    followed(browser, saved)
+    return page, written_by_save(browser, before)
+
+
+@pytest.mark.parametrize("name", list(PAGES))
+def test_a_printed_summary_s_screenshot_saves_what_its_school_text_paste_saves(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """A printed summary read from its screenshots, every group ticked, writes the same
+    assignments as the same summary pasted as School text with every offer ticked: the same
+    class, title, due date, assigned date and instruction words, on records of their own."""
+    text, answers, written = PAGES[name]
+    with here(open_settings(tmp_path / "pasted")) as browser:
+        _, pasted = pasted_and_saved(browser, text)
+    with here(open_settings(tmp_path / "read")) as browser:
+        _, read = read_and_saved(browser, monkeypatch, answers)
+
+    assert pasted == written
+    assert read == written
+
+
+def test_the_mixed_page_offers_math_and_shows_its_two_set_aside_lines(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On the mixed page, Math is offered and saved without the line shaped like a card's
+    label and the line after it, and the review shows both lines apart for review, with the
+    card they came from."""
+    with here(open_settings(tmp_path)) as browser:
+        page, read = read_and_saved(browser, monkeypatch, [(RED, MIXED)])
+
+    shown = html.unescape(page)
+    unread = shown.split('id="unread-heading"', 1)[1]
+    assert "Math" in courses_offered(page)
+    assert ("Math", "Worksheet 4", date(2026, 10, 5), None, "") in read
+    assert "Due: check answers with a partner" in unread
+    assert "Use a pencil." in unread
+    assert "Due: check answers with a partner" not in shown.split('id="unread-heading"', 1)[0]
+
+
+LIVE_MIXED: Final = printed_page(
+    [MONDAY_LINE],
+    card_line(
+        None,
+        "Humanities",
+        "Read chapter 3 of The Outsiders.",
+        "Write two sentences about Ponyboy.",
+        None,
+        200,
+    ),
+    card_line("ASSIGNED", "Art", "Poster", "Bring markers on Thursday.", "(Due:10/8/2026)", 300),
+    card_line(None, "Science", "Lab report due Friday.", None, None, 400),
+    card_line(
+        "DUE",
+        "Math",
+        "Worksheet 4",
+        "Show your work.\nDue: check answers with a partner\nUse a pencil.",
+        None,
+        500,
+    ),
+)
+"""The live read's mixed image as the reader is asked to answer it: the mixed page with "Show
+your work." above Math's line shaped like a card's label. Its School text paste is no control:
+School text reads a plain line before a line shaped like a card's label as a card of its own
+(#265), so the mixed page is the paste-parity control."""
+
+
+def test_the_live_mixed_page_offers_math_with_its_kept_line_and_shows_two_lines_apart(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On the live read's mixed page, Math is offered and selectable with "Show your work." as
+    its only instruction, the line shaped like a card's label and the line after it are shown
+    apart, and Save writes Math once, with no assignment from those lines."""
+    with here(open_settings(tmp_path)) as browser:
+        page, read = read_and_saved(browser, monkeypatch, [(RED, LIVE_MIXED)])
+
+    offered, unread = html.unescape(page).split('id="unread-heading"', 1)
+    assert "Math" in courses_offered(page)
+    assert "Show your work." in offered
+    assert "Due: check answers with a partner" in unread
+    assert "Use a pencil." in unread
+    assert "Due: check answers with a partner" not in offered
+    assert "Use a pencil." not in offered
+    assert [row for row in read if row[0] == "Math"] == [
+        ("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work.")
+    ]
+    assert read == [
+        (*ART_POSTER, "Bring markers on Thursday."),
+        (
+            "Humanities",
+            "Read chapter 3 of The Outsiders",
+            None,
+            None,
+            "Read chapter 3 of The Outsiders. Write two sentences about Ponyboy.",
+        ),
+        ("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work."),
+        ("Science", "Lab report", date(2026, 10, 9), None, "Lab report due Friday."),
+    ]
+
+
+def unread_items(page: str) -> list[str]:
+    """The paragraph of each item under "Couldn't read", as the page writes it, in page order."""
+    return re.findall(r"<li><p>(.*?)</p>", page.split('id="unread-heading"', 1)[1], re.S)
+
+
+def test_the_lines_kept_apart_are_one_item_shown_line_by_line(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lines kept apart from a card's instructions are one item, its paragraph naming the
+    card they came from and then each line in its order, with a line break before each, so a
+    parent can tell where one ends and the next begins."""
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, LIVE_MIXED))
+
+    assert unread_items(page) == [
+        "From card 4: Math · Worksheet 4<br>Due: check answers with a partner<br>Use a pencil."
+    ]
+
+
+KEPT_APART_NOTE: Final = (
+    "Blossom leaves these lines out of the card's instructions because the first line looks like"
+    " another card or a date. Check them against the screenshot."
+)
+"""The note over the lines kept apart from a card's instructions."""
+
+
+def test_the_note_over_lines_kept_apart_holds_before_and_after_save_and_after_leaving_the_card(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The note over the lines kept apart says what Blossom did with them and nothing about
+    whether their card is offered, so it holds before Save, after Save, and after the card's
+    group is left unsaved; the item stays each time."""
+    with here(open_settings(tmp_path / "saved")) as browser:
+        draft_id, before = read_review(browser, monkeypatch, (RED, LIVE_MIXED))
+        page = answered(browser, draft_id, before)
+        save = page_post(page, "save", tick=units_on(page))
+        saved = followed(browser, send(browser, draft_id, save))
+    with here(open_settings(tmp_path / "left")) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, LIVE_MIXED))
+        page = her_name_answered(browser, draft_id, read)
+        leave = "Leave this group unsaved for Worksheet 4 (screenshot 1, card 4)"
+        left = press_button_named(browser, draft_id, page, leave)
+
+    assert "Math" not in courses_offered(left)
+    for shown in (before, saved, left):
+        assert KEPT_APART_NOTE in html.unescape(shown)
+        assert "The card is offered" not in html.unescape(shown)
+        assert len(unread_items(shown)) == 1
+
+
+def test_an_item_of_another_group_shows_its_text_as_before(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the lines kept apart are shown line by line: an item of another group whose text has
+    a line break, a printed Assigned card with no due line, is shown as before, its text in one
+    paragraph with no line break added."""
+    answer = printed_page(
+        [MONDAY_LINE],
+        card_line("ASSIGNED", "Art", "Poster", "Due: Thursday\nBring markers.", None, 200),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, answer))
+
+    assert unread_items(page) == ["Card 1: Art · Poster · Due: Thursday\nBring markers."]
+
+
+def button_attributes(opening: str) -> dict[str, str | None]:
+    """A button's attributes as Python's HTML parser reads its opening tag: names in lower case
+    and values unquoted, whichever quotes, or none, they were written with. A name written twice
+    keeps its first value, as a browser keeps it."""
+    found: dict[str, str | None] = {}
+
+    class Reader(HTMLParser):
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            for name, value in attrs:
+                found.setdefault(name, value)
+
+    Reader().feed(opening)
+    return found
+
+
+def buttons_named(page: str) -> dict[str, str]:
+    """Each button by its accessible name as the accessible-name rules give it for these buttons
+    (its aria-label when it has one, else its text with tags dropped and spaces joined, a visually
+    hidden part included), with its opening tag. Its attributes are read by the HTML parser, so
+    their quoting and letter case don't matter. A button whose role attribute names another role
+    isn't one, and a button named by aria-labelledby is refused: the names those give aren't read
+    here."""
+    out: dict[str, str] = {}
+    for attributes, inner in re.findall(r"<button([^>]*)>(.*?)</button>", page, re.S):
+        read = button_attributes(f"<button{attributes}>")
+        role = read.get("role")
+        if role is not None and role.strip().lower() != "button":
+            continue
+        assert "aria-labelledby" not in read, f"aria-labelledby: <button{attributes}>"
+        label = read.get("aria-label")
+        text = html.unescape(re.sub(r"<[^>]+>", "", inner)) if label is None else label
+        out.setdefault(" ".join(text.split()), f"<button{attributes}>")
+    return out
+
+
+def ticked_units(page: str) -> list[str]:
+    """The groups the review form shows ticked."""
+    return [value for name, value in checked_values(review_form(page)) if name == "unit"]
+
+
+def units_by_course(page: str) -> dict[str, str]:
+    """Each offered group of one card by the class its course box holds."""
+    form = review_form(page)
+    out: dict[str, str] = {}
+    for subject in fields_named(form, "correct:"):
+        piece, field = json.loads(subject)[:2]
+        box = box_of(form, f"correct:{subject}")
+        if field == "course" and box is not None and piece in units_on(page):
+            out[box[1]] = piece
+    return out
+
+
+def press_button_named(
+    browser: TestClient,
+    draft_id: str,
+    page: str,
+    name: str,
+    *,
+    tick: Sequence[str] | None = None,
+) -> str:
+    """The page after the button of this accessible name is pressed as a browser with scripts
+    off presses it: a button that names another form sends that form's fields alone; a button of
+    the review form sends the review form, with the groups in ``tick`` ticked (else those the
+    page shows ticked), and its own name and value."""
+    tag = buttons_named(page)[name]
+    form = import_review_cases.attribute(tag, "form")
+    if form is not None and form != "review-form":
+        return followed(browser, press_outside(browser, page, form))
+    press = import_review_cases.attribute(tag, "value") or ""
+    ticked = ticked_units(page) if tick is None else list(tick)
+    return followed(browser, send(browser, draft_id, page_post(page, press, tick=ticked)))
+
+
+def test_the_lines_kept_apart_have_a_set_aside_button_named_for_those_lines(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Set aside button of the lines kept apart from a card's instructions is named, for a
+    screen reader, for those lines and the card they came from, its visible text "Set aside":
+    found by its role and that full name, as the accessible-name rules give it (an aria-label
+    would override it). Pressed, it sets the lines aside alone: the card stays offered, its ticks
+    as they were, with the line it keeps."""
+    full = "Set aside the lines kept apart from card 4 of screenshot 1"
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, LIVE_MIXED))
+        page = her_name_answered(browser, draft_id, page)
+        named = buttons_named(page)
+        left = press_button_named(browser, draft_id, page, full)
+
+    shown = html.unescape(left)
+    assert full in named
+    assert "Set aside for card 4 of screenshot 1" not in named
+    assert '>Set aside<span class="visually-hidden">' in page
+    assert "Due: check answers with a partner" not in shown
+    assert "Use a pencil." not in shown
+    assert courses_offered(left) == courses_offered(page)
+    assert checked_values(review_form(left)) == checked_values(review_form(page))
+    assert units_on(left) == units_on(page)
+    assert "Show your work." in shown
+
+
+def test_a_whole_card_s_set_aside_button_keeps_its_name(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the lines kept apart get the new name: a card that couldn't be read, here a printed
+    Assigned card with no due line, keeps its button named for the card."""
+    answer = printed_page(
+        [MONDAY_LINE],
+        card_line("ASSIGNED", "Art", "Poster", "Due: Thursday\nBring markers.", None, 200),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        _, page = read_review(browser, monkeypatch, (RED, answer))
+
+    named = buttons_named(page)
+    assert "Set aside for card 1 of screenshot 1" in named
+    assert [name for name in named if name.startswith("Set aside the lines")] == []
+
+
+WITH_AN_UNDATED_CARD: Final = {
+    **LIVE_MIXED,
+    "cards": [
+        *LIVE_MIXED["cards"],  # type: ignore[misc]
+        card_line("ASSIGNED", "Music", "Song", "Bring the sheet music.", None, 600),
+    ],
+}
+"""The live mixed page with a printed Assigned card with no due line beneath it, so the review
+holds an item of the lines kept apart and an item of a card whose date couldn't be told."""
+
+
+@pytest.mark.parametrize(
+    ("button", "other"),
+    [
+        (
+            "Set aside the lines kept apart from card 4 of screenshot 1",
+            "Set aside for card 5 of screenshot 1",
+        ),
+        (
+            "Set aside for card 5 of screenshot 1",
+            "Set aside the lines kept apart from card 4 of screenshot 1",
+        ),
+    ],
+    ids=["lines-kept-apart", "date-couldn-t-be-told"],
+)
+def test_set_aside_keeps_the_ticks_just_changed_and_sets_aside_its_item_alone(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, button: str, other: str
+) -> None:
+    """With Math unticked and Science ticked on the page and neither kept, a "Couldn't read"
+    item's Set aside sets that item aside alone and keeps both choices: the page comes back with
+    the other item still there, Math unticked and Science ticked, and nothing written; the next
+    Save writes Science and not Math."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        units = units_by_course(page)
+        shown = ticked_units(page)
+        changed = [unit for unit in shown if unit != units["Math"]] + [units["Science"]]
+        after = press_button_named(browser, draft_id, page, button, tick=changed)
+        written_by_the_press = written_by_save(browser, before)
+        ticked_after = ticked_units(after)
+        followed(browser, send(browser, draft_id, page_post(after, "save", tick=ticked_after)))
+        written = written_by_save(browser, before)
+
+    assert units["Math"] in shown
+    assert units["Science"] not in shown
+    assert button not in buttons_named(after)
+    assert other in buttons_named(after)
+    assert units["Math"] not in ticked_after
+    assert units["Science"] in ticked_after
+    assert written_by_the_press == []
+    assert "Science" in [row[0] for row in written]
+    assert "Math" not in [row[0] for row in written]
+
+
+A_DATED_MUSIC_CARD: Final = printed_page(
+    [MONDAY_LINE],
+    card_line("DUE", "Music", "Song", "Bring the sheet music.", "(Due:10/9/2026)", 200),
+)
+"""A printed page with one dated card of a class the mixed page doesn't hold: the screenshot
+added to a review after it is read."""
+
+
+def test_set_aside_with_the_ticks_as_drawn_leaves_a_later_screenshot_s_defaults_as_without_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With nothing saved and the ticks left as the page drew them, Set aside sets its item
+    aside and writes no ticks: saved progress and its revision stay as they were, and a dated
+    Music screenshot added afterwards gets the same ticks as in a run that skipped Set aside,
+    Music ticked by default."""
+    reader = Reader(monkeypatch)
+    reader.answers[RED] = ScreenshotAnswer(WITH_AN_UNDATED_CARD, None, 10, 5)
+    reader.answers[GREEN] = ScreenshotAnswer(A_DATED_MUSIC_CARD, None, 10, 5)
+    card = "Set aside for card 5 of screenshot 1"
+    ticks: dict[str, dict[str, bool]] = {}
+    progress: dict[str, tuple[str | None, int]] = {}
+    for run in ("skipped", "set-aside"):
+        folder = tmp_path / run
+        folder.mkdir()
+        with here(open_settings(folder)) as browser:
+            draft_id = made(browser, RED)
+            shown = browser.get(f"/parent/imports/{draft_id}").text
+            read = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(shown)).text
+            page = her_name_answered(browser, draft_id, read)
+            student = state_of(browser).project_state.student_id()
+            store = state_of(browser).import_drafts
+            drawn = store.snapshot(student, draft_id)
+            if run == "set-aside":
+                page = press_button_named(browser, draft_id, page, card)
+            left = store.snapshot(student, draft_id)
+            progress[run] = (left.progress, left.progress_revision)
+            upload(browser, GREEN, form={}, to=f"/parent/imports/{draft_id}/images")
+            shown = browser.get(f"/parent/imports/{draft_id}").text
+            added = browser.post(f"/parent/imports/{draft_id}/read", data=read_form(shown)).text
+            on = ticked_units(added)
+            ticks[run] = {course: unit in on for course, unit in units_by_course(added).items()}
+
+        assert (drawn.progress, drawn.progress_revision) == (None, 0)
+        assert (card in buttons_named(page)) == (run == "skipped")
+
+    assert ticks["skipped"]["Music"]
+    assert ticks["set-aside"] == ticks["skipped"]
+    assert progress["set-aside"] == progress["skipped"] == (None, 0)
+
+
+def test_set_aside_keeps_every_group_unticked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With every group unticked on the page and nothing kept, a "Couldn't read" item's Set
+    aside keeps that choice too: the page comes back with nothing ticked and nothing written,
+    and the next Save writes nothing."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        before = ids_on_record(browser)
+        after = press_button_named(
+            browser, draft_id, page, "Set aside for card 5 of screenshot 1", tick=[]
+        )
+        written_by_the_press = written_by_save(browser, before)
+        followed(browser, send(browser, draft_id, page_post(after, "save", tick=[])))
+
+        assert ticked_units(page) != []
+        assert ticked_units(after) == []
+        assert written_by_the_press == []
+        assert written_by_save(browser, before) == []
+
+
+@pytest.mark.parametrize("saved", ["kept-with-math-unticked", "left-by-save-with-math-unticked"])
+def test_set_aside_with_the_ticks_as_drawn_leaves_a_saved_selection_as_it_is(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, saved: str
+) -> None:
+    """With ticks already saved, by Keep these answers or left by Save, Set aside with the ticks
+    as the page drew them sets its item aside and leaves the saved progress and its revision as
+    they were, so the review reopens with the same ticks."""
+    card = "Set aside for card 5 of screenshot 1"
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        math = units_by_course(page)["Math"]
+        ticks = [unit for unit in ticked_units(page) if unit != math]
+        press = "keep" if saved.startswith("kept") else "save"
+        page = followed(browser, send(browser, draft_id, page_post(page, press, tick=ticks)))
+        student = state_of(browser).project_state.student_id()
+        store = state_of(browser).import_drafts
+        drawn = store.snapshot(student, draft_id)
+        after = press_button_named(browser, draft_id, page, card)
+        pressed = store.snapshot(student, draft_id)
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert drawn.progress is not None
+    assert math not in ticked_units(page)
+    assert says(after, imports.AFTER_SAID["set_aside"])
+    assert card not in buttons_named(after)
+    assert pressed.progress == drawn.progress
+    assert pressed.progress_revision == drawn.progress_revision
+    assert ticked_units(reloaded) == ticked_units(page)
+
+
+@pytest.mark.parametrize("kept", ["other-ticks", "this-page-s-own-ticks"])
+def test_set_aside_from_a_page_whose_ticks_moved_on_sets_nothing_aside(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, kept: str
+) -> None:
+    """A page whose saved ticks another page has since kept, the review's version where it was (a
+    keep of ticks alone moves the progress revision alone), other ticks or the very ticks this
+    page shows: that page's Set aside sets nothing aside and says it is out of date, so it never
+    sets an item aside while dropping the ticks it carried, and the ticks the other page kept
+    stand."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        first = her_name_answered(browser, draft_id, read)
+        math = units_by_course(first)["Math"]
+        kept_ticks = [u for u in ticked_units(first) if kept != "other-ticks" or u != math]
+        student = state_of(browser).project_state.student_id()
+        store = state_of(browser).import_drafts
+        drawn = store.snapshot(student, draft_id)
+        store.keep_selection(
+            student,
+            draft_id,
+            progress_revision=drawn.progress_revision,
+            selection=lambda progress: selection_text(progress, rows_of_units(kept_ticks)),
+        )
+        moved = store.snapshot(student, draft_id)
+        after = press_button_named(browser, draft_id, first, "Set aside for card 5 of screenshot 1")
+        states = row_states(browser, draft_id)
+        left = store.snapshot(student, draft_id)
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+
+    assert (moved.version, moved.progress_revision) == (drawn.version, drawn.progress_revision + 1)
+    assert math in ticked_units(first)
+    assert says(after, imports.OUT_OF_DATE)
+    assert says(after, imports.AFTER_SAID["nothing_set_aside"])
+    assert "discarded" not in states.values()
+    assert (left.progress, left.progress_revision) == (moved.progress, moved.progress_revision)
+    assert set(ticked_units(reloaded)) == set(kept_ticks)
+
+
+@pytest.mark.parametrize(
+    "pressed",
+    [
+        "Set aside the lines kept apart from card 4 of screenshot 1",
+        "Set aside for card 5 of screenshot 1",
+    ],
+    ids=["the-same-item", "another-item"],
+)
+@pytest.mark.parametrize("first_ticks", ["math-unticked-science-ticked", "as-a-load-shows"])
+def test_set_aside_from_a_second_tab_behind_the_first_says_the_page_is_out_of_date(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, pressed: str, first_ticks: str
+) -> None:
+    """The review open in two tabs: the first sets aside the lines kept apart, with Math
+    unticked and Science ticked, or with the ticks a fresh load shows, which writes no ticks and
+    moves the review's version alone. A Set aside from the second tab, on that same item or on
+    another, says the page is out of date and sets nothing aside, never that its button couldn't
+    be checked, and the first tab's choices stand: the next Save writes Art and Science, or Art
+    and Math."""
+    first = "Set aside the lines kept apart from card 4 of screenshot 1"
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        second_tab = page
+        before = ids_on_record(browser)
+        units = units_by_course(page)
+        chosen = ticked_units(page)
+        if first_ticks != "as-a-load-shows":
+            chosen = [unit for unit in chosen if unit != units["Math"]] + [units["Science"]]
+        press_button_named(browser, draft_id, page, first, tick=chosen)
+        states = row_states(browser, draft_id)
+        refused = press_button_named(browser, draft_id, second_tab, pressed)
+        after = row_states(browser, draft_id)
+        reloaded = browser.get(f"/parent/imports/{draft_id}").text
+        save = page_post(reloaded, "save", tick=ticked_units(reloaded))
+        followed(browser, send(browser, draft_id, save))
+        written = sorted(row[0] for row in written_by_save(browser, before))
+
+    assert says(refused, imports.OUT_OF_DATE)
+    assert says(refused, imports.AFTER_SAID["nothing_set_aside"])
+    assert not says(refused, imports.AFTER_SAID["unchecked"])
+    assert after == states
+    assert set(ticked_units(reloaded)) == set(chosen)
+    assert written == (["Art", "Math"] if first_ticks == "as-a-load-shows" else ["Art", "Science"])
+
+
+def test_a_keep_landing_after_set_aside_checks_the_page_still_stops_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another page keeps this page's very ticks after Set aside has checked the page against
+    the review and before the item is set aside: the store checks the progress revision as it
+    writes, even with no ticks to write, so nothing is set aside, the page is told it is out of
+    date, and the ticks the other page kept stand."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        ticks = rows_of_units(ticked_units(page))
+        student = state_of(browser).project_state.student_id()
+        store = state_of(browser).import_drafts
+        set_aside: Callable[..., Any] = store.set_aside
+
+        def kept_first(*args: object, **kwargs: object) -> object:
+            store.keep_selection(
+                student,
+                draft_id,
+                progress_revision=store.snapshot(student, draft_id).progress_revision,
+                selection=lambda progress: selection_text(progress, ticks),
+            )
+            return set_aside(*args, **kwargs)
+
+        monkeypatch.setattr(store, "set_aside", kept_first)
+        after = press_button_named(browser, draft_id, page, "Set aside for card 5 of screenshot 1")
+        states = row_states(browser, draft_id)
+        kept = store.snapshot(student, draft_id)
+
+    assert says(after, imports.OUT_OF_DATE)
+    assert says(after, imports.AFTER_SAID["nothing_set_aside"])
+    assert "discarded" not in states.values()
+    assert kept.progress_revision == 1
+    assert kept.progress is not None
+
+
+def test_set_aside_keeps_the_ticks_whatever_is_typed_and_typing_goes_as_before(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Typing in an open card, even a correction longer than its box takes, neither holds a
+    Set aside nor is kept by it: the item is set aside, the ticks the page carried are kept,
+    and the typing is gone, as Set aside has always left it."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        art = units_by_course(page)["Art"]
+        opened = import_review_cases.open_cards(browser, draft_id, page, [f"correct:{art}"])
+        box = next(
+            f"correct:{subject}"
+            for subject in fields_named(review_form(opened), "correct:")
+            if json.loads(subject)[:2] == [art, "course"]
+        )
+        ticked = ticked_units(opened)
+        press = buttons_named(opened)["Set aside for card 5 of screenshot 1"]
+        post = page_post(
+            opened,
+            import_review_cases.attribute(press, "value") or "",
+            tick=ticked,
+            typed={box: "Art " + "x" * 5000},
+        )
+        after = followed(browser, send(browser, draft_id, post))
+        states = row_states(browser, draft_id)
+
+    assert says(after, imports.AFTER_SAID["set_aside"])
+    assert sorted(states.values()).count("discarded") == 1
+    assert set(ticked_units(after)) == set(ticked)
+    assert "x" * 50 not in after
+
+
+@pytest.mark.parametrize(
+    "named", ["an-offered-row", "no-key-of-this-review", "an-item-already-set-aside"]
+)
+def test_a_set_aside_press_naming_no_item_the_page_shows_sets_nothing_aside(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, named: str
+) -> None:
+    """A Set aside press whose key isn't one of the review's open "Couldn't read" items, an
+    offered homework row, a key the review doesn't hold, or an item already set aside named from
+    the page drawn after it, sets nothing aside and says the page's button couldn't be checked."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        row = units_by_course(page)["Math"].split("+")[0].split("|")[0]
+        key = row if named == "an-offered-row" else "0" * 64
+        if named == "an-item-already-set-aside":
+            card = "Set aside for card 5 of screenshot 1"
+            press = import_review_cases.attribute(buttons_named(page)[card], "value") or ""
+            key = press.removeprefix("set-aside:")
+            page = press_button_named(browser, draft_id, page, card)
+        before = row_states(browser, draft_id)
+        after = followed(browser, send(browser, draft_id, set_aside_post(page, f"set-aside:{key}")))
+        states = row_states(browser, draft_id)
+
+    assert says(after, imports.AFTER_SAID["unchecked"])
+    assert states == before
+    assert list(states.values()).count("discarded") == int(named == "an-item-already-set-aside")
+
+
+@pytest.mark.parametrize("alteration", ["the signature changed", "a tick the page didn't sign"])
+def test_a_set_aside_post_that_fails_its_checks_says_its_button_couldn_t_be_checked(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, alteration: str
+) -> None:
+    """A Set aside post the review can't check sets nothing aside, keeps none of its ticks, and
+    says the page's button couldn't be checked, as a press naming no item does."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        page = her_name_answered(browser, draft_id, read)
+        card = buttons_named(page)["Set aside for card 5 of screenshot 1"]
+        press = import_review_cases.attribute(card, "value") or ""
+        before = row_states(browser, draft_id)
+        forged = ALTERATIONS[alteration](set_aside_post(page, press))
+        after = followed(browser, send(browser, draft_id, forged))
+        states = row_states(browser, draft_id)
+
+    assert says(after, imports.AFTER_SAID["unchecked"])
+    assert states == before
+    assert set(ticked_units(after)) == set(ticked_units(page))
+
+
+def test_every_set_aside_is_pressed_past_a_question_the_form_requires(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A question whose answer came back twice with different values is asked again with no
+    choice made and an answer required. Each Set aside skips the browser's own check of the
+    review form's required answers, so with scripts off it can still be pressed there, as the
+    separate form it replaced, which asked nothing, could."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, read = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        named = re.search(r'name="(answer:name:[0-9a-f]{64})"', review_form(read))
+        assert named is not None
+        twice = import_review_cases.raw_post(
+            page_post(read, "keep"), added=[(named.group(1), "hers"), (named.group(1), "misread")]
+        )
+        page = followed(browser, send(browser, draft_id, twice))
+
+    asks = [
+        tag
+        for tag in re.findall(r"<input[^>]*>", review_form(page))
+        if f'name="{named.group(1)}"' in tag
+    ]
+    buttons = re.findall(r'<button[^>]*name="press" value="set-aside:[0-9a-f]{64}"[^>]*>', page)
+    assert len(asks) == 2
+    assert all(re.search(r"\srequired[\s>]", tag) for tag in asks)
+    assert len(buttons) == 2
+    assert all(re.search(r"\sformnovalidate[\s>]", tag) for tag in buttons)
+
+
+def first_review_press(page: str) -> str:
+    """The value of the review form's first submit button, the one Enter in its boxes and
+    choices presses: the first button in the page the form owns, inside it with no form of its
+    own or outside it naming it."""
+    start = page.index('id="review-form"')
+    end = page.index("</form>", start)
+    for found in re.finditer(r"<button([^>]*)>", page):
+        tag = found.group(0)
+        if import_review_cases.attribute(tag, "type") != "submit":
+            continue
+        form = import_review_cases.attribute(tag, "form")
+        if form == "review-form" or (form is None and start < found.start() < end):
+            return import_review_cases.attribute(tag, "value") or ""
+    return ""
+
+
+@pytest.mark.parametrize("shown", ["with cards", "after Save"])
+def test_no_set_aside_is_the_review_form_s_first_press(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, shown: str
+) -> None:
+    """Enter in a box or a choice presses the review form's first submit button, so no Set aside
+    is ever it: Review changes on a page with a card shown, and Keep these answers on the page
+    after Save, where no card is shown, every screenshot is read, and nothing above the form
+    copies its default press."""
+    with here(open_settings(tmp_path)) as browser:
+        draft_id, page = read_review(browser, monkeypatch, (RED, WITH_AN_UNDATED_CARD))
+        if shown == "after Save":
+            page = answered(browser, draft_id, page)
+            save = page_post(page, "save", tick=units_on(page))
+            page = followed(browser, send(browser, draft_id, save))
+
+    assert aside_presses(page) != []
+    assert first_review_press(page) == ("review" if shown == "with cards" else "keep")
+
+
+@pytest.mark.parametrize("first", ["screenshot", "paste"])
+@pytest.mark.parametrize("name", ["cards-only", "mixed"])
+def test_a_printed_summary_imported_both_ways_in_either_order_is_written_once(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, name: str, first: str
+) -> None:
+    """The same summary saved from its screenshot and from its School text paste, in either
+    order, every offer ticked each time, is written once: the second import writes nothing."""
+    text, answers, written = PAGES[name]
+    with here(open_settings(tmp_path)) as browser:
+        if first == "screenshot":
+            _, once = read_and_saved(browser, monkeypatch, answers)
+            _, again = pasted_and_saved(browser, text)
+        else:
+            _, once = pasted_and_saved(browser, text)
+            _, again = read_and_saved(browser, monkeypatch, answers)
+
+    assert once == written
+    assert again == []
+
+
+V1C_REVIEW: Final = printed_page(
+    [MONDAY_LINE],
+    card_line("ASSIGNED", "Art", "Poster", "Bring markers.", "(Due:10/8/2026)", 210),
+    card_line(
+        "DUE", "Math", "Worksheet 4", "Due: check answers with a partner\nUse a pencil.", None, 300
+    ),
+    card_line("ASSIGNED", "Music", "Song", None, "Due (10/9/2026)", 390),
+)
+"""A printed page read under prompt v1c: a printed Assigned card, a Due card whose
+instruction begins with a line shaped like a card's label, and a card with the portal's due
+line."""
+V1C_MATH_KEY: Final = "42a5f149c10aee7ca0374342f442ed43d927e9e71e68e89e809509f9880409fd"
+"""Math / Worksheet 4's row key under v1c, as main gives it, its two lines its instruction."""
+V1C_MUSIC_KEY: Final = "08ceda9d2335b568c639655b8aefbce2375ac72fe85aec033f1e51cbd6b641c8"
+"""Music / Song's row key under v1c, as main gives it."""
+
+
+def test_a_v1c_review_saved_for_later_reopens_with_its_rows_and_its_tick_as_main_read_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reading stored under prompt v1c reads its cards as v1c did: the printed Assigned card
+    has no date it can be saved under, and the Due card keeps both of its lines as its
+    instruction, so its rows have the keys main gives them. Saved for later with Math ticked,
+    the review reopens with the same rows, Math ticked and Music not, and the reader is never
+    called; Save from the reopened page writes Math with both lines."""
+    called: list[bytes] = []
+
+    def never(settings: Settings, png_bytes: bytes, *, timeout: float) -> ScreenshotAnswer:
+        called.append(png_bytes)
+        pytest.fail("the reader was called")
+
+    monkeypatch.setattr(screenshot_reading, "read_screenshot", never)
+    with here(open_settings(tmp_path)) as browser:
+        draft_id = made(browser, RED)
+        read_under(browser, draft_id, V1C_REVIEW, "v1c")
+        page = her_name_answered(browser, draft_id, loaded(browser, draft_id))
+        student = state_of(browser).project_state.student_id()
+        drafts = state_of(browser).import_drafts
+        stored = drafts.snapshot(student, draft_id).readings
+        keys = screenshots.homework_rows(stored)
+        followed(browser, send(browser, draft_id, page_post(page, "later", tick=[V1C_MATH_KEY])))
+        reopened = loaded(browser, draft_id)
+        before = ids_on_record(browser)
+        sent = page_post(reopened, "save", tick=units_ticked(reopened))
+        followed(browser, send(browser, draft_id, sent))
+        rows = written_by_save(browser, before)
+
+    assembly = screenshots.homework_assembly(stored, now=screenshots.KEY_INSTANT)
+    assert [reading.prompt_version for reading in stored] == ["v1c"]
+    assert [row.key for row in keys if row.readable] == [V1C_MUSIC_KEY, V1C_MATH_KEY]
+    assert [item.reason for item in assembly.unread] == ["no_day"]
+    assert units_on(page) == units_on(reopened)
+    assert sorted(units_on(reopened)) == sorted([V1C_MATH_KEY, V1C_MUSIC_KEY])
+    assert units_ticked(reopened) == [V1C_MATH_KEY]
+    assert rows == [
+        (
+            "Math",
+            "Worksheet 4",
+            date(2026, 10, 5),
+            None,
+            "Due: check answers with a partner Use a pencil.",
+        )
+    ]
+    assert called == []
+
+
+def test_a_subject_whose_words_run_over_a_card_line_stays_a_card_that_couldnt_be_read(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the prompt in use, a printed subject whose words, as read, run over the card line
+    beneath it is still a card that couldn't be read, so nothing of it is offered, and the Read
+    writes no assignment: the assignments on record before the Read are compared with those
+    right after it, before any Save."""
+    swallowed = printed_page(
+        [MONDAY_LINE],
+        card_line(
+            None,
+            "Humanities",
+            "Read chapter 3 of The Outsiders.",
+            "Write two sentences about Ponyboy.\n"
+            "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers on Thursday.",
+            None,
+            200,
+        ),
+    )
+    with here(open_settings(tmp_path)) as browser:
+        before = ids_on_record(browser)
+        _, read = read_review(browser, monkeypatch, (RED, swallowed))
+        written_by_the_read = written_by_save(browser, before)
+
+    assert 'id="unread-heading"' in read
+    assert units_on(read) == []
+    assert written_by_the_read == []
+
+
+def test_a_portal_card_keeps_an_instruction_line_shaped_like_a_card_s_label(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card under the portal's day heading, read with the prompt in use, is offered and saved
+    with an instruction line that begins like a card's label, as on main."""
+    portal = homework_answer(
+        headings=[{"text": "Monday 10/5/2026", "y": 100, "uncertain": None}],
+        cards=[card_line("DUE", "Math", "Worksheet 4", "Due: Friday in class", None, 200)],
+    )
+    with here(open_settings(tmp_path)) as browser:
+        page, read = read_and_saved(browser, monkeypatch, [(RED, portal)])
+
+    assert 'id="unread-heading"' not in page
+    assert read == [("Math", "Worksheet 4", date(2026, 10, 5), None, "Due: Friday in class")]

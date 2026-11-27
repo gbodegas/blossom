@@ -32,6 +32,7 @@ from blossom.screenshot_page import (
     UNRESOLVED,
     PostRefused,
     answer_field,
+    aside_of,
     asks_read,
     carried_digest,
     onward_of,
@@ -417,8 +418,10 @@ def _shown_card(piece: str, offered: Mapping[str, Collection[str]]) -> bool:
 def _a_press(value: str, offered: Mapping[str, Collection[str]]) -> bool:
     """Whether a press's value is one of the review form's: a press of ``PRESSES``, a
     screenshot's Replace or Enter it by hand by an id of the store's shape (``onward_of``; the
-    route checks the review holds it), or Correct what was read on a card the page showed."""
-    if value in PRESSES or onward_of(value) is not None:
+    route checks the review holds it), a "Couldn't read" item's Set aside by a key of the
+    store's shape (``aside_of``; the route checks the review shows that item), or Correct what
+    was read on a card the page showed."""
+    if value in PRESSES or onward_of(value) is not None or aside_of(value) is not None:
         return True
     return value.startswith(CORRECT_PRESS) and _shown_card(
         value.removeprefix(CORRECT_PRESS), offered
@@ -666,7 +669,7 @@ def read_review(
         raise PostRefused
     onward = onward_of(presses[0])
     press = LATER if onward is not None else presses[0]
-    pressed = press.removeprefix(CORRECT_PRESS) if press not in PRESSES else None
+    pressed = press.removeprefix(CORRECT_PRESS) if press.startswith(CORRECT_PRESS) else None
     opened = tuple(sorted({*marked_cards, *([pressed] if pressed else [])}))
     units = tuple(dict.fromkeys(v for n, v in rest if n == "unit"))
     if any(u not in digests for u in units):
