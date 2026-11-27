@@ -668,6 +668,48 @@ def test_after_a_one_line_card_that_does_not_read_mail_lines_are_for_review(
     assert [u.text for u in read.unread] == for_review
 
 
+@pytest.mark.parametrize("heading", list(TWO_HEADINGS))
+@pytest.mark.parametrize(
+    ("listed", "quiz"),
+    [
+        ("Sent: Sat, Oct 3, 2026", (TODAY, PASTE_DAY)),
+        ("Date: Sat, Oct 3, 2026", (TODAY, PASTE_DAY)),
+        ("On Sat, Oct 3, 2026 at 9:14 AM The School wrote:", (TODAY, PASTE_DAY)),
+        ("Sat, Oct 3, 2026", (TODAY, PASTE_DAY)),
+        ("Subject: fractions", (date(2026, 9, 1), EMAIL_DATE_LINE)),
+    ],
+    ids=["a-sent-line", "a-date-line", "a-forwarded-line", "a-weekday-line", "a-subject-line"],
+)
+def test_a_mail_date_listed_after_a_card_that_does_not_read_ends_the_earlier_emails_date(
+    heading: str, listed: str, quiz: tuple[date, object]
+) -> None:
+    """A mail date line listed after a card written on one line that does not read, in any of a
+    mail program's forms, may head another email, so the reports after it are dated by the day
+    of the paste, as after one kept in a note: neither by the listed date nor by an earlier
+    email's. A listed line that is no date line, such as a Subject: line, changes no date. The
+    earlier email's report keeps its date, and a later date line read as one dates the reports
+    after it again."""
+    text = (
+        "Date: Tue, Sep 1, 2026\n9/1 Math: Homework: Practice Grade: Missing\n"
+        + TWO_HEADINGS[heading]
+        + REJECTED_ONE_LINE_CARD
+        + f"{listed}\n9/8 Math: Homework: Quiz Grade: Missing\n\n"
+        "Date: Sun, Sep 20, 2026\n9/18 Art: Homework: Collage Grade: Missing\n"
+    )
+    read = read_text(text, now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert {
+        pair: [(r.reported_on, r.dated_by) for r in items[pair].reports]
+        for pair in [("Math", "Practice"), ("Math", "Quiz"), ("Art", "Collage")]
+    } == {
+        ("Math", "Practice"): [(date(2026, 9, 1), EMAIL_DATE_LINE)],
+        ("Math", "Quiz"): [quiz],
+        ("Art", "Collage"): [(date(2026, 9, 20), EMAIL_DATE_LINE)],
+    }
+    assert [u.text for u in read.unread] == ["Math - Assigned:  : (Due:10/9/2026)", listed]
+
+
 def test_the_summarys_next_heading_right_after_a_rejected_one_line_card_is_for_review() -> None:
     """The summary's heading over its next week, right after a card written on one line that
     does not read, is listed for review with the card's line; the next week's card still

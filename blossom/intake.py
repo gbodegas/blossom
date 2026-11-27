@@ -639,9 +639,9 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     after it, and the other lines of a mail header are read as nothing;
     after a card written on one line, read or not, the same lines, and the
     summary's heading, are its lines, its words or text for review. One
-    kept for review, in a note or as a heading, dates none: the reports
-    after it are dated by the day of the paste until a date line is read
-    as one. Each
+    kept for review, in a note, as a heading, or after a card written on one
+    line that does not read, dates none: the reports after it are dated by
+    the day of the paste until a date line is read as one. Each
     Missing line is a reading of its own, apart from any card of its name,
     and the same line twice is one. Any
     other plain line outside a card needs review too. A card that names an
@@ -752,8 +752,12 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             # After a card written on one line that did not read, a line the three rules after
             # this one would read as nothing or as the email's date is one of its lines: text for
             # review, never a course, and a mail date line here dates nothing. After one that
-            # reads, the same line is its words, since ``last`` is that card.
+            # reads, the same line is its words, since ``last`` is that card. A mail date line
+            # listed here may head another email, so, as one kept in a note, it leaves the
+            # reports after it dated by the day of the paste, not by an earlier email's date.
             unread.append(Unread(number, line))
+            if mail_date(line) is not None:
+                reported_on, dated_by = today, PASTE_DAY
             continue
         if plain and HEADING_LINE.match(line) and last is None:
             # The summary's heading, outside a card; under a card the same

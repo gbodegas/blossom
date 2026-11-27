@@ -221,6 +221,12 @@ def test_note_shaped_cards_that_cannot_be_read_as_notes_stay_items() -> None:
 SHAPED = [
     pytest.param(None, f"{STUDY}\n11/18/2026 - Wednesday", id="a-day"),
     pytest.param(None, f"{STUDY}\n11/12 Math 8: Homework: Sheet Grade: Missing", id="a-missing"),
+    pytest.param(
+        None, f"{STUDY}\n11/12 Math 8: Homework:  Grade: Missing", id="a-missing-with-a-blank-title"
+    ),
+    pytest.param(
+        None, f"{STUDY}\n11/12 Math 8: Homework: Grade: Missing", id="a-missing-with-no-title"
+    ),
     pytest.param(f"{STUDY}\nMath 8 - Due: Worksheet 3:", None, id="a-card-in-the-title"),
     pytest.param(
         None, f"{STUDY}\nOn Tue, Nov 17, 2026 at 9:14 AM The School wrote:", id="a-mail-date"
@@ -229,7 +235,7 @@ SHAPED = [
     pytest.param("Assigned: Poster: (Due:TBD)", None, id="a-card-s-label-in-the-title"),
 ]
 """A note card's title and instruction, a line of one shaped as a day, a Missing line, a card
-or a mail program's date line."""
+or a mail program's date line. A Missing line with only spaces for a title is shaped as one too."""
 
 
 @pytest.mark.parametrize(("title", "instruction"), SHAPED)

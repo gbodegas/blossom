@@ -122,6 +122,7 @@ from tests.support import (
     JOINED_TICK,
     LOOPBACK,
     PAGE_HEADERS,
+    PLAN_DATE,
     PROBLEM,
     RED,
     THEIRS,
@@ -59396,6 +59397,40 @@ def test_mail_lines_after_a_one_line_card_that_does_not_read_are_for_review(
     else:
         assert needs_review(page) == []
         assert (reported_on, dated_by) == (date(2026, 10, 3), EMAIL_DATE_LINE)
+
+
+THREE_DATES: Final = (
+    "Date: Tue, Sep 1, 2026\n9/1 Math: Homework: Practice Grade: Missing\n{heading}"
+    "Math - Assigned:  : (Due:10/9/2026)\nSent: Sat, Oct 3, 2026\n"
+    "9/8 Math: Homework: Quiz Grade: Missing\n\nDate: Sun, Sep 20, 2026\n"
+    "9/18 Art: Homework: Collage Grade: Missing\n"
+)
+"""An email dated September 1 and its report; a card on one line that does not read, a Sent:
+line dated October 3 after it, and a report; a blank line, an email dated September 20 and its
+report."""
+
+
+@pytest.mark.parametrize("heading", list(DAY_HEADINGS))
+def test_a_sent_line_listed_after_a_card_that_does_not_read_dates_the_next_report_by_the_paste(
+    tmp_path: pathlib.Path, heading: str
+) -> None:
+    """A Sent: line listed for review after a card written on one line that does not read may
+    head another email, so the Missing report after it is saved dated by the day of the paste,
+    with that as its source: neither October 3, the listed date, nor September 1, the earlier
+    email's. The report under the earlier email keeps September 1, and a later genuine header
+    dates its own report September 20. Pasted, reviewed and saved with every offer ticked."""
+    with here(open_settings(tmp_path)) as browser:
+        before = ids_on_record(browser)
+        page, _ = pasted_and_saved(browser, THREE_DATES.format(heading=DAY_HEADINGS[heading]))
+        reports = reports_saved(browser, before)
+
+    assert PLAN_DATE not in (date(2026, 9, 1), date(2026, 10, 3), date(2026, 9, 20))
+    assert reports == {
+        ("Math", "Practice"): [(date(2026, 9, 1), EMAIL_DATE_LINE)],
+        ("Math", "Quiz"): [(PLAN_DATE, PASTE_DAY)],
+        ("Art", "Collage"): [(date(2026, 9, 20), EMAIL_DATE_LINE)],
+    }
+    assert needs_review(page) == ["Math - Assigned:  : (Due:10/9/2026)", "Sent: Sat, Oct 3, 2026"]
 
 
 @pytest.mark.parametrize("heading", list(DAY_HEADINGS))
