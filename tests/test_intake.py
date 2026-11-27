@@ -589,6 +589,345 @@ def test_a_line_that_could_be_a_course_before_a_blank_titled_label_is_for_review
     assert read_as(TWO_HEADINGS[heading] + body) == (expected, for_review)
 
 
+ART_POSTER_5: Final = {("Art", "Poster"): (OCTOBER_5, ())}
+
+
+@pytest.mark.parametrize("heading", list(TWO_HEADINGS))
+@pytest.mark.parametrize(
+    ("body", "expected", "for_review"),
+    [
+        (
+            "Art\nDue: Poster:\nMath\nAssigned:: (Due:10/9/2026)\nDue: Worksheet 4:\n",
+            ART_POSTER_5,
+            ["Math", "Assigned:: (Due:10/9/2026)", "Due: Worksheet 4:"],
+        ),
+        (
+            "Math - Assigned:: (Due:10/9/2026)\nUse a pencil.\nScience - Due: Lab report:\n",
+            {("Science", "Lab report"): (OCTOBER_5, ())},
+            ["Math - Assigned:: (Due:10/9/2026)", "Use a pencil."],
+        ),
+        (
+            "Math\nAssigned:: (Due:10/9/2026)\nUse a pencil.\n",
+            {},
+            ["Math", "Assigned:: (Due:10/9/2026)", "Use a pencil."],
+        ),
+    ],
+    ids=["under-a-course-line-after-art", "on-one-line", "beneath-a-standalone-course"],
+)
+def test_an_assigned_label_with_nothing_between_its_colons_has_a_blank_title(
+    heading: str, body: str, expected: ReadAs, for_review: list[str]
+) -> None:
+    """An Assigned label with nothing between its colons reads as one whose title is only
+    spaces: no card, the line before it listed and the course in force ended, so no later label
+    takes Art."""
+    assert read_as(TWO_HEADINGS[heading] + body) == (expected, for_review)
+
+
+REJECTED_ONE_LINE_CARD: Final = "Math - Assigned:  : (Due:10/9/2026)\n"
+MAIL_HEADER_AND_REPORT: Final = (
+    "Subject: fractions\nSent: Sat, Oct 3, 2026\n9/8 Math: Homework: Quiz Grade: Missing\n"
+)
+
+
+@pytest.mark.parametrize("heading", list(TWO_HEADINGS))
+@pytest.mark.parametrize(
+    ("body", "reported", "for_review"),
+    [
+        (
+            REJECTED_ONE_LINE_CARD
+            + "Homework for tomorrow: bring paper.\n"
+            + MAIL_HEADER_AND_REPORT,
+            (TODAY, PASTE_DAY),
+            [
+                "Math - Assigned:  : (Due:10/9/2026)",
+                "Homework for tomorrow: bring paper.",
+                "Subject: fractions",
+                "Sent: Sat, Oct 3, 2026",
+            ],
+        ),
+        (MAIL_HEADER_AND_REPORT, (date(2026, 10, 3), EMAIL_DATE_LINE), []),
+        (
+            REJECTED_ONE_LINE_CARD + "\n" + MAIL_HEADER_AND_REPORT,
+            (date(2026, 10, 3), EMAIL_DATE_LINE),
+            ["Math - Assigned:  : (Due:10/9/2026)"],
+        ),
+    ],
+    ids=["after-a-rejected-one-line-card", "a-genuine-header", "after-a-blank-line"],
+)
+def test_after_a_one_line_card_that_does_not_read_mail_lines_are_for_review(
+    heading: str, body: str, reported: tuple[date, object], for_review: list[str]
+) -> None:
+    """After a card written on one line that does not read, a heading, a mail header and a mail
+    date line are its lines, listed for review, and the date line dates nothing: the later
+    Missing report is dated by the day of the paste. With no card above them, or after a blank
+    line, the same lines are a mail header that dates the report."""
+    read = read_text(TWO_HEADINGS[heading] + body, now=NOW, today=TODAY)
+    report = by_pair(read.items)["Math", "Quiz"].reports[0]
+
+    assert (report.reported_on, report.dated_by) == reported
+    assert [u.text for u in read.unread] == for_review
+
+
+def test_the_summarys_next_heading_right_after_a_rejected_one_line_card_is_for_review() -> None:
+    """The summary's heading over its next week, right after a card written on one line that
+    does not read, is listed for review with the card's line; the next week's card still
+    reads."""
+    text = (
+        TWO_HEADINGS["summary"] + REJECTED_ONE_LINE_CARD + "Homework for Wren\n"
+        "10/12/2026 - Monday\nScience - Due: Lab report:\n"
+    )
+    assert read_as(text) == (
+        {("Science", "Lab report"): (date(2026, 10, 12), ())},
+        ["Math - Assigned:  : (Due:10/9/2026)", "Homework for Wren"],
+    )
+
+
+@pytest.mark.parametrize("heading", list(TWO_HEADINGS))
+@pytest.mark.parametrize(
+    ("body", "expected", "for_review"),
+    [
+        (
+            "Math - Assigned: Quiz: (Due:13/45/2026)\nSubject: fractions\nDue: Worksheet 4:\n",
+            {},
+            ["Math - Assigned: Quiz: (Due:13/45/2026)", "Subject: fractions", "Due: Worksheet 4:"],
+        ),
+        (
+            "Math - Assigned: Quiz\nFrom: School Office\nAssigned: Quiz 2: (Due:10/9/2026)\n",
+            {},
+            ["Math - Assigned: Quiz", "From: School Office", "Assigned: Quiz 2: (Due:10/9/2026)"],
+        ),
+        (
+            REJECTED_ONE_LINE_CARD + "Homework for tomorrow: bring paper.\nDue: Worksheet 4:\n",
+            {},
+            [
+                "Math - Assigned:  : (Due:10/9/2026)",
+                "Homework for tomorrow: bring paper.",
+                "Due: Worksheet 4:",
+            ],
+        ),
+        (
+            REJECTED_ONE_LINE_CARD + "Subject: fractions\nDue: Worksheet 4:\n",
+            {},
+            ["Math - Assigned:  : (Due:10/9/2026)", "Subject: fractions", "Due: Worksheet 4:"],
+        ),
+        (
+            REJECTED_ONE_LINE_CARD + "Sent: Sat, Oct 3, 2026\nDue: Worksheet 4:\n",
+            {},
+            ["Math - Assigned:  : (Due:10/9/2026)", "Sent: Sat, Oct 3, 2026", "Due: Worksheet 4:"],
+        ),
+        (
+            "Math - Due: Worksheet 3:\nSubject: fractions\nDue: Worksheet 4:\n",
+            {
+                ("Math", "Worksheet 3"): (OCTOBER_5, ()),
+                ("Subject: fractions", "Worksheet 4"): (OCTOBER_5, ()),
+            },
+            [],
+        ),
+    ],
+    ids=[
+        "a-date-that-names-no-date-then-a-mail-header",
+        "a-card-part-that-fits-no-label-then-a-mail-header",
+        "a-blank-title-then-a-homework-heading",
+        "a-blank-title-then-a-mail-header",
+        "a-blank-title-then-a-mail-date",
+        "limit-a-after-a-card-that-reads",
+    ],
+)
+def test_after_a_one_line_card_that_does_not_read_a_mail_line_names_no_course(
+    heading: str, body: str, expected: ReadAs, for_review: list[str]
+) -> None:
+    """After a card written on one line that does not read, a heading, a mail header or a mail
+    date line is listed for review and never names a course, so the label after it, with no
+    course, is listed too. After a card that reads, the same line is its words and, before a
+    card's label written whole, a course, as limit A says."""
+    assert read_as(TWO_HEADINGS[heading] + body) == (expected, for_review)
+
+
+NOTE: Final = "Homework for Wren\n10/5/2026 - Monday\nArt -\nBring a smock.\n"
+"""A subject's note under the summary's day heading."""
+MATH_O4: Final = "Math\nDue:   :\n"
+SCIENCE_CARD: Final = "Science\nDue: Lab report:\n"
+NOTE_LINES: Final = ["Art -", "Bring a smock."]
+MISSING_QUIZ: Final = "9/8 Math: Homework: Quiz Grade: Missing\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected", "for_review"),
+    [
+        (
+            NOTE + "10/6/2026 - Tuesday\n" + MATH_O4 + SCIENCE_CARD,
+            {("Science", "Lab report"): (date(2026, 10, 6), ())},
+            [*NOTE_LINES, "Math", "Due:   :"],
+        ),
+        (
+            NOTE + "Tuesday 10/6/2026\n" + MATH_O4 + SCIENCE_CARD,
+            {("Science", "Lab report"): (date(2026, 10, 6), ())},
+            [*NOTE_LINES, "Math", "Due:   :"],
+        ),
+        (
+            "Art -\nBring a smock.\nMonday 10/5/2026\n" + MATH_O4 + SCIENCE_CARD,
+            {("Science", "Lab report"): (OCTOBER_5, ())},
+            [*NOTE_LINES, "Math", "Due:   :"],
+        ),
+        (
+            NOTE + MISSING_QUIZ + MATH_O4 + SCIENCE_CARD,
+            {("Math", "Quiz"): (None, ()), ("Science", "Lab report"): (OCTOBER_5, ())},
+            [*NOTE_LINES, "Math", "Due:   :"],
+        ),
+        (
+            NOTE + "Religion - Due: Short essay:\n\n" + MATH_O4 + SCIENCE_CARD,
+            {
+                ("Religion", "Short essay"): (OCTOBER_5, ()),
+                ("Science", "Lab report"): (OCTOBER_5, ()),
+            },
+            [*NOTE_LINES, "Math", "Due:   :"],
+        ),
+        (
+            NOTE + MISSING_QUIZ + "Math\nAssigned:: (Due:10/9/2026)\n" + SCIENCE_CARD,
+            {("Math", "Quiz"): (None, ()), ("Science", "Lab report"): (OCTOBER_5, ())},
+            [*NOTE_LINES, "Math", "Assigned:: (Due:10/9/2026)"],
+        ),
+        (
+            NOTE + "10/6/2026 - Tuesday\nMath\n\nDue:   :\n" + SCIENCE_CARD,
+            {("Science", "Lab report"): (date(2026, 10, 6), ())},
+            [*NOTE_LINES, "Math", "Due:   :"],
+        ),
+        (
+            NOTE + "10/6/2026 - Tuesday\nMath\nAssigned:  : (Due:10/9/2026)\n" + SCIENCE_CARD,
+            {("Science", "Lab report"): (date(2026, 10, 6), ())},
+            [*NOTE_LINES, "Math", "Assigned:  : (Due:10/9/2026)"],
+        ),
+        (
+            NOTE + MISSING_QUIZ + MATH_O4 + "Due: Orphan:\nClasses\n",
+            {("Math", "Quiz"): (None, ())},
+            [*NOTE_LINES, "Math", "Due:   :", "Due: Orphan:", "Classes"],
+        ),
+        (
+            NOTE + "10/6/2026 - Tuesday\nDue: Orphan:\nUse a pencil.\nDue: Worksheet 4:\n",
+            {},
+            [*NOTE_LINES, "Due: Orphan:", "Use a pencil.", "Due: Worksheet 4:"],
+        ),
+        (
+            NOTE + MISSING_QUIZ + "Bring these things:\nDue: Orphan:\nClasses\n" + SCIENCE_CARD,
+            {("Math", "Quiz"): (None, ())},
+            [
+                *NOTE_LINES,
+                "Bring these things:",
+                "Due: Orphan:",
+                "Classes",
+                "Science",
+                "Due: Lab report:",
+            ],
+        ),
+        (
+            NOTE + MISSING_QUIZ + "(Due: Friday)\nDue: Orphan:\nClasses\n" + SCIENCE_CARD,
+            {("Math", "Quiz"): (None, ())},
+            [
+                *NOTE_LINES,
+                "(Due: Friday)",
+                "Due: Orphan:",
+                "Classes",
+                "Science",
+                "Due: Lab report:",
+            ],
+        ),
+        (
+            NOTE + MISSING_QUIZ + REJECTED_ONE_LINE_CARD + "Subject: fractions\nDue: Orphan:\n"
+            "Classes\n" + SCIENCE_CARD,
+            {("Math", "Quiz"): (None, ())},
+            [
+                *NOTE_LINES,
+                "Math - Assigned:  : (Due:10/9/2026)",
+                "Subject: fractions",
+                "Due: Orphan:",
+                "Classes",
+                "Science",
+                "Due: Lab report:",
+            ],
+        ),
+    ],
+    ids=[
+        "a-new-day",
+        "a-new-day-written-the-pages-way",
+        "a-note-before-the-pages-day",
+        "the-same-day-after-a-missing-line",
+        "the-same-day-after-a-one-line-card-and-a-blank",
+        "an-empty-assigned-title",
+        "a-blank-line-before-the-label",
+        "a-blank-assigned-title-on-a-new-day",
+        "a-courseless-label-after-the-label-keeps-its-paragraph",
+        "a-courseless-label-on-a-later-day-keeps-its-paragraph",
+        "after-a-plain-line-listed-for-review-a-courseless-label-keeps-its-paragraph",
+        "after-a-line-shaped-like-a-due-date-a-courseless-label-keeps-its-paragraph",
+        "after-a-mail-line-after-a-rejected-card-a-courseless-label-keeps-its-paragraph",
+    ],
+)
+def test_a_label_right_after_a_line_listed_for_its_blank_title_opens_no_review_paragraph(
+    text: str, expected: ReadAs, for_review: list[str]
+) -> None:
+    """Where a subject's note was read, a label with no course keeps the lines after it for
+    review, but not a label whose course the line before it was refused for its blank title:
+    after that pair, the next course line and label read as a card, on a new day or the note's
+    own, so Science is saved once with its date. A label with no course for want of one keeps
+    its paragraph on any day."""
+    assert read_as(text) == (expected, for_review)
+
+
+def test_after_a_line_listed_for_a_blank_title_a_teachers_line_before_a_label_is_a_course() -> None:
+    """The pair the Science card forces, as on main: after a line listed for a label's blank
+    title, a plain line before a titled label is read as its course, whatever the teacher meant
+    by it."""
+    text = NOTE + MISSING_QUIZ + "Use glue.\nDue:   :\nUse a pencil.\nDue: Worksheet 4:\n"
+    assert read_as(text) == (
+        {("Math", "Quiz"): (None, ()), ("Use a pencil.", "Worksheet 4"): (OCTOBER_5, ())},
+        [*NOTE_LINES, "Use glue.", "Due:   :"],
+    )
+
+
+@pytest.mark.parametrize("heading", list(TWO_HEADINGS))
+@pytest.mark.parametrize("spaces", [" ", "  ", "   "], ids=["one", "two", "three"])
+def test_a_missing_line_with_only_spaces_for_a_title_names_no_course(
+    heading: str, spaces: str
+) -> None:
+    """A school email's Missing line with only spaces between Homework: and Grade: is a Missing
+    line with a blank title, whatever the number of spaces: listed for review, never the course
+    of the label after it, which is listed too."""
+    line = f"9/8 Math: Homework:{spaces}Grade: Missing"
+    text = TWO_HEADINGS[heading] + f"{line}\nDue: Worksheet 4:\nScience - Due: Lab report:\n"
+
+    assert read_as(text) == (
+        {("Science", "Lab report"): (OCTOBER_5, ())},
+        [line, "Due: Worksheet 4:"],
+    )
+
+
+def test_a_note_holding_a_missing_line_with_a_blank_title_keeps_it_and_is_suspect() -> None:
+    """In a subject's note, a Missing line with nothing for a title does not read as one, so it
+    stays in the note, and the note is marked suspect."""
+    read = read_text(
+        NOTE + "9/8 Math: Homework:  Grade: Missing\nUse glue.\n", now=NOW, today=TODAY
+    )
+
+    assert read.items == ()
+    assert [(note.lines, note.block.suspect) for note in read.notes] == [((3, 4, 5, 6), True)]
+
+
+def test_after_a_one_line_card_a_missing_line_with_a_blank_title_ends_its_words() -> None:
+    """A Missing line with nothing for a title ends a one-line card's words, as a titled grade
+    line does, so a teacher's line after it before a label is read as a course, as on main."""
+    text = (
+        TWO_HEADINGS["summary"] + "Math - Due: Worksheet 4:\n9/8 Math: Homework:  Grade: Missing\n"
+        "Show your work.\nDue: check answers with a partner\n"
+    )
+    assert read_as(text) == (
+        {
+            ("Math", "Worksheet 4"): (OCTOBER_5, ()),
+            ("Show your work.", "check answers with a partner"): (OCTOBER_5, ()),
+        },
+        ["9/8 Math: Homework:  Grade: Missing"],
+    )
+
+
 @pytest.mark.parametrize(
     ("card", "expected", "note_lines"),
     [
