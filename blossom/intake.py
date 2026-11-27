@@ -591,10 +591,13 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     """Read pasted text in the portal's shapes or the email's, in one pass over its lines.
 
     A plain line just before a card's line is the card's course, on the
-    homework page; the summary names the course on the card's own line, so in
-    the instruction of a card written that way, on one line, under either
-    shape, such a line is the card's instruction, and the card's line after it
-    is read as one right after a card.
+    homework page; the summary names the course on the card's own line, so a
+    card written that way, on one line, under either shape, ends the course in
+    force, and in its instruction such a line names a course only before a
+    card's label written whole that reads as a card (a Due title closed by a
+    colon under a day in force, or Assigned with a printed due date that names
+    a date): before any other line that begins like a label it is the card's
+    instruction, and that line is read as one right after a card.
     Plain lines just after a card are the teacher's instruction, until the
     next card, day, course line, or subject heading, or a blank; the same
     instruction under both of an item's days is kept once. Only a day
@@ -796,6 +799,9 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 draft.field_origins["assigned_on"] = SourceChannel.LMS
             draft.notes.append(("assigned", day, []))
             last, last_on_one_line = draft, combined is not None
+            if last_on_one_line:
+                # A card written on one line names its own course and ends the one in force.
+                course = None
             continue
         if due := DUE_LINE.match(body):
             title = due.group("title").strip()
@@ -811,6 +817,9 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 draft.field_origins["due_date"] = SourceChannel.LMS
             draft.notes.append(("due", day, []))
             last, last_on_one_line = draft, combined is not None
+            if last_on_one_line:
+                # A card written on one line names its own course and ends the one in force.
+                course = None
             continue
         if LOOKS_STRUCTURAL.match(line):
             # Shaped like a day, a card, or a due date, and not read as one:
@@ -834,11 +843,15 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             to_blank = False
             headings_read = True
             continue
-        if not (last is not None and last_on_one_line) and _is_course_line(line, following[index]):
+        in_one_line_card = last is not None and last_on_one_line
+        if _is_course_line(line, following[index]) and (
+            not in_one_line_card or _is_whole_card_label(following[index], day)
+        ):
             # The homework page's rule: a plain line before a card's line is its course. In
             # the instruction of a card written on one line, as the summary writes it, under
-            # either shape, the line is the teacher's, and a card's label after it is read as
-            # it is right after the card.
+            # either shape, it holds only before a card's label written whole that reads as
+            # a card; before any other line that begins like a label the line is the
+            # teacher's, and that label line is read as it is right after the card.
             course = line
             last = None
             continue
@@ -960,6 +973,26 @@ def _is_course_line(line: str, following: str | None) -> bool:
     if len(line) > COURSE_LENGTH or line.endswith(":") or following is None:
         return False
     return bool(ASSIGNED_LINE.match(following) or DUE_LINE.match(following))
+
+
+def _is_whole_card_label(line: str | None, day: date | None) -> bool:
+    """A card's label line written whole, as both pages write one, that reads as a card:
+    Assigned with its title and a printed due date that names a date, or Due with its title
+    closed by a colon under a day in force (``day``)."""
+    if line is None:
+        return False
+    if assigned := ASSIGNED_LINE.match(line):
+        return (
+            a_date(assigned.group("year"), assigned.group("month"), assigned.group("day"))
+            is not None
+        )
+    due = DUE_LINE.match(line)
+    return (
+        due is not None
+        and day is not None
+        and bool(due.group("title").strip())
+        and line.rstrip().endswith(":")
+    )
 
 
 def _is_subject_heading(line: str) -> bool:

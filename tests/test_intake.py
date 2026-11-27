@@ -58,6 +58,7 @@ from tests.support import FIXTURES, fixture_clock
 
 NOW = datetime(2026, 9, 12, 20, 0, tzinfo=UTC)
 TODAY = date(2026, 9, 12)
+OCTOBER_5 = date(2026, 10, 5)
 
 THREE_WEEKS = """Homework for Wren
 
@@ -246,6 +247,149 @@ def test_a_plain_line_before_a_label_line_in_a_summary_card_is_the_cards_words(
 
 
 @pytest.mark.parametrize(
+    "heading",
+    ["Homework for Wren\n10/5/2026 - Monday\n", "Monday 10/5/2026\n"],
+    ids=["summary", "homework-page"],
+)
+@pytest.mark.parametrize(
+    ("body", "expected", "for_review"),
+    [
+        (
+            "Art\nDue: Poster:\nMath - Due: Worksheet 4:\nShow your work.\n"
+            "Due: check answers with a partner\nUse a pencil.\n",
+            {
+                ("Art", "Poster"): (OCTOBER_5, ()),
+                ("Math", "Worksheet 4"): (OCTOBER_5, ("Show your work.",)),
+            },
+            ["Due: check answers with a partner", "Use a pencil."],
+        ),
+        (
+            "Math - Due: Worksheet 4:\nShow your work.\nScience\nDue: Lab report:\n",
+            {
+                ("Math", "Worksheet 4"): (OCTOBER_5, ("Show your work.",)),
+                ("Science", "Lab report"): (OCTOBER_5, ()),
+            },
+            [],
+        ),
+        (
+            "Math - Due: Worksheet 4:\nShow your work.\nUse a ruler.\n"
+            "Due: check answers with a partner\n",
+            {("Math", "Worksheet 4"): (OCTOBER_5, ("Show your work.\nUse a ruler.",))},
+            ["Due: check answers with a partner"],
+        ),
+        (
+            "Math - Assigned: Quiz: (Due:10/9/2026)\nShow your work.\nUse a ruler.\n"
+            "Due: check answers with a partner\n",
+            {("Math", "Quiz"): (date(2026, 10, 9), ("Show your work.\nUse a ruler.",))},
+            ["Due: check answers with a partner"],
+        ),
+        (
+            "Art\nDue: Poster:\nMath - Assigned: Quiz: (Due:10/9/2026)\nShow your work.\n"
+            "Due: check answers with a partner\n",
+            {
+                ("Art", "Poster"): (OCTOBER_5, ()),
+                ("Math", "Quiz"): (date(2026, 10, 9), ("Show your work.",)),
+            },
+            ["Due: check answers with a partner"],
+        ),
+        (
+            "Math - Due: Worksheet 4:\nShow your work.\n"
+            "Science 8\nAssigned: Chains: (Due:10/8/2026)\n",
+            {
+                ("Math", "Worksheet 4"): (OCTOBER_5, ("Show your work.",)),
+                ("Science 8", "Chains"): (date(2026, 10, 8), ()),
+            },
+            [],
+        ),
+        (
+            "Math - Due: Worksheet 4:\nShow your work.\nDue: :\nUse a pencil.\n",
+            {("Math", "Worksheet 4"): (OCTOBER_5, ("Show your work.",))},
+            ["Due: :", "Use a pencil."],
+        ),
+        (
+            "Math - Due: Worksheet 4:\nShow your work.\nAssigned: Quiz: (Due:2/30/2026)\n"
+            "Due: check answers with a partner\nUse a pencil.\n",
+            {("Math", "Worksheet 4"): (OCTOBER_5, ("Show your work.",))},
+            [
+                "Assigned: Quiz: (Due:2/30/2026)",
+                "Due: check answers with a partner",
+                "Use a pencil.",
+            ],
+        ),
+    ],
+    ids=[
+        "an-earlier-course-is-cleared",
+        "a-whole-card-after-the-words",
+        "two-lines-of-words-before-a-due-line",
+        "two-lines-of-words-on-an-assigned-card",
+        "an-assigned-card-on-one-line-clears-the-course",
+        "a-whole-assigned-card-after-the-words",
+        "a-label-with-no-title",
+        "a-label-whose-date-names-no-date",
+    ],
+)
+def test_after_a_one_line_card_only_a_card_written_whole_starts_another(
+    heading: str,
+    body: str,
+    expected: dict[tuple[str, str], tuple[date, tuple[str, ...]]],
+    for_review: list[str],
+) -> None:
+    """In the instruction of a card written on one line, a plain line names the next card's
+    course only before a card's label written whole that reads as a card; otherwise it is the
+    card's words. The card on one line ends the course in force before it. The same under
+    either page's day heading."""
+    read = read_text(heading + body, now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert {pair: (item.due_date, words(item)) for pair, item in items.items()} == expected
+    assert [u.text for u in read.unread] == for_review
+
+
+@pytest.mark.parametrize(
+    "heading", ["", "2/30/2026 - Monday\n"], ids=["no-day-line", "a-day-that-names-no-date"]
+)
+def test_with_no_day_in_force_a_due_title_closed_by_a_colon_is_no_card_label(
+    heading: str,
+) -> None:
+    """With no day in force, a Due title closed by a colon can't be read as a card, so in the
+    instruction of a card written on one line the line before it stays the card's words."""
+    text = (
+        heading + "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers.\n"
+        "Due: check answers with a partner:\n"
+    )
+    read = read_text(text, now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert {pair: words(item) for pair, item in items.items()} == {
+        ("Art", "Poster"): ("Bring markers.",)
+    }
+    assert [u.text for u in read.unread][-1:] == ["Due: check answers with a partner:"]
+
+
+@pytest.mark.parametrize(
+    "heading", ["", "2/30/2026 - Monday\n"], ids=["no-day-line", "a-day-that-names-no-date"]
+)
+def test_with_no_day_in_force_an_assigned_card_written_whole_still_starts_a_card(
+    heading: str,
+) -> None:
+    """An Assigned label written whole needs a printed due date that names a date, not a day:
+    with no day in force, a course line before one after a card written on one line still names
+    its card's course."""
+    text = (
+        heading + "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers.\n"
+        "Science 8\nAssigned: Chains: (Due:10/9/2026)\n"
+    )
+    read = read_text(text, now=NOW, today=TODAY)
+    items = by_pair(read.items)
+
+    assert {pair: (item.due_date, words(item)) for pair, item in items.items()} == {
+        ("Art", "Poster"): (date(2026, 10, 8), ("Bring markers.",)),
+        ("Science 8", "Chains"): (date(2026, 10, 9), ()),
+    }
+    assert "Assigned: Chains: (Due:10/9/2026)" not in [u.text for u in read.unread]
+
+
+@pytest.mark.parametrize(
     ("text", "expected"),
     [
         (
@@ -265,8 +409,18 @@ def test_a_plain_line_before_a_label_line_in_a_summary_card_is_the_cards_words(
             "Science\nDue: Lab report:\n",
             {("Math", "Worksheet 4"): ("Show your work.",), ("Science", "Lab report"): ()},
         ),
+        (
+            "Monday 10/5/2026\nMath - Due: Worksheet 4:\nShow your work.\n\n"
+            "Science\nDue: Lab report\n",
+            {("Math", "Worksheet 4"): ("Show your work.",), ("Science", "Lab report"): ()},
+        ),
     ],
-    ids=["homework-page-after-a-card", "summary-with-no-card-open", "summary-after-a-card"],
+    ids=[
+        "homework-page-after-a-card",
+        "summary-with-no-card-open",
+        "summary-after-a-card",
+        "homework-page-after-a-blank-after-a-one-line-card",
+    ],
 )
 def test_a_course_line_before_a_cards_label_still_names_its_course(
     text: str, expected: dict[tuple[str, str], tuple[str, ...]]
