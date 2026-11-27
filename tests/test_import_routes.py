@@ -59034,21 +59034,38 @@ def test_an_item_of_another_group_shows_its_text_as_before(
     assert unread_items(page) == ["Card 1: Art · Poster · Due: Thursday\nBring markers."]
 
 
+def button_attributes(opening: str) -> dict[str, str | None]:
+    """A button's attributes as Python's HTML parser reads its opening tag: names in lower case
+    and values unquoted, whichever quotes, or none, they were written with. A name written twice
+    keeps its first value, as a browser keeps it."""
+    found: dict[str, str | None] = {}
+
+    class Reader(HTMLParser):
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            for name, value in attrs:
+                found.setdefault(name, value)
+
+    Reader().feed(opening)
+    return found
+
+
 def buttons_named(page: str) -> dict[str, str]:
     """Each button by its accessible name as the accessible-name rules give it for these buttons
     (its aria-label when it has one, else its text with tags dropped and spaces joined, a visually
-    hidden part included), with its opening tag. A button whose role attribute names another role
+    hidden part included), with its opening tag. Its attributes are read by the HTML parser, so
+    their quoting and letter case don't matter. A button whose role attribute names another role
     isn't one, and a button named by aria-labelledby is refused: the names those give aren't read
     here."""
     out: dict[str, str] = {}
     for attributes, inner in re.findall(r"<button([^>]*)>(.*?)</button>", page, re.S):
-        role = re.search(r'\brole="([^"]*)"', attributes)
-        if role is not None and role.group(1).strip().lower() != "button":
+        read = button_attributes(f"<button{attributes}>")
+        role = read.get("role")
+        if role is not None and role.strip().lower() != "button":
             continue
-        assert "aria-labelledby" not in attributes, f"aria-labelledby: <button{attributes}>"
-        label = re.search(r'\baria-label="([^"]*)"', attributes)
-        text = label.group(1) if label is not None else re.sub(r"<[^>]+>", "", inner)
-        out.setdefault(" ".join(html.unescape(text).split()), f"<button{attributes}>")
+        assert "aria-labelledby" not in read, f"aria-labelledby: <button{attributes}>"
+        label = read.get("aria-label")
+        text = html.unescape(re.sub(r"<[^>]+>", "", inner)) if label is None else label
+        out.setdefault(" ".join(text.split()), f"<button{attributes}>")
     return out
 
 
