@@ -520,7 +520,7 @@ def refused_press(client: TestClient, key: str) -> str:
 
 def turning_in_seen(reader: str, tmp_path: pathlib.Path) -> dict[str, str]:
     """What ``reader`` is shown of the three Practice assignments, each still to turn in:
-    the rows of To turn in on its page and on her week, the family page's Turning work in
+    the rows of To turn in on its page and on her week, the family page's Still open
     where the reader opens it, the line that names them once their records cannot be read,
     and where she presses, what a refused press and a refused Undo say beside the refusal."""
     seen: dict[str, str] = {}
@@ -582,7 +582,13 @@ def test_the_links_to_turning_it_in_say_their_whole_name_in_a_label(
         for course in PRACTICE_KEYS
     }
 
-    assert titles == dict.fromkeys(titles, TITLE_LINKS)
+    # On the family page her Still to turn in of the days is a plain row as well, its title a
+    # link to the card that holds it, named with the title and the course.
+    plain = [f"Practice, {course}" for course in PRACTICE_KEYS]
+    assert titles == {
+        state: sorted([*TITLE_LINKS, *plain]) if state == "family, turning in" else TITLE_LINKS
+        for state in titles
+    }
     assert len(titles) == (4 if reader == "her" else 5)
     assert to_the_section == ({} if reader == "parent" else expected)
     for state, page in seen.items():

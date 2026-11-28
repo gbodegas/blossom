@@ -144,7 +144,7 @@ def test_the_family_page_offers_the_paste_box_and_the_entry_form(tmp_path: pathl
         page = client.get("/parent", headers=PAGE).text
 
     assert '<a class="skip" href="#main">Skip to main content</a>' in page
-    assert '<a href="#add-assignments">Add assignments</a>' in page
+    assert '<a href="/parent?add=1#add-assignments">Add assignments</a>' in page
     assert "<summary>Add assignments</summary>" in page
     assert "<h2>Paste school text</h2>" in page
     assert "<summary>See an example</summary>" in page
@@ -1185,8 +1185,8 @@ def test_what_the_school_reports_is_shown_on_both_pages_with_its_source_and_day(
     )
     assert "What the school reports is saved with the day." in shown
     assert kept.headers["location"] == "/parent?added=0&updated=1&unchanged=0"
-    assert "<h2>Assignment updates</h2>" in family
-    assert "<h3>School reports</h3>" in family
+    assert "<h3>Still open</h3>" in family
+    assert '<h4 class="update-heading">School reports</h4>' in family
     assert "Worth checking together" not in family
     assert SCHOOL_SAYS_MISSING.search(family)
     assert "From the school email, pasted Monday, September 7, 2026." in family

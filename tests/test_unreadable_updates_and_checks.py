@@ -97,6 +97,8 @@ HERS_AS_A_CANDIDATE = "Her updates on this assignment can't be read right now."
 UPDATES_NOTICE = f"Her updates can't be read right now for: {ESSAY_TITLE} (World History)."
 CHECKS_NOTICE = f"Family checks can't be read right now for: {ESSAY_TITLE} (World History)."
 UNREADABLE_GROUP = "Records that can't be read"
+UPDATES_LINE = r"<p class=\"problem\" id=\"updates-unreadable\"[^>]*>Her updates can.*?</p>"
+"""The family page's line that names the rows whose updates of hers can't be read."""
 
 HER_NOTE = "Handed in Tuesday."
 THEIR_NOTE = "Teacher has it on paper."
@@ -543,7 +545,7 @@ def test_the_family_page_names_her_unreadable_updates_and_links_to_the_row(
         page = family_page(client)
 
     row = row_for(page, ESSAY_ID)
-    notice = re.search(r"<p class=\"problem\">Her updates can.*?</p>", page, re.S)
+    notice = re.search(UPDATES_LINE, page, re.S)
     assert notice is not None
     assert words(notice.group(0)) == UPDATES_NOTICE
     link = re.search(r'href="([^"]+)"', notice.group(0))
@@ -897,9 +899,8 @@ def test_a_recent_row_whose_checks_cannot_be_read_is_unfolded_for_the_link_to_it
         page = family_page(client)
 
     row = page.index(f'id="update-{ESSAY_ID}"')
-    fold = page.rfind("<details", 0, row)
-    assert page.rfind("Recent updates", 0, row) > fold
-    assert page[fold : page.index(">", fold) + 1] == '<details class="steps" open>'
+    assert page.rfind('id="recent-activity"', 0, row) > page.rfind("<details", 0, row)
+    assert page[page.rfind("<", 0, row) : row].startswith('<li class="compact-row" ')
     assert CHECKS_NOTICE in words(page)
     assert CHECK_ON_THE_FAMILY_PAGE in words(row_for(page, ESSAY_ID))
 
@@ -920,7 +921,7 @@ def test_the_link_to_a_row_reaches_an_id_that_holds_a_slash_a_space_and_a_hash()
         spoil(store, "student_reports", "note", WORDS, name)
         page = family_page(client)
 
-    notice = re.search(r"<p class=\"problem\">Her updates can.*?</p>", page, re.S)
+    notice = re.search(UPDATES_LINE, page, re.S)
     assert notice is not None
     link = re.search(r'href="([^"]+)"', notice.group(0))
     assert link is not None

@@ -31,11 +31,12 @@
   <p class="confidence disagree" role="status"><strong>Student updates.</strong> {{ draft.reported_done }}{% if reading.structured and reading.done_work %} In it: {% for work in reading.done_work %}{% if work.href %}<a class="assignment-link" href="{{ work.href }}" aria-label="{{ work.link_name }}">{{ work.title }}</a>{% else %}{{ work.title }}{% endif %} ({{ work.course }}{% if work.needs_date %}, {% if work.due_date %}due {{ work.due_date|long_date }}{% else %}no due date{% endif %}{% endif %}){% if work.reference %} <span class="plan-ref">{{ work.reference }}</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% elif draft.reported_done_work %} In it: {% for work in draft.reported_done_work %}{{ work.title }} ({{ work.assignment_id }}){% if not loop.last %}, {% endif %}{% endfor %}. A new plan will leave it out.{% endif %}</p>
 {% endmacro %}
 {% macro row_title(item) %}<a class="assignment-link" href="{{ details_href(item.assignment_id, return_to="family") }}" aria-label="{{ item.title }}, {{ item.course }}">{{ item.title }}</a>{% endmacro %}
-{% macro turned_in_words(hi) %}{% if hi.unavailable %}Her hand-in record for this assignment cannot be read right now, so it is not shown.{% elif hi.state == "needs_hand_in" %}She reported Still to turn in on {{ hi.reported_on|long_date }}. Next: {% if hi.next_action %}<q class="authored-text">{{ hi.next_action }}</q>{% else %}Turn it in.{% endif %}{% elif hi.state == "turned_in" %}She reported it turned in on {{ hi.reported_on|long_date }}.{% elif hi.state == "not_required" %}She reported nothing to turn in on {{ hi.reported_on|long_date }}.{% else %}Hand-in status: Not sure. She reported this on {{ hi.reported_on|long_date }}.{% endif %}{% if hi.note %} She wrote: <q class="authored-text">{{ hi.note }}</q>{% if hi.note_updated_on %} Note updated {{ hi.note_updated_on|long_date }}.{% endif %}{% endif %}{% endmacro %}
+{% macro turned_in_words(hi) %}{% if hi.unavailable %}Her hand-in record for this assignment cannot be read right now, so it is not shown.{% elif hi.state == "needs_hand_in" %}She reported Still to turn in on {{ hi.reported_on|long_date }}. Next: {% if hi.next_action %}<q class="authored-text">{{ hi.next_action }}</q>{% else %}Turn it in.{% endif %}{% elif hi.state == "turned_in" %}She reported it turned in on {{ hi.reported_on|long_date }}.{% elif hi.state == "not_required" %}She reported nothing to turn in on {{ hi.reported_on|long_date }}.{% elif hi.taken_back_on %}She took back her hand-in report on {{ hi.taken_back_on|long_date }}.{% else %}Hand-in status: Not sure. She reported this on {{ hi.reported_on|long_date }}.{% endif %}{% if hi.note %} She wrote: <q class="authored-text">{{ hi.note }}</q>{% if hi.note_updated_on %} Note updated {{ hi.note_updated_on|long_date }}.{% endif %}{% endif %}{% endmacro %}
 {% macro local(moment) %}{% set when = moment.astimezone(zone) %}{{ when.strftime("%B") }} {{ when.day }}, {{ when.year }}, {{ when|clock }} {{ when.strftime("%Z") }}{% endmacro %}
+{# The day a dated row says Blossom recorded it, with its year only when it is not this year. #}
+{% macro recorded_day(day) %}{{ day.strftime("%B") }} {{ day.day }}{% if day.year != today.year %}, {{ day.year }}{% endif %}{% endmacro %}
 {% block content %}
   <h1>Family review</h1>
-  <p class="lead-action"><a href="#add-assignments">Add assignments</a> · <a href="/parent/grades/add">Add grade report</a></p>
 
   {% if problem %}
     {#
@@ -78,9 +79,91 @@
   {% endif %}
 
   {#
-    The work a parent does with her comes first: what she asked for, then
-    what waits for a review. Starting a plan on her behalf and the record of
-    earlier plans fold away below.
+    Needs you: one row for each item that waits on a parent, whatever its age,
+    from the states the page already shows: each open request, each school
+    instruction waiting for review, each homework note she added, each row
+    worth checking together, and each plan waiting for review. Each row says
+    its kind, links its title to the item's card below, and says when. A source
+    that can't be read, help requests, school instructions, homework notes, her
+    updates or the family checks, gets a row of its own that links to the line
+    saying so, so the page never says nothing needs you while it can't tell.
+  #}
+  {% set needs_count = help_open|length + instructions_to_review|length + homework_notes|length + updates.check|length + waiting|length %}
+  {% set unread_sources = help_set_apart or instructions_unreadable or homework_notes_unreadable or updates.updates_unreadable or updates.checks_unreadable %}
+  <section class="needs-you" id="needs-you">
+    <h2>Needs you{% if needs_count %} <span class="pill">{{ needs_count }}</span>{% endif %}</h2>
+    {% if needs_count or unread_sources %}
+      {#
+        Each row is a compact row, as Recent activity's are: its kind, the item
+        as the link to its card, then its words line, where the item has one. A
+        request for help is named by the day and time she asked it, so requests
+        asked in different minutes have links with different words; requests asked
+        in one minute add which of them each is, "(1 of 2)", in the order Blossom
+        kept them. A link to an assignment is named by its title and class, as every
+        other link to it is.
+      #}
+      {% macro needs_row(kind, href, when=none, label=none) %}
+        <li class="compact-row">
+          <p class="course">{{ kind }}</p>
+          <p class="decision-line"><strong><a href="{{ href }}"{% if label %} aria-label="{{ label }}"{% endif %}>{{ caller() }}</a></strong></p>
+          {% if when %}<p>{{ when }}</p>{% endif %}
+        </li>
+      {% endmacro %}
+      <ul class="compact-rows">
+        {% for ask in help_open %}
+          {% call needs_row("Help she asked for", card_href('help-request-', ask.request_id)) %}Request from {{ ask.asked_local|spoken_day(today) }} at {{ ask.asked_local|clock }}{{ help_numbers[ask.request_id] }}{% endcall %}
+        {% endfor %}
+        {% if help_set_apart %}
+          {% call needs_row("Help she asked for", "#help-set-apart") %}Requests that can't be read{% endcall %}
+        {% endif %}
+        {% for item, waiting_here in instructions_to_review %}
+          {% set found_in %}<span class="authored-text">{{ item.course }}</span>, found in the old note field{% endset %}
+          {% call needs_row("School instructions to review", card_href('instructions-to-review-', item.assignment_id), found_in, label=item.title ~ ", " ~ item.course) %}<span class="authored-text">{{ item.title }}</span>{% endcall %}
+        {% endfor %}
+        {% if instructions_unreadable %}
+          {% call needs_row("School instructions to review", "#instructions-unreadable") %}School instructions that can't be read{% endcall %}
+        {% endif %}
+        {% for note in homework_notes %}
+          {% call needs_row("Homework she added", card_href('homework-note-', note.capture_id), "Saved " ~ (note.created_on|long_date)) %}<span class="authored-text">{{ note.title or note.text }}</span>{% endcall %}
+        {% endfor %}
+        {% if homework_notes_unreadable %}
+          {% call needs_row("Homework she added", "#homework-notes-unreadable") %}Notes that can't be read{% endcall %}
+        {% endif %}
+        {% for item in updates.check %}
+          {% call needs_row("Worth checking together", update_row_href(item.assignment_id), item.course ~ ((". She reported it done on " ~ item.reported_on.strftime("%B") ~ " " ~ item.reported_on.day ~ ".") if item.reported_on else ""), label=item.title ~ ", " ~ item.course) %}{{ item.title }}{% endcall %}
+        {% endfor %}
+        {% if updates.updates_unreadable %}
+          {% call needs_row("Recent activity", "#updates-unreadable") %}Her updates that can't be read{% endcall %}
+        {% endif %}
+        {% if updates.checks_unreadable %}
+          {% call needs_row("Recent activity", "#checks-unreadable") %}Family checks that can't be read{% endcall %}
+        {% endif %}
+        {% for draft in waiting %}
+          {% call needs_row("Waiting for your review", card_href('plan-to-review-', draft.draft_id)) %}Plan for {{ draft.plan_date.strftime("%A, %B") }} {{ draft.plan_date.day }}{% endcall %}
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="empty quiet">Nothing needs you right now.</p>
+    {% endif %}
+  </section>
+
+  {#
+    The ways to add or plan, as links to the folds below and the grade page, so no
+    form is on the page twice.
+  #}
+  <section class="add-or-do" id="add-or-do">
+    <h2>Add or do</h2>
+    <ul>
+      <li><a href="/parent?add=1#add-assignments">Add assignments</a></li>
+      <li><a href="/parent/grades/add">Add a grade report</a></li>
+      <li><a href="/parent?planning=1#help-with-a-plan">Help with a plan</a></li>
+    </ul>
+  </section>
+
+  {#
+    The work a parent does with her comes next: what she asked for, then
+    what waits for a review. Recent activity follows; starting a plan on her
+    behalf and the record of earlier plans fold away below.
   #}
   <section id="help-she-asked-for" tabindex="-1">
     <h2>Help she asked for</h2>
@@ -105,7 +188,7 @@
       counted in one line above them, with nothing it holds, and has no form.
     #}
     {% if help_set_apart %}
-      <p class="problem">{{ help_set_apart }}</p>
+      <p class="problem" id="help-set-apart" tabindex="-1">{{ help_set_apart }}</p>
     {% elif not help_open %}
       <p class="empty quiet">No open help requests.</p>
     {% endif %}
@@ -114,7 +197,7 @@
       {% set refused_words = kept and kept.at_reply %}
       {% set pointed = kept and (kept.at_reply or kept.below) %}
       {% set asked_on %}{{ ask.asked_local|spoken_day(today) }} at {{ ask.asked_local|clock }}{% endset %}
-      <article class="draft help-{{ ask.state }}">
+      <article class="draft help-{{ ask.state }}" id="help-request-{{ ask.request_id }}" tabindex="-1">
         {% with hers = false %}{% include "help_request.html" %}{% endwith %}
         <form method="post" action="/parent/actions/help/{{ ask.request_id }}" class="decision help-reply">
           <label for="reply-{{ ask.request_id }}">{% if ask.state == "requested" %}Reply to your student (optional){% else %}Add an update{% endif %}</label>
@@ -157,21 +240,27 @@
     field after the upgrade, beside instructions already kept, which the record
     cannot say which version of Blossom wrote. None of them applies, and none
     reaches a plan, until a parent chooses; each assignment links straight to
-    its review.
+    its review. Instructions that can't be read are named in one line, each
+    assignment a link to its details page, and the section is shown for it.
   #}
-  {% if instructions_to_review %}
+  {% if instructions_to_review or instructions_unreadable %}
     <section class="panel" id="school-instructions-to-review">
       <h2>School instructions to review</h2>
+      {% if instructions_unreadable %}
+        <p class="problem" id="instructions-unreadable" tabindex="-1">School instructions can't be read right now for: {% for item in instructions_unreadable %}<a class="assignment-link" href="{{ details_href(item.assignment_id, return_to="family") }}">{{ item.title }}</a> ({{ item.course }}){% if not loop.last %}, {% endif %}{% endfor %}.</p>
+      {% endif %}
+      {% if instructions_to_review %}
       <p class="helper">These were found in the old note field after the upgrade. None of them applies until you choose.</p>
       <ul>
         {% for item, waiting in instructions_to_review %}
-          <li>
+          <li id="instructions-to-review-{{ item.assignment_id }}" tabindex="-1">
             <span class="authored-text">{{ item.course }}</span> &middot; <span class="authored-text">{{ item.title }}</span>:
             {% for instruction in waiting %}<q class="authored-text">{{ instruction.text }}</q>{% if not loop.last %}, {% endif %}{% endfor %}
             <p class="support-links"><a href="{{ instructions_review_href(item.assignment_id) }}">Review school instructions</a></p>
           </li>
         {% endfor %}
       </ul>
+      {% endif %}
     </section>
   {% endif %}
 
@@ -184,7 +273,7 @@
     still needs for that, shows the details it has been given, and leads to
     the family's page for adding them, where a parent's details are recorded
     as a parent's. Each opens on its own page, with its history; the ones in
-    homework and the ones she put away are links from here.
+    homework and the ones she put away are links under History.
   #}
   <section class="homework-notes" id="homework-she-added">
     <h2>Homework she added</h2>
@@ -192,7 +281,7 @@
       <p class="empty">No homework notes are waiting.</p>
     {% endif %}
     {% for note in homework_notes %}
-      <article class="draft homework-note">
+      <article class="draft homework-note" id="homework-note-{{ note.capture_id }}" tabindex="-1">
         <p class="course">{% if note.course %}<span class="authored-text">{{ note.course }}</span> &middot; {% endif %}Saved {{ note.created_on|long_date }}{% if note.updated_on != note.created_on %}, changed {{ note.updated_on|long_date }}{% endif %}</p>
         <blockquote class="authored-text note-words">{{ note.text }}</blockquote>
         {% if note.text != note.original_text %}
@@ -206,22 +295,25 @@
       </article>
     {% endfor %}
     {% if homework_notes_unreadable %}
-      <p class="problem">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now.</p>
+      <p class="problem" id="homework-notes-unreadable" tabindex="-1">{{ homework_notes_unreadable|length }} homework note{% if homework_notes_unreadable|length != 1 %}s{% endif %} cannot be read right now.</p>
     {% endif %}
-    <p class="note"><a href="{{ added_notes_page }}">Notes added to homework</a> &middot; <a href="{{ archived_notes_page }}">Archived homework notes</a></p>
   </section>
 
   {#
     What she reports about her part and what the school reports are two
     accounts, shown side by side with their days and sources, and the page
     decides nothing between them. Her "done" beside a school "missing" is
-    worth checking together and comes first, open, with a form to record
-    that a parent checked it with her; the rows checked lately fold next,
-    each with a way to check again; her recent updates fold; the rest of
-    the school's reports follow. Her updates or the family's checks that
-    cannot be read are named at the section's head, each name a link to its
-    row, and said on the row in place of what they would show; a row they
-    leave in no other group closes the section. Checks that cannot be read
+    worth checking together, in a section of its own above the plans, with a
+    form to record that a parent checked it with her. Under Recent activity,
+    every other row the school reports on is under Still open, with her
+    update and its check and Check again, whatever their days; the rows
+    checked lately, each with a way to check again, and her recent updates
+    are entries. Her updates or the family's checks that cannot be read are
+    named at the head of Recent activity, each name a link to its row, and
+    said on the row in place of what they would show; a row not worth
+    checking together and with no school report is under Still open for
+    them. The events of a row worth checking together or under Still open
+    are plain entries that link to it. Checks that cannot be read
     offer neither form, and a row worth checking stays worth checking. A
     check is the family's own record: it changes neither account, sets no
     status, and sends nothing.
@@ -268,34 +360,9 @@
   {% macro check_on_record(item) %}
     {% if item.checks_unavailable %}<p class="problem">The family check on this assignment can't be read right now. No check can be saved until that record can be read.</p>{% elif item.updates_unavailable and item.checked_before_on %}{{ check_unweighed(item) }}{% elif item.checked %}{{ checked_line(item) }}{% elif item.checked_before_on %}{{ checked_before(item) }}{{ again_form(item) }}{% endif %}
   {% endmacro %}
-  {#
-    A link back from an assignment's details names its row. When the row is
-    in none of the groups now, the link lands on the section, at a place
-    with the row's id, and no row is made for it. That holds when no group
-    has a row at all, the last update having aged out: the section is there
-    for the link to land on and says that nothing is listed. An ordinary
-    visit with nothing listed shows no section.
-  #}
-  {% set listed = (updates.check + updates.checked + updates.recent + updates.school + updates.unreadable)|map(attribute="assignment_id")|list %}
-  {% set hand_in_listed = updates.turning_in|map(attribute="assignment_id")|list %}
-  {% set pointed_at = check and not check.said and not check.problem and check.assignment_id not in listed and check.assignment_id not in hand_in_listed %}
-  {% if listed or pointed_at %}
-    <section class="assignment-updates" id="assignment-updates">
-      <h2>Assignment updates</h2>
-      {% if pointed_at %}
-        <span id="update-{{ check.assignment_id }}" tabindex="-1"></span>
-      {% endif %}
-      {% if not listed %}
-        <p class="empty quiet">No assignment updates to show.</p>
-      {% endif %}
-      {% if updates.updates_unreadable %}
-        <p class="problem">Her updates can't be read right now for: {% for item in updates.updates_unreadable %}<a class="assignment-link" href="{{ update_row_href(item.assignment_id) }}">{{ item.title }}</a> ({{ item.course }}){% if not loop.last %}, {% endif %}{% endfor %}.</p>
-      {% endif %}
-      {% if updates.checks_unreadable %}
-        <p class="problem">Family checks can't be read right now for: {% for item in updates.checks_unreadable %}<a class="assignment-link" href="{{ update_row_href(item.assignment_id) }}">{{ item.title }}</a> ({{ item.course }}){% if not loop.last %}, {% endif %}{% endfor %}.</p>
-      {% endif %}
-      {% if updates.check %}
-        <h3>Worth checking together</h3>
+  {% if updates.check %}
+    <section class="assignment-updates" id="worth-checking-together">
+      <h2>Worth checking together</h2>
         {% for item in updates.check %}
           {% set here = check and check.assignment_id == item.assignment_id %}
           {% set at_note = here and check.field == "note" %}
@@ -332,108 +399,6 @@
             {% endif %}
           </article>
         {% endfor %}
-      {% endif %}
-      {% if updates.checked %}
-        {% set inside = check and (updates.checked|selectattr("assignment_id", "equalto", check.assignment_id)|list) %}
-        <details class="steps checked-recently"{% if inside %} open{% endif %}>
-          <summary>Checked recently ({{ updates.checked|length }})</summary>
-          <ul>
-            {% for item in updates.checked %}
-              <li id="update-{{ item.assignment_id }}" tabindex="-1">
-                <strong>{{ row_title(item) }}</strong> &middot; {{ item.course }}:
-                {{ check_words(item) }}
-                {{ her_update(item) }}
-                {% for statement in item.school_statements %}
-                  The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}
-                {% endfor %}
-                {% with words = item.words, to_a_parent = true, review_href = instructions_review_href(item.assignment_id) %}{% include "school_words.html" %}{% endwith %}
-                {{ checked_line(item) }}
-              </li>
-            {% endfor %}
-          </ul>
-          <p class="note">Checks of the last two weeks, the latest first. A check is the family's own record; it changes neither her update nor the school's report. Check again reopens it here.</p>
-        </details>
-      {% endif %}
-      {% if updates.recent %}
-        {% set inside = check and (updates.recent|selectattr("assignment_id", "equalto", check.assignment_id)|list) %}
-        {% set named = updates.recent|selectattr("checks_unavailable")|list %}
-        <details class="steps"{% if inside or named %} open{% endif %}>
-          <summary>Recent updates ({{ updates.recent|length }})</summary>
-          <ul>
-            {% for item in updates.recent %}
-              <li id="update-{{ item.assignment_id }}" tabindex="-1">
-                <strong>{{ row_title(item) }}</strong> &middot; {{ item.course }}:
-                {{ check_words(item) }}
-                {{ her_update(item) }}
-                {% for statement in item.school_statements %}
-                  The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}
-                {% endfor %}
-                {% with words = item.words, to_a_parent = true, review_href = instructions_review_href(item.assignment_id) %}{% include "school_words.html" %}{% endwith %}
-                {{ check_on_record(item) }}
-              </li>
-            {% endfor %}
-          </ul>
-          <p class="note">Her updates of the last two weeks, most recent first. Done means she has finished her part; it does not turn work in.</p>
-        </details>
-      {% endif %}
-      {% if updates.school %}
-        <h3>School reports</h3>
-        {% for item in updates.school %}
-          <article class="draft" id="update-{{ item.assignment_id }}" tabindex="-1">
-            <p class="course">{{ item.course }}</p>
-            {{ check_words(item) }}
-            {% for statement in item.school_statements %}
-              <p class="decision-line">
-                <strong>{% if loop.first %}{{ row_title(item) }}{% else %}{{ item.title }}{% endif %}: the school reports it {{ statement.status|replace("_", " ") }}.</strong>
-                {{ statement.sentence }}
-              </p>
-            {% endfor %}
-            {% if item.status or item.cleared_on or item.updates_unavailable %}<p class="note">{{ her_update(item) }}</p>{% endif %}
-            {% with words = item.words, to_a_parent = true, review_href = instructions_review_href(item.assignment_id) %}{% include "school_words.html" %}{% endwith %}
-            {{ check_on_record(item) }}
-          </article>
-        {% endfor %}
-      {% endif %}
-      {% if updates.unreadable %}
-        <h3>Records that can't be read</h3>
-        {% for item in updates.unreadable %}
-          <article class="draft" id="update-{{ item.assignment_id }}" tabindex="-1">
-            <p class="course">{{ item.course }}</p>
-            <p class="decision-line"><strong>{{ row_title(item) }}</strong></p>
-            {{ check_words(item) }}
-            {% if item.status or item.cleared_on or item.updates_unavailable %}<p class="note">{{ her_update(item) }}</p>{% endif %}
-            {% with words = item.words, to_a_parent = true, review_href = instructions_review_href(item.assignment_id) %}{% include "school_words.html" %}{% endwith %}
-            {{ check_on_record(item) }}
-          </article>
-        {% endfor %}
-      {% endif %}
-    </section>
-  {% endif %}
-
-  {#
-    Turning work in: what she has said about delivery, read only. Everything
-    still to turn in, however old, then what else she said lately. Each title
-    goes to the assignment's details, where her section is; there is no form
-    here, since what she turned in is hers to say, and reading this records
-    nothing and sends no reminder.
-  #}
-  {% if updates.turning_in %}
-    <section class="assignment-updates" id="turning-work-in" tabindex="-1">
-      <h2>Turning work in</h2>
-      <p class="note">Her own reports, with the day Blossom took each. Done means she finished her part; this says what she reports about handing it over. Nothing here is sent to the school.</p>
-      {% for row in updates.turning_in %}
-        {#
-          The way back from an assignment's details names the assignment's row.
-          When this is the only row it has on the page, it answers to that name;
-          when Assignment updates has one too, that row keeps the name and this
-          one keeps its own, so no id is on the page twice.
-        #}
-        <article class="draft" id="{% if row.assignment_id in listed %}hand-in{% else %}update{% endif %}-{{ row.assignment_id }}" tabindex="-1">
-          <p class="course">{{ row.course }}</p>
-          <p class="decision-line"><strong><a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to="family") }}" aria-label="{{ row.title }}, {{ row.course }}: Turning it in">{{ row.title }}</a></strong></p>
-          <p>{{ turned_in_words(row.hand_in) }}</p>
-        </article>
-      {% endfor %}
     </section>
   {% endif %}
 
@@ -443,7 +408,7 @@
       <p class="empty quiet">No plans need your review.</p>
     {% endif %}
     {% for draft in waiting %}
-      <article class="draft outcome-{{ draft.outcome }}">
+      <article class="draft outcome-{{ draft.outcome }}" id="plan-to-review-{{ draft.draft_id }}" tabindex="-1">
         <p class="course">Evening of {{ draft.plan_date }}</p>
         <h3>{{ draft.plan_date.strftime("%A, %B") }} {{ draft.plan_date.day }}, {{ draft.plan_date.year }}</h3>
         {#
@@ -558,6 +523,155 @@
       </article>
     </section>
   {% endif %}
+
+  {#
+    Recent activity: Still open first, rows shown whatever their age and
+    outside the bound, then the entries of the last seven household days,
+    newest first, at most ten unless all are asked for, in one row layout:
+    the day Blossom recorded it and the class, the title, and what happened.
+    Her update, her word on turning work in, and a family check are entries
+    of their own, each in its own words, and nothing here implies the school
+    received anything. An entry whose fact is held by a row worth checking
+    together or a Still open row is a plain row: its title links to that row
+    by the row's own id, and it has no id and no form. The days are said to
+    hold nothing only while every record of them can be read. A hand-in row
+    answers to the assignment's row name when that assignment has no other
+    row on the page, and keeps its own otherwise, so no id is on the page
+    twice. A link back that names a row in no list lands on a place with the
+    row's id at the section's head, and no row is made for it.
+  #}
+  {% macro row_entry(item, kind) %}
+    {{ check_words(item) }}
+    <p>{{ her_update(item) }}</p>
+    {% for statement in item.school_statements %}
+      <p>The school reports it {{ statement.status|replace("_", " ") }}. {{ statement.sentence }}</p>
+    {% endfor %}
+    {% with words = item.words, to_a_parent = true, review_href = instructions_review_href(item.assignment_id) %}{% include "school_words.html" %}{% endwith %}
+    {% if kind == "check" %}{{ checked_line(item) }}{% else %}{{ check_on_record(item) }}{% endif %}
+  {% endmacro %}
+  {% macro hand_in_card(row, day=none) %}
+    <li class="compact-row{% if day %} entry-hand-in{% endif %}" id="{% if row.assignment_id in activity.update_ids %}hand-in{% else %}update{% endif %}-{{ row.assignment_id }}" tabindex="-1">
+      <p class="course">{% if day %}{{ recorded_day(day) }} &middot; {% endif %}{{ row.course }}</p>
+      <p class="decision-line"><strong><a class="assignment-link" href="{{ details_href(row.assignment_id, fragment="turning-it-in", return_to="family") }}" aria-label="{{ row.title }}, {{ row.course }}: Turning it in">{{ row.title }}</a></strong></p>
+      <p>{{ turned_in_words(row.hand_in) }}</p>
+    </li>
+  {% endmacro %}
+  {% macro plain_entry(entry) %}
+    {% if entry.kind == "hand_in" %}{% set row = entry.hand_in %}{% set target = card_href("hand-in-" if row.assignment_id in activity.update_ids else "update-", row.assignment_id) %}{% else %}{% set row = entry.row %}{% set target = card_href("update-", row.assignment_id) %}{% endif %}
+    <li class="compact-row entry-{{ entry.kind }} entry-plain">
+      <p class="course">{{ recorded_day(entry.day) }} &middot; {{ row.course }}</p>
+      <p class="decision-line"><strong><a class="assignment-link" href="{{ target }}" aria-label="{{ row.title }}, {{ row.course }}">{{ row.title }}</a></strong></p>
+      <p>{% if entry.kind == "hand_in" %}{{ turned_in_words(row.hand_in) }}{% elif entry.kind == "check" %}A parent marked this checked with her on {{ row.checked_on.strftime("%B") }} {{ row.checked_on.day }}.{% if row.check_note %} The note with it: <q>{{ row.check_note }}</q>{% endif %}{% else %}{{ her_update(row) }}{% endif %}</p>
+    </li>
+  {% endmacro %}
+  {% macro activity_entry(entry) %}
+    {% if entry.plain %}
+      {{ plain_entry(entry) }}
+    {% elif entry.kind == "hand_in" %}
+      {{ hand_in_card(entry.hand_in, entry.day) }}
+    {% else %}
+      {% set item = entry.row %}
+      <li class="compact-row entry-{{ entry.kind }}" id="update-{{ item.assignment_id }}" tabindex="-1">
+        <p class="course">{{ recorded_day(entry.day) }} &middot; {{ item.course }}</p>
+        <p class="decision-line"><strong>{{ row_title(item) }}</strong></p>
+        {{ row_entry(item, entry.kind) }}
+      </li>
+    {% endif %}
+  {% endmacro %}
+  {% set still_open = activity.still_to_turn_in or activity.school or activity.unreadable or activity.hand_ins_unreadable %}
+  {% set kinds = (activity.shown + activity.later + (activity.earlier if activity.earlier_shown else []))|map(attribute="kind")|list %}
+  {% set pointed_at = check and not check.said and not check.problem and check.assignment_id not in activity.listed_ids %}
+  <section class="assignment-updates" id="recent-activity" tabindex="-1">
+    <h2>Recent activity</h2>
+    {% if pointed_at %}
+      <span id="update-{{ check.assignment_id }}" tabindex="-1"></span>
+    {% endif %}
+    {% if updates.updates_unreadable %}
+      <p class="problem" id="updates-unreadable" tabindex="-1">Her updates can't be read right now for: {% for item in updates.updates_unreadable %}<a class="assignment-link" href="{{ update_row_href(item.assignment_id) }}">{{ item.title }}</a> ({{ item.course }}){% if not loop.last %}, {% endif %}{% endfor %}.</p>
+    {% endif %}
+    {% if updates.checks_unreadable %}
+      <p class="problem" id="checks-unreadable" tabindex="-1">Family checks can't be read right now for: {% for item in updates.checks_unreadable %}<a class="assignment-link" href="{{ update_row_href(item.assignment_id) }}">{{ item.title }}</a> ({{ item.course }}){% if not loop.last %}, {% endif %}{% endfor %}.</p>
+    {% endif %}
+    {% if still_open %}
+      <section class="still-open" id="still-open">
+        <h3>Still open</h3>
+        {% if activity.still_to_turn_in %}
+          <h4 class="update-heading">Still to turn in</h4>
+          <ul class="compact-rows">{% for row in activity.still_to_turn_in %}{{ hand_in_card(row) }}{% endfor %}</ul>
+        {% endif %}
+        {% if activity.school %}
+          <h4 class="update-heading">School reports</h4>
+          <ul class="compact-rows">
+          {% for item in activity.school %}
+            <li class="compact-row" id="update-{{ item.assignment_id }}" tabindex="-1">
+              <p class="course">{{ item.course }}</p>
+              {{ check_words(item) }}
+              {% for statement in item.school_statements %}
+                <p class="decision-line">
+                  <strong>{% if loop.first %}{{ row_title(item) }}{% else %}{{ item.title }}{% endif %}: the school reports it {{ statement.status|replace("_", " ") }}.</strong>
+                  {{ statement.sentence }}
+                </p>
+              {% endfor %}
+              {% if item.status or item.cleared_on or item.updates_unavailable %}<p class="note">{{ her_update(item) }}</p>{% endif %}
+              {% with words = item.words, to_a_parent = true, review_href = instructions_review_href(item.assignment_id) %}{% include "school_words.html" %}{% endwith %}
+              {{ check_on_record(item) }}
+            </li>
+          {% endfor %}
+          </ul>
+        {% endif %}
+        {% if activity.unreadable or activity.hand_ins_unreadable %}
+          <h4 class="update-heading">Records that can't be read</h4>
+          <ul class="compact-rows">
+          {% for item in activity.unreadable %}
+            <li class="compact-row" id="update-{{ item.assignment_id }}" tabindex="-1">
+              <p class="course">{{ item.course }}</p>
+              <p class="decision-line"><strong>{{ row_title(item) }}</strong></p>
+              {{ check_words(item) }}
+              {% if item.status or item.cleared_on or item.updates_unavailable %}<p class="note">{{ her_update(item) }}</p>{% endif %}
+              {% with words = item.words, to_a_parent = true, review_href = instructions_review_href(item.assignment_id) %}{% include "school_words.html" %}{% endwith %}
+              {{ check_on_record(item) }}
+            </li>
+          {% endfor %}
+          {% for row in activity.hand_ins_unreadable %}{{ hand_in_card(row) }}{% endfor %}
+          </ul>
+        {% endif %}
+      </section>
+    {% endif %}
+    {% if activity.entries %}
+      <p class="note">{{ activity.span }}, the last 7 days, by the day Blossom recorded each. {% if activity.shown|length < activity.entries|length %}Showing the {{ activity.shown|length }} newest of {{ activity.entries|length }}.{% else %}Showing all {{ activity.entries|length }}.{% endif %}</p>
+      <ul class="compact-rows">{% for entry in activity.shown %}{{ activity_entry(entry) }}{% endfor %}</ul>
+      {% if activity.shown|length < activity.entries|length %}
+        <p class="support-links"><a href="/parent?activity=all#recent-activity">Show all {{ activity.entries|length }} from these days</a></p>
+      {% endif %}
+    {% elif not activity.unread %}
+      <p class="empty quiet">No updates, checks or hand-in reports from {{ activity.span }}.</p>
+    {% endif %}
+    {% if activity.later %}
+      <div id="later-activity">
+        <p class="note">Recorded with a later date:</p>
+        <ul class="compact-rows">{% for entry in activity.later %}{{ activity_entry(entry) }}{% endfor %}</ul>
+      </div>
+    {% endif %}
+    {% if "update" in kinds %}
+      <p class="note">Done means she has finished her part; it does not turn work in.</p>
+    {% endif %}
+    {% if "hand_in" in kinds or activity.still_to_turn_in %}
+      <p class="note">Her own reports, with the day Blossom took each. Done means she finished her part; this says what she reports about handing it over. Nothing here is sent to the school.</p>
+    {% endif %}
+    {% if "check" in kinds or activity.school|selectattr("checked")|list %}
+      <p class="note">A check is the family's own record; it changes neither her update nor the school's report. Check again reopens it here.</p>
+    {% endif %}
+    {% if activity.earlier %}
+      {% if activity.earlier_shown %}
+        <section id="earlier-activity" tabindex="-1">
+          <h3>Earlier activity ({{ activity.earlier|length }})</h3>
+          <ul class="compact-rows">{% for entry in activity.earlier %}{{ activity_entry(entry) }}{% endfor %}</ul>
+        </section>
+      {% else %}
+        <p class="support-links"><a href="/parent?activity=earlier#earlier-activity">Earlier activity ({{ activity.earlier|length }})</a></p>
+      {% endif %}
+    {% endif %}
+  </section>
 
   {#
     The way in for assignments: the school's own text, pasted whole, or one
@@ -677,7 +791,7 @@ Cover both books with paper.</pre>
       </form>
     </section>
   </details>
-  <details class="steps panel-fold"{% if plan_open %} open{% endif %}>
+  <details class="steps panel-fold" id="help-with-a-plan"{% if plan_open %} open{% endif %}>
     <summary>Help with a plan</summary>
     <section class="panel{% if model_available and plan_form %} plan-panel{% endif %}">
       <h2>Plan an evening for her</h2>
@@ -710,6 +824,12 @@ Cover both books with paper.</pre>
     </section>
   </details>
 
+  {#
+    History: the earlier plans, the plans that couldn't be made, and the ways to
+    her notes in homework and the ones she put away.
+  #}
+  <section id="history">
+  <h2>History</h2>
   {% set earlier_open = (open_plan and (decided|selectattr("draft_id", "equalto", open_plan)|list)) or (landing_plan and (decided|selectattr("draft_id", "equalto", landing_plan)|list)) %}
   <details class="steps panel-fold"{% if earlier_open %} open{% endif %}>
     <summary>Earlier plans</summary>
@@ -765,4 +885,6 @@ Cover both books with paper.</pre>
       </section>
     </details>
   {% endif %}
+  <p class="note history-links"><a href="{{ added_notes_page }}">Notes added to homework</a> &middot; <a href="{{ archived_notes_page }}">Archived homework notes</a></p>
+  </section>
 {% endblock %}

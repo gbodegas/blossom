@@ -365,7 +365,7 @@ CARD_CUE_STAYS_ON_SCREEN = (
 beside the card, pinned from the last line of its comment."""
 SECTIONS_REACH_WITH_THEIR_CARDS = (
     "   and its cue on every screen 200 or 400 pixels or wider. */\n"
-    "#help-she-asked-for,\n#turning-work-in {\n"
+    "#help-she-asked-for {\n"
     "  margin-inline: min(0px, 13vw - 2.25rem);\n"
     "  padding-inline: clamp(0px, 2.25rem - 13vw, 2.25rem);\n}\n\n"
     "section#help-she-asked-for:focus {\n"
@@ -373,9 +373,9 @@ SECTIONS_REACH_WITH_THEIR_CARDS = (
     "    0 0 0 clamp(0px, 13vw - 1.25rem, 0.375rem) var(--arrival-tint),\n"
     "    -0.25rem 0 0 clamp(0px, 13vw - 1.25rem, 0.375rem) var(--blue-action);\n}\n"
 )
-"""The two family sections a link lands on that hold cards, reaching with their cards and
-padding their words back in, and the narrowed cue of the one that has a cue, pinned from the
-last line of their comment. Check both landings in a browser at 320 px with text at 200%."""
+"""The one family section a link lands on that holds cards, reaching with its cards and
+padding its words back in, and its narrowed cue, pinned from the last line of their comment.
+Check its landing in a browser at 320 px with text at 200%."""
 
 
 def test_the_family_page_s_landing_cues_are_pinned_word_for_word() -> None:
@@ -386,11 +386,11 @@ def test_the_family_page_s_landing_cues_are_pinned_word_for_word() -> None:
     assert styles.count(CARD_CUE_STAYS_ON_SCREEN) == 1
     assert styles.count(SECTIONS_REACH_WITH_THEIR_CARDS) == 1
     assert styles.count("clamp(0px, 13vw - 1.25rem, 0.375rem)") == 4
-    assert styles.count("#turning-work-in") == 1
+    assert "#recent-activity" not in styles
 
 
 def test_the_family_page_s_cards_narrow_rule_is_pinned_and_no_decision_has_its_own() -> None:
-    """The pinned text occurs once; the family page writes ten cards and the page of plans
+    """The pinned text occurs once; the family page writes seven cards and the page of plans
     shown as saved one, inside its panel; and no rule names a plan's decision, of the four
     there are, so a card of any decision takes the shared rule."""
     styles = (STATIC / "blossom.css").read_text(encoding="utf-8")
@@ -403,7 +403,7 @@ def test_the_family_page_s_cards_narrow_rule_is_pinned_and_no_decision_has_its_o
     assert styles.count(CARDS_GIVE_WAY) == 1
     assert styles.count("> section:not(.panel) > .draft") == 5
     assert sorted(writers) == ["parent_review.html", "plans_unavailable.html"]
-    assert writers["parent_review.html"].count('<article class="draft') == 10
+    assert writers["parent_review.html"].count('<article class="draft') == 7
     assert writers["parent_review.html"].count('class="draft decided-{{ draft.decision }}"') == 2
     assert writers["plans_unavailable.html"].count('<article class="draft">') == 1
     assert writers["plans_unavailable.html"].count('<section class="panel saved-plans">') == 1

@@ -940,7 +940,8 @@ a.assignment-link:focus-visible {
    result's homework page, its heading, where a press or the way in lands. On the
    screenshot review, a question or a card's choices, and a group of what saving
    does, where their links land, and what an upload, a Read press or a save did, where
-   the press lands. Each
+   the press lands. On the family page, a school instruction to review, where its
+   Needs you link lands. Each
    takes the same calm cue, whether a click, a key or a
    redirect brought the focus: a pale wash around the place and a bar of the action
    color at its left, both drawn outside its box so nothing moves, and no outline
@@ -966,7 +967,8 @@ h1#homework:focus,
 #told:focus,
 #done:focus,
 #outcome-heading:focus,
-#too-much-state:focus {
+#too-much-state:focus,
+#school-instructions-to-review li[tabindex="-1"]:focus {
   outline: 3px solid transparent;
   outline-offset: 4px;
   background-color: var(--arrival-tint);
@@ -1030,8 +1032,9 @@ h1#homework:focus,
 }
 
 /* A problem line a press lands on, at the top of her week or of a page, on a card, in her
-   To turn in list or in Help, keeps its own tint and edge, and the edge widens: the same
-   calm cue in the problem's colors, with the same transparent outline for forced colors. */
+   To turn in list or in Help, or that a Needs you link on the family page lands on, keeps
+   its own tint and edge, and the edge widens: the same calm cue in the problem's colors,
+   with the same transparent outline for forced colors. */
 #problem-summary:focus,
 #note-problem:focus,
 .detail .problem[tabindex="-1"]:focus,
@@ -1039,7 +1042,12 @@ h1#homework:focus,
 #problem[tabindex="-1"]:focus,
 .update .problem[tabindex="-1"]:focus,
 #to-turn-in-problem:focus,
-.help-panel .problem[tabindex="-1"]:focus {
+.help-panel .problem[tabindex="-1"]:focus,
+#help-set-apart:focus,
+#instructions-unreadable:focus,
+#homework-notes-unreadable:focus,
+#updates-unreadable:focus,
+#checks-unreadable:focus {
   outline: 3px solid transparent;
   outline-offset: 4px;
   box-shadow: inset 0.25rem 0 0 var(--rose-ink);
@@ -1397,15 +1405,14 @@ main > section:not(.panel) > .draft[tabindex="-1"]:focus {
     -0.25rem 0 0 clamp(0px, 13vw - 1.25rem, 0.375rem) var(--blue-action);
 }
 
-/* Help she asked for and Turning work in hold such cards, and a link lands on Help she asked
-   for. On a phone with text at 200% each reaches into the page's side margin with its cards
-   and pads its own words back in by as much, so its cards stay inside it. Help she asked
-   for's arrival cue goes around them, its spread narrowing as a card's does, and its selector
+/* Help she asked for is the one section of the family page that holds such cards and that a
+   link lands on. On a phone with text at 200% it reaches into the page's side margin with
+   its cards and pads its own words back in by as much, so its cards stay inside it. Its
+   arrival cue goes around them, its spread narrowing as a card's does, and its selector
    outranks the cue it narrows wherever either sits in this file. Every screen 277 pixels or
-   wider with ordinary text, and 554 pixels or wider with text at 200%, keeps each section,
+   wider with ordinary text, and 554 pixels or wider with text at 200%, keeps the section,
    and its cue on every screen 200 or 400 pixels or wider. */
-#help-she-asked-for,
-#turning-work-in {
+#help-she-asked-for {
   margin-inline: min(0px, 13vw - 2.25rem);
   padding-inline: clamp(0px, 2.25rem - 13vw, 2.25rem);
 }
@@ -2004,11 +2011,47 @@ select[aria-invalid="true"] {
   overflow-wrap: anywhere;
 }
 
-.lead-action {
-  margin: -0.5rem 0 1.25rem;
+/* Needs you and Recent activity list their rows as compact rows: the kind in the cards'
+   small label, the title as a link, then what happened. A hairline sets each row apart
+   from the one above it, in place of a card's surface. The rows carry no side padding, so
+   on a narrow screen with large text their words keep the whole line. */
+.compact-rows {
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
 }
 
-.lead-action a {
+.compact-row {
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--edge);
+  overflow-wrap: anywhere;
+}
+
+.compact-row:first-child {
+  border-top: 0;
+}
+
+.compact-row > p {
+  margin: 0.15rem 0;
+}
+
+/* Add or do: its three links on one line that wraps, each a chip in the action color. Its
+   side padding gives way on a narrow screen with large text before a word breaks. */
+.add-or-do ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.add-or-do a {
+  padding-block: 0;
+  padding-inline: clamp(0px, 13vw - 1rem, 1rem);
+  border: 1px solid var(--pink-deep);
+  border-radius: var(--pill);
+  background: var(--surface-strong);
   color: var(--blue-action);
   font-weight: 700;
 }
@@ -2878,14 +2921,19 @@ main.wide {
   min-height: 2.75rem;
 }
 
-/* The title that leads a row of her To turn in list or of the family page's updates, the
-   family page's link to adding assignments, the line of links under the homework notes, and
-   the Open note link that ends each note's row keep their place in the line, their type, and
-   their color, and are as tall as the buttons. */
+/* The title that leads a row of her To turn in list or of the family page's updates, its
+   plain rows included, the family page's links in Needs you and Add or do, the line of
+   links under her homework notes and under the family page's History, the links of the
+   line naming school instructions that can't be read, and the Open note link that ends
+   each note's row keep their place in the line, their type, and their color, and are as
+   tall as the buttons. */
 .to-turn-in-row a.assignment-link,
 .assignment-updates a.assignment-link,
-.lead-action a,
+.needs-you a,
+.add-or-do a,
 .homework-notes > .note a,
+.history-links a,
+#instructions-unreadable a,
 .homework-note-row a.assignment-link {
   display: inline-flex;
   align-items: center;
@@ -2975,7 +3023,9 @@ details.quiet-fold > summary {
   margin: 0.25rem 0 0.5rem;
 }
 
-.assignment-updates [tabindex="-1"]:focus {
+/* A row of the updates lists that a link lands on takes the calm cue; a problem line in them
+   keeps its rose tint and takes its own cue, above. */
+.assignment-updates [tabindex="-1"]:not(.problem):focus {
   outline: 3px solid transparent;
   outline-offset: 4px;
   background-color: var(--arrival-tint);

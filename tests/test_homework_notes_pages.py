@@ -229,7 +229,8 @@ def test_the_family_page_shows_what_she_added_and_offers_no_way_to_change_it(
     assert "Geometry" in section
     assert f'href="{note_href(name)}"' in section
     assert "a note she put away" not in section
-    assert "Archived homework notes" in section
+    history = family[family.index('id="history"') : family.index("</main>")]
+    assert "Archived homework notes" in history
     assert "<form" not in section
     assert "It is not an assignment" in section
 

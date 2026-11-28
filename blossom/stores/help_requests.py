@@ -66,7 +66,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -299,7 +299,7 @@ RESOLVED_ROWS: Final = """
     ORDER BY resolved_at DESC, request_id
 """
 LISTED_ROWS: Final = """
-    SELECT * FROM help_requests
+    SELECT rowid AS kept_order, * FROM help_requests
     WHERE state<>'resolved' OR resolved_at >= ?
     ORDER BY state='resolved',
         CASE WHEN state<>'resolved' THEN asked_at END,
@@ -307,7 +307,9 @@ LISTED_ROWS: Final = """
         request_id
 """
 """Both lists in one statement, so they read one state of the file: the open requests oldest
-first, then those resolved within retention, most recently resolved first."""
+first, then those resolved within retention, most recently resolved first. Each row also
+carries its rowid as ``kept_order``: a new row takes a rowid above every row the table holds,
+so their order is the order Blossom kept the requests, whatever times were stored."""
 REQUEST_ID: Final = re.compile(r"[0-9a-f]{32}")
 """The shape of an id a form carries: 32 lowercase hex digits, as ``new_request_id`` makes."""
 
@@ -368,6 +370,9 @@ class HelpListed:
     open: tuple[HelpRequest, ...]
     resolved: tuple[HelpRequest, ...]
     unreadable: int
+    kept: tuple[str, ...] = ()
+    """The ids of the open requests in the order Blossom kept them, whatever times were
+    stored."""
 
     def every(self) -> list[HelpRequest]:
         """Every request that can be read, in the order the lists show them."""
@@ -866,7 +871,7 @@ class HelpRequestsStore:
         requests, unreadable = readable(rows)
         waiting = tuple(request for request in requests if request.state != "resolved")
         resolved = tuple(request for request in requests if request.state == "resolved")
-        return HelpListed(waiting, resolved, unreadable)
+        return HelpListed(waiting, resolved, unreadable, kept_order_of(rows, waiting))
 
     def retained(self) -> HelpHeld:
         """Every request kept, open or resolved within retention, in one statement, with the
@@ -1077,6 +1082,18 @@ def readable(rows: list[sqlite3.Row]) -> tuple[tuple[HelpRequest, ...], int]:
             logger.warning("a kept help request was set apart: %s", refused)
             unreadable += 1
     return tuple(requests), unreadable
+
+
+def kept_order_of(rows: list[sqlite3.Row], waiting: tuple[HelpRequest, ...]) -> tuple[str, ...]:
+    """The ids of the ``waiting`` requests in the order Blossom kept them, by the
+    ``kept_order`` their rows were read with. Each row's id is read as ``request_from`` reads
+    it, so every request built from these rows is found; a row whose id is not UTF-8 is none of
+    them."""
+    kept: dict[str, int] = {}
+    for row in rows:
+        with suppress(UnicodeDecodeError):
+            kept[str(decoded(row["request_id"]))] = row["kept_order"]
+    return tuple(sorted((request.request_id for request in waiting), key=kept.__getitem__))
 
 
 def reference_from(held: object, request_id: str) -> tuple[str | None, bool]:

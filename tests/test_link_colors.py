@@ -76,6 +76,8 @@ from tests.support import (
     winner,
 )
 from tests.support import READING_LOG_ID as LOG_ID
+from tests.test_instructions_first import unreadable as instruction_bent
+from tests.test_school_instructions_review import A, a_current_b_earlier
 
 ACTIONS = f"/student/actions/assignments/{ESSAY_ID}"
 STATES = ("link", "visited")
@@ -1109,17 +1111,24 @@ HER_ROWS = frozenset({"a row of her To turn in list"})
 UPDATES = frozenset(
     {
         "a row worth checking together",
-        "a row checked recently",
-        "a recent update",
+        "her update in Recent activity",
+        "a plain row in Recent activity",
         "a school report",
-        "a row turning work in",
+        "a row still to turn in",
     }
 )
-"""Each group of the family page's updates, and the rows of what she says about turning work in."""
-LEAD = frozenset({"the way to adding assignments"})
+"""Each place of the family page's rows: worth checking together, the entries of Recent
+activity, the plain rows of the events whose rows are listed apart, and Still open with the
+school's reports, a checked row among them, and what she says is still to turn in."""
+LEAD = frozenset({"a way to add or plan"})
+NEEDS = frozenset({"a row of Needs you"})
 UNDER_THE_NOTES = frozenset({"the line under the homework notes"})
+HISTORY = frozenset({"the line of notes links under History"})
 NOTE_ROWS = frozenset({"a homework note's row"})
-LISTED = HER_ROWS | UPDATES | LEAD | UNDER_THE_NOTES | NOTE_ROWS
+INSTRUCTIONS_LINE = frozenset({"the line of instructions that can't be read"})
+LISTED = (
+    HER_ROWS | UPDATES | LEAD | NEEDS | UNDER_THE_NOTES | HISTORY | NOTE_ROWS | INSTRUCTIONS_LINE
+)
 LIST_PLACES = frozenset(
     {
         ("her week", "a row of her To turn in list"),
@@ -1127,13 +1136,17 @@ LIST_PLACES = frozenset(
         ("her week", "a homework note's row"),
         ("her To turn in list", "a row of her To turn in list"),
         ("her homework notes", "a homework note's row"),
-        *(("the family page", place) for place in UPDATES | LEAD | UNDER_THE_NOTES),
+        *(
+            ("the family page", place)
+            for place in UPDATES | LEAD | NEEDS | HISTORY | INSTRUCTIONS_LINE
+        ),
     }
 )
 """Every page and place that holds a link the lists rule is for."""
 LISTS_RULE = (
     ".to-turn-in-row a.assignment-link,\n.assignment-updates a.assignment-link,\n"
-    ".lead-action a,\n.homework-notes > .note a,\n.homework-note-row a.assignment-link {\n"
+    ".needs-you a,\n.add-or-do a,\n.homework-notes > .note a,\n.history-links a,\n"
+    "#instructions-unreadable a,\n.homework-note-row a.assignment-link {\n"
     "  display: inline-flex;\n  align-items: center;\n  min-height: 2.75rem;\n}"
 )
 LISTS: dict[str, str] = {}
@@ -1142,8 +1155,9 @@ LISTS: dict[str, str] = {}
 @pytest.fixture
 def lists() -> dict[str, str]:
     """Her week, her To turn in list, her homework notes, and the family page, with two
-    assignments still to turn in, four homework notes, and a row in every group of the
-    updates. Kept once rendered, as ``rendered`` is."""
+    assignments still to turn in, four homework notes, a row in every group of the updates,
+    and the essay's school instructions unreadable. Kept once rendered, as ``rendered``
+    is."""
     if LISTS:
         return LISTS
     with browser() as client:
@@ -1190,6 +1204,8 @@ def lists() -> dict[str, str]:
                 headers=PAGE_HEADERS,
             )
             assert saved.status_code == 303, saved.text[:400]
+        a_current_b_earlier(store)
+        instruction_bent(store, A)
         LISTS.update(
             {
                 "her week": client.get(HER_PAGE, headers=PAGE_HEADERS).text,
@@ -1214,8 +1230,14 @@ def list_place(link: Element) -> str | None:
         and "homework-notes" in line.parent.classes
     ):
         return "the line under the homework notes"
-    if "lead-action" in marks:
-        return "the way to adding assignments"
+    if line is not None and "history-links" in line.classes:
+        return "the line of notes links under History"
+    if line is not None and line.attributes.get("id") == "instructions-unreadable":
+        return "the line of instructions that can't be read"
+    if "add-or-do" in marks:
+        return "a way to add or plan"
+    if "needs-you" in marks:
+        return "a row of Needs you"
     if "assignment-link" not in link.classes:
         return None
     if "homework-note-row" in marks:
@@ -1224,13 +1246,16 @@ def list_place(link: Element) -> str | None:
         return "a row of her To turn in list"
     if "assignment-updates" not in marks:
         return None
-    if any(item.attributes.get("id") == "turning-work-in" for item in above):
-        return "a row turning work in"
-    if "checked-recently" in marks:
-        return "a row checked recently"
-    if any(item.tag == "details" for item in above):
-        return "a recent update"
-    return "a row worth checking together" if "needs-review" in marks else "a school report"
+    if any(item.attributes.get("id") == "still-open" for item in above):
+        turning = "turning-it-in" in link.attributes.get("href", "")
+        return "a row still to turn in" if turning else "a school report"
+    if "entry-plain" in marks:
+        return "a plain row in Recent activity"
+    if "entry-check" in marks:
+        return "a check in Recent activity"
+    if "entry-update" in marks:
+        return "her update in Recent activity"
+    return "a row worth checking together" if "needs-review" in marks else "a row in no place"
 
 
 def links_in_the_lists(pages: dict[str, str]) -> list[tuple[str, str, Element]]:
@@ -1274,10 +1299,16 @@ def test_every_title_and_line_of_links_in_the_lists_is_as_tall_as_a_control(
             id="the-updates-selector-broken",
         ),
         pytest.param(
-            LISTS_RULE.replace(".lead-action a,", ".lead-action b,"),
+            LISTS_RULE.replace(".add-or-do a,", ".add-or-do b,"),
             LEAD,
             0,
             id="the-lead-selector-broken",
+        ),
+        pytest.param(
+            LISTS_RULE.replace(".needs-you a,", ".needs-you b,"),
+            NEEDS,
+            0,
+            id="the-needs-selector-broken",
         ),
         pytest.param(
             LISTS_RULE.replace(".note a,", ".note b,"),
@@ -1286,10 +1317,22 @@ def test_every_title_and_line_of_links_in_the_lists_is_as_tall_as_a_control(
             id="the-notes-selector-broken",
         ),
         pytest.param(
+            LISTS_RULE.replace(".history-links a,", ".history-links b,"),
+            HISTORY,
+            0,
+            id="the-history-selector-broken",
+        ),
+        pytest.param(
             LISTS_RULE.replace(".homework-note-row a.", ".homework-note-row b."),
             NOTE_ROWS,
             0,
             id="the-note-rows-selector-broken",
+        ),
+        pytest.param(
+            LISTS_RULE.replace("#instructions-unreadable a,", "#instructions-unreadable b,"),
+            INSTRUCTIONS_LINE,
+            0,
+            id="the-instructions-line-selector-broken",
         ),
         pytest.param(LISTS_RULE.replace("inline-flex", "inline"), LISTED, 0, id="laid-out-inline"),
         pytest.param(LISTS_RULE.replace("inline-flex", "flex"), LISTED, 0, id="out-of-its-line"),

@@ -166,8 +166,9 @@ can't be read count as not reported, so the work stays in the plan with none
 of their words, and no page says she reported nothing or Not yet: her card
 and the details say her updates can't be read and offer no form, and a save
 refused over them shows what she chose and wrote, read-only. The family page
-names every such row at the head of its updates, each name a link to its row,
-and lists a row no readable fact puts in a group under Records that can't be
+names every such row at the head of Recent activity, each name a link to its
+row, with a row of its own under Needs you that links to that line, and lists a
+row no readable fact puts in a group under Still open, as Records that can't be
 read. Checks that can't be read leave her Done and its place in a plan as
 they are, and a row worth checking stays worth checking, with neither Mark
 checked nor Check again. A note's candidate says her updates can't be read,
@@ -235,10 +236,30 @@ the one way into the form, a GET that writes nothing. The form asks "Has this
 been turned in?" with the four answers, and shows the next step only while
 Still to turn in is chosen; the stylesheet hides it otherwise and keeps what
 she typed, and a save of another answer with a step typed says the step was
-not saved. Her week's rows show one line and a link, the family page lists
-what is still to turn in, however old, then what else she said in the last
-fourteen days, with no form, and a row worth checking together carries it as
-context that decides nothing. A page's one reading holds every chain, read
+not saved. Her week's rows show one line and a link. The family page opens
+with Needs you, a row for each open request, school instruction waiting for
+review, homework note she added, row worth checking together, and plan
+waiting for review, whatever its age, each a link to its card, and a row for
+each of those sources, school instructions among them, that can't be read,
+then Add or do, three links, then those sections with their forms. Recent
+activity follows: Still open first, rows outside the bound whatever their
+age, with what she reports still to turn in, every row the school reports on
+that is not worth checking together, with her update and a family check on
+it, and every other row whose records can't be read; then the entries of the
+last seven household days, today minus six to today, by the day Blossom
+recorded each (an entry recorded with a later date is listed apart after
+them, under "Recorded with a later date:"): her latest event on an
+assignment, a family check that stands, and her latest word on turning it
+in, still to turn in included, newest first, at most ten unless
+`?activity=all` asks for every one, with older entries under Earlier activity
+at `?activity=earlier`. An entry whose row is worth checking together or
+Still open is a plain row: its title links to that row, with no id and no
+form. The days are said to hold nothing only while every record of them can
+be read. A row the address names is always listed. History closes the page
+with the earlier plans, the plans that couldn't be made, and the links to her
+notes. There is no form for her hand-in words, and a row worth checking
+together carries them as context that decides nothing. A page's one reading
+holds every chain, read
 once through `hand_in_readings`, which takes the rows one assignment at a
 time: a row that cannot be decoded, its text not UTF-8 included, or a
 chain that does not hold, makes

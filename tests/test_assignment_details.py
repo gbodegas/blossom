@@ -647,8 +647,9 @@ def test_a_parent_reads_the_details_and_cannot_save_and_her_device_is_not_sent_t
 def test_the_way_back_to_a_row_lands_on_the_family_page_when_no_update_is_listed() -> None:
     """Nothing is reported and the school has said nothing, so the family page lists no
     assignment updates. The way back from an assignment's details still names that
-    assignment's row, and the page still has a place with that id to land on, once, in the
-    section, which says that nothing is listed. An ordinary visit shows no such section."""
+    assignment's row, and the page still has a place with that id to land on, once, in
+    Recent activity, which says that nothing is listed. An ordinary visit has no such
+    place."""
     with browser() as client:
         details = client.get(f"{DETAILS}?return_to=family", headers=PAGE_HEADERS).text
         link = re.search(r'<p class="return"><a href="([^"]+)"', details)
@@ -660,13 +661,12 @@ def test_the_way_back_to_a_row_lands_on_the_family_page_when_no_update_is_listed
     assert href == f"/parent?focus={ESSAY_ID}#update-{ESSAY_ID}"
     assert landed.status_code == 200
     assert landed.text.count(f'id="update-{ESSAY_ID}"') == 1
-    section = landed.text[landed.text.index('id="assignment-updates"') :]
+    section = landed.text[landed.text.index('id="recent-activity"') :]
     section = section[: section.index("</section>")]
     assert f'<span id="update-{ESSAY_ID}" tabindex="-1"></span>' in section
-    assert "No assignment updates to show." in section
+    assert "No updates, checks or hand-in reports from" in section
     assert "<h3>" not in section
-    assert 'id="assignment-updates"' not in ordinary
-    assert "No assignment updates to show." not in ordinary
+    assert f'id="update-{ESSAY_ID}"' not in ordinary
 
 
 @pytest.mark.parametrize("plan_id", ["", "draft:plan:2026-08-19:abc12345"])
@@ -810,7 +810,7 @@ def test_every_way_back_lands_where_it_says_and_opens_what_encloses_it() -> None
     )
     assert re.search(r"<details open>\s*<summary>The plan as it was", family_at_plan)
     assert '<p class="return"><a href="/parent">Back to family review</a>' in to_nowhere
-    assert re.search(r'<details class="steps" open>\s*<summary>Recent updates', family_at_row)
+    assert f'<li class="compact-row entry-update" id="update-{ESSAY_ID}"' in family_at_row
     assert f'<span id="update-{namesake}" tabindex="-1"></span>' in family_no_row
     assert family_no_row.count(f'id="update-{namesake}"') == 1
     assert "Marked checked" not in family_no_row

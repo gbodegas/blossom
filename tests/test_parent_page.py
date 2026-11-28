@@ -1370,7 +1370,7 @@ def rules_for(css: str, name: str) -> list[str]:
     ("card", "opening"),
     [
         ("failed run", '<article class="draft outcome-checks_failed">'),
-        ("kept plan", '<article class="draft outcome-unsettled">'),
+        ("kept plan", '<article class="draft outcome-unsettled" id="plan-to-review-'),
         ("reviewed kept plan", '<article class="draft decided-approved">'),
     ],
     ids=["failed run", "kept plan", "reviewed kept plan"],
@@ -2819,8 +2819,8 @@ def site_of(card: Element) -> str:
         return "school report"
     if named == "update-assignment-reading-log":
         return "record that can't be read"
-    if section.attributes.get("id") == "turning-work-in":
-        return "turning work in"
+    if section.attributes.get("id") == "still-open":
+        return "still to turn in"
     if any(one.startswith("decided-") for one in card.classes):
         return "earlier plan" if in_fold else "today's plan"
     if any(one.startswith("outcome-") for one in card.classes):
@@ -2832,9 +2832,6 @@ EVERY_SITE = {
     "help",
     "homework note",
     "worth checking together",
-    "school report",
-    "record that can't be read",
-    "turning work in",
     "earlier plan",
     "plan that couldn't be made",
 }
