@@ -2039,7 +2039,8 @@ select[aria-invalid="true"] {
 }
 
 .add-or-do a {
-  padding: 0 clamp(0px, 13vw - 1rem, 1rem);
+  padding-block: 0;
+  padding-inline: clamp(0px, 13vw - 1rem, 1rem);
   border: 1px solid var(--pink-deep);
   border-radius: var(--pill);
   background: var(--surface-strong);
