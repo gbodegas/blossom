@@ -1326,15 +1326,20 @@ def test_her_hand_in_report_taken_back_before_the_days_is_earlier_activity_the_d
 
 def test_the_needs_you_lines_and_instruction_rows_take_the_page_landing_cues() -> None:
     """The problem lines Needs you links to take the problem line's cue, and a school
-    instruction's row takes the calm cue. The rules are pinned here; how they look is
-    measured in a browser."""
+    instruction's row takes the calm cue. The calm cue of the updates lists leaves out their
+    problem lines, so the two that say records can't be read keep their rose background. The
+    rules are pinned here; how they look is measured in a browser."""
     for selector in (
         "#help-set-apart:focus",
         "#instructions-unreadable:focus",
         "#homework-notes-unreadable:focus",
+        "#updates-unreadable:focus",
+        "#checks-unreadable:focus",
     ):
         assert declared_for(selector) == [PROBLEM_CUE], selector
     assert declared_for('#school-instructions-to-review li[tabindex="-1"]:focus') == [ARRIVAL_CUE]
+    assert declared_for('.assignment-updates [tabindex="-1"]:not(.problem):focus') == [ARRIVAL_CUE]
+    assert declared_for('.assignment-updates [tabindex="-1"]:focus') == []
 
 
 # ------------------------------------------------------------------ names of Needs you links
@@ -1513,3 +1518,90 @@ def test_two_waiting_requests_seconds_apart_in_two_minutes_keep_their_labels() -
         (f"#help-request-{segment(first)}", f"{said} 5:00 PM", ""),
         (f"#help-request-{segment(second)}", f"{said} 5:01 PM", ""),
     ]
+
+
+KEPT_FIRST = "f" * 32
+KEPT_SECOND = "a" * 32
+"""Two ids of the shape a form makes, the one Blossom keeps first the larger."""
+
+
+def numbered(page: str) -> dict[str, str]:
+    """Each Help she asked for row of Needs you: where it links and its link's words."""
+    return {href: said for href, said, _ in needs_rows(page, "Help she asked for")}
+
+
+def each_reaches_its_card(page: str, *request_ids: str) -> None:
+    """Every numbered link's card is on the page once, under the id its link names."""
+    found = ids_of(page)
+    for request_id in request_ids:
+        assert found[f"help-request-{request_id}"] == 1, request_id
+
+
+def test_with_one_stored_time_the_first_kept_reads_1_of_2_whatever_its_id() -> None:
+    """Both kept at 5:00 PM to the microsecond, the larger id kept first: it reads
+    "(1 of 2)" and the smaller id "(2 of 2)", each link going to its own card."""
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store, _ = pinned_help(client)
+        store.ask_once(KEPT_FIRST, PLAN_DATE, ESSAY)
+        store.ask_once(KEPT_SECOND, PLAN_DATE, MAP)
+        kept = store.listed().open
+        page = page_at(client)
+
+    assert len(kept) == 2
+    assert len({request.asked_at for request in kept}) == 1
+    said = "Request from Wednesday, August 19 at 5:00 PM"
+    assert numbered(page) == {
+        f"#help-request-{segment(KEPT_FIRST)}": f"{said} (1 of 2)",
+        f"#help-request-{segment(KEPT_SECOND)}": f"{said} (2 of 2)",
+    }
+    each_reaches_its_card(page, KEPT_FIRST, KEPT_SECOND)
+
+
+def test_with_the_clock_set_back_in_one_minute_the_first_kept_reads_1_of_2() -> None:
+    """Asked at 5:00:40 PM, then at 5:00:10 PM by a clock set back between them: the first
+    kept reads "(1 of 2)" though its stored time is the later, each link going to its own
+    card."""
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store, clock = pinned_help(client, T0 + timedelta(seconds=40))
+        first = asked(store, ESSAY)
+        clock.at = T0 + timedelta(seconds=10)
+        second = asked(store, MAP)
+        page = page_at(client)
+
+    said = "Request from Wednesday, August 19 at 5:00 PM"
+    assert numbered(page) == {
+        f"#help-request-{segment(first)}": f"{said} (1 of 2)",
+        f"#help-request-{segment(second)}": f"{said} (2 of 2)",
+    }
+    each_reaches_its_card(page, first, second)
+
+
+PROBLEM_LINES = {
+    "help requests set apart": "help-set-apart",
+    "a homework note that can't be read": "homework-notes-unreadable",
+    "her updates that can't be read": "updates-unreadable",
+    "family checks that can't be read": "checks-unreadable",
+    "school instructions that can't be read": "instructions-unreadable",
+}
+"""Where Needs you lands for each record it can't read: a problem line on the page."""
+
+
+@pytest.mark.parametrize("source", list(PROBLEM_LINES))
+def test_each_line_saying_a_record_cannot_be_read_is_a_problem_line_needs_you_lands_on(
+    source: str,
+) -> None:
+    """The line a Needs you row links to for a record that can't be read is a problem line
+    a link can focus, so the problem-line landing cue applies to it and the updates lists'
+    calm cue, which leaves problem lines out, does not."""
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        UNREADABLE[source](client, on_record(client, CHECK_ME))
+        page = page_at(client)
+
+    ident = PROBLEM_LINES[source]
+    assert f"#{ident}" in needs_you_targets(page)
+    opening = OPENING.search(element(page, ident))
+    assert opening is not None
+    tag = opening.group(0)
+    assert opening.group(1) == "p"
+    assert re.search(r'\sclass="problem"', tag), tag
+    assert 'tabindex="-1"' in tag, tag

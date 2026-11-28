@@ -1352,14 +1352,17 @@ RESOLVE_ANSWERS: Final = help_move_answers(
 """Every body Close request over JSON answers with besides the request."""
 
 
-def numbered_by_minute(asks: Sequence[HelpRequestView]) -> dict[str, str]:
+def numbered_by_minute(asks: Sequence[HelpRequestView], kept: Sequence[str]) -> dict[str, str]:
     """What each request's link in Needs you adds after the day and time she asked it:
     " (k of n)" when n of these requests read the same household day and minute, k in the
-    order given, which is the order she asked them; nothing for a request alone in its
-    minute."""
-    minutes = [ask.asked_local.replace(tzinfo=None, second=0, microsecond=0) for ask in asks]
+    order Blossom kept them, which ``kept`` gives by id, whatever times were stored; nothing
+    for a request alone in its minute. A request ``kept`` leaves out counts after those it
+    names, in the order given."""
+    turns = {request_id: turn for turn, request_id in enumerate(kept)}
+    in_order = sorted(asks, key=lambda ask: turns.get(ask.request_id, len(turns)))
+    minutes = [ask.asked_local.replace(tzinfo=None, second=0, microsecond=0) for ask in in_order]
     numbers: dict[str, str] = {}
-    for place, (ask, minute) in enumerate(zip(asks, minutes, strict=True)):
+    for place, (ask, minute) in enumerate(zip(in_order, minutes, strict=True)):
         same = minutes.count(minute)
         turn = minutes[: place + 1].count(minute)
         numbers[ask.request_id] = f" ({turn} of {same})" if same > 1 else ""
@@ -1731,7 +1734,7 @@ def review_page(
             "problem_target": check.assignment_id if about_a_row and check is not None else None,
             "reason_max_length": REASON_MAX_LENGTH,
             "help_open": help_open,
-            "help_numbers": numbered_by_minute(help_open),
+            "help_numbers": numbered_by_minute(help_open, listed.kept),
             "help_resolved": [help_view(state, r, named) for r in asked if not r.open],
             "help_set_apart": set_apart(listed.unreadable),
             "update_ids": {r.request_id: new_update_id() for r in asked if r.open},
