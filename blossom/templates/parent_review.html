@@ -307,7 +307,8 @@
     named at the head of Recent activity, each name a link to its row, and
     said on the row in place of what they would show; a row not worth
     checking together and with no school report is under Still open for
-    them, never an entry. Checks that cannot be read
+    them. The events of a row worth checking together or under Still open
+    are plain entries that link to it. Checks that cannot be read
     offer neither form, and a row worth checking stays worth checking. A
     check is the family's own record: it changes neither account, sets no
     status, and sends nothing.
@@ -519,16 +520,20 @@
   {% endif %}
 
   {#
-    Recent activity: Still open first, whatever its age and never counted,
-    then the entries of the last seven household days, newest first, at most
-    ten unless all are asked for, in one row layout: the day Blossom recorded
-    it and the class, the title, and what happened. Her update, her word on
-    turning work in, and a family check are entries of their own, each in
-    its own words, and nothing here implies the school received anything.
-    A hand-in row answers to the assignment's row name when that assignment
-    has no other row on the page, and keeps its own otherwise, so no id is
-    on the page twice. A link back that names a row in no list lands on a
-    place with the row's id at the section's head, and no row is made for it.
+    Recent activity: Still open first, rows shown whatever their age and
+    outside the bound, then the entries of the last seven household days,
+    newest first, at most ten unless all are asked for, in one row layout:
+    the day Blossom recorded it and the class, the title, and what happened.
+    Her update, her word on turning work in, and a family check are entries
+    of their own, each in its own words, and nothing here implies the school
+    received anything. An entry whose fact is held by a row worth checking
+    together or a Still open row is a plain row: its title links to that row
+    by the row's own id, and it has no id and no form. The days are said to
+    hold nothing only while every record of them can be read. A hand-in row
+    answers to the assignment's row name when that assignment has no other
+    row on the page, and keeps its own otherwise, so no id is on the page
+    twice. A link back that names a row in no list lands on a place with the
+    row's id at the section's head, and no row is made for it.
   #}
   {% macro row_entry(item, kind) %}
     {{ check_words(item) }}
@@ -546,8 +551,18 @@
       <p>{{ turned_in_words(row.hand_in) }}</p>
     </li>
   {% endmacro %}
+  {% macro plain_entry(entry) %}
+    {% if entry.kind == "hand_in" %}{% set row = entry.hand_in %}{% set target = card_href("hand-in-" if row.assignment_id in activity.update_ids else "update-", row.assignment_id) %}{% else %}{% set row = entry.row %}{% set target = card_href("update-", row.assignment_id) %}{% endif %}
+    <li class="compact-row entry-{{ entry.kind }} entry-plain">
+      <p class="course">{{ entry.day.strftime("%B") }} {{ entry.day.day }} &middot; {{ row.course }}</p>
+      <p class="decision-line"><strong><a class="assignment-link" href="{{ target }}" aria-label="{{ row.title }}, {{ row.course }}">{{ row.title }}</a></strong></p>
+      <p>{% if entry.kind == "hand_in" %}{{ turned_in_words(row.hand_in) }}{% elif entry.kind == "check" %}A parent marked this checked with her on {{ row.checked_on.strftime("%B") }} {{ row.checked_on.day }}.{% if row.check_note %} The note with it: <q>{{ row.check_note }}</q>{% endif %}{% else %}{{ her_update(row) }}{% endif %}</p>
+    </li>
+  {% endmacro %}
   {% macro activity_entry(entry) %}
-    {% if entry.kind == "hand_in" %}
+    {% if entry.plain %}
+      {{ plain_entry(entry) }}
+    {% elif entry.kind == "hand_in" %}
       {{ hand_in_card(entry.hand_in, entry.day) }}
     {% else %}
       {% set item = entry.row %}
@@ -623,7 +638,7 @@
       {% if activity.shown|length < activity.entries|length %}
         <p class="support-links"><a href="/parent?activity=all#recent-activity">Show all {{ activity.entries|length }} from these days</a></p>
       {% endif %}
-    {% else %}
+    {% elif not activity.unread %}
       <p class="empty quiet">No updates, checks or hand-in reports from {{ activity.span }}.</p>
     {% endif %}
     {% if "update" in kinds %}

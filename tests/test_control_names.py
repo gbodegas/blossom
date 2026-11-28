@@ -582,7 +582,13 @@ def test_the_links_to_turning_it_in_say_their_whole_name_in_a_label(
         for course in PRACTICE_KEYS
     }
 
-    assert titles == dict.fromkeys(titles, TITLE_LINKS)
+    # On the family page her Still to turn in of the days is a plain row as well, its title a
+    # link to the card that holds it, named with the title and the course.
+    plain = [f"Practice, {course}" for course in PRACTICE_KEYS]
+    assert titles == {
+        state: sorted([*TITLE_LINKS, *plain]) if state == "family, turning in" else TITLE_LINKS
+        for state in titles
+    }
     assert len(titles) == (4 if reader == "her" else 5)
     assert to_the_section == ({} if reader == "parent" else expected)
     for state, page in seen.items():

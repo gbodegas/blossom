@@ -50,7 +50,7 @@ Without that, the visibility policy is stated but not observable.
 import asyncio
 import logging
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
@@ -453,10 +453,12 @@ class ReasonKept:
 @dataclass(frozen=True)
 class ActivityEntry:
     """One entry of Recent activity: her latest event on an assignment (``update``), a
-    family check that stands (``check``), or her latest word on turning it in that is not
-    still to turn in (``hand_in``), with the household day and the moment Blossom recorded
-    it. ``row`` is the assignment's row for the first two and ``hand_in`` the hand-in row for
-    the third."""
+    family check that stands (``check``), or her latest word on turning it in (``hand_in``),
+    with the household day and the moment Blossom recorded it. ``row`` is the assignment's
+    row for the first two and ``hand_in`` the hand-in row for the third. ``plain`` is true
+    when the row that holds the entry's fact is in a list of its own (the row worth checking
+    together, a school report, a record that can't be read, or a card still to turn in): the
+    entry is then a plain row that links to it, with no id and no form."""
 
     kind: str
     day: date
@@ -464,18 +466,22 @@ class ActivityEntry:
     assignment_id: str
     row: AssignmentUpdateView | None = None
     hand_in: HandInRowView | None = None
+    plain: bool = False
 
 
 @dataclass(frozen=True)
 class RecentActivity:
     """The family page's Recent activity, from the page's one reading.
 
-    ``still_to_turn_in``, ``school`` and the two unreadable lists are Still open: shown
-    whatever their age and never counted among the entries. ``entries`` are those of the
-    days from ``first_day`` to today, later days included, the newest first; ``shown`` is
+    ``still_to_turn_in``, ``school`` and the two unreadable lists are Still open: rows shown
+    whatever their age, outside the bound. ``entries`` are the events of the days from
+    ``first_day`` to today, later days included, the newest first, an event of a Still
+    open row or of a row worth checking together among them as a plain entry; ``shown`` is
     what the page lists of them, the ten newest unless all are asked for or a row the page
-    names is past the ten. ``earlier`` is every older entry, the newest first, listed when
-    asked for or when a row the page names is among them."""
+    names is an entry past the ten. ``earlier`` is every older event, the newest first,
+    listed when asked for or when a row the page names is an entry among them. ``unread``
+    is whether her updates, the family's checks or her hand-in records can't be read for
+    some assignment, so the page never says the days hold nothing."""
 
     first_day: date
     span: str
@@ -489,16 +495,22 @@ class RecentActivity:
     earlier_shown: bool
     checking: frozenset[str] = frozenset()
     """The assignments worth checking together, whose rows are above this section."""
+    unread: bool = False
+
+    @property
+    def rows_listed(self) -> list[ActivityEntry]:
+        """The entries the page lists that are rows themselves, the plain ones left out."""
+        listed = [*self.shown, *(self.earlier if self.earlier_shown else [])]
+        return [entry for entry in listed if not entry.plain]
 
     @property
     def update_ids(self) -> frozenset[str]:
         """The assignments with a row of their own on the page, which a hand-in row of the
         same assignment leaves its plain id to, so no id is on the page twice."""
-        listed = [*self.shown, *(self.earlier if self.earlier_shown else [])]
         return frozenset(
             {
                 *self.checking,
-                *(entry.assignment_id for entry in listed if entry.row is not None),
+                *(entry.assignment_id for entry in self.rows_listed if entry.row is not None),
                 *(item.assignment_id for item in (*self.school, *self.unreadable)),
             }
         )
@@ -506,10 +518,9 @@ class RecentActivity:
     @property
     def listed_ids(self) -> frozenset[str]:
         """Every assignment with a row of any kind on the page, a hand-in row included."""
-        listed = [*self.shown, *(self.earlier if self.earlier_shown else [])]
         return self.update_ids | {
             *(row.assignment_id for row in (*self.still_to_turn_in, *self.hand_ins_unreadable)),
-            *(entry.assignment_id for entry in listed),
+            *(entry.assignment_id for entry in self.rows_listed),
         }
 
 
@@ -1635,8 +1646,8 @@ def review_page(
             rest.replace(PLACE_MARK, place or ""),
         )
     updates = assignment_updates(everything, today)
-    # A row the page names is always listed, wherever its entry falls. A row whose records
-    # can't be read is never an entry: such a row is worth checking together or Still open.
+    # A row the page names is always listed, wherever its entry falls. A row worth checking
+    # together or Still open is listed whatever its age; its events are plain entries.
     landing = frozenset(() if check is None else (check.assignment_id,))
     activity_listed = recent_activity(
         everything,
@@ -1765,9 +1776,10 @@ def assignment_updates(everything: Everything, today: date) -> AssignmentUpdates
     about follows, in the record's order, whatever its age and whatever her
     update or a check on it. Next, every other row whose updates or checks
     cannot be read, in the record's order, so it is never out of sight and
-    never dated as recent. Of the rest, the rows a parent marked checked in
-    the last ``ACTIVITY_DAYS`` household days, today minus six to today with
-    any later day counted in, by the check's day, the latest check first,
+    the row itself is never a dated entry. Of the rest, the rows a parent
+    marked checked in the last ``ACTIVITY_DAYS`` household days, today minus
+    six to today with any later day counted in, by the check's day, the
+    latest check first,
     while the check stands against the facts as they are. Then the
     assignments with an event of hers in those days, a correction included,
     by that latest event, most recent first, each showing the day of the
@@ -1925,25 +1937,28 @@ def recent_activity(
 ) -> RecentActivity:
     """The family page's Recent activity, from the page's one reading and its groups.
 
-    Still open comes first and is never counted: everything she reports as
-    still to turn in, the longest standing first and however old, every
-    assignment the school reports on that is not worth checking together,
-    and the records that can't be read, her hand-in records after the rows.
-    None of them is an entry, so the bound never leaves one out. The entries are
-    a standing family check of the window, her latest event of the window,
-    and her latest word on turning work in that is not still to turn in,
-    each one entry, a hand-in entry beside the row's own. Those recorded
-    from today minus six days on, later days included, are the window's,
-    newest first; older ones are earlier activity, newest first. The page
-    shows ``OVERVIEW_ENTRIES`` of the window unless ``asked`` is ``all``, and
-    earlier activity when ``asked`` is ``earlier``. An assignment the page
-    names in ``landing`` is always shown: past the ten, the whole window is;
-    older, earlier activity is. There is no form for her words here: what
-    she turned in is hers to say.
+    Still open comes first, whatever its age and outside the bound:
+    everything she reports as still to turn in, the longest standing first
+    and however old, every assignment the school reports on that is not
+    worth checking together, and the records that can't be read, her
+    hand-in records after the rows. The entries are the events: for every
+    assignment, her latest event, a family check that stands, and her latest
+    word on turning work in, still to turn in included. An event whose fact
+    is held by a row worth checking together or a Still open row is a plain
+    entry that links to that row; any other event is the row itself, one
+    entry for her update and a check that stands, by the check, and a
+    hand-in entry beside it. Those recorded from today minus six days on,
+    later days included, are the window's, newest first; older ones are
+    earlier activity, newest first. The page shows ``OVERVIEW_ENTRIES`` of
+    the window unless ``asked`` is ``all``, and earlier activity when
+    ``asked`` is ``earlier``. An assignment the page names in ``landing``
+    is always shown: when its row is an entry past the ten, the whole window
+    is; when it is an older entry, earlier activity is. There is no form for
+    her words here: what she turned in is hers to say.
     """
     first_day = activity_start(today)
     waiting: list[tuple[int, HandInRowView]] = []
-    settled: list[tuple[int, ActivityEntry]] = []
+    said_on: list[tuple[int, ActivityEntry]] = []
     hand_ins_unreadable: list[HandInRowView] = []
     for item in everything.assignments:
         said = hand_in_shown(everything, item.assignment_id)
@@ -1958,40 +1973,72 @@ def recent_activity(
         reading = everything.hand_ins[item.assignment_id]
         head = reading.head
         entered = reading.entered
+        still = False
         if reading.state == NEEDS_HAND_IN and entered is not None:
             waiting.append((entered.sequence or 0, row))
-        elif head is not None:
+            still = True
+        if head is not None:
             entry = ActivityEntry(
-                HAND_IN_ENTRY, head.reported_on, head.reported_at, item.assignment_id, hand_in=row
+                HAND_IN_ENTRY,
+                head.reported_on,
+                head.reported_at,
+                item.assignment_id,
+                hand_in=row,
+                plain=still,
             )
-            settled.append((head.sequence or 0, entry))
-    hand_ins = [entry for _, entry in sorted(settled, key=lambda pair: pair[0], reverse=True)]
+            said_on.append((head.sequence or 0, entry))
+    hand_ins = [entry for _, entry in sorted(said_on, key=lambda pair: pair[0], reverse=True)]
 
-    def entries_of(views: Sequence[AssignmentUpdateView], kind: str | None) -> list[ActivityEntry]:
+    def entry_of(view: AssignmentUpdateView, kind: str, *, plain: bool = False) -> ActivityEntry:
+        return ActivityEntry(
+            kind,
+            recorded_on(everything, view, kind),
+            recorded_at(everything, view, kind),
+            view.assignment_id,
+            row=view,
+            plain=plain,
+        )
+
+    def held_by(view: AssignmentUpdateView) -> list[ActivityEntry]:
+        """The events a row in a list of its own holds, each a plain entry: her latest event
+        and a check that stands. Her updates that can't be read have none to date."""
         made = []
-        for view in views:
-            chosen = entry_kind(view) if kind is None else kind
-            made.append(
-                ActivityEntry(
-                    chosen,
-                    recorded_on(everything, view, chosen),
-                    recorded_at(everything, view, chosen),
-                    view.assignment_id,
-                    row=view,
-                )
-            )
+        if everything.statuses[view.assignment_id].head is not None:
+            made.append(entry_of(view, UPDATE_ENTRY, plain=True))
+        if view.checked_on is not None:
+            made.append(entry_of(view, CHECK_ENTRY, plain=True))
         return made
 
-    rows = newest_first(
-        entries_of(updates.checked, CHECK_ENTRY), entries_of(updates.recent, UPDATE_ENTRY)
+    def by_time(made: Iterable[ActivityEntry]) -> list[ActivityEntry]:
+        return sorted(made, key=lambda entry: entry.at, reverse=True)
+
+    held = [
+        entry
+        for view in (*updates.check, *updates.school, *updates.unreadable)
+        for entry in held_by(view)
+    ]
+    rows = by_time(
+        [
+            *(entry_of(view, CHECK_ENTRY) for view in updates.checked),
+            *(entry_of(view, UPDATE_ENTRY) for view in updates.recent),
+            *(entry for entry in held if entry.day >= first_day),
+        ]
+    )
+    older_rows = by_time(
+        [
+            *(entry_of(view, entry_kind(view)) for view in updates.earlier),
+            *(entry for entry in held if entry.day < first_day),
+        ]
     )
     entries = newest_first(rows, [entry for entry in hand_ins if entry.day >= first_day])
-    earlier = newest_first(
-        entries_of(updates.earlier, None), [entry for entry in hand_ins if entry.day < first_day]
-    )
-    whole = asked == "all" or any(
-        entry.assignment_id in landing for entry in entries[OVERVIEW_ENTRIES:]
-    )
+    earlier = newest_first(older_rows, [entry for entry in hand_ins if entry.day < first_day])
+
+    def lands_in(listed: Sequence[ActivityEntry]) -> bool:
+        """Whether a row the page names is an entry of ``listed``; a plain entry is not its
+        row, which is in its own list already."""
+        return any(not entry.plain and entry.assignment_id in landing for entry in listed)
+
+    whole = asked == "all" or lands_in(entries[OVERVIEW_ENTRIES:])
     return RecentActivity(
         first_day=first_day,
         span=span_said(first_day, today),
@@ -2002,9 +2049,9 @@ def recent_activity(
         entries=entries,
         shown=entries if whole else entries[:OVERVIEW_ENTRIES],
         earlier=earlier,
-        earlier_shown=bool(earlier)
-        and (asked == "earlier" or any(entry.assignment_id in landing for entry in earlier)),
+        earlier_shown=bool(earlier) and (asked == "earlier" or lands_in(earlier)),
         checking=frozenset(view.assignment_id for view in updates.check),
+        unread=bool(updates.updates_unreadable or updates.checks_unreadable or hand_ins_unreadable),
     )
 
 

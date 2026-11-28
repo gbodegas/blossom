@@ -29,7 +29,7 @@ from blossom.routes.navigation import (
     details_href,
     segment,
 )
-from blossom.routes.parent import span_said
+from blossom.routes.parent import CHECK_REOPENED, NOT_THIS_ROWS, span_said
 from blossom.stores.project_state import Checked, ProjectStateStore, Saved
 from tests.support import (
     ESSAY_ID,
@@ -276,7 +276,8 @@ def test_on_a_crowded_page_what_needs_you_and_the_ways_to_add_come_before_any_ac
     ]
     assert max(placed) < page.index('id="recent-activity"')
     assert max(placed) < page.index("She reported it turned in on")
-    assert len(window(page)) == 10
+    # Her Done of the days on the row worth checking together is one of the ten, a plain row.
+    assert len(window(page)) + len(plain_rows(the_days(page))) == 10
 
 
 def test_the_sections_follow_one_order_from_needs_you_to_history() -> None:
@@ -670,11 +671,12 @@ def still_open_under(page: str, said: str) -> list[str]:
     return []
 
 
-def ten_of_eleven(page: str) -> None:
-    """The overview lists exactly the ten newest of ``NEWER`` and counts those eleven only."""
+def ten_of_eleven(page: str, *, held: int = 0) -> None:
+    """The overview lists exactly the ten newest of ``NEWER`` and counts those eleven and the
+    ``held`` older events of the days whose rows are in a list of their own."""
     assert window(page) == list(reversed(NEWER))[:10]
     assert re.search(
-        bounds("Showing the 10 newest of 11."), words(element(page, "recent-activity"))
+        bounds(f"Showing the 10 newest of {11 + held}."), words(element(page, "recent-activity"))
     )
 
 
@@ -704,7 +706,8 @@ def test_a_row_the_school_reports_missing_stays_open_past_ten_beside_her_update_
     said = words(element(page, "update-sm-recent"))
     assert "the school reports it missing" in said
     assert f"She reported it not yet done on {FIRST_DAY:%B} {FIRST_DAY.day}." in said
-    ten_of_eleven(page)
+    # Her Not yet of the days is an event of the days too, a plain row past the ten.
+    ten_of_eleven(page, held=1)
     assert max(ids_of(page).values()) == 1
 
 
@@ -729,7 +732,8 @@ def test_a_row_the_school_reports_missing_stays_open_past_ten_with_its_check_of_
         "The note with it: Seen."
     ) in words(row)
     assert "the school reports it missing" in words(row)
-    ten_of_eleven(page)
+    # The check of the days is an event of the days too, a plain row past the ten.
+    ten_of_eleven(page, held=1)
     assert max(ids_of(page).values()) == 1
 
 
@@ -778,7 +782,9 @@ def test_a_row_whose_records_cannot_be_read_stays_open_past_ten_and_the_ten_stay
 
     assert still_open_under(page, "Records that can't be read") == ["bent"]
     assert page.count('id="update-bent"') == 1
-    ten_of_eleven(page)
+    # Beside checks that can't be read, her Done of the days is an event, a plain row past the
+    # ten; her updates that can't be read have no day to list.
+    ten_of_eleven(page, held=int(unreadable is checks_unreadable_in_the_days))
     assert max(ids_of(page).values()) == 1
 
 
@@ -877,7 +883,9 @@ def test_the_entries_of_the_days_and_the_needs_you_rows_are_compact_rows_of_one_
     listed = without(element(page, "recent-activity"), "still-open", "earlier-activity")
     assert listed.count(ONE_LIST) == 1
     entries = ENTRY_ROW.findall(listed)
-    assert len(entries) == len(window(page)) == 10
+    # Her Done of the days on the row worth checking together is one of the ten, a plain row.
+    assert len(entries) == len(window(page)) == 9
+    assert plain_rows(listed) == [("update", f"#update-{CHECK_ME}")]
     for kind, title, said in entries:
         assert re.fullmatch(rf"[A-Z][a-z]+ \d+ {MIDDLE_DOT} \S.*", unescape(kind).strip()), kind
         assert title.startswith("Work ")
@@ -955,3 +963,263 @@ def test_history_holds_the_earlier_plans_the_plans_that_could_not_be_made_and_th
     ):
         assert (address, said) in links(history)
         assert page.count(f'href="{address}"') == 1
+
+
+# ------------------------------------------------------------------ events beside open rows
+
+
+PLAIN_ROW = re.compile(
+    r'<li class="compact-row entry-(\w+) entry-plain">\s*'
+    r'<p class="course">([^<]*)</p>\s*'
+    r'<p class="decision-line"><strong><a class="assignment-link" href="([^"]*)"[^>]*>'
+    r"([^<]*)</a></strong></p>\s*"
+    r"<p>(.*?)</p>\s*</li>",
+    re.S,
+)
+"""A dated event whose row is in a list of its own: its kind line, its title linking to that
+row, and what happened, with no id and no form."""
+EMPTY_DAYS = "No updates, checks or hand-in reports from"
+
+
+def plain_rows(fragment: str) -> list[tuple[str, str]]:
+    """Each plain row of a piece of a page, in order: its kind and where its title links."""
+    return [(kind, unescape(href)) for kind, _, href, _, _ in PLAIN_ROW.findall(fragment)]
+
+
+def the_days(page: str) -> str:
+    """Recent activity without Still open and Earlier activity: the list of the days."""
+    return without(element(page, "recent-activity"), "still-open", "earlier-activity")
+
+
+def said_not_yet(store: ProjectStateStore, name: str, moment: datetime) -> None:
+    saved = store.report_status(
+        name, "not_yet", None, expected_head=None, now=moment, today=moment.astimezone(ZONE).date()
+    )
+    assert isinstance(saved, Saved)
+
+
+def test_her_update_and_her_still_to_turn_in_of_the_days_are_listed_beside_still_open() -> None:
+    """Her Not yet today beside the school's missing, and her Still to turn in today: each row
+    is under Still open, and each event is a plain row of the days linking to it."""
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = on_record(client, "not-yet-today", "to-turn-in-today")
+        store.record_status_reports("not-yet-today", [school_missing(PLAN_DATE)])
+        said_not_yet(store, "not-yet-today", at_noon(PLAN_DATE))
+        handed_in(
+            store, "to-turn-in-today", at_noon(PLAN_DATE), state=NEEDS_HAND_IN, step="Ask Ms. Lee"
+        )
+        page = page_at(client)
+
+    recent = words(element(page, "recent-activity"))
+    days = the_days(page)
+    assert EMPTY_DAYS not in recent
+    assert re.search(bounds("Showing all 2."), recent)
+    assert sorted(plain_rows(days)) == [
+        ("hand_in", "#update-to-turn-in-today"),
+        ("update", "#update-not-yet-today"),
+    ]
+    assert "She reported it not yet done on August 19" in words(days)
+    assert "She reported Still to turn in on August 19" in words(days)
+    assert still_open_under(page, "School reports") == ["not-yet-today"]
+    assert still_open_under(page, "Still to turn in") == ["to-turn-in-today"]
+    for _, href in plain_rows(days):
+        assert lands_on(page, href)
+    assert window(page) == []
+    assert max(ids_of(page).values()) == 1
+
+
+def test_her_done_of_the_days_on_a_row_worth_checking_is_a_plain_row_linking_to_its_card() -> None:
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        worth_checking(on_record(client, CHECK_ME), CHECK_ME, PLAN_DATE - timedelta(days=1))
+        page = page_at(client)
+
+    days = the_days(page)
+    assert plain_rows(days) == [("update", f"#update-{CHECK_ME}")]
+    assert "needs-review" in lands_on(page, f"#update-{CHECK_ME}")
+    assert f'id="update-{CHECK_ME}"' in element(page, "worth-checking-together")
+    assert "She reported it done on August 18" in words(days)
+    assert "<form" not in days
+    assert re.search(bounds("Showing all 1."), words(element(page, "recent-activity")))
+    assert max(ids_of(page).values()) == 1
+
+
+def test_a_school_report_with_her_update_and_a_check_of_the_days_has_two_plain_rows_one_form() -> (
+    None
+):
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = on_record(client, "seen")
+        worth_checking(store, "seen", PLAN_DATE - timedelta(days=2))
+        assert mark(client, "seen", "Seen together.").status_code == 303
+        page = page_at(client)
+
+    days = the_days(page)
+    assert still_open_under(page, "School reports") == ["seen"]
+    assert plain_rows(days) == [("check", "#update-seen"), ("update", "#update-seen")]
+    assert CHECKED_TODAY in words(days)
+    assert "She reported it done on August 17" in words(days)
+    assert "<form" not in days
+    assert page.count('action="/parent/actions/checks/seen/again"') == 1
+    assert re.search(bounds("Showing all 2."), words(element(page, "recent-activity")))
+    assert max(ids_of(page).values()) == 1
+
+
+def test_her_still_to_turn_in_of_the_days_links_to_its_card_by_the_id_the_card_has() -> None:
+    """Her Done yesterday is a row of the days, so the card still to turn in keeps its hand-in
+    id and the plain row of her Still to turn in links to that id."""
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = on_record(client, "both")
+        said_done(store, "both", at_noon(PLAN_DATE - timedelta(days=1)))
+        handed_in(store, "both", at_noon(PLAN_DATE), state=NEEDS_HAND_IN, step="Ask Ms. Lee")
+        page = page_at(client)
+
+    days = the_days(page)
+    assert window(page) == ["both"]
+    assert 'id="update-both"' in days
+    assert plain_rows(days) == [("hand_in", "#hand-in-both")]
+    assert 'id="hand-in-both"' in element(page, "still-open")
+    assert re.search(bounds("Showing all 2."), words(element(page, "recent-activity")))
+    assert max(ids_of(page).values()) == 1
+
+
+def a_check_that_does_not_stand(store: ProjectStateStore, name: str, moment: datetime) -> None:
+    """Her Done at ``moment`` and a check five minutes later, written by the store's own writer
+    on a made-up basis that is not the row's, so the row offers Check again."""
+    said_done(store, name, moment)
+    basis = f"{name}|made-up"
+    kept = store.mark_checked(
+        name,
+        basis,
+        None,
+        expected_check=None,
+        basis_now=lambda: basis,
+        now=moment + timedelta(minutes=5),
+        today=moment.astimezone(ZONE).date(),
+    )
+    assert isinstance(kept, Checked)
+
+
+def test_a_row_whose_check_does_not_stand_keeps_check_again_and_lands_by_still_to_turn_in() -> None:
+    """Her Done at 6:00 AM on August 13 under a check that does not stand, her Still to turn
+    in the newest report and eleven reports between: the row is past the ten, and the address
+    a reopen or a refused reopen gives lands on it with Check again and its line."""
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = on_record(client, "moved", *NEWER)
+        a_check_that_does_not_stand(store, "moved", morning(FIRST_DAY))
+        handed_in(
+            store,
+            "moved",
+            at_noon(PLAN_DATE) + timedelta(hours=8),
+            state=NEEDS_HAND_IN,
+            step="Ask Ms. Lee",
+        )
+        eleven_newer(store)
+        plain = page_at(client)
+        reopened = page_at(client, reopened="moved")
+        refused = client.post(
+            "/parent/actions/checks/moved/again",
+            data={"check_id": "no-such-check", "basis": ""},
+            headers=PAGE_HEADERS,
+        )
+
+    assert 'id="update-moved"' not in the_days(plain)
+    assert refused.status_code == 422
+    for page, line in ((reopened, CHECK_REOPENED), (refused.text, NOT_THIS_ROWS)):
+        row = element(page, "update-moved")
+        assert row in the_days(page)
+        assert 'aria-label="Check again: Work moved"' in row
+        assert line in words(row)
+        assert ("hand_in", "#hand-in-moved") in plain_rows(the_days(page))
+        assert 'id="hand-in-moved"' in element(page, "still-open")
+        assert max(ids_of(page).values()) == 1
+
+
+def test_the_count_and_show_all_count_every_event_of_the_days_plain_rows_included() -> None:
+    """Her Done at 6:00 AM on August 13 beside the school's missing, and eleven newer reports:
+    twelve events, the plain row the oldest."""
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = on_record(client, CHECK_ME, *NEWER)
+        said_done(store, CHECK_ME, morning(FIRST_DAY))
+        store.record_status_reports(CHECK_ME, [school_missing(FIRST_DAY)])
+        eleven_newer(store)
+        page = page_at(client)
+        whole = page_at(client, activity="all")
+
+    recent = element(page, "recent-activity")
+    assert re.search(bounds("Showing the 10 newest of 12."), words(recent))
+    assert link_words(recent, "activity=all", "recent-activity") == ["Show all 12 from these days"]
+    assert window(page) == list(reversed(NEWER))[:10]
+    assert plain_rows(the_days(page)) == []
+    assert re.search(bounds("Showing all 12."), words(element(whole, "recent-activity")))
+    assert window(whole) == list(reversed(NEWER))
+    assert plain_rows(the_days(whole)) == [("update", f"#update-{CHECK_ME}")]
+    assert the_days(whole).count('<li class="compact-row entry-') == 12
+    for shown in (page, whole):
+        assert max(ids_of(shown).values()) == 1
+
+
+def test_earlier_activity_holds_the_older_events_of_open_rows_as_plain_rows_and_counts_them() -> (
+    None
+):
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = on_record(client, CHECK_ME, "waiting", "nine-days")
+        handed_in(
+            store,
+            "waiting",
+            at_noon(PLAN_DATE - timedelta(days=30)),
+            state=NEEDS_HAND_IN,
+            step="Ask Ms. Lee",
+        )
+        worth_checking(store, CHECK_ME, PLAN_DATE - timedelta(days=20))
+        handed_in(store, "nine-days", at_noon(PLAN_DATE - timedelta(days=9)))
+        page = page_at(client)
+        older = page_at(client, **EARLIER)
+
+    recent = element(page, "recent-activity")
+    assert link_words(recent, "activity=earlier", "earlier-activity") == ["Earlier activity (3)"]
+    assert heading(element(older, "earlier-activity"), "h3") == "Earlier activity (3)"
+    assert earlier(older) == ["nine-days"]
+    assert plain_rows(element(older, "earlier-activity")) == [
+        ("update", f"#update-{CHECK_ME}"),
+        ("hand_in", "#update-waiting"),
+    ]
+    assert f"{EMPTY_DAYS} {SPAN}." in words(recent)
+    for shown in (page, older):
+        assert max(ids_of(shown).values()) == 1
+
+
+def updates_unreadable_long_ago(client: TestClient, store: ProjectStateStore) -> None:
+    said_done(store, CHECK_ME, at_noon(PLAN_DATE - timedelta(days=20)))
+    spoil(store, "student_reports", "status", "finished", CHECK_ME)
+
+
+def checks_unreadable_long_ago(client: TestClient, store: ProjectStateStore) -> None:
+    worth_checking(store, CHECK_ME, PLAN_DATE - timedelta(days=20))
+    assert mark(client, CHECK_ME).status_code == 303
+    spoil(store, "family_checks", "operation", "erased", CHECK_ME)
+
+
+def hand_ins_unreadable_long_ago(client: TestClient, store: ProjectStateStore) -> None:
+    handed_in(store, CHECK_ME, at_noon(PLAN_DATE - timedelta(days=20)))
+    spoil(store, "hand_in_events", "state", "none-of-the-four", CHECK_ME)
+
+
+UNREAD_RECORDS: dict[str, Callable[[TestClient, ProjectStateStore], None]] = {
+    "her updates": updates_unreadable_long_ago,
+    "the family checks": checks_unreadable_long_ago,
+    "her hand-in records": hand_ins_unreadable_long_ago,
+}
+
+
+@pytest.mark.parametrize("unreadable", UNREAD_RECORDS.values(), ids=UNREAD_RECORDS.keys())
+def test_the_days_are_never_said_empty_while_a_record_of_them_cannot_be_read(
+    unreadable: Callable[[TestClient, ProjectStateStore], None],
+) -> None:
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        unreadable(client, on_record(client, CHECK_ME))
+        page = page_at(client)
+
+    recent = words(element(page, "recent-activity"))
+    assert "can't be read" in recent
+    assert EMPTY_DAYS not in recent
+    assert window(page) == []
+    assert max(ids_of(page).values()) == 1

@@ -475,7 +475,7 @@ class AssignmentUpdatesView(BaseModel):
     the latest first."""
     unreadable: list[AssignmentUpdateView] = []
     """The rows no readable fact puts in any other group, with a record that cannot be
-    read, in the record's order: never left out, and never dated as recent."""
+    read, in the record's order: never left out, and the row itself never a dated entry."""
     updates_unreadable: list[AssignmentUpdateView] = []
     """Every row whose updates of hers cannot be read, wherever it is listed, in the
     record's order, for the page to name once."""

@@ -2912,17 +2912,19 @@ main.wide {
   min-height: 2.75rem;
 }
 
-/* The title that leads a row of her To turn in list or of the family page's updates, the
-   family page's links in Needs you and Add or do, the line of links under her homework
-   notes and under the family page's History, and the Open note link that ends each note's
-   row keep their place in the line, their type, and their color, and are as tall as the
-   buttons. */
+/* The title that leads a row of her To turn in list or of the family page's updates, its
+   plain rows included, the family page's links in Needs you and Add or do, the line of
+   links under her homework notes and under the family page's History, the links of the
+   line naming school instructions that can't be read, and the Open note link that ends
+   each note's row keep their place in the line, their type, and their color, and are as
+   tall as the buttons. */
 .to-turn-in-row a.assignment-link,
 .assignment-updates a.assignment-link,
 .needs-you a,
 .add-or-do a,
 .homework-notes > .note a,
 .history-links a,
+#instructions-unreadable a,
 .homework-note-row a.assignment-link {
   display: inline-flex;
   align-items: center;

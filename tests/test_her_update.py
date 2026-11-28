@@ -2664,7 +2664,9 @@ def test_each_assignment_is_in_one_family_group_with_every_fact_it_was_grouped_b
     checking = checking[: checking.index("<h2>Waiting for your review</h2>")]
     activity = family[family.index('id="recent-activity"') : family.index('id="add-assignments"')]
     school, _, recent = activity.partition("</section>")
-    assert "Showing all 1." in recent
+    # Her Done on the essay and her Not yet on the log are events of the days too, plain rows
+    # that link to the rows above, so the days hold three and the science row is the one row.
+    assert "Showing all 3." in recent
     titles = {
         ESSAY: ESSAY_TITLE,
         LOG: "Reading log, week one",
@@ -2672,7 +2674,7 @@ def test_each_assignment_is_in_one_family_group_with_every_fact_it_was_grouped_b
         cover: "Cover the textbook",
     }
     assert [name for name in titles if titles[name] in checking] == [ESSAY]
-    assert [name for name in titles if titles[name] in recent] == [science]
+    assert [name for name in titles if f'id="update-{name}"' in recent] == [science]
     assert [name for name in titles if titles[name] in school] == [LOG, cover]
     assert (
         "She reported it not yet done on August 19. She wrote: <q>Two chapters left.</q>" in school
