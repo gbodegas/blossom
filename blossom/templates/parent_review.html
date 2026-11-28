@@ -645,7 +645,7 @@
       <p class="note">Done means she has finished her part; it does not turn work in.</p>
     {% endif %}
     {% if "hand_in" in kinds or activity.still_to_turn_in %}
-      <p class="note">Her own reports of turning work in, with the day Blossom took each. Nothing here is sent to the school.</p>
+      <p class="note">Her own reports, with the day Blossom took each. Done means she finished her part; this says what she reports about handing it over. Nothing here is sent to the school.</p>
     {% endif %}
     {% if "check" in kinds or activity.school|selectattr("checked")|list %}
       <p class="note">A check is the family's own record; it changes neither her update nor the school's report. Check again reopens it here.</p>

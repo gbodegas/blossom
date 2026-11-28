@@ -605,7 +605,7 @@ def test_earlier_activity_counts_what_is_older_and_lists_it_newest_first() -> No
     assert comparable(unknown) == comparable(page)
 
 
-def test_what_stays_open_is_shown_before_the_list_whatever_its_age_and_never_counted() -> None:
+def test_what_stays_open_is_shown_before_the_list_whatever_its_age() -> None:
     names = [f"handed-{number:02}" for number in range(11)]
     long_ago = PLAN_DATE - timedelta(days=90)
     with browser(BLOSSOM_FIXTURE_PATH="") as client:
