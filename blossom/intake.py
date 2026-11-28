@@ -217,7 +217,7 @@ SUBJECT_LINE: Final = re.compile(r"^.*[^\W_].*\s-$")
 """The summary's heading over what a teacher typed for a subject: the subject, with a letter
 or a digit in it, then a hyphen that ends the line."""
 ASSIGNED_LINE: Final = re.compile(
-    r"^Assigned:\s*(?P<title>.+):\s*\(Due:\s*(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\)\s*$"
+    r"^Assigned:\s*(?P<title>.*):\s*\(Due:\s*(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\)\s*$"
 )
 DUE_LINE: Final = re.compile(r"^Due:\s*(?P<title>.*?):?\s*$")
 CARD_LABEL_LINE: Final = re.compile(r"^(?:Assigned|Due)\s*:")
@@ -230,7 +230,7 @@ LOOKS_STRUCTURAL: Final = re.compile(
 that needs review, never a teacher's words."""
 EMAIL_LINE: Final = re.compile(
     r"^(?P<date>\d{1,2}/\d{1,2})\s+(?P<course>.+?)(?:\s+-\s+\S+)?:\s+"
-    r"(?P<category>[^:]+?):\s+(?P<title>.+?)\s+Grade:\s+(?P<grade>.+?)\s*$"
+    r"(?P<category>[^:]+?):(?:\s+(?P<title>.+?))?\s+Grade:\s+(?P<grade>.+?)\s*$"
 )
 MISSING: Final = "missing"
 """The one grade the school's email is read for, kept as the status it reports."""
@@ -590,8 +590,24 @@ def _same_report_as_written(one: StatusReport, other: StatusReport) -> bool:
 def read_text(text: str, *, now: datetime, today: date) -> Read:
     """Read pasted text in the portal's shapes or the email's, in one pass over its lines.
 
-    A plain line just before a card's line is the card's course, on the
-    homework page; the summary names the course on the card's own line.
+    A card's label reads as a card only with a title that is not empty after
+    trimming, and nothing between its colons is a blank title too; so does
+    a Missing line, where one or more spaces and nothing else between its
+    category's colon and "Grade:" is a blank title. A plain line just before
+    a card's label line with such a title is the card's course, on the
+    homework page;
+    shaped that way before a label whose title is blank, outside a card
+    written on one line, it could be an open card's instruction or the next
+    card's course, so it is text for review, and it ends any open card's
+    instruction and the course in force, with a card open or not. The
+    summary names the course on the card's own line, so a card written that
+    way, on one line, under either shape, ends the course in force whether
+    or not it reads, and until its words end such a line names a course
+    only before a card's label written whole that reads as a card (a Due
+    title closed by a colon under a day in force, or Assigned with a printed
+    due date that names a date): before any other line that begins like a
+    label it is the card's instruction, or text for review where the card
+    did not read, and that line is read as one right after a card.
     Plain lines just after a card are the teacher's instruction, until the
     next card, day, course line, or subject heading, or a blank; the same
     instruction under both of an item's days is kept once. Only a day
@@ -613,15 +629,19 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     a card's line left for review for want of a course keeps the rest of its
     paragraph for review with it, but for a line there that reads as a day,
     a Missing line or a card with its course on its line, which is read as
-    what it is. A text with no heading-shaped line outside the homework
-    page's shape is read by the other rules alone. A line shaped like a day or a card
+    what it is; a label right after a line listed for that label's blank
+    title had its course refused, not missing, and keeps nothing. A text
+    with no heading-shaped line outside the homework page's shape is read by
+    the other rules alone. A line shaped like a day or a card
     that does not read as one is text that needs review, and it ends the
     card before it, so nothing after it is taken for that card's words. A
     mail program's date line outside a card dates the school's reports read
-    after it, and the other lines of a mail header are read as nothing. One
-    kept for review, in a note or as a heading, dates none: the reports
-    after it are dated by the day of the paste until a date line is read
-    as one. Each
+    after it, and the other lines of a mail header are read as nothing;
+    after a card written on one line, read or not, the same lines, and the
+    summary's heading, are its lines, its words or text for review. One
+    kept for review, in a note, as a heading, or after a card written on one
+    line that does not read, dates none: the reports after it are dated by
+    the day of the paste until a date line is read as one. Each
     Missing line is a reading of its own, apart from any card of its name,
     and the same line twice is one. Any
     other plain line outside a card needs review too. A card that names an
@@ -648,6 +668,14 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     day: date | None = None
     course: str | None = None
     last: _Draft | None = None
+    # Whether the lines here follow a card written on one line, course and card, read or not,
+    # until the card's words end: there a plain line names a course only before a card's label
+    # written whole that reads as a card. It is set by a card written on one line, read or not,
+    # and ends at every other place ``last`` is set to ``None``.
+    after_one_line_card = False
+    # Whether the line before this one, not counting blanks, was listed for review because
+    # its label's title is blank: that label's course was refused, not missing.
+    refused_line = False
     in_note = False
     to_blank = False
     headings_read = False
@@ -659,12 +687,13 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
     for index, line in enumerate(lines):
         number = index + 1
         if not line:
-            last = None
+            last, after_one_line_card = None, False
             if to_blank:
                 in_note = to_blank = False
             if note is not None:
                 note.after_blank = True
             continue
+        follows_refused_line, refused_line = refused_line, False
         ends_note = False
         if in_note:
             if line == opening_heading and _names_a_day(following[index]):
@@ -707,11 +736,28 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             _close(note, notes)
             note = None
             ends_note = True
-        # The four rules below read plain text outside a card as nothing or as the
-        # email's date. They pass over a line that ended a note and over a subject heading.
+        # The rules below, but for the second, read plain text outside a card as nothing or
+        # as the email's date. They pass over a line that ended a note and over a subject
+        # heading.
         plain = not ends_note and (page_day or not _is_subject_heading(line))
         if plain and (line.lower() in NOISE or WEEK_LINE.match(line)):
-            last = None
+            last, after_one_line_card = None, False
+            continue
+        if (
+            plain
+            and last is None
+            and after_one_line_card
+            and (HEADING_LINE.match(line) or mail_date(line) is not None or MAIL_HEADER.match(line))
+        ):
+            # After a card written on one line that did not read, a line the three rules after
+            # this one would read as nothing or as the email's date is one of its lines: text for
+            # review, never a course, and a mail date line here dates nothing. After one that
+            # reads, the same line is its words, since ``last`` is that card. A mail date line
+            # listed here may head another email, so, as one kept in a note, it leaves the
+            # reports after it dated by the day of the paste, not by an earlier email's date.
+            unread.append(Unread(number, line))
+            if mail_date(line) is not None:
+                reported_on, dated_by = today, PASTE_DAY
             continue
         if plain and HEADING_LINE.match(line) and last is None:
             # The summary's heading, outside a card; under a card the same
@@ -735,19 +781,23 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
             # shape as it was, as in a note.
             page_day = bool(DAY_LINE.match(line)) and (day is not None or page_day)
             course = None
-            last = None
+            last, after_one_line_card = None, False
             if day is None:
                 unread.append(Unread(number, line))
             continue
         if email := EMAIL_LINE.match(line):
-            last = None
-            if email.group("grade").strip().lower() != MISSING:
+            last, after_one_line_card = None, False
+            title = (email.group("title") or "").strip()
+            if email.group("grade").strip().lower() != MISSING or not title:
+                # Only a Missing line is read, and only with a title that is not empty after
+                # trimming, as a card's label is: one or more spaces and nothing else between
+                # the category's colon and "Grade:" is a blank title.
                 unread.append(Unread(number, line))
                 continue
             draft = _draft_for(
                 drafts,
                 email.group("course").strip(),
-                email.group("title").strip(),
+                title,
                 SourceChannel.EMAIL,
                 number,
                 None,
@@ -767,12 +817,20 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
         card_course, body = course, line
         if combined := CARD_LINE.match(line):
             card_course, body = combined.group("course").strip(), combined.group("card")
+            # A card written on one line names its own course, whether or not it reads: it
+            # ends the one in force, and the lines after it are read by its rule.
+            course = None
         if assigned := ASSIGNED_LINE.match(body):
             when = a_date(assigned.group("year"), assigned.group("month"), assigned.group("day"))
-            if card_course is None or when is None:
+            if card_course is None or when is None or not _label_reads(body, day):
                 unread.append(Unread(number, line))
-                in_note = to_blank = headings_read and card_course is None
-                last = None
+                # A label with no course keeps the rest of its paragraph for review where a
+                # subject's note was read, unless the line before it was listed for this
+                # label's blank title: then its course was refused, not missing.
+                in_note = to_blank = (
+                    headings_read and card_course is None and not follows_refused_line
+                )
+                last, after_one_line_card = None, combined is not None
                 continue
             draft = _draft_for(
                 drafts,
@@ -790,14 +848,19 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 draft.assigned_on = day
                 draft.field_origins["assigned_on"] = SourceChannel.LMS
             draft.notes.append(("assigned", day, []))
-            last = draft
+            last, after_one_line_card = draft, combined is not None
             continue
         if due := DUE_LINE.match(body):
             title = due.group("title").strip()
-            if card_course is None or day is None or not title:
+            if card_course is None or day is None or not _label_reads(body, day):
                 unread.append(Unread(number, line))
-                in_note = to_blank = headings_read and card_course is None
-                last = None
+                # A label with no course keeps the rest of its paragraph for review where a
+                # subject's note was read, unless the line before it was listed for this
+                # label's blank title: then its course was refused, not missing.
+                in_note = to_blank = (
+                    headings_read and card_course is None and not follows_refused_line
+                )
+                last, after_one_line_card = None, combined is not None
                 continue
             draft = _draft_for(drafts, card_course, title, SourceChannel.LMS, number, day)
             draft.add(claim(SourceChannel.LMS, day, DAY_HEADER, now, PORTAL_CONFIDENCE))
@@ -805,13 +868,19 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 draft.due_date = day
                 draft.field_origins["due_date"] = SourceChannel.LMS
             draft.notes.append(("due", day, []))
-            last = draft
+            last, after_one_line_card = draft, combined is not None
+            continue
+        if combined is not None:
+            # A card written on one line whose card part fits no label's shape, such as
+            # "Math - Assigned: Quiz": it does not read, and is read as such a card is.
+            unread.append(Unread(number, line))
+            last, after_one_line_card = None, True
             continue
         if LOOKS_STRUCTURAL.match(line):
             # Shaped like a day, a card, or a due date, and not read as one:
             # for review, and never a teacher's words.
             unread.append(Unread(number, line))
-            last = None
+            last, after_one_line_card = None, False
             continue
         if not page_day and _is_subject_heading(line):
             # The summary's heading over a teacher's note: neither it nor the note is
@@ -824,14 +893,36 @@ def read_text(text: str, *, now: datetime, today: date) -> Read:
                 reported_on, dated_by = today, PASTE_DAY
             note = _OpenNote.under(line, day, number)
             course = None
-            last = None
+            last, after_one_line_card = None, False
             in_note = True
             to_blank = False
             headings_read = True
             continue
-        if _is_course_line(line, following[index]):
+        if (
+            not after_one_line_card
+            and _could_be_course_line(line, following[index])
+            and not _is_course_line(line, following[index])
+        ):
+            # Shaped as a course line, but its label's title is blank: the line could be an
+            # open card's instruction or the next card's course. It is for review, and it ends
+            # any open card's words and the course in force, with a card open or not, so no
+            # later label takes that course.
+            unread.append(Unread(number, line))
+            course = None
+            last, after_one_line_card = None, False
+            refused_line = True
+            continue
+        if _is_course_line(line, following[index]) and (
+            not after_one_line_card or _is_whole_card_label(following[index], day)
+        ):
+            # The homework page's rule: a plain line before a card's label line with a title
+            # is its course. After a card written on one line, as the summary writes it, under
+            # either shape, read or not, it holds only before a card's label written whole
+            # that reads as a card; before any other line that begins like a label the line
+            # is the card's words, or text for review where the card did not read, and that
+            # label line is read as it is right after the card.
             course = line
-            last = None
+            last, after_one_line_card = None, False
             continue
         if last is not None:
             last.notes[-1][2].append(line)
@@ -946,11 +1037,52 @@ def _draft_for(
     return draft
 
 
-def _is_course_line(line: str, following: str | None) -> bool:
-    """A short plain line whose next line is a card's line names the card's course."""
+def _could_be_course_line(line: str, following: str | None) -> bool:
+    """A short plain line, not ending in a colon, whose next line is shaped as a card's label
+    line: the shape of a course line, whatever the label's title."""
     if len(line) > COURSE_LENGTH or line.endswith(":") or following is None:
         return False
-    return bool(ASSIGNED_LINE.match(following) or DUE_LINE.match(following))
+    return _label_title(following) is not None
+
+
+def _is_course_line(line: str, following: str | None) -> bool:
+    """A line shaped as a course line whose next line is a card's label line with a title, not
+    empty after trimming, names the card's course."""
+    return (
+        following is not None
+        and _could_be_course_line(line, following)
+        and bool(_label_title(following))
+    )
+
+
+def _label_title(label: str) -> str | None:
+    """The title a card's label line gives, trimmed, or ``None`` when the line is not shaped
+    as a label: Assigned with its printed due date, or Due."""
+    found = ASSIGNED_LINE.match(label) or DUE_LINE.match(label)
+    return None if found is None else found.group("title").strip()
+
+
+def _label_reads(label: str, day: date | None) -> bool:
+    """Whether a card's label line reads as a card, given its course: its title is not empty
+    after trimming, and an Assigned line's printed due date names a date, or a Due line has a
+    day in force (``day``) to be due on. ``read_text`` reads a card by these conditions, and
+    every check that asks whether a label reads asks this."""
+    if not _label_title(label):
+        return False
+    if assigned := ASSIGNED_LINE.match(label):
+        return (
+            a_date(assigned.group("year"), assigned.group("month"), assigned.group("day"))
+            is not None
+        )
+    return day is not None
+
+
+def _is_whole_card_label(line: str | None, day: date | None) -> bool:
+    """A card's label line written whole, as both pages write one, that reads as a card: the
+    Assigned form, or Due with its title closed by a colon, under ``_label_reads``."""
+    if line is None or not _label_reads(line, day):
+        return False
+    return bool(ASSIGNED_LINE.match(line)) or line.rstrip().endswith(":")
 
 
 def _is_subject_heading(line: str) -> bool:
@@ -1047,20 +1179,17 @@ def _close(note: _OpenNote | None, notes: list[NoteRead]) -> None:
 
 def _ends_a_note(line: str, day: date | None) -> bool:
     """Whether a line in a note reads as what ends it: a day whose digits name a date, a
-    Missing line, or a card with its course on its line, an assigned card with a real due
-    date or a due card with a title under a day already read. The first shape a line has
-    decides, and the conditions are the ones ``read_text`` reads each of them by."""
+    Missing line with a title, or a card with its course on its line whose label reads as a
+    card (``_label_reads``). The first shape a line has decides, and the conditions are the
+    ones ``read_text`` reads each of them by."""
     if found := DAY_LINE.match(line) or SUMMARY_DAY_LINE.match(line):
         return a_date(found.group("year"), found.group("month"), found.group("day")) is not None
     if found := EMAIL_LINE.match(line):
-        return found.group("grade").strip().lower() == MISSING
+        return found.group("grade").strip().lower() == MISSING and bool(
+            (found.group("title") or "").strip()
+        )
     if found := CARD_LINE.match(line):
-        body = found.group("card")
-        if assigned := ASSIGNED_LINE.match(body):
-            when = a_date(assigned.group("year"), assigned.group("month"), assigned.group("day"))
-            return when is not None
-        if due := DUE_LINE.match(body):
-            return day is not None and bool(due.group("title").strip())
+        return _label_reads(found.group("card"), day)
     return False
 
 

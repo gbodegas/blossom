@@ -58,6 +58,7 @@ from blossom import (
 from blossom.anthropic_client import ScreenshotAnswer
 from blossom.app import create_app
 from blossom.household import UnreadableHouseholdSecret
+from blossom.intake import EMAIL_DATE_LINE, PASTE_DAY
 from blossom.routes import imports, navigation, store_refusals
 from blossom.screenshot_page import ListTooLarge
 from blossom.screenshot_posts import rows_of_units, selection_text
@@ -121,6 +122,7 @@ from tests.support import (
     JOINED_TICK,
     LOOPBACK,
     PAGE_HEADERS,
+    PLAN_DATE,
     PROBLEM,
     RED,
     THEIRS,
@@ -58888,6 +58890,707 @@ def test_a_printed_summary_s_screenshot_saves_what_its_school_text_paste_saves(
 
     assert pasted == written
     assert read == written
+
+
+LABEL_LINE_IN_A_CARD: Final = {
+    "math-example": SUMMARY_HEAD + "10/5/2026 - Monday\n"
+    "Math - Due: Worksheet 4:\n"
+    "Show your work.\n"
+    "Due: check answers with a partner\n"
+    "Use a pencil.\n",
+    "full-mixed-page": SUMMARY_HEAD + "10/5/2026 - Monday\n"
+    "Humanities -\n"
+    "Read chapter 3 of The Outsiders.\n"
+    "Write two sentences about Ponyboy.\n"
+    "Art - Assigned: Poster: (Due:10/8/2026)\n"
+    "Bring markers on Thursday.\n"
+    "Science -\n"
+    "Lab report due Friday.\n"
+    "Math - Due: Worksheet 4:\n"
+    "Show your work.\n"
+    "Due: check answers with a partner\n"
+    "Use a pencil.\n",
+}
+"""#265's two made-up pastes: "Show your work.", then a line shaped like a card's label, under
+Math's card; the short example and the mixed page of #266's live screenshot check."""
+
+
+def needs_review(page: str) -> list[str]:
+    """Each line the School text review lists under "Text that needs review", in page order."""
+    if '<ul class="unread">' not in page:
+        return []
+    listed = page.split('<ul class="unread">', 1)[1].split("</ul>", 1)[0]
+    return [html.unescape(line) for line in re.findall(r"<code>(.*?)</code>", listed, re.S)]
+
+
+def text_review_offers(page: str) -> str:
+    """The School text review's words outside its list of lines that need review and outside the
+    hidden copy of the pasted text: what it offers to save."""
+    page = re.sub(r'<ul class="unread">.*?</ul>', "", page, flags=re.S)
+    page = re.sub(r'<textarea name="text" hidden>.*?</textarea>', "", page, flags=re.S)
+    page = re.sub(r'<input type="hidden"[^>]*>', "", page)
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", page)).split())
+
+
+@pytest.mark.parametrize("name", list(LABEL_LINE_IN_A_CARD))
+def test_a_plain_line_before_a_label_line_in_a_summary_card_is_the_cards_instruction(
+    tmp_path: pathlib.Path, name: str
+) -> None:
+    """Pasted as School text, read, reviewed and saved with every offer ticked: Math / Worksheet
+    4 is offered once, due 10/5/2026, with "Show your work." as its instruction; "Due: check
+    answers with a partner" and "Use a pencil." are listed for review and nothing is saved from
+    them; the mixed page saves exactly its four assignments, Humanities, Art and Science as they
+    were."""
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, LABEL_LINE_IN_A_CARD[name])
+    others: list[Written] = (
+        [
+            (*ART_POSTER, "Bring markers on Thursday."),
+            (
+                "Humanities",
+                "Read chapter 3 of The Outsiders",
+                None,
+                None,
+                "Read chapter 3 of The Outsiders. Write two sentences about Ponyboy.",
+            ),
+            ("Science", "Lab report", date(2026, 10, 9), None, "Lab report due Friday."),
+        ]
+        if name == "full-mixed-page"
+        else []
+    )
+    math: Written = ("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work.")
+
+    assert needs_review(page) == ["Due: check answers with a partner", "Use a pencil."]
+    assert "check answers with a partner" not in text_review_offers(page)
+    assert "Use a pencil." not in text_review_offers(page)
+    assert text_review_offers(page).count("Worksheet 4") == 1
+    assert written == sorted([*others, math])
+    assert len(written) == (4 if name == "full-mixed-page" else 1)
+
+
+DAY_HEADINGS: Final = {
+    "summary": SUMMARY_HEAD + "10/5/2026 - Monday\n",
+    "homework-page": "Monday 10/5/2026\n",
+}
+"""The two pages' day headings for 10/5/2026, so a reading that switches on the heading alone
+fails one of them."""
+MATH_CARD: Final = ("Math", "Worksheet 4", date(2026, 10, 5), None)
+CARDS_AFTER_A_ONE_LINE_CARD: Final[dict[str, tuple[str, list[Written], list[str]]]] = {
+    "an-earlier-course-is-cleared": (
+        "Art\nDue: Poster:\nMath - Due: Worksheet 4:\nShow your work.\n"
+        "Due: check answers with a partner\nUse a pencil.\n",
+        [("Art", "Poster", date(2026, 10, 5), None, ""), (*MATH_CARD, "Show your work.")],
+        ["Due: check answers with a partner", "Use a pencil."],
+    ),
+    "a-whole-card-after-the-words": (
+        "Math - Due: Worksheet 4:\nShow your work.\nScience\nDue: Lab report:\n",
+        [(*MATH_CARD, "Show your work."), ("Science", "Lab report", date(2026, 10, 5), None, "")],
+        [],
+    ),
+    "two-lines-of-words-before-a-due-line": (
+        "Math - Due: Worksheet 4:\nShow your work.\nUse a ruler.\n"
+        "Due: check answers with a partner\n",
+        [(*MATH_CARD, "Show your work. Use a ruler.")],
+        ["Due: check answers with a partner"],
+    ),
+    "two-lines-of-words-on-an-assigned-card": (
+        "Math - Assigned: Quiz: (Due:10/9/2026)\nShow your work.\nUse a ruler.\n"
+        "Due: check answers with a partner\n",
+        [("Math", "Quiz", date(2026, 10, 9), date(2026, 10, 5), "Show your work. Use a ruler.")],
+        ["Due: check answers with a partner"],
+    ),
+    "an-assigned-card-on-one-line-clears-the-course": (
+        "Art\nDue: Poster:\nMath - Assigned: Quiz: (Due:10/9/2026)\nShow your work.\n"
+        "Due: check answers with a partner\n",
+        [
+            ("Art", "Poster", date(2026, 10, 5), None, ""),
+            ("Math", "Quiz", date(2026, 10, 9), date(2026, 10, 5), "Show your work."),
+        ],
+        ["Due: check answers with a partner"],
+    ),
+    "a-whole-assigned-card-after-the-words": (
+        "Math - Due: Worksheet 4:\nShow your work.\nScience 8\nAssigned: Chains: (Due:10/8/2026)\n",
+        [
+            (*MATH_CARD, "Show your work."),
+            ("Science 8", "Chains", date(2026, 10, 8), date(2026, 10, 5), ""),
+        ],
+        [],
+    ),
+    "a-label-with-no-title": (
+        "Math - Due: Worksheet 4:\nShow your work.\nDue: :\nUse a pencil.\n",
+        [(*MATH_CARD, "Show your work.")],
+        ["Due: :", "Use a pencil."],
+    ),
+    "a-label-whose-date-names-no-date": (
+        "Math - Due: Worksheet 4:\nShow your work.\nAssigned: Quiz: (Due:2/30/2026)\n"
+        "Due: check answers with a partner\nUse a pencil.\n",
+        [(*MATH_CARD, "Show your work.")],
+        [
+            "Assigned: Quiz: (Due:2/30/2026)",
+            "Due: check answers with a partner",
+            "Use a pencil.",
+        ],
+    ),
+}
+"""Lines after a card written on one line: what Save writes with every offer ticked, and the
+lines the review lists for review."""
+
+
+@pytest.mark.parametrize("heading", list(DAY_HEADINGS))
+@pytest.mark.parametrize("case", list(CARDS_AFTER_A_ONE_LINE_CARD))
+def test_after_a_one_line_card_only_a_card_written_whole_starts_another(
+    tmp_path: pathlib.Path, case: str, heading: str
+) -> None:
+    """In the instruction of a card written on one line, a plain line names the next card's
+    course only before a card's label written whole, such as "Due: Lab report:"; before "Due:
+    check answers with a partner" it stays the card's words, however many such lines there are.
+    The card on one line clears an earlier course, so that Due line names no card. The same
+    under either page's day heading."""
+    text, expected, for_review = CARDS_AFTER_A_ONE_LINE_CARD[case]
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, DAY_HEADINGS[heading] + text)
+
+    assert written == expected
+    assert needs_review(page) == for_review
+    for line in for_review:
+        assert line not in text_review_offers(page)
+
+
+@pytest.mark.parametrize(
+    "heading", ["", "2/30/2026 - Monday\n"], ids=["no-day-line", "a-day-that-names-no-date"]
+)
+def test_with_no_day_in_force_a_due_title_closed_by_a_colon_starts_no_card(
+    tmp_path: pathlib.Path, heading: str
+) -> None:
+    """With no day in force, a Due title closed by a colon can't be read as a card, so in the
+    instruction of a card written on one line the line before it stays the card's words, and
+    the Due line is listed for review, nothing saved from it."""
+    text = (
+        heading + "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers.\n"
+        "Due: check answers with a partner:\n"
+    )
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, text)
+
+    assert written == [("Art", "Poster", date(2026, 10, 8), None, "Bring markers.")]
+    assert needs_review(page)[-1:] == ["Due: check answers with a partner:"]
+    assert "check answers with a partner" not in text_review_offers(page)
+
+
+@pytest.mark.parametrize(
+    "heading", ["", "2/30/2026 - Monday\n"], ids=["no-day-line", "a-day-that-names-no-date"]
+)
+def test_with_no_day_in_force_an_assigned_card_written_whole_still_starts_a_card(
+    tmp_path: pathlib.Path, heading: str
+) -> None:
+    """An Assigned label written whole needs a printed due date that names a date, not a day:
+    with no day in force, a course line before one after a card written on one line still names
+    its card's course, pasted, reviewed and saved."""
+    text = (
+        heading + "Art - Assigned: Poster: (Due:10/8/2026)\nBring markers.\n"
+        "Science 8\nAssigned: Chains: (Due:10/9/2026)\n"
+    )
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, text)
+
+    assert written == [
+        ("Art", "Poster", date(2026, 10, 8), None, "Bring markers."),
+        ("Science 8", "Chains", date(2026, 10, 9), None, ""),
+    ]
+    assert "Assigned: Chains: (Due:10/9/2026)" not in needs_review(page)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "Monday 10/5/2026\nMath\nDue: Worksheet 4\nShow your work.\n"
+            "Science\nDue: Lab report\nBring goggles.\n",
+            [
+                ("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work."),
+                ("Science", "Lab report", date(2026, 10, 5), None, "Bring goggles."),
+            ],
+        ),
+        (
+            SUMMARY_HEAD + "10/5/2026 - Monday\nMath\nDue: Worksheet 4:\nShow your work.\n",
+            [("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work.")],
+        ),
+        (
+            SUMMARY_HEAD + "10/5/2026 - Monday\nMath\nDue: Worksheet 4:\nShow your work.\n"
+            "Science\nDue: Lab report:\n",
+            [
+                ("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work."),
+                ("Science", "Lab report", date(2026, 10, 5), None, ""),
+            ],
+        ),
+        (
+            "Monday 10/5/2026\nMath - Due: Worksheet 4:\nShow your work.\n\n"
+            "Science\nDue: Lab report\n",
+            [
+                ("Math", "Worksheet 4", date(2026, 10, 5), None, "Show your work."),
+                ("Science", "Lab report", date(2026, 10, 5), None, ""),
+            ],
+        ),
+    ],
+    ids=[
+        "homework-page-after-a-card",
+        "summary-with-no-card-open",
+        "summary-after-a-card",
+        "homework-page-after-a-blank-after-a-one-line-card",
+    ],
+)
+def test_a_genuine_course_line_before_a_card_still_imports(
+    tmp_path: pathlib.Path, text: str, expected: list[Written]
+) -> None:
+    """A course on its own line before a card's label line still names that card's course,
+    pasted, reviewed and saved: where no card is open and right after a card written with its
+    course on its own line, on the homework page and in the summary; nothing is left for
+    review."""
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, text)
+
+    assert needs_review(page) == []
+    assert written == expected
+
+
+SCIENCE_LAB: Final = ("Science", "Lab report", date(2026, 10, 5), None, "")
+ART_POSTER_DUE: Final = ("Art", "Poster", date(2026, 10, 5), None, "")
+HIS_REJECTED_CARD: Final = (
+    "Art\nDue: Poster:\nMath - Due: :\nShow your work.\nDue: check answers with a partner\n"
+)
+"""His round 847 sequence: a Math card written on one line that does not read, after Art."""
+HIS_REJECTED_LINES: Final = [
+    "Math - Due: :",
+    "Show your work.",
+    "Due: check answers with a partner",
+]
+MALFORMED_CARDS: Final[dict[str, tuple[str, list[Written], list[str]]]] = {
+    "a-blank-assigned-title-in-a-one-line-cards-words": (
+        "Math - Due: Worksheet 4:\nShow your work.\nAssigned:  : (Due:10/8/2026)\nUse a pencil.\n",
+        [(*MATH_CARD, "Show your work.")],
+        ["Assigned:  : (Due:10/8/2026)", "Use a pencil."],
+    ),
+    "a-blank-assigned-title-beneath-a-standalone-course": (
+        "Math\nAssigned:  : (Due:10/9/2026)\nUse a pencil.\n\nScience\nDue: Lab report\n",
+        [SCIENCE_LAB],
+        ["Math", "Assigned:  : (Due:10/9/2026)", "Use a pencil."],
+    ),
+    "a-blank-assigned-title-on-one-line": (
+        "Math - Assigned:  : (Due:10/9/2026)\nUse a pencil.\nScience - Due: Lab report:\n",
+        [SCIENCE_LAB],
+        ["Math - Assigned:  : (Due:10/9/2026)", "Use a pencil."],
+    ),
+    "a-missing-line-with-a-blank-title": (
+        "9/8 Math: Homework:   Grade: Missing\nScience - Due: Lab report:\n",
+        [SCIENCE_LAB],
+        ["9/8 Math: Homework:   Grade: Missing"],
+    ),
+    "his-rejected-card-then-a-whole-card": (
+        HIS_REJECTED_CARD + "Science\nDue: Lab report:\n",
+        [ART_POSTER_DUE, SCIENCE_LAB],
+        HIS_REJECTED_LINES,
+    ),
+    "his-rejected-card-then-a-one-line-card": (
+        HIS_REJECTED_CARD + "Science - Due: Lab report:\n",
+        [ART_POSTER_DUE, SCIENCE_LAB],
+        HIS_REJECTED_LINES,
+    ),
+    "his-rejected-card-then-a-blank-and-a-homework-card": (
+        HIS_REJECTED_CARD + "\nScience\nDue: Lab report\n",
+        [ART_POSTER_DUE, SCIENCE_LAB],
+        HIS_REJECTED_LINES,
+    ),
+    "a-rejected-card-whose-date-names-no-date": (
+        "Art\nDue: Poster:\nMath - Assigned: Quiz: (Due:2/30/2026)\nShow your work.\n"
+        "Due: check answers with a partner\nScience\nDue: Lab report:\n",
+        [ART_POSTER_DUE, SCIENCE_LAB],
+        [
+            "Math - Assigned: Quiz: (Due:2/30/2026)",
+            "Show your work.",
+            "Due: check answers with a partner",
+        ],
+    ),
+    "a-rejected-card-before-a-label-closed-by-a-colon": (
+        "Art\nDue: Poster:\nMath - Assigned: Quiz: (Due:2/30/2026)\n"
+        "Due: check answers with a partner:\n",
+        [ART_POSTER_DUE],
+        ["Math - Assigned: Quiz: (Due:2/30/2026)", "Due: check answers with a partner:"],
+    ),
+    "a-one-line-card-whose-card-part-fits-no-label": (
+        "Art\nDue: Poster:\nMath - Assigned: Quiz\nDue: check answers with a partner:\n",
+        [ART_POSTER_DUE],
+        ["Math - Assigned: Quiz", "Due: check answers with a partner:"],
+    ),
+}
+"""Malformed cards from his round 847: what Save writes with every offer ticked, so nothing
+offered is left out, and the lines the review lists for review."""
+
+
+@pytest.mark.parametrize("heading", list(DAY_HEADINGS))
+@pytest.mark.parametrize("case", list(MALFORMED_CARDS))
+def test_a_malformed_card_saves_no_assignment_and_takes_no_course(
+    tmp_path: pathlib.Path, case: str, heading: str
+) -> None:
+    """A label whose title is only spaces, and a card written on one line that does not read,
+    save no assignment, pasted, reviewed and saved with every offer ticked: the lines stay
+    listed for review, the line before a blank-titled label names no course, a card on one line
+    ends the course in force even when it does not read, and the next card still imports. The
+    same under either page's day heading."""
+    text, expected, for_review = MALFORMED_CARDS[case]
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, DAY_HEADINGS[heading] + text)
+
+    assert written == expected
+    assert needs_review(page) == for_review
+    for line in for_review:
+        if " " in line:
+            assert " ".join(line.split()) not in text_review_offers(page)
+
+
+@pytest.mark.parametrize("heading", list(DAY_HEADINGS))
+@pytest.mark.parametrize(
+    ("text", "expected", "for_review"),
+    [
+        (
+            "Art\nDue: Poster:\nMath - Due: :\nScience\nDue: Lab report\n",
+            [ART_POSTER_DUE],
+            ["Math - Due: :", "Science", "Due: Lab report"],
+        ),
+        (
+            "Art\nDue: Poster:\nMath - Assigned: Quiz: (Due:2/30/2026)\nShow your work.\n"
+            "Due: check answers with a partner:\n",
+            [
+                ART_POSTER_DUE,
+                ("Show your work.", "check answers with a partner", date(2026, 10, 5), None, ""),
+            ],
+            ["Math - Assigned: Quiz: (Due:2/30/2026)"],
+        ),
+    ],
+    ids=["limit-b-a-colon-less-card", "limit-a-a-label-closed-by-a-colon"],
+)
+def test_limits_a_and_b_hold_after_a_one_line_card_that_does_not_read(
+    tmp_path: pathlib.Path, heading: str, text: str, expected: list[Written], for_review: list[str]
+) -> None:
+    """The two readings the card structure can't tell apart, kept as limits, pasted, reviewed
+    and saved: after a card written on one line that does not read, a colon-less card's two
+    lines are listed for review, and a teacher's line before a label closed by a colon is saved
+    as a course and its card."""
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, DAY_HEADINGS[heading] + text)
+
+    assert written == expected
+    assert needs_review(page) == for_review
+
+
+PASTE_A: Final = (
+    "Math\nDue: Worksheet 4:\nShow your work.\nAssigned:  : (Due:10/8/2026)\nUse a pencil.\n"
+)
+"""A teacher's line under a homework page's card, before a blank-titled Assigned label."""
+PASTE_A_REVIEW: Final = ["Show your work.", "Assigned:  : (Due:10/8/2026)", "Use a pencil."]
+PASTE_B: Final = "Art\nDue: Poster:\nMath\nDue:   :\nDue: Worksheet 4:\n"
+"""A course line over two cards, the first a blank-titled Due label, after Art's card."""
+PASTE_B_REVIEW: Final = ["Math", "Due:   :", "Due: Worksheet 4:"]
+LINES_THAT_COULD_BE_A_COURSE: Final[dict[str, tuple[str, list[Written], list[str], str]]] = {
+    "paste-a": (PASTE_A, [(*MATH_CARD, "")], PASTE_A_REVIEW, "Show your work."),
+    "paste-b": (PASTE_B, [ART_POSTER_DUE], PASTE_B_REVIEW, "Worksheet 4"),
+    "paste-b-with-an-assigned-label": (
+        "Art\nDue: Poster:\nMath\nAssigned:  : (Due:10/9/2026)\nDue: Worksheet 4:\n",
+        [ART_POSTER_DUE],
+        ["Math", "Assigned:  : (Due:10/9/2026)", "Due: Worksheet 4:"],
+        "Worksheet 4",
+    ),
+    "paste-b-after-a-blank": (
+        "Art\nDue: Poster:\n\nMath\nDue:   :\nDue: Worksheet 4:\n",
+        [ART_POSTER_DUE],
+        PASTE_B_REVIEW,
+        "Worksheet 4",
+    ),
+    "paste-a-then-a-genuine-card": (
+        PASTE_A + "Science\nDue: Lab report\n",
+        [(*MATH_CARD, ""), SCIENCE_LAB],
+        PASTE_A_REVIEW,
+        "Show your work.",
+    ),
+    "paste-b-then-a-genuine-card": (
+        PASTE_B + "Science\nDue: Lab report:\n",
+        [ART_POSTER_DUE, SCIENCE_LAB],
+        PASTE_B_REVIEW,
+        "Worksheet 4",
+    ),
+    "paste-b-with-nothing-between-the-assigned-colons": (
+        "Art\nDue: Poster:\nMath\nAssigned:: (Due:10/9/2026)\nDue: Worksheet 4:\n",
+        [ART_POSTER_DUE],
+        ["Math", "Assigned:: (Due:10/9/2026)", "Due: Worksheet 4:"],
+        "Worksheet 4",
+    ),
+}
+"""A plain line between a card, or a blank line, and a blank-titled label, that could be a card's
+instruction or the next course: what Save writes with every offer ticked, the lines listed for
+review, and words no offer may hold."""
+
+
+@pytest.mark.parametrize("heading", list(DAY_HEADINGS))
+@pytest.mark.parametrize("case", list(LINES_THAT_COULD_BE_A_COURSE))
+def test_a_line_that_could_be_a_course_before_a_blank_titled_label_is_for_review(
+    tmp_path: pathlib.Path, case: str, heading: str
+) -> None:
+    """A plain line between a card, or a blank line, and a label whose title is blank could be a
+    card's instruction or the next card's course, so it is listed for review and ends the course
+    in force, pasted, reviewed and saved with every offer ticked: no instruction or assignment
+    is saved from it, no later label is saved under the earlier course, and the next genuine
+    card still saves. The same under either page's day heading."""
+    text, expected, for_review, not_offered = LINES_THAT_COULD_BE_A_COURSE[case]
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, DAY_HEADINGS[heading] + text)
+
+    assert written == expected
+    assert needs_review(page) == for_review
+    assert not_offered not in text_review_offers(page)
+
+
+def reports_saved(
+    browser: TestClient, before: set[str]
+) -> dict[tuple[str, str], list[tuple[date, object]]]:
+    """Each assignment on record that isn't among ``before``, by class and title, with the date
+    and the source of every status report saved for it."""
+    record = state_of(browser).project_state
+    return {
+        (a.course, a.title): [
+            (r.reported_on, r.dated_by) for r in record.status_reports(a.assignment_id)
+        ]
+        for a in record.all_assignments()
+        if a.assignment_id not in before
+    }
+
+
+MAIL_HEADER_AND_REPORT: Final = (
+    "Subject: fractions\nSent: Sat, Oct 3, 2026\n9/8 Math: Homework: Quiz Grade: Missing\n"
+)
+
+
+@pytest.mark.parametrize("heading", list(DAY_HEADINGS))
+@pytest.mark.parametrize("after_a_card", [True, False], ids=["after-a-rejected-card", "alone"])
+def test_mail_lines_after_a_one_line_card_that_does_not_read_are_for_review(
+    tmp_path: pathlib.Path, heading: str, after_a_card: bool
+) -> None:
+    """After a card written on one line that does not read, Subject: and Sent: are listed for
+    review, pasted, reviewed and saved with every offer ticked, and the Missing report after
+    them is saved dated by the day of the paste, not October 3. With no card above them, the
+    same lines are a mail header, and the report is saved dated October 3 by the email's date
+    line."""
+    card = "Math - Assigned:  : (Due:10/9/2026)\n" if after_a_card else ""
+    with here(open_settings(tmp_path)) as browser:
+        before = ids_on_record(browser)
+        page, _ = pasted_and_saved(browser, DAY_HEADINGS[heading] + card + MAIL_HEADER_AND_REPORT)
+        reports = reports_saved(browser, before)
+
+    assert list(reports) == [("Math", "Quiz")]
+    [(reported_on, dated_by)] = reports["Math", "Quiz"]
+    if after_a_card:
+        assert needs_review(page) == [
+            "Math - Assigned:  : (Due:10/9/2026)",
+            "Subject: fractions",
+            "Sent: Sat, Oct 3, 2026",
+        ]
+        assert dated_by == PASTE_DAY
+        assert reported_on != date(2026, 10, 3)
+    else:
+        assert needs_review(page) == []
+        assert (reported_on, dated_by) == (date(2026, 10, 3), EMAIL_DATE_LINE)
+
+
+THREE_DATES: Final = (
+    "Date: Tue, Sep 1, 2026\n9/1 Math: Homework: Practice Grade: Missing\n{heading}"
+    "Math - Assigned:  : (Due:10/9/2026)\nSent: Sat, Oct 3, 2026\n"
+    "9/8 Math: Homework: Quiz Grade: Missing\n\nDate: Sun, Sep 20, 2026\n"
+    "9/18 Art: Homework: Collage Grade: Missing\n"
+)
+"""An email dated September 1 and its report; a card on one line that does not read, a Sent:
+line dated October 3 after it, and a report; a blank line, an email dated September 20 and its
+report."""
+
+
+@pytest.mark.parametrize("heading", list(DAY_HEADINGS))
+def test_a_sent_line_listed_after_a_card_that_does_not_read_dates_the_next_report_by_the_paste(
+    tmp_path: pathlib.Path, heading: str
+) -> None:
+    """A Sent: line listed for review after a card written on one line that does not read may
+    head another email, so the Missing report after it is saved dated by the day of the paste,
+    with that as its source: neither October 3, the listed date, nor September 1, the earlier
+    email's. The report under the earlier email keeps September 1, and a later genuine header
+    dates its own report September 20. Pasted, reviewed and saved with every offer ticked."""
+    with here(open_settings(tmp_path)) as browser:
+        before = ids_on_record(browser)
+        page, _ = pasted_and_saved(browser, THREE_DATES.format(heading=DAY_HEADINGS[heading]))
+        reports = reports_saved(browser, before)
+
+    assert PLAN_DATE not in (date(2026, 9, 1), date(2026, 10, 3), date(2026, 9, 20))
+    assert reports == {
+        ("Math", "Practice"): [(date(2026, 9, 1), EMAIL_DATE_LINE)],
+        ("Math", "Quiz"): [(PLAN_DATE, PASTE_DAY)],
+        ("Art", "Collage"): [(date(2026, 9, 20), EMAIL_DATE_LINE)],
+    }
+    assert needs_review(page) == ["Math - Assigned:  : (Due:10/9/2026)", "Sent: Sat, Oct 3, 2026"]
+
+
+@pytest.mark.parametrize("heading", list(DAY_HEADINGS))
+@pytest.mark.parametrize(
+    ("card", "line", "label"),
+    [
+        ("Math - Assigned: Quiz: (Due:13/45/2026)", "Subject: fractions", "Due: Worksheet 4:"),
+        ("Math - Assigned: Quiz", "From: School Office", "Assigned: Quiz 2: (Due:10/9/2026)"),
+        ("Math - Assigned:  : (Due:10/9/2026)", "Sent: Sat, Oct 3, 2026", "Due: Worksheet 4:"),
+        (
+            "Math - Assigned:  : (Due:10/9/2026)",
+            "Homework for tomorrow: bring paper.",
+            "Due: Worksheet 4:",
+        ),
+    ],
+    ids=["a-mail-header", "a-from-line-before-an-assigned-label", "a-mail-date", "a-heading"],
+)
+def test_a_mail_line_after_a_one_line_card_that_does_not_read_names_no_course(
+    tmp_path: pathlib.Path, heading: str, card: str, line: str, label: str
+) -> None:
+    """After a card written on one line that does not read, a heading, a mail header or a mail
+    date line right before a card's label written whole is listed for review and names no
+    course, pasted, reviewed and saved with every offer ticked: the label after it is listed
+    too, and only the later genuine card is saved."""
+    text = DAY_HEADINGS[heading] + f"{card}\n{line}\n{label}\n\nScience - Due: Lab report:\n"
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, text)
+
+    assert written == [SCIENCE_LAB]
+    assert needs_review(page) == [card, line, label]
+
+
+ART_NOTE_TASK: Final = ("Art", "Bring a smock", None, None, "Bring a smock.")
+"""What Save writes for the summary's Art note, as on main: a task read from the note."""
+AFTER_A_NOTE_AND_A_DAY: Final[dict[str, tuple[str, list[Written], list[str]]]] = {
+    "summary": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\nArt -\nBring a smock.\n10/6/2026 - Tuesday\n"
+        "Math\nDue:   :\nScience\nDue: Lab report:\n",
+        [ART_NOTE_TASK, ("Science", "Lab report", date(2026, 10, 6), None, "")],
+        ["Math", "Due:   :"],
+    ),
+    "homework-page": (
+        "Art -\nBring a smock.\nMonday 10/5/2026\nMath\nDue:   :\nScience\nDue: Lab report:\n",
+        [("Science", "Lab report", date(2026, 10, 5), None, "")],
+        ["Art -", "Bring a smock.", "Math", "Due:   :"],
+    ),
+}
+"""A subject's note, then a day whose digits name a date, then a line listed for a blank-titled
+label and the genuine Science card, in each page's way of writing the day: what Save writes and
+the lines listed under "Text that needs review". The summary's note is shown as a note of its
+own and offers its task, as on main; a note before any day is no block, so its lines are listed
+with the others and offer nothing."""
+
+
+@pytest.mark.parametrize("heading", list(AFTER_A_NOTE_AND_A_DAY))
+def test_after_a_note_and_a_new_day_the_genuine_science_card_is_saved_once(
+    tmp_path: pathlib.Path, heading: str
+) -> None:
+    """After a subject's note and a new day, a line listed for a blank-titled label opens no
+    review paragraph, so the Science card under it is offered and saved once, with its course
+    and its day's date, pasted, reviewed and saved with every offer ticked."""
+    text, expected, for_review = AFTER_A_NOTE_AND_A_DAY[heading]
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, text)
+
+    assert written == expected
+    assert [row for row in written if row[0] == "Science"] == [expected[-1]]
+    assert needs_review(page) == for_review
+
+
+MATH_QUIZ_MISSING: Final = ("Math", "Quiz", None, None, "")
+COURSELESS_AFTER_A_LISTED_LINE: Final[dict[str, tuple[str, list[Written], list[str]]]] = {
+    "summary": (
+        SUMMARY_HEAD + "10/5/2026 - Monday\nArt -\nBring a smock.\n"
+        "9/8 Math: Homework: Quiz Grade: Missing\n{listed}\nDue: Orphan:\nClasses\n"
+        "Science\nDue: Lab report:\n",
+        [ART_NOTE_TASK, MATH_QUIZ_MISSING],
+        [],
+    ),
+    "homework-page": (
+        "Art -\nBring a smock.\nMonday 10/5/2026\n9/8 Math: Homework: Quiz Grade: Missing\n"
+        "{listed}\nDue: Orphan:\nClasses\nScience\nDue: Lab report:\n",
+        [MATH_QUIZ_MISSING],
+        ["Art -", "Bring a smock."],
+    ),
+}
+"""A subject's note ended by a Missing line, then a line listed for review for another reason
+than a blank title, then a label with no course for want of one and the lines after it, in each
+page's way: what Save writes and the lines listed before the listed line."""
+
+
+@pytest.mark.parametrize("heading", list(COURSELESS_AFTER_A_LISTED_LINE))
+@pytest.mark.parametrize(
+    "listed",
+    [
+        ["Bring these things:"],
+        ["(Due: Friday)"],
+        ["Math - Assigned:  : (Due:10/9/2026)", "Subject: fractions"],
+    ],
+    ids=["a-plain-line", "a-due-date-shape", "a-mail-line-after-a-rejected-card"],
+)
+def test_a_courseless_label_after_another_listed_line_keeps_its_paragraph_through_save(
+    tmp_path: pathlib.Path, heading: str, listed: list[str]
+) -> None:
+    """Only a line listed for a label's blank title spares that label its review paragraph.
+    After a plain line, a line shaped like a due date, or a mail line after a one-line card
+    that does not read, listed for review, a label with no course keeps the lines after it for
+    review, pasted, reviewed and saved with every offer ticked: Save writes no Science
+    assignment."""
+    text, expected, before = COURSELESS_AFTER_A_LISTED_LINE[heading]
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, text.format(listed="\n".join(listed)))
+
+    assert written == expected
+    assert not [row for row in written if row[0] == "Science"]
+    assert needs_review(page) == [
+        *before,
+        *listed,
+        "Due: Orphan:",
+        "Classes",
+        "Science",
+        "Due: Lab report:",
+    ]
+
+
+@pytest.mark.parametrize("heading", list(DAY_HEADINGS))
+@pytest.mark.parametrize("spaces", ["  ", "   "], ids=["two-spaces", "three-spaces"])
+def test_a_missing_line_with_only_spaces_for_a_title_saves_nothing_and_is_for_review(
+    tmp_path: pathlib.Path, heading: str, spaces: str
+) -> None:
+    """The reported paste with two and with three spaces between Homework: and Grade:, side by
+    side: the Missing line and the label after it are listed for review, and Save writes only
+    the Science card, pasted, reviewed and saved with every offer ticked."""
+    line = f"9/8 Math: Homework:{spaces}Grade: Missing"
+    text = DAY_HEADINGS[heading] + f"{line}\nDue: Worksheet 4:\nScience - Due: Lab report:\n"
+    with here(open_settings(tmp_path)) as browser:
+        page, written = pasted_and_saved(browser, text)
+
+    assert written == [SCIENCE_LAB]
+    assert needs_review(page) == [line, "Due: Worksheet 4:"]
+
+
+@pytest.mark.parametrize("heading", list(DAY_HEADINGS))
+def test_a_missing_line_with_a_title_is_still_saved_with_its_report(
+    tmp_path: pathlib.Path, heading: str
+) -> None:
+    """A Missing line with a title still reads, pasted, reviewed and saved: its assignment is
+    saved with a Missing report, beside the Science card."""
+    text = (
+        DAY_HEADINGS[heading]
+        + "9/8 Math: Homework: Quiz Grade: Missing\nScience - Due: Lab report:\n"
+    )
+    with here(open_settings(tmp_path)) as browser:
+        before = ids_on_record(browser)
+        page, written = pasted_and_saved(browser, text)
+        reports = reports_saved(browser, before)
+
+    assert [row[:2] for row in written] == [("Math", "Quiz"), ("Science", "Lab report")]
+    assert len(reports["Math", "Quiz"]) == 1
+    assert needs_review(page) == []
 
 
 def test_the_mixed_page_offers_math_and_shows_its_two_set_aside_lines(
