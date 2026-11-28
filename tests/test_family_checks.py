@@ -105,7 +105,10 @@ from tests.support import (
 )
 
 HELPER = "This records your check here. It does not change her update or the school's report."
-HEADINGS = ("Worth checking together", "Checked recently", "Recent updates", "School reports")
+HEADINGS = ("Worth checking together", "School reports")
+CHECK_ENTRY = "a check in Recent activity"
+UPDATE_ENTRY = "her update in Recent activity"
+"""Where a row can be: under a heading, or an entry of Recent activity of one kind."""
 RECORDED = str(escape(CHECK_RECORDED))
 FACTS_CHANGED = str(escape(CHECK_FACTS_CHANGED))
 NOT_THIS = str(escape(NOT_THIS_ROWS))
@@ -565,8 +568,13 @@ def test_a_check_event_has_one_of_two_shapes() -> None:
 
 
 def where(page: str, assignment_id: str) -> str:
-    """The group heading a row is under."""
+    """Where a row is: an entry of Recent activity by its kind, or the heading it is under."""
     start = page.index(f'id="update-{assignment_id}"')
+    opening = page[page.rfind("<", 0, start) : start]
+    if "entry-check" in opening:
+        return CHECK_ENTRY
+    if "entry-update" in opening:
+        return UPDATE_ENTRY
     return max(HEADINGS, key=lambda heading: page.rfind(heading, 0, start))
 
 
@@ -596,7 +604,7 @@ def undo(client: TestClient, assignment_id: str) -> None:
 def test_the_family_page_offers_mark_checked_and_a_check_shows_on_both_pages() -> None:
     """The row worth checking carries the form: a note for her card, the basis, the check
     the row showed, the helper words, and one button, a form alone. Marked, the page comes
-    back at the row, folded under Checked recently with the day, the note, both accounts,
+    back at the row, a check entry of Recent activity with the day, the note, both accounts,
     and Check again; her card says a parent checked it with her, with the note."""
     with browser() as client:
         a_discrepancy(client)
@@ -607,7 +615,7 @@ def test_the_family_page_offers_mark_checked_and_a_check_shows_on_both_pages() -
         hers = card_for(client.get(HER_PAGE, headers=PAGE_HEADERS).text, ESSAY_ID)
         chain = state_of(client).project_state.family_checks(ESSAY_ID)
 
-    assert "<h3>Worth checking together</h3>" in before
+    assert "<h2>Worth checking together</h2>" in before
     assert f'<article class="draft needs-review" id="update-{ESSAY_ID}" tabindex="-1">' in before
     assert f'action="/parent/actions/checks/{ESSAY_ID}/mark"' in row
     assert HELPER in row
@@ -626,11 +634,10 @@ def test_the_family_page_offers_mark_checked_and_a_check_shows_on_both_pages() -
     assert "<script" not in row
     assert marked.status_code == 303
     assert marked.headers["location"] == f"/parent?checked={ESSAY_ID}#update-{ESSAY_ID}"
-    assert "<h3>Worth checking together</h3>" not in after
-    assert '<details class="steps checked-recently" open>' in after
-    assert "<summary>Checked recently (1)</summary>" in after
+    assert "<h2>Worth checking together</h2>" not in after
+    assert after.count('class="compact-row entry-check"') == 1
     checked = row_for(after, ESSAY_ID)
-    assert where(after, ESSAY_ID) == "Checked recently"
+    assert where(after, ESSAY_ID) == CHECK_ENTRY
     assert RECORDED in checked
     assert (
         "A parent marked this checked with her on August 19. The note with it: "
@@ -768,7 +775,7 @@ def test_only_a_parents_device_marks_a_check_and_the_check_holds_through_a_resta
     assert (hers.status_code, hers_again.status_code) == (403, 403)
     assert marked.status_code == 303
     assert len(chain) == 1
-    assert "<summary>Checked recently (1)</summary>" in family
+    assert family.count('class="compact-row entry-check"') == 1
     assert (
         "A parent marked this checked with her on August 19. The note with it: <q>On paper.</q>"
         in as_parent
@@ -865,7 +872,7 @@ def test_a_check_from_a_page_the_facts_or_the_record_moved_past_is_refused_with_
     assert marked.status_code == 303
     assert from_before.status_code == 409
     second_row = row_for(from_before.text, ESSAY_ID)
-    assert where(from_before.text, ESSAY_ID) == "Checked recently"
+    assert where(from_before.text, ESSAY_ID) == CHECK_ENTRY
     assert CHECK_MOVED_ON in second_row
     assert "The note with it: <q>Checked both.</q>" in second_row
     assert (
@@ -884,7 +891,7 @@ def test_a_check_from_a_page_the_facts_or_the_record_moved_past_is_refused_with_
     assert twice.status_code == 409
     assert CHECK_MOVED_ON in row_for(twice.text, ESSAY_ID)
     assert gone.status_code == 409
-    assert where(gone.text, ESSAY_ID) == "Recent updates"
+    assert where(gone.text, ESSAY_ID) == UPDATE_ENTRY
     gone_row = row_for(gone.text, ESSAY_ID)
     assert FACTS_CHANGED in gone_row
     assert "The note typed with it was not saved: <q>Typed before her change.</q>" in gone_row
@@ -928,11 +935,11 @@ def test_what_reopens_a_checked_row_and_what_does_not() -> None:
         chain = store.family_checks(ESSAY_ID)
         reports = store.student_reports(ESSAY_ID)
 
-    assert where(same_paste, ESSAY_ID) == "Checked recently"
-    assert where(note_only, ESSAY_ID) == "Checked recently"
+    assert where(same_paste, ESSAY_ID) == CHECK_ENTRY
+    assert where(note_only, ESSAY_ID) == CHECK_ENTRY
     assert "<q>Handed in Tuesday, both parts.</q>" in row_for(note_only, ESSAY_ID)
-    assert where(late, ESSAY_ID) == "Checked recently"
-    assert where(out, ESSAY_ID) == "Recent updates"
+    assert where(late, ESSAY_ID) == CHECK_ENTRY
+    assert where(out, ESSAY_ID) == UPDATE_ENTRY
     out_row = row_for(out, ESSAY_ID)
     assert (
         "A parent marked this checked on August 19, and what it rests on differs now: her "
@@ -941,7 +948,7 @@ def test_what_reopens_a_checked_row_and_what_does_not() -> None:
     assert "A parent marked this checked with her" not in out_row
     assert f'aria-label="Check again: {ESSAY_TITLE}"' in out_row
     assert f'action="/parent/actions/checks/{ESSAY_ID}/mark"' not in out_row
-    assert where(restored, ESSAY_ID) == "Checked recently"
+    assert where(restored, ESSAY_ID) == CHECK_ENTRY
     assert "restored August 19" in row_for(restored, ESSAY_ID)
     assert (
         "A parent marked this checked with you on August 19. The note with it: <q>Seen.</q>"
@@ -1183,7 +1190,7 @@ def test_a_check_whose_facts_moved_stays_on_its_row_and_can_be_reopened() -> Non
         after = client.get(reopened.headers["location"], headers=PAGE_HEADERS).text
         chain = store.family_checks(ESSAY_ID)
 
-    assert where(cleared, ESSAY_ID) == "Recent updates"
+    assert where(cleared, ESSAY_ID) == UPDATE_ENTRY
     cleared_row = row_for(cleared, ESSAY_ID)
     assert (
         "A parent marked this checked on August 19, and what it rests on differs now: no "
@@ -1193,7 +1200,7 @@ def test_a_check_whose_facts_moved_stays_on_its_row_and_can_be_reopened() -> Non
     assert hidden(cleared_row, "check_id") == chain[0].check_id
     assert "The school reports it turned in." in cleared_row
     assert "Worth checking together" not in cleared
-    assert "Checked recently" not in cleared
+    assert "entry-check" not in cleared
     assert "A parent marked this checked" not in hers
     assert (
         "differs now: her update is not Done, and no school channel reports it missing."

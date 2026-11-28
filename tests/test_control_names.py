@@ -520,7 +520,7 @@ def refused_press(client: TestClient, key: str) -> str:
 
 def turning_in_seen(reader: str, tmp_path: pathlib.Path) -> dict[str, str]:
     """What ``reader`` is shown of the three Practice assignments, each still to turn in:
-    the rows of To turn in on its page and on her week, the family page's Turning work in
+    the rows of To turn in on its page and on her week, the family page's Still open
     where the reader opens it, the line that names them once their records cannot be read,
     and where she presses, what a refused press and a refused Undo say beside the refusal."""
     seen: dict[str, str] = {}

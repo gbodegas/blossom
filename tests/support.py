@@ -1827,7 +1827,9 @@ def family_line_focused(page: str) -> bool:
 def plan_fold_open(page: str) -> bool | None:
     """Whether the family page's Help with a plan is open, or ``None`` when it isn't there."""
     found = re.search(
-        r'<details class="steps panel-fold"( open)?>\s*<summary>Help with a plan</summary>', page
+        r'<details class="steps panel-fold" id="help-with-a-plan"( open)?>\s*'
+        r"<summary>Help with a plan</summary>",
+        page,
     )
     return None if found is None else found.group(1) is not None
 

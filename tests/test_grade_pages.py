@@ -2113,7 +2113,7 @@ def test_family_review_links_to_adding_a_grade_report(tmp_path: pathlib.Path) ->
     with at(open_household(tmp_path)) as browser:
         page = browser.get("/parent", headers=PAGE).text
 
-    assert f'<a href="{ADD}">Add grade report</a>' in page
+    assert f'<a href="{ADD}">Add a grade report</a>' in page
 
 
 def test_answers_another_tab_settled_return_the_review_and_keep_what_still_applies(

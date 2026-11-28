@@ -1959,8 +1959,8 @@ def test_her_done_beside_the_schools_missing_is_something_to_check_on_both_pages
     assert f"show={ESSAY}#title-{ESSAY}" in link.group(1)
     assert '<details class="steps reported-done" open>' in followed
     assert "<strong>The school reports this missing.</strong>" in card_for(followed, ESSAY)
-    checking, _, rest = family.partition("<h3>School reports</h3>")
-    assert "<h3>Worth checking together</h3>" in checking
+    checking, _, rest = family.partition('<h4 class="update-heading">School reports</h4>')
+    assert "<h2>Worth checking together</h2>" in checking
     assert "She reported it done on August 19. She wrote: <q>Handed in Tuesday.</q>" in checking
     assert "The school reports it missing. From the school email, pasted" in checking
     assert "<strong>Check the school record.</strong>" in checking
@@ -2187,7 +2187,7 @@ def test_the_missing_a_check_rests_on_is_shown_whatever_the_latest_report_says()
 
     card = hers[hers.index(f'id="assignment-{ESSAY}"') :]
     card = card[: card.index("</article>")]
-    checking, _, _ = family.partition("<h3>School reports</h3>")
+    checking, _, _ = family.partition('<h4 class="update-heading">School reports</h4>')
     assert status.check_the_school_record
     assert [item.channel for item in status.missing_reports] == [SourceChannel.EMAIL]
     assert "has a school report to check" in hers
@@ -2195,7 +2195,7 @@ def test_the_missing_a_check_rests_on_is_shown_whatever_the_latest_report_says()
     assert "From the school portal, pasted" in card
     assert "<strong>The school reports this missing.</strong>" in card
     assert "From the school email, pasted" in card
-    assert "<h3>Worth checking together</h3>" in checking
+    assert "<h2>Worth checking together</h2>" in checking
     assert "The school reports it missing. From the school email, pasted" in checking
     assert "The school reports it submitted. From the school portal, pasted" in checking
 
@@ -2659,10 +2659,11 @@ def test_each_assignment_is_in_one_family_group_with_every_fact_it_was_grouped_b
         report(client, science, "done")
         family = client.get("/parent", headers=PAGE_HEADERS).text
 
-    section = family[family.index("<h2>Assignment updates</h2>") :]
-    section = section[: section.index("<h2>Waiting for your review</h2>")]
-    checking, _, rest = section.partition("<summary>Recent updates (2)</summary>")
-    recent, _, school = rest.partition("<h3>School reports</h3>")
+    checking = family[family.index("<h2>Worth checking together</h2>") :]
+    checking = checking[: checking.index("<h2>Waiting for your review</h2>")]
+    activity = family[family.index('id="recent-activity"') : family.index('id="add-assignments"')]
+    school, _, recent = activity.partition("</section>")
+    assert "Showing all 2." in recent
     titles = {
         ESSAY: ESSAY_TITLE,
         LOG: "Reading log, week one",
@@ -2732,7 +2733,7 @@ def test_both_pages_show_what_each_school_channel_says_now_with_its_day(
 
     card = card_for(hers, ESSAY)
     banners = card[: card.index('<div class="update">')]
-    section = family[family.index("<h2>Assignment updates</h2>") :]
+    section = family[family.index('id="add-or-do"') :]
     for fact in shown:
         assert (
             f"The school reports this {fact}".replace(". From", ".</strong>\n          From")
@@ -2741,7 +2742,7 @@ def test_both_pages_show_what_each_school_channel_says_now_with_its_day(
         assert f"The school reports it {fact}" in section
     assert banners.count("<strong>The school reports this") == len(shown)
     assert ("has a school report to check" in hers) is checks
-    assert ("<h3>Worth checking together</h3>" in section) is checks
+    assert ("<h2>Worth checking together</h2>" in section) is checks
 
 
 def test_her_words_wrap_and_keep_their_lines_on_both_pages() -> None:
@@ -3011,10 +3012,9 @@ def test_an_old_update_put_back_today_is_recent_by_its_correction_and_dated_as_i
         family = client.get("/parent", headers=PAGE_HEADERS).text
 
     assert taken_back.status_code == 303
-    section = family[family.index("<h2>Assignment updates</h2>") :]
-    section = section[: section.index("<h2>Waiting for your review</h2>")]
-    assert "<summary>Recent updates (2)</summary>" in section
-    fold = section[section.index("<summary>Recent updates (2)</summary>") :]
+    section = family[family.index('id="recent-activity"') : family.index('id="add-assignments"')]
+    assert "Showing all 2." in section
+    fold = section[section.index("Showing all 2.") :]
     assert fold.index(ESSAY_TITLE) < fold.index("Reading log, week one")
     assert (
         "She reported it not yet done on August 1, restored August 19. "
@@ -3037,9 +3037,8 @@ def test_taking_back_her_only_update_is_recent_activity_that_says_no_update_stan
         hers = client.get(PAGE, headers=PAGE_HEADERS).text
 
     assert taken_back.status_code == 303
-    section = family[family.index("<h2>Assignment updates</h2>") :]
-    section = section[: section.index("<h2>Waiting for your review</h2>")]
-    assert "<summary>Recent updates (1)</summary>" in section
+    section = family[family.index('id="recent-activity"') : family.index('id="add-assignments"')]
+    assert "Showing all 1." in section
     assert ESSAY_TITLE in section
     assert "She took back her update on August 19; no update stands." in section
     assert "She reported it" not in section

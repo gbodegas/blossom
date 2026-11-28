@@ -731,7 +731,7 @@ def test_the_family_page_lists_what_she_said_and_offers_no_way_to_say_it_for_her
 
         family = client.get(FAMILY).text
 
-        start = family.index('id="turning-work-in"')
+        start = family.index('id="still-open"')
         listed = family[start : family.index("</section>", start)]
         assert ESSAY_TITLE in listed
         assert "She reported Still to turn in on August 19" in listed
@@ -746,10 +746,11 @@ def test_the_family_list_keeps_its_order_its_window_and_its_unreadable_rows_last
     """Six assignments, said about on chosen days, read on the pinned day, August 19.
 
     Still to turn in comes first, the longest standing first, however old, and
-    an edit inside that state does not move a row down. Whatever else she said
-    follows while her latest word is inside fourteen days, the latest first by
-    the order the file kept and never by the clock: August 6 is inside and
-    August 5 is not. A record that cannot be read comes last.
+    an edit inside that state does not move a row down, and a record that
+    cannot be read follows it under Still open. Whatever else she said is an
+    entry of the last seven days while her latest word is inside them, and
+    earlier activity before them, the latest first by the order the file kept:
+    August 18 is inside, and August 6 and August 5 are earlier.
     """
     names = ["old-wait", "new-wait", "edge-in", "recent", "edge-out", "broken"]
     with browser(BLOSSOM_FIXTURE_PATH="") as client:
@@ -786,14 +787,20 @@ def test_the_family_list_keeps_its_order_its_window_and_its_unreadable_rows_last
         store._connection.commit()
 
         family = client.get(FAMILY).text
+        older = client.get(FAMILY, params={"activity": "earlier"}).text
 
-    start = family.index('id="turning-work-in"')
-    listed = family[start : family.index("</section>", start)]
-    order = re.findall(r'<article class="draft" id="(?:update|hand-in)-([^"]+)"', listed)
-    assert order == ["old-wait", "new-wait", "edge-in", "recent", "broken"]
-    assert "edge-out" not in listed
+    start = family.index('id="recent-activity"')
+    listed = family[start : family.index('id="add-assignments"', start)]
+    row = r'<li class="compact-row[^"]*" id="(?:update|hand-in)-([^"]+)"'
+    order = re.findall(row, listed)
+    assert order == ["old-wait", "new-wait", "broken", "recent"]
     assert "She reported Still to turn in on July 1, 2026." in listed
     assert "cannot be read" in listed[listed.index("-broken") :]
+    start = older.index('id="earlier-activity"')
+    assert re.findall(row, older[start : older.index("</section>", start)]) == [
+        "edge-in",
+        "edge-out",
+    ]
 
 
 def test_her_two_accounts_stay_apart_on_the_page_and_a_plan_is_not_made_stale() -> None:
@@ -1186,7 +1193,7 @@ def test_a_way_back_from_a_hand_in_row_lands_on_that_row_and_not_on_an_empty_sec
         assert found.group(1).endswith(f"#update-{ESSAY_ID}")
         assert family.count(f'id="update-{ESSAY_ID}"') == 1
         start = family.index(f'id="update-{ESSAY_ID}"')
-        assert "Put it in my folder" in family[start : family.index("</article>", start)]
+        assert "Put it in my folder" in family[start : family.index("</li>", start)]
         assert "No assignment updates to show." not in family
 
 

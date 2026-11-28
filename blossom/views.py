@@ -454,8 +454,8 @@ class AssignmentUpdateView(BaseModel):
 
 
 class AssignmentUpdatesView(BaseModel):
-    """The family page's section on assignment updates, in its groups, with the rows whose
-    records cannot be read named at its head."""
+    """The family page's assignment rows, in its groups, with the rows whose records cannot
+    be read named apart."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -463,25 +463,24 @@ class AssignmentUpdatesView(BaseModel):
     """Her "done" beside a school "missing" with no check standing: worth checking
     together, shown open, with the form to mark it checked."""
     checked: list[AssignmentUpdateView] = []
-    """The rows a parent marked checked in the last fourteen household days, the latest
-    check first, while the check stands; folded, each with Check again."""
+    """The rows a parent marked checked in the last seven household days, today included,
+    the latest check first, while the check stands; each with Check again."""
     recent: list[AssignmentUpdateView] = []
-    """Her standing reports of the last fourteen household days, most recent first."""
+    """Her latest events of the last seven household days, most recent first."""
     school: list[AssignmentUpdateView] = []
-    """Every other assignment the school has reported on, with its latest report."""
+    """Every other assignment the school has reported on, with its latest report, whatever
+    its age."""
+    earlier: list[AssignmentUpdateView] = []
+    """The rest with a check that stands or an event of hers older than the seven days,
+    the latest first."""
     unreadable: list[AssignmentUpdateView] = []
     """The rows no readable fact puts in any other group, with a record that cannot be
     read, in the record's order: never left out, and never dated as recent."""
     updates_unreadable: list[AssignmentUpdateView] = []
     """Every row whose updates of hers cannot be read, wherever it is listed, in the
-    record's order, for the section to name at its head."""
+    record's order, for the page to name once."""
     checks_unreadable: list[AssignmentUpdateView] = []
     """Every row whose family checks cannot be read, named the same way."""
-    turning_in: list[HandInRowView] = []
-    """Turning work in: everything she reports as still to turn in, the longest
-    standing first and however old, then whatever else she has said about delivery
-    in the last fourteen household days, and any assignment whose hand-in record
-    cannot be read. A section of its own, with no form in it."""
 
 
 class WorkloadSignalView(BaseModel):
