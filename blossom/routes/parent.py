@@ -1635,15 +1635,9 @@ def review_page(
             rest.replace(PLACE_MARK, place or ""),
         )
     updates = assignment_updates(everything, today)
-    # A row the page names, and every row a line about unreadable records links to, is
-    # always listed, wherever its entry falls.
-    landing = frozenset(
-        {
-            *(() if check is None else (check.assignment_id,)),
-            *(view.assignment_id for view in updates.updates_unreadable),
-            *(view.assignment_id for view in updates.checks_unreadable),
-        }
-    )
+    # A row the page names is always listed, wherever its entry falls. A row whose records
+    # can't be read is never an entry: such a row is worth checking together or Still open.
+    landing = frozenset(() if check is None else (check.assignment_id,))
     activity_listed = recent_activity(
         everything,
         today,
@@ -1748,6 +1742,11 @@ def review_page(
                 and everything.instructions[item.assignment_id].awaiting
             ],
             "instructions_review_href": instructions_review_href,
+            "instructions_unreadable": [
+                item
+                for item in everything.assignments
+                if item.assignment_id in everything.instructions_unavailable
+            ],
             "check": check,
             "check_note_max_length": CHECK_NOTE_MAX_LENGTH,
             "check_routes": check_actions,
@@ -1762,20 +1761,20 @@ def assignment_updates(everything: Everything, today: date) -> AssignmentUpdates
     Each assignment is in one group, the first that fits. Her "done" beside
     any school channel's current "missing", with no check of the family's
     standing against it, is worth checking together, and comes first, open,
-    however old. Next, the rows a parent marked checked in the last
-    ``ACTIVITY_DAYS`` household days, today minus six to today with any later
-    day counted in, by the check's day, the latest check first, while the
-    check stands against the facts as they are. Of the rest, the assignments
-    with an event of hers in those days, a correction included, follow, by
-    that latest event, most recent first, each showing the day of the update
-    that stands, or that none does. Every other assignment the school has a
-    current statement about follows, in the record's order, whatever its age.
-    The rest with a check that stands or an event of hers older than those
-    days are earlier activity, the latest first. A row whose updates or
-    checks cannot be read goes where its readable facts put it, and one they
-    put nowhere is listed last, in the record's order, so it is never out of
-    sight and never dated as recent. Every row whose updates cannot be read,
-    and every row whose checks cannot be, is named once. Whichever group
+    however old. Every other assignment the school has a current statement
+    about follows, in the record's order, whatever its age and whatever her
+    update or a check on it. Next, every other row whose updates or checks
+    cannot be read, in the record's order, so it is never out of sight and
+    never dated as recent. Of the rest, the rows a parent marked checked in
+    the last ``ACTIVITY_DAYS`` household days, today minus six to today with
+    any later day counted in, by the check's day, the latest check first,
+    while the check stands against the facts as they are. Then the
+    assignments with an event of hers in those days, a correction included,
+    by that latest event, most recent first, each showing the day of the
+    update that stands, or that none does. The rest with a check that stands
+    or an event of hers older than those days are earlier activity, the
+    latest first. Every row whose updates cannot be read, and every row
+    whose checks cannot be, is named once. Whichever group
     a row is in, it shows her update when she has one, what each school
     channel says now, every channel, and the check that stands, so a row
     never leaves out a fact it was grouped by. The rows, her events, the school's reports, and
@@ -1801,6 +1800,18 @@ def assignment_updates(everything: Everything, today: date) -> AssignmentUpdates
     check = [view for view in views.values() if statuses[view.assignment_id].needs_a_check]
     shown = {view.assignment_id for view in check}
     first_day = activity_start(today)
+    school = [
+        view
+        for view in views.values()
+        if view.assignment_id not in shown and view.school_statements
+    ]
+    shown |= {view.assignment_id for view in school}
+    unreadable = [
+        view
+        for view in views.values()
+        if view.assignment_id not in shown and (view.updates_unavailable or view.checks_unavailable)
+    ]
+    shown |= {view.assignment_id for view in unreadable}
 
     checked = sorted(
         (
@@ -1828,12 +1839,6 @@ def assignment_updates(everything: Everything, today: date) -> AssignmentUpdates
         reverse=True,
     )
     shown |= {view.assignment_id for view in recent}
-    school = [
-        view
-        for view in views.values()
-        if view.assignment_id not in shown and view.school_statements
-    ]
-    shown |= {view.assignment_id for view in school}
     earlier = sorted(
         (
             view
@@ -1844,12 +1849,6 @@ def assignment_updates(everything: Everything, today: date) -> AssignmentUpdates
         key=lambda view: recorded_at(everything, view, entry_kind(view)),
         reverse=True,
     )
-    shown |= {view.assignment_id for view in earlier}
-    unreadable = [
-        view
-        for view in views.values()
-        if view.assignment_id not in shown and (view.updates_unavailable or view.checks_unavailable)
-    ]
     # What she has said about turning work in rides along on a row worth checking
     # together, as context, and decides nothing about the check.
     check = [
@@ -1928,8 +1927,9 @@ def recent_activity(
 
     Still open comes first and is never counted: everything she reports as
     still to turn in, the longest standing first and however old, every
-    assignment the school reports on that no entry lists, and the records
-    that can't be read, her hand-in records after the rows. The entries are
+    assignment the school reports on that is not worth checking together,
+    and the records that can't be read, her hand-in records after the rows.
+    None of them is an entry, so the bound never leaves one out. The entries are
     a standing family check of the window, her latest event of the window,
     and her latest word on turning work in that is not still to turn in,
     each one entry, a hand-in entry beside the row's own. Those recorded

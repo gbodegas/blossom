@@ -137,6 +137,7 @@ from tests.support import (
     style_rules,
     week_card,
     whole_form,
+    words,
 )
 from tests.support import ESSAY_ID as ESSAY
 from tests.support import FIXTURE_WEEK as WEEK
@@ -2642,8 +2643,8 @@ def test_the_history_fold_lists_her_updates_and_corrections_and_the_schools_repo
 
 
 def test_each_assignment_is_in_one_family_group_with_every_fact_it_was_grouped_by() -> None:
-    """Done beside Missing is worth checking; a recent Not yet beside Missing is a recent
-    update, with the school's word in its row; a recent Done the school has said nothing
+    """Done beside Missing is worth checking; a recent Not yet beside Missing is under the
+    school's reports, with her update in its row; a recent Done the school has said nothing
     about is a recent update; and a school report on work she has said nothing about is
     under the school's reports. No assignment is in two groups."""
     science = "assignment-science-fair-proposal"
@@ -2663,7 +2664,7 @@ def test_each_assignment_is_in_one_family_group_with_every_fact_it_was_grouped_b
     checking = checking[: checking.index("<h2>Waiting for your review</h2>")]
     activity = family[family.index('id="recent-activity"') : family.index('id="add-assignments"')]
     school, _, recent = activity.partition("</section>")
-    assert "Showing all 2." in recent
+    assert "Showing all 1." in recent
     titles = {
         ESSAY: ESSAY_TITLE,
         LOG: "Reading log, week one",
@@ -2671,14 +2672,12 @@ def test_each_assignment_is_in_one_family_group_with_every_fact_it_was_grouped_b
         cover: "Cover the textbook",
     }
     assert [name for name in titles if titles[name] in checking] == [ESSAY]
-    assert [name for name in titles if titles[name] in recent] == [LOG, science]
-    assert [name for name in titles if titles[name] in school] == [cover]
+    assert [name for name in titles if titles[name] in recent] == [science]
+    assert [name for name in titles if titles[name] in school] == [LOG, cover]
     assert (
-        "She reported it not yet done on August 19. She wrote: <q>Two chapters left.</q>" in recent
+        "She reported it not yet done on August 19. She wrote: <q>Two chapters left.</q>" in school
     )
-    assert (
-        "The school reports it missing. From the school email, pasted Tuesday, August 18" in recent
-    )
+    assert school.count("the school reports it missing.</strong>") == 2
     assert "the school reports it missing.</strong>" in school
 
 
@@ -2739,7 +2738,7 @@ def test_both_pages_show_what_each_school_channel_says_now_with_its_day(
             f"The school reports this {fact}".replace(". From", ".</strong>\n          From")
             in banners
         )
-        assert f"The school reports it {fact}" in section
+        assert f"school reports it {fact}" in words(section)
     assert banners.count("<strong>The school reports this") == len(shown)
     assert ("has a school report to check" in hers) is checks
     assert ("<h2>Worth checking together</h2>" in section) is checks

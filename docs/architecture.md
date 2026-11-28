@@ -239,14 +239,17 @@ she typed, and a save of another answer with a step typed says the step was
 not saved. Her week's rows show one line and a link. The family page opens
 with Needs you, a row for each open request, school instruction waiting for
 review, homework note she added, row worth checking together, and plan
-waiting for review, whatever its age, each a link to its card, then Add or
-do, three links, then those sections with their forms. Recent activity
-follows: Still open first, never counted and whatever its age, with what she
-reports still to turn in, the school's reports, and the records that can't be
-read; then the entries of the last seven household days, today minus six to
-today with any later day counted in, by the day Blossom recorded each: her
-latest event on an assignment, a family check that stands, and her latest
-word on turning it in, each an entry of its own, newest first, at most ten
+waiting for review, whatever its age, each a link to its card, and a row for
+each of those sources, school instructions among them, that can't be read,
+then Add or do, three links, then those sections with their forms. Recent
+activity follows: Still open first, never counted and whatever its age, with
+what she reports still to turn in, every row the school reports on that is not
+worth checking together, with her update and a family check on it, and every
+other row whose records can't be read; then the entries of the last seven
+household days, today minus six to today with any later day counted in, by
+the day Blossom recorded each: her latest event on an assignment and a family
+check that stands, on a row Still open does not hold, and her latest word on
+turning it in, each an entry of its own, newest first, at most ten
 unless `?activity=all` asks for every one, with older entries under Earlier
 activity at `?activity=earlier`. A row the address names is always listed.
 History closes the page with the earlier plans, the plans that couldn't be

@@ -900,7 +900,7 @@ def test_a_recent_row_whose_checks_cannot_be_read_is_unfolded_for_the_link_to_it
 
     row = page.index(f'id="update-{ESSAY_ID}"')
     assert page.rfind('id="recent-activity"', 0, row) > page.rfind("<details", 0, row)
-    assert page[page.rfind("<", 0, row) : row].startswith('<li class="compact-row entry-update"')
+    assert page[page.rfind("<", 0, row) : row].startswith('<li class="compact-row" ')
     assert CHECKS_NOTICE in words(page)
     assert CHECK_ON_THE_FAMILY_PAGE in words(row_for(page, ESSAY_ID))
 

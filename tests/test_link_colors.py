@@ -1109,14 +1109,14 @@ HER_ROWS = frozenset({"a row of her To turn in list"})
 UPDATES = frozenset(
     {
         "a row worth checking together",
-        "a check in Recent activity",
         "her update in Recent activity",
         "a school report",
         "a row still to turn in",
     }
 )
 """Each place of the family page's rows: worth checking together, the entries of Recent
-activity, and Still open with what she says is still to turn in."""
+activity, and Still open with the school's reports, a checked row among them, and what she
+says is still to turn in."""
 LEAD = frozenset({"a way to add or plan"})
 NEEDS = frozenset({"a row of Needs you"})
 UNDER_THE_NOTES = frozenset({"the line under the homework notes"})

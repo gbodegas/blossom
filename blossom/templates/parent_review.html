@@ -82,11 +82,12 @@
     instruction waiting for review, each homework note she added, each row
     worth checking together, and each plan waiting for review. Each row says
     its kind, links its title to the item's card below, and says when. A source
-    that can't be read gets a row of its own that links to the line saying so,
-    so the page never says nothing needs you while it can't tell.
+    that can't be read, help requests, school instructions, homework notes, her
+    updates or the family checks, gets a row of its own that links to the line
+    saying so, so the page never says nothing needs you while it can't tell.
   #}
   {% set needs_count = help_open|length + instructions_to_review|length + homework_notes|length + updates.check|length + waiting|length %}
-  {% set unread_sources = help_set_apart or homework_notes_unreadable or updates.updates_unreadable or updates.checks_unreadable %}
+  {% set unread_sources = help_set_apart or instructions_unreadable or homework_notes_unreadable or updates.updates_unreadable or updates.checks_unreadable %}
   <section class="needs-you" id="needs-you">
     <h2>Needs you{% if needs_count %} <span class="pill">{{ needs_count }}</span>{% endif %}</h2>
     {% if needs_count or unread_sources %}
@@ -114,6 +115,9 @@
           {% set found_in %}<span class="authored-text">{{ item.course }}</span>, found in the old note field{% endset %}
           {% call needs_row("School instructions to review", card_href('instructions-to-review-', item.assignment_id), found_in) %}<span class="authored-text">{{ item.title }}</span>{% endcall %}
         {% endfor %}
+        {% if instructions_unreadable %}
+          {% call needs_row("School instructions to review", "#instructions-unreadable") %}School instructions that can't be read{% endcall %}
+        {% endif %}
         {% for note in homework_notes %}
           {% call needs_row("Homework she added", card_href('homework-note-', note.capture_id), "Saved " ~ (note.created_on|long_date)) %}<span class="authored-text">{{ note.title or note.text }}</span>{% endcall %}
         {% endfor %}
@@ -231,11 +235,16 @@
     field after the upgrade, beside instructions already kept, which the record
     cannot say which version of Blossom wrote. None of them applies, and none
     reaches a plan, until a parent chooses; each assignment links straight to
-    its review.
+    its review. Instructions that can't be read are named in one line, each
+    assignment a link to its details page, and the section is shown for it.
   #}
-  {% if instructions_to_review %}
+  {% if instructions_to_review or instructions_unreadable %}
     <section class="panel" id="school-instructions-to-review">
       <h2>School instructions to review</h2>
+      {% if instructions_unreadable %}
+        <p class="problem" id="instructions-unreadable" tabindex="-1">School instructions can't be read right now for: {% for item in instructions_unreadable %}<a class="assignment-link" href="{{ details_href(item.assignment_id, return_to="family") }}">{{ item.title }}</a> ({{ item.course }}){% if not loop.last %}, {% endif %}{% endfor %}.</p>
+      {% endif %}
+      {% if instructions_to_review %}
       <p class="helper">These were found in the old note field after the upgrade. None of them applies until you choose.</p>
       <ul>
         {% for item, waiting in instructions_to_review %}
@@ -246,6 +255,7 @@
           </li>
         {% endfor %}
       </ul>
+      {% endif %}
     </section>
   {% endif %}
 
@@ -290,12 +300,14 @@
     decides nothing between them. Her "done" beside a school "missing" is
     worth checking together, in a section of its own above the plans, with a
     form to record that a parent checked it with her. Under Recent activity,
-    the rows checked lately, each with a way to check again, and her recent
-    updates are entries; the rest of the school's reports are under Still
-    open. Her updates or the family's checks that cannot be read are named
-    at the head of Recent activity, each name a link to its row, and said on
-    the row in place of what they would show; a row they leave in no other
-    group is under Still open. Checks that cannot be read
+    every other row the school reports on is under Still open, with her
+    update and its check and Check again, whatever their days; the rows
+    checked lately, each with a way to check again, and her recent updates
+    are entries. Her updates or the family's checks that cannot be read are
+    named at the head of Recent activity, each name a link to its row, and
+    said on the row in place of what they would show; a row not worth
+    checking together and with no school report is under Still open for
+    them, never an entry. Checks that cannot be read
     offer neither form, and a row worth checking stays worth checking. A
     check is the family's own record: it changes neither account, sets no
     status, and sends nothing.
@@ -620,7 +632,7 @@
     {% if "hand_in" in kinds or activity.still_to_turn_in %}
       <p class="note">Her own reports of turning work in, with the day Blossom took each. Nothing here is sent to the school.</p>
     {% endif %}
-    {% if "check" in kinds %}
+    {% if "check" in kinds or activity.school|selectattr("checked")|list %}
       <p class="note">A check is the family's own record; it changes neither her update nor the school's report. Check again reopens it here.</p>
     {% endif %}
     {% if activity.earlier %}
