@@ -224,6 +224,8 @@ class HandInView(BaseModel):
     page showed. Never the event that began the state."""
     undo_event_id: str | None = None
     """The report she can take back, when the head is one she made."""
+    taken_back_on: date | None = None
+    """The day she took back a report and left none standing; ``None`` otherwise."""
     history: list[HandInEventView] = []
 
     @classmethod
@@ -239,6 +241,11 @@ class HandInView(BaseModel):
             note_updated_on=reading.note_updated_on,
             head_id=reading.head_id,
             undo_event_id=reading.undo_event_id,
+            taken_back_on=(
+                reading.head.reported_on
+                if reading.state is None and reading.head is not None
+                else None
+            ),
             history=[
                 HandInEventView(
                     on=row.event.reported_on,

@@ -246,8 +246,9 @@ activity follows: Still open first, rows outside the bound whatever their
 age, with what she reports still to turn in, every row the school reports on
 that is not worth checking together, with her update and a family check on
 it, and every other row whose records can't be read; then the entries of the
-last seven household days, today minus six to today with any later day
-counted in, by the day Blossom recorded each: her latest event on an
+last seven household days, today minus six to today, by the day Blossom
+recorded each (an entry recorded with a later date is listed apart after
+them, under "Recorded with a later date:"): her latest event on an
 assignment, a family check that stands, and her latest word on turning it
 in, still to turn in included, newest first, at most ten unless
 `?activity=all` asks for every one, with older entries under Earlier activity

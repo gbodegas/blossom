@@ -22,7 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from blossom.drafts import Draft
-from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved
+from blossom.hand_in import NEEDS_HAND_IN, TURNED_IN, HandInSaved, HandInUndone
 from blossom.routes.navigation import (
     ADDED_NOTES_PAGE,
     ARCHIVED_NOTES_PAGE,
@@ -32,15 +32,19 @@ from blossom.routes.navigation import (
 from blossom.routes.parent import CHECK_REOPENED, NOT_THIS_ROWS, span_said
 from blossom.stores.project_state import Checked, ProjectStateStore, Saved
 from tests.support import (
+    ARRIVAL_CUE,
     ESSAY_ID,
     PAGE_HEADERS,
     PLAN_DATE,
+    PROBLEM_CUE,
     THEIRS,
     ZONE,
     SetClock,
     a_row,
     browser,
     client_for,
+    control_names,
+    declared_for,
     ended_run,
     lands_on,
     mark,
@@ -113,9 +117,32 @@ def without(fragment: str, *idents: str) -> str:
 
 def window(page: str) -> list[str]:
     """The assignments of the entries Recent activity lists for its days, in order: the
-    section without Still open and Earlier activity."""
-    listed = without(element(page, "recent-activity"), "still-open", "earlier-activity")
+    section without Still open, the entries recorded with a later date, and Earlier
+    activity."""
+    listed = without(
+        element(page, "recent-activity"), "still-open", "later-activity", "earlier-activity"
+    )
     return [unescape(found) for found in ROW_ID.findall(listed)]
+
+
+LATER_LINE = "Recorded with a later date:"
+
+
+def later(page: str) -> list[str]:
+    """The assignments of the entries listed after the line for a later date, in order,
+    checking that the line opens their list and comes after the list of the days."""
+    recent = element(page, "recent-activity")
+    found = element(recent, "later-activity")
+    line = re.search(r"<p\b[^>]*>(.*?)</p>", found, re.S)
+    assert line is not None
+    assert words(line.group(1)) == LATER_LINE
+    assert words(recent).count(LATER_LINE) == 1
+    assert found.count('<ul class="compact-rows">') == 1
+    days = without(recent, "still-open")
+    before, after = days[: days.index(found)], days[days.index(found) + len(found) :]
+    assert "the last 7 days" in words(before) or "No updates, checks" in words(before)
+    assert ROW_ID.findall(without(after, "earlier-activity")) == []
+    return [unescape(name) for name in ROW_ID.findall(found)]
 
 
 def earlier(page: str) -> list[str]:
@@ -502,7 +529,7 @@ EDGES = {
 }
 
 
-def test_the_days_are_the_last_seven_household_days_today_and_a_later_day_included() -> None:
+def test_the_days_are_the_last_seven_household_days_today_included_a_later_day_apart() -> None:
     with browser(BLOSSOM_FIXTURE_PATH="") as client:
         store = on_record(client, *EDGES)
         for name, day in EDGES.items():
@@ -511,8 +538,9 @@ def test_the_days_are_the_last_seven_household_days_today_and_a_later_day_includ
         older = page_at(client, activity="earlier")
 
     recent = element(page, "recent-activity")
-    assert window(page) == ["a-later-day", "today", "minus-six"]
-    assert re.search(bounds("Showing all 3."), words(recent))
+    assert window(page) == ["today", "minus-six"]
+    assert re.search(bounds("Showing all 2."), words(recent))
+    assert later(page) == ["a-later-day"]
     assert link_words(recent, "activity=earlier", "earlier-activity") == ["Earlier activity (1)"]
     assert link_words(recent, "activity=all", "recent-activity") == []
     assert earlier(older) == ["minus-seven"]
@@ -868,8 +896,8 @@ ENTRY_ROW = re.compile(
 )
 NEEDS_ROW = re.compile(
     r'<li class="compact-row">\s*<p class="course">([^<]*)</p>\s*'
-    r'<p class="decision-line"><strong><a href="(#[^"]*)">(.*?)</a></strong></p>\s*'
-    r"(?:<p>(.*?)</p>\s*)?</li>",
+    r'<p class="decision-line"><strong><a href="(#[^"]*)"(?: aria-label="[^"]*")?>(.*?)</a>'
+    r"</strong></p>\s*(?:<p>(.*?)</p>\s*)?</li>",
     re.S,
 )
 
@@ -1223,3 +1251,265 @@ def test_the_days_are_never_said_empty_while_a_record_of_them_cannot_be_read(
     assert EMPTY_DAYS not in recent
     assert window(page) == []
     assert max(ids_of(page).values()) == 1
+
+
+# ------------------------------------------------------------------ a hand-in report taken back
+
+
+def took_back(store: ProjectStateStore, name: str, made: datetime, back: datetime) -> None:
+    """Her report that she turned it in, kept at ``made`` and taken back at ``back``, so no
+    report of hers stands."""
+    kept = store.record_hand_in(
+        name,
+        TURNED_IN,
+        None,
+        None,
+        expected_head=None,
+        now=made,
+        today=made.astimezone(ZONE).date(),
+    )
+    assert isinstance(kept, HandInSaved)
+    undone = store.undo_hand_in(
+        name, kept.event.event_id, now=back, today=back.astimezone(ZONE).date()
+    )
+    assert isinstance(undone, HandInUndone)
+
+
+def taken_back_words(day: date) -> str:
+    return f"She took back her hand-in report on {day:%B} {day.day}, {day.year}."
+
+
+def test_her_hand_in_report_taken_back_in_the_days_is_their_one_entry_dated_by_the_undo() -> None:
+    """Reported turned in on August 17 and taken back on August 18, with nothing else on the
+    record: the days list one row, by the day she took it back, and are not said empty."""
+    back = PLAN_DATE - timedelta(days=1)
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        took_back(
+            on_record(client, "solo"), "solo", at_noon(back - timedelta(days=1)), at_noon(back)
+        )
+        page = page_at(client)
+
+    recent = words(element(page, "recent-activity"))
+    assert window(page) == ["solo"]
+    [(kind, title, said)] = ENTRY_ROW.findall(
+        without(element(page, "recent-activity"), "still-open", "earlier-activity")
+    )
+    assert " ".join(unescape(kind).split()) == f"{back:%B} {back.day} {MIDDLE_DOT} Math"
+    assert title == "Work solo"
+    assert said.strip() == taken_back_words(back)
+    assert re.search(bounds("Showing all 1."), recent), recent
+    assert EMPTY_DAYS not in recent
+    assert "She reported it turned in" not in recent
+
+
+def test_her_hand_in_report_taken_back_before_the_days_is_earlier_activity_the_days_empty() -> None:
+    """Taken back nine days ago, with nothing else on the record: the days hold nothing and
+    say so, and Earlier activity holds the one row."""
+    back = PLAN_DATE - timedelta(days=9)
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        took_back(
+            on_record(client, "solo"), "solo", at_noon(back - timedelta(days=1)), at_noon(back)
+        )
+        page = page_at(client)
+        older = page_at(client, **EARLIER)
+
+    recent = element(page, "recent-activity")
+    assert f"{EMPTY_DAYS} {SPAN}." in words(recent)
+    assert window(page) == []
+    assert link_words(recent, "activity=earlier", "earlier-activity") == ["Earlier activity (1)"]
+    assert earlier(older) == ["solo"]
+    assert taken_back_words(back) in words(element(older, "earlier-activity"))
+
+
+# ------------------------------------------------------------------ where Needs you lands
+
+
+def test_the_needs_you_lines_and_instruction_rows_take_the_page_landing_cues() -> None:
+    """The problem lines Needs you links to take the problem line's cue, and a school
+    instruction's row takes the calm cue. The rules are pinned here; how they look is
+    measured in a browser."""
+    for selector in (
+        "#help-set-apart:focus",
+        "#instructions-unreadable:focus",
+        "#homework-notes-unreadable:focus",
+    ):
+        assert declared_for(selector) == [PROBLEM_CUE], selector
+    assert declared_for('#school-instructions-to-review li[tabindex="-1"]:focus') == [ARRIVAL_CUE]
+
+
+# ------------------------------------------------------------------ names of Needs you links
+
+
+def test_two_rows_worth_checking_with_one_title_have_links_named_by_title_and_class() -> None:
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = state_of(client).project_state
+        store.put_on_record(
+            [
+                a_row("p-hist", "Practice").model_copy(update={"course": "History"}),
+                a_row("p-sci", "Practice").model_copy(update={"course": "Science"}),
+            ],
+            {},
+        )
+        for name in ("p-hist", "p-sci"):
+            worth_checking(store, name, PLAN_DATE - timedelta(days=1))
+        page = page_at(client)
+
+    named = [
+        name for shown, name in control_names(element(page, "needs-you")) if shown == "Practice"
+    ]
+    assert sorted(named) == ["Practice, History", "Practice, Science"]
+
+
+def test_an_instruction_to_review_has_a_needs_you_link_named_by_title_and_class(
+    tmp_path: pathlib.Path,
+) -> None:
+    settings = signed_in_household(tmp_path)
+    with client_for(settings) as client:
+        a_current_b_earlier(store_of(client))
+    with_awaiting(settings, C)
+    with client_for(settings) as client:
+        signed_in(client, THEIRS)
+        page = client.get(FAMILY, headers=PAGE_HEADERS).text
+
+    [(_, title, said)] = needs_rows(page, "School instructions to review")
+    course = re.fullmatch(r'<span class="authored-text">([^<]+)</span>, found in .*', said)
+    assert course is not None, said
+    assert (title, f"{title}, {unescape(course.group(1))}") in control_names(
+        element(page, "needs-you")
+    )
+
+
+# ------------------------------------------------------------------ years on the dated rows
+
+
+def test_earlier_activity_says_the_year_of_an_event_from_another_year_and_not_of_this_one() -> None:
+    """A hand-in report, an update and a still to turn in from 2025 beside a hand-in report
+    of this year: each 2025 row's day line has its year, this year's has none."""
+    last_year = date(PLAN_DATE.year - 1, 8, 25)
+    this_year = date(PLAN_DATE.year, 8, 1)
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = on_record(client, "old-hand-in", "old-update", "old-waiting", "this-year")
+        handed_in(store, "old-hand-in", at_noon(last_year))
+        said_done(store, "old-update", at_noon(last_year + timedelta(days=1)))
+        handed_in(store, "old-waiting", at_noon(last_year + timedelta(days=2)), state=NEEDS_HAND_IN)
+        handed_in(store, "this-year", at_noon(this_year))
+        older = page_at(client, **EARLIER)
+
+    rows = re.findall(
+        r'<li class="compact-row[^"]*"[^>]*>\s*<p class="course">([^<]*)</p>\s*'
+        r'<p class="decision-line"><strong><a [^>]*>([^<]*)</a>',
+        element(older, "earlier-activity"),
+    )
+    said = {title: " ".join(unescape(kind).split()) for kind, title in rows}
+    dot = MIDDLE_DOT
+    assert said == {
+        "Work this-year": f"August 1 {dot} Math",
+        "Work old-waiting": f"August 27, {last_year.year} {dot} Math",
+        "Work old-update": f"August 26, {last_year.year} {dot} Math",
+        "Work old-hand-in": f"August 25, {last_year.year} {dot} Math",
+    }
+    assert [kind for kind, _ in plain_rows(element(older, "earlier-activity"))] == ["hand_in"]
+
+
+# ------------------------------------------------------------------ entries with a later date
+
+TOMORROW = PLAN_DATE + timedelta(days=1)
+
+
+def test_one_entry_with_a_later_date_is_listed_after_the_days_and_not_counted_in_them() -> None:
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = on_record(client, "today", "tomorrow")
+        handed_in(store, "today", at_noon(PLAN_DATE))
+        handed_in(store, "tomorrow", at_noon(TOMORROW))
+        page = page_at(client)
+
+    recent = element(page, "recent-activity")
+    assert window(page) == ["today"]
+    assert re.search(bounds("Showing all 1."), words(recent))
+    assert link_words(recent, "activity=all", "recent-activity") == []
+    assert later(page) == ["tomorrow"]
+    assert max(ids_of(page).values()) == 1
+
+
+LATER = [f"later-{number:02}" for number in range(10)]
+
+
+def test_ten_entries_with_a_later_date_leave_the_days_their_one_entry_of_today() -> None:
+    """Ten reports kept on August 20 beside one of August 19, read on August 19: the days
+    show and count today's report alone, and the ten follow the line, newest first."""
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = on_record(client, "today", *LATER)
+        handed_in(store, "today", at_noon(PLAN_DATE))
+        for number, name in enumerate(LATER):
+            handed_in(store, name, at_noon(TOMORROW) + timedelta(minutes=number))
+        page = page_at(client)
+
+    recent = element(page, "recent-activity")
+    assert window(page) == ["today"]
+    assert re.search(bounds("Showing all 1."), words(recent))
+    assert "Showing the 10 newest" not in words(recent)
+    assert link_words(recent, "activity=all", "recent-activity") == []
+    assert later(page) == list(reversed(LATER))
+    assert max(ids_of(page).values()) == 1
+
+
+def test_only_an_entry_with_a_later_date_leaves_the_days_said_empty() -> None:
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store = on_record(client, "tomorrow")
+        handed_in(store, "tomorrow", at_noon(TOMORROW))
+        page = page_at(client)
+
+    recent = element(page, "recent-activity")
+    assert f"{EMPTY_DAYS} {SPAN}." in words(recent)
+    assert window(page) == []
+    assert later(page) == ["tomorrow"]
+    assert "Nothing here is sent to the school." in words(recent)
+
+
+# ------------------------------------------------------------------ help asked in one minute
+
+ESSAY = "Wren asks how to start the essay."
+MAP = "Wren asks where the map is."
+ONE_MINUTE = {
+    "twenty-five-seconds": (timedelta(seconds=25), ESSAY, MAP),
+    "no-note": (timedelta(seconds=25), None, None),
+    "one-second": (timedelta(milliseconds=400), ESSAY, MAP),
+}
+
+
+@pytest.mark.parametrize(
+    ("apart", "first_words", "second_words"), ONE_MINUTE.values(), ids=ONE_MINUTE
+)
+def test_two_waiting_requests_in_one_minute_are_numbered_in_the_order_she_asked(
+    apart: timedelta, first_words: str | None, second_words: str | None
+) -> None:
+    """Asked at 5:00 PM on August 19 in the household and again in that minute, each link
+    says when she asked it and which of the two it is, and goes to its own card."""
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store, clock = pinned_help(client)
+        first = asked(store, first_words)
+        clock.at = T0 + apart
+        second = asked(store, second_words)
+        page = page_at(client)
+
+    said = "Request from Wednesday, August 19 at 5:00 PM"
+    assert needs_rows(page, "Help she asked for") == [
+        (f"#help-request-{segment(first)}", f"{said} (1 of 2)", ""),
+        (f"#help-request-{segment(second)}", f"{said} (2 of 2)", ""),
+    ]
+
+
+def test_two_waiting_requests_seconds_apart_in_two_minutes_keep_their_labels() -> None:
+    """Asked at 5:00:50 PM and 5:01:10 PM: twenty seconds apart, in two minutes."""
+    with browser(BLOSSOM_FIXTURE_PATH="") as client:
+        store, clock = pinned_help(client, T0 + timedelta(seconds=50))
+        first = asked(store, ESSAY)
+        clock.at = T0 + timedelta(minutes=1, seconds=10)
+        second = asked(store, None)
+        page = page_at(client)
+
+    said = "Request from Wednesday, August 19 at"
+    assert needs_rows(page, "Help she asked for") == [
+        (f"#help-request-{segment(first)}", f"{said} 5:00 PM", ""),
+        (f"#help-request-{segment(second)}", f"{said} 5:01 PM", ""),
+    ]

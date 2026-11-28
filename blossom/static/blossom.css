@@ -940,7 +940,8 @@ a.assignment-link:focus-visible {
    result's homework page, its heading, where a press or the way in lands. On the
    screenshot review, a question or a card's choices, and a group of what saving
    does, where their links land, and what an upload, a Read press or a save did, where
-   the press lands. Each
+   the press lands. On the family page, a school instruction to review, where its
+   Needs you link lands. Each
    takes the same calm cue, whether a click, a key or a
    redirect brought the focus: a pale wash around the place and a bar of the action
    color at its left, both drawn outside its box so nothing moves, and no outline
@@ -966,7 +967,8 @@ h1#homework:focus,
 #told:focus,
 #done:focus,
 #outcome-heading:focus,
-#too-much-state:focus {
+#too-much-state:focus,
+#school-instructions-to-review li[tabindex="-1"]:focus {
   outline: 3px solid transparent;
   outline-offset: 4px;
   background-color: var(--arrival-tint);
@@ -1030,8 +1032,9 @@ h1#homework:focus,
 }
 
 /* A problem line a press lands on, at the top of her week or of a page, on a card, in her
-   To turn in list or in Help, keeps its own tint and edge, and the edge widens: the same
-   calm cue in the problem's colors, with the same transparent outline for forced colors. */
+   To turn in list or in Help, or that a Needs you link on the family page lands on, keeps
+   its own tint and edge, and the edge widens: the same calm cue in the problem's colors,
+   with the same transparent outline for forced colors. */
 #problem-summary:focus,
 #note-problem:focus,
 .detail .problem[tabindex="-1"]:focus,
@@ -1039,7 +1042,10 @@ h1#homework:focus,
 #problem[tabindex="-1"]:focus,
 .update .problem[tabindex="-1"]:focus,
 #to-turn-in-problem:focus,
-.help-panel .problem[tabindex="-1"]:focus {
+.help-panel .problem[tabindex="-1"]:focus,
+#help-set-apart:focus,
+#instructions-unreadable:focus,
+#homework-notes-unreadable:focus {
   outline: 3px solid transparent;
   outline-offset: 4px;
   box-shadow: inset 0.25rem 0 0 var(--rose-ink);

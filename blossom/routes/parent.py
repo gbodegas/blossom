@@ -313,8 +313,8 @@ FAMILY_UNREADABLE_WHY: Final = (
 )
 ACTIVITY_DAYS: Final = 7
 """How many household days, today included, the family page's Recent activity lists by
-the day Blossom recorded each entry: today minus six days to today, with any later day
-counted in. Older entries are listed under Earlier activity."""
+the day Blossom recorded each entry: today minus six days to today. Entries recorded with
+a later date are listed apart below them, and older entries under Earlier activity."""
 OVERVIEW_ENTRIES: Final = 10
 """The most entries of those days that Recent activity shows unless all of them are asked
 for, the newest first."""
@@ -475,10 +475,12 @@ class RecentActivity:
 
     ``still_to_turn_in``, ``school`` and the two unreadable lists are Still open: rows shown
     whatever their age, outside the bound. ``entries`` are the events of the days from
-    ``first_day`` to today, later days included, the newest first, an event of a Still
-    open row or of a row worth checking together among them as a plain entry; ``shown`` is
-    what the page lists of them, the ten newest unless all are asked for or a row the page
-    names is an entry past the ten. ``earlier`` is every older event, the newest first,
+    ``first_day`` to today, the newest first, an event of a Still open row or of a row
+    worth checking together among them as a plain entry; ``shown`` is what the page lists
+    of them, the ten newest unless all are asked for or a row the page names is an entry
+    past the ten. ``later`` is every event recorded with a day after today, the newest
+    first, always listed, apart from the days and outside the ten and their counts.
+    ``earlier`` is every older event, the newest first,
     listed when asked for or when a row the page names is an entry among them. ``unread``
     is whether her updates, the family's checks or her hand-in records can't be read for
     some assignment, so the page never says the days hold nothing."""
@@ -491,6 +493,7 @@ class RecentActivity:
     hand_ins_unreadable: list[HandInRowView]
     entries: list[ActivityEntry]
     shown: list[ActivityEntry]
+    later: list[ActivityEntry]
     earlier: list[ActivityEntry]
     earlier_shown: bool
     checking: frozenset[str] = frozenset()
@@ -500,7 +503,7 @@ class RecentActivity:
     @property
     def rows_listed(self) -> list[ActivityEntry]:
         """The entries the page lists that are rows themselves, the plain ones left out."""
-        listed = [*self.shown, *(self.earlier if self.earlier_shown else [])]
+        listed = [*self.shown, *self.later, *(self.earlier if self.earlier_shown else [])]
         return [entry for entry in listed if not entry.plain]
 
     @property
@@ -1349,6 +1352,20 @@ RESOLVE_ANSWERS: Final = help_move_answers(
 """Every body Close request over JSON answers with besides the request."""
 
 
+def numbered_by_minute(asks: Sequence[HelpRequestView]) -> dict[str, str]:
+    """What each request's link in Needs you adds after the day and time she asked it:
+    " (k of n)" when n of these requests read the same household day and minute, k in the
+    order given, which is the order she asked them; nothing for a request alone in its
+    minute."""
+    minutes = [ask.asked_local.replace(tzinfo=None, second=0, microsecond=0) for ask in asks]
+    numbers: dict[str, str] = {}
+    for place, (ask, minute) in enumerate(zip(asks, minutes, strict=True)):
+        same = minutes.count(minute)
+        turn = minutes[: place + 1].count(minute)
+        numbers[ask.request_id] = f" ({turn} of {same})" if same > 1 else ""
+    return numbers
+
+
 @router.get("/help-requests")
 def help_requests(state: State, response: Response) -> list[HelpRequestView]:
     """Every request she has open, oldest first, then those resolved within two weeks, each
@@ -1552,6 +1569,7 @@ def review_page(
         )
         notes = state.project_state.outstanding_captures()
         named = subjects_named_by(state, asked)
+    help_open = [help_view(state, r, named) for r in asked if r.open]
     # What stands about the dates is worked out once, from the same reading, for every
     # assignment the plans in force speak about: today's and each later evening's.
     live = [record for record in shown if record.draft_id in records.operative]
@@ -1712,7 +1730,8 @@ def review_page(
             "problem": said_at_the_top,
             "problem_target": check.assignment_id if about_a_row and check is not None else None,
             "reason_max_length": REASON_MAX_LENGTH,
-            "help_open": [help_view(state, r, named) for r in asked if r.open],
+            "help_open": help_open,
+            "help_numbers": numbered_by_minute(help_open),
             "help_resolved": [help_view(state, r, named) for r in asked if not r.open],
             "help_set_apart": set_apart(listed.unreadable),
             "update_ids": {r.request_id: new_update_id() for r in asked if r.open},
@@ -1943,12 +1962,14 @@ def recent_activity(
     worth checking together, and the records that can't be read, her
     hand-in records after the rows. The entries are the events: for every
     assignment, her latest event, a family check that stands, and her latest
-    word on turning work in, still to turn in included. An event whose fact
-    is held by a row worth checking together or a Still open row is a plain
-    entry that links to that row; any other event is the row itself, one
-    entry for her update and a check that stands, by the check, and a
-    hand-in entry beside it. Those recorded from today minus six days on,
-    later days included, are the window's, newest first; older ones are
+    word on turning work in, still to turn in included, her taking back a
+    report that leaves none standing among them, by the day she took it
+    back. An event whose fact is held by a row worth checking together or a
+    Still open row is a plain entry that links to that row; any other event
+    is the row itself, one entry for her update and a check that stands, by
+    the check, and a hand-in entry beside it. Those recorded from today
+    minus six days to today are the window's, newest first; those recorded
+    with a later day are listed apart, every one, newest first; older ones are
     earlier activity, newest first. The page shows ``OVERVIEW_ENTRIES`` of
     the window unless ``asked`` is ``all``, and earlier activity when
     ``asked`` is ``earlier``. An assignment the page names in ``landing``
@@ -1962,6 +1983,9 @@ def recent_activity(
     hand_ins_unreadable: list[HandInRowView] = []
     for item in everything.assignments:
         said = hand_in_shown(everything, item.assignment_id)
+        kept = everything.hand_ins.get(item.assignment_id)
+        if said is None and kept is not None and kept.head is not None:
+            said = HandInView.of(kept)
         if said is None:
             continue
         row = HandInRowView(
@@ -2030,7 +2054,9 @@ def recent_activity(
             *(entry for entry in held if entry.day < first_day),
         ]
     )
-    entries = newest_first(rows, [entry for entry in hand_ins if entry.day >= first_day])
+    dated = newest_first(rows, [entry for entry in hand_ins if entry.day >= first_day])
+    entries = [entry for entry in dated if entry.day <= today]
+    later = [entry for entry in dated if entry.day > today]
     earlier = newest_first(older_rows, [entry for entry in hand_ins if entry.day < first_day])
 
     def lands_in(listed: Sequence[ActivityEntry]) -> bool:
@@ -2048,6 +2074,7 @@ def recent_activity(
         hand_ins_unreadable=hand_ins_unreadable,
         entries=entries,
         shown=entries if whole else entries[:OVERVIEW_ENTRIES],
+        later=later,
         earlier=earlier,
         earlier_shown=bool(earlier) and (asked == "earlier" or lands_in(earlier)),
         checking=frozenset(view.assignment_id for view in updates.check),
